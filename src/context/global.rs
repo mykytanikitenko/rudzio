@@ -44,11 +44,14 @@ where
     /// (or root-level cancels that fan out through the parent/child chain)
     /// propagate into the test body.
     ///
-    /// The test context lifetime is tied to the borrow of self.
-    fn context(
-        &self,
+    /// `'test_context` names the third tier of the lifetime hierarchy:
+    /// `'runtime: 'context_global: 'test_context`. It is the duration of
+    /// the `&self` borrow that produces the test — the test runner's own
+    /// per-test stack frame.
+    fn context<'test_context>(
+        &'test_context self,
         cancel: CancellationToken,
-    ) -> impl Future<Output = Result<Self::Test, Self::ContextError>> + Send + '_;
+    ) -> impl Future<Output = Result<Self::Test, Self::ContextError>> + Send + 'test_context;
 
     /// Create the shared state. Called once per runtime group.
     ///
