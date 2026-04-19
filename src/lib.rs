@@ -1,6 +1,7 @@
 pub mod context;
 pub mod runner;
 pub mod runtime;
+pub mod suite;
 pub mod test_case;
 pub mod token;
 
@@ -8,7 +9,11 @@ pub use rudzio_macro::{main, suite, test};
 
 pub use context::{Global, Test};
 pub use runner::{run, RunConfig, TestSummary};
-pub use runtime::{DynRuntime, JoinError, Runtime};
+pub use runtime::{JoinError, Runtime};
+pub use suite::{
+    RunIgnoredMode, SuiteId, SuiteRunRequest, SuiteRunner, SuiteReporter, SuiteSummary,
+    TestOutcome,
+};
 pub use test_case::{box_error, BoxError, TestCase, TestFn};
 pub use token::{TestToken, TEST_TOKENS};
 

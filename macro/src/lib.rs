@@ -7,33 +7,31 @@ mod transform;
 
 #[proc_macro_attribute]
 pub fn main(args: TokenStream, input: TokenStream) -> TokenStream {
-    // If args are provided, delegate to the legacy expand_main for backwards
-    // compatibility. Otherwise emit a minimal fn main that calls rudzio::run().
-    if args.is_empty() {
-        // Expect `fn main() {}` as input and replace it with the rudzio runner.
-        let _: syn::ItemFn = match syn::parse(input) {
-            Ok(f) => f,
-            Err(e) => return e.to_compile_error().into(),
-        };
-        return quote::quote! {
-            fn main() {
-                ::rudzio::run();
-            }
-        }
+    if !args.is_empty() {
+        return syn::Error::new(
+            proc_macro2::TokenStream::from(args).into_iter().next().map_or_else(
+                proc_macro2::Span::call_site,
+                |t| t.span(),
+            ),
+            "`#[rudzio::main]` no longer accepts inline configuration; use \
+             `#[rudzio::suite([...])] mod ... { ... }` for each runtime config \
+             and a separate `#[rudzio::main] fn main() {}` to install the \
+             runner",
+        )
+        .to_compile_error()
         .into();
     }
 
-    let args: args::MainArgs = match syn::parse(args) {
-        Ok(args) => args,
+    let _: syn::ItemFn = match syn::parse(input) {
+        Ok(f) => f,
         Err(e) => return e.to_compile_error().into(),
     };
-
-    let input_mod: syn::ItemMod = match syn::parse(input) {
-        Ok(m) => m,
-        Err(e) => return e.to_compile_error().into(),
-    };
-
-    codegen::expand_main(args, input_mod)
+    quote::quote! {
+        fn main() {
+            ::rudzio::run();
+        }
+    }
+    .into()
 }
 
 #[proc_macro_attribute]

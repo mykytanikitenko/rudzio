@@ -1,7 +1,5 @@
 //! Async runtime abstraction and concrete implementations.
 
-/// Object-safe runtime shim for internal use by the runner and generated code.
-pub mod dyn_rt;
 /// Error type returned when a spawned task fails to join.
 mod join_error;
 /// The [`Runtime`] trait defining the async runtime abstraction.
@@ -14,6 +12,5 @@ pub mod embassy;
 #[cfg(feature = "runtime-tokio")]
 pub mod tokio;
 
-pub use dyn_rt::{DynRuntime, SendAdapter};
 pub use join_error::JoinError;
 pub use rt::Runtime;

@@ -1,17 +1,16 @@
-use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::env;
 use std::io::{self, IsTerminal as _, Write as _};
 use std::num::NonZeroUsize;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use futures_util::stream::{FuturesUnordered, StreamExt as _};
 use tokio_util::sync::CancellationToken;
 
-use crate::runtime::DynRuntime;
+use crate::suite::{
+    RunIgnoredMode, SuiteId, SuiteReporter, SuiteRunRequest, SuiteRunner, SuiteSummary, TestOutcome,
+};
 use crate::token::{TestToken, TEST_TOKENS};
 
 // ---------------------------------------------------------------------------
@@ -91,6 +90,21 @@ impl TestSummary {
     }
 }
 
+impl From<SuiteSummary> for TestSummary {
+    #[inline]
+    fn from(s: SuiteSummary) -> Self {
+        Self {
+            cancelled: s.cancelled,
+            failed: s.failed,
+            ignored: s.ignored,
+            panicked: s.panicked,
+            passed: s.passed,
+            timed_out: s.timed_out,
+            total: s.total,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // CLI args
 // ---------------------------------------------------------------------------
@@ -108,16 +122,6 @@ enum ColorMode {
     Never,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RunIgnored {
-    /// Default: skip ignored tests (report as ignored).
-    Normal,
-    /// `--ignored`: run only tests marked `#[ignore]`.
-    Only,
-    /// `--include-ignored`: run all tests.
-    Include,
-}
-
 #[derive(Debug)]
 struct CliArgs {
     filter: Option<String>,
@@ -125,7 +129,7 @@ struct CliArgs {
     threads: usize,
     format: Format,
     color: ColorMode,
-    run_ignored: RunIgnored,
+    run_ignored: RunIgnoredMode,
     list: bool,
     /// Per-test timeout. `None` = no limit.
     test_timeout: Option<Duration>,
@@ -139,7 +143,7 @@ fn parse_cli_args() -> CliArgs {
     let mut threads: Option<usize> = None;
     let mut format = Format::Pretty;
     let mut color = ColorMode::Auto;
-    let mut run_ignored = RunIgnored::Normal;
+    let mut run_ignored = RunIgnoredMode::Normal;
     let mut list = false;
     let mut test_timeout: Option<Duration> = None;
     let mut run_timeout: Option<Duration> = None;
@@ -184,9 +188,9 @@ fn parse_cli_args() -> CliArgs {
                 format = Format::Terse;
             }
         } else if arg == "--ignored" {
-            run_ignored = RunIgnored::Only;
+            run_ignored = RunIgnoredMode::Only;
         } else if arg == "--include-ignored" {
-            run_ignored = RunIgnored::Include;
+            run_ignored = RunIgnoredMode::Include;
         } else if arg == "--list" {
             list = true;
         } else if let Some(rest) = arg.strip_prefix("--test-timeout=") {
@@ -272,32 +276,7 @@ struct FailureInfo {
 }
 
 // ---------------------------------------------------------------------------
-// Internal outcome types
-// ---------------------------------------------------------------------------
-
-/// Result of executing the test future, produced inside `spawn_dyn`.
-#[derive(Debug)]
-enum SpawnResult {
-    Completed(Result<(), crate::test_case::BoxError>),
-    Panicked,
-    TimedOut,
-    /// The root cancellation token fired before the test finished.
-    Cancelled,
-}
-
-/// Per-test outcome returned by `spawn_test`.
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug)]
-enum TestOutcome {
-    Passed { elapsed: Duration },
-    Failed { elapsed: Duration, message: String },
-    Panicked { elapsed: Duration },
-    TimedOut,
-    Cancelled,
-}
-
-// ---------------------------------------------------------------------------
-// resolve_test_threads  (public; kept for callers)
+// resolve_test_threads (kept for callers)
 // ---------------------------------------------------------------------------
 
 fn resolve_from<I>(argv: I, env_var: Option<&str>) -> Option<usize>
@@ -338,12 +317,107 @@ pub fn resolve_test_threads() -> usize {
 }
 
 // ---------------------------------------------------------------------------
+// Default reporter
+// ---------------------------------------------------------------------------
+
+struct DefaultReporter {
+    failures: Mutex<Vec<FailureInfo>>,
+    fmt: Format,
+    colored: bool,
+}
+
+impl SuiteReporter for DefaultReporter {
+    fn report_ignored(&self, token: &'static TestToken, runtime_name: &'static str) {
+        match self.fmt {
+            Format::Terse => {
+                print!("{}", yellow("i", self.colored));
+                let _flush = io::stdout().flush();
+            }
+            Format::Pretty => {
+                let label = yellow("ignored", self.colored);
+                if token.ignore_reason.is_empty() {
+                    println!("test {} [{}] ... {}", token.name, runtime_name, label);
+                } else {
+                    println!(
+                        "test {} [{}] ... {}, {}",
+                        token.name, runtime_name, label, token.ignore_reason
+                    );
+                }
+            }
+        }
+    }
+
+    fn report_cancelled(&self, token: &'static TestToken, runtime_name: &'static str) {
+        match self.fmt {
+            Format::Terse => {
+                print!("{}", yellow("c", self.colored));
+                let _flush = io::stdout().flush();
+            }
+            Format::Pretty => {
+                println!(
+                    "test {} [{}] ... {}",
+                    token.name,
+                    runtime_name,
+                    yellow("cancelled", self.colored),
+                );
+            }
+        }
+    }
+
+    fn report_outcome(
+        &self,
+        token: &'static TestToken,
+        runtime_name: &'static str,
+        outcome: TestOutcome,
+    ) {
+        match self.fmt {
+            Format::Terse => {
+                let ch = match &outcome {
+                    TestOutcome::Passed { .. } => ".".to_owned(),
+                    TestOutcome::Failed { .. }
+                    | TestOutcome::Panicked { .. }
+                    | TestOutcome::TimedOut => red("F", self.colored),
+                    TestOutcome::Cancelled => yellow("c", self.colored),
+                };
+                print!("{ch}");
+                let _flush = io::stdout().flush();
+            }
+            Format::Pretty => {
+                let status = match &outcome {
+                    TestOutcome::Passed { elapsed } => {
+                        format!("{} ({elapsed:.2?})", green("ok", self.colored))
+                    }
+                    TestOutcome::Failed { elapsed, .. } => {
+                        format!("{} ({elapsed:.2?})", red("FAILED", self.colored))
+                    }
+                    TestOutcome::Panicked { elapsed } => {
+                        format!("{} ({elapsed:.2?})", red("FAILED (panicked)", self.colored))
+                    }
+                    TestOutcome::TimedOut => red("FAILED (timed out)", self.colored),
+                    TestOutcome::Cancelled => yellow("cancelled", self.colored),
+                };
+                println!("test {} [{}] ... {}", token.name, runtime_name, status);
+            }
+        }
+
+        if let TestOutcome::Failed { message, .. } = outcome {
+            let mut guard = self.failures.lock().expect("failures mutex poisoned");
+            guard.push(FailureInfo { name: token.name, message });
+        }
+    }
+
+    fn report_warning(&self, message: &str) {
+        eprintln!("warning: {message}");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // run()
 // ---------------------------------------------------------------------------
 
-/// Collect all registered [`TestToken`]s, group them by runtime+global pair,
-/// run each group in its own OS thread, print results in cargo-test format,
-/// then exit the process.
+/// Collect all registered [`TestToken`]s, group them by `suite_id`, run each
+/// suite in its own OS thread via its [`SuiteRunner`], print results in
+/// cargo-test format, then exit the process.
 pub fn run() -> ! {
     let args = parse_cli_args();
     let colored = use_color(args.color);
@@ -365,8 +439,8 @@ pub fn run() -> ! {
                 }
             }
             match args.run_ignored {
-                RunIgnored::Normal | RunIgnored::Include => true,
-                RunIgnored::Only => t.ignored,
+                RunIgnoredMode::Normal | RunIgnoredMode::Include => true,
+                RunIgnoredMode::Only => t.ignored,
             }
         })
         .collect();
@@ -389,17 +463,9 @@ pub fn run() -> ! {
     );
 
     // Root cancellation token: cancelled on run-timeout, SIGINT, or SIGTERM.
-    // Global contexts receive a child of this token, so cancellation fans out
-    // to every in-flight test via the framework's context plumbing.
     let root_token = CancellationToken::new();
-
-    // Always install a SIGINT/SIGTERM handler on Unix so the runner cancels
-    // gracefully instead of being killed. A dedicated thread iterates the
-    // signal queue and cancels the root token on the first delivery.
     install_signal_handler(root_token.clone());
 
-    // Global run timeout watchdog — cancels the root token and lets the run
-    // wind down gracefully rather than aborting the process.
     if let Some(dur) = args.run_timeout {
         let watchdog_token = root_token.clone();
         let _watchdog = thread::spawn(move || {
@@ -411,29 +477,43 @@ pub fn run() -> ! {
         });
     }
 
-    let failures: Arc<Mutex<Vec<FailureInfo>>> = Arc::new(Mutex::new(Vec::new()));
-
-    let mut groups: HashMap<TypeId, Vec<&'static TestToken>> = HashMap::new();
+    // Group tokens by suite_id (TypeId of a macro-generated ZST marker).
+    let mut groups: HashMap<SuiteId, Vec<&'static TestToken>> = HashMap::new();
     for token in &filtered_tokens {
-        groups.entry((token.runtime_group)()).or_default().push(token);
+        groups
+            .entry(token.suite_runner.suite_id())
+            .or_default()
+            .push(token);
     }
+
+    let reporter = Arc::new(DefaultReporter {
+        failures: Mutex::new(Vec::new()),
+        fmt: args.format,
+        colored,
+    });
 
     let start = Instant::now();
 
     let handles: Vec<_> = groups
         .into_values()
-        .map(|group_tokens| {
-            let failures = Arc::clone(&failures);
-            let test_timeout = args.test_timeout;
-            let threads = args.threads;
-            let run_ignored = args.run_ignored;
-            let fmt = args.format;
-            let group_token = root_token.clone();
+        .map(|mut group_tokens| {
+            // Stable source order (file, line) within a suite.
+            group_tokens.sort_by_key(|t| (t.file, t.line));
+            let runner: &'static dyn SuiteRunner = group_tokens[0].suite_runner;
+            let req_threads = args.threads;
+            let req_timeout = args.test_timeout;
+            let req_run_ignored = args.run_ignored;
+            let req_root = root_token.clone();
+            let reporter = Arc::clone(&reporter);
             thread::spawn(move || {
-                run_group(
-                    group_tokens, threads, test_timeout, run_ignored, colored, fmt, failures,
-                    group_token,
-                )
+                let req = SuiteRunRequest {
+                    tokens: &group_tokens,
+                    threads: req_threads,
+                    test_timeout: req_timeout,
+                    run_ignored: req_run_ignored,
+                    root_token: req_root,
+                };
+                runner.run_suite(req, &*reporter)
             })
         })
         .collect();
@@ -441,7 +521,7 @@ pub fn run() -> ! {
     let total = handles
         .into_iter()
         .fold(TestSummary::zero(), |acc, handle| match handle.join() {
-            Ok(summary) => acc.merge(summary),
+            Ok(suite_summary) => acc.merge(TestSummary::from(suite_summary)),
             Err(payload) => {
                 let msg = payload
                     .downcast_ref::<&str>()
@@ -455,13 +535,11 @@ pub fn run() -> ! {
 
     let elapsed = start.elapsed();
 
-    // Terse: newline after dots.
     if args.format == Format::Terse && total_count > 0 {
         println!();
     }
 
-    // Failures section.
-    let guard = failures.lock().expect("failures mutex poisoned");
+    let guard = reporter.failures.lock().expect("failures mutex poisoned");
     if !guard.is_empty() {
         println!("\nfailures:\n");
         for f in guard.iter() {
@@ -501,436 +579,9 @@ pub fn run() -> ! {
 }
 
 // ---------------------------------------------------------------------------
-// Group execution
-// ---------------------------------------------------------------------------
-
-#[allow(clippy::too_many_arguments)]
-fn run_group(
-    mut tokens: Vec<&'static TestToken>,
-    threads: usize,
-    test_timeout: Option<Duration>,
-    run_ignored: RunIgnored,
-    colored: bool,
-    fmt: Format,
-    failures: Arc<Mutex<Vec<FailureInfo>>>,
-    root_token: CancellationToken,
-) -> TestSummary {
-    tokens.sort_by_key(|t| (t.file, t.line));
-    let first = tokens[0];
-    let runtime_name = first.runtime_name;
-
-    let dyn_rt: &'static dyn DynRuntime = match (first.make_runtime)() {
-        Ok(rt) => Box::leak(rt),
-        Err(e) => {
-            eprintln!("error: FATAL: failed to create runtime [{runtime_name}]: {e}");
-            return TestSummary {
-                panicked: tokens.len(),
-                total: tokens.len(),
-                ..TestSummary::zero()
-            };
-        }
-    };
-
-    let fut = group_future(
-        dyn_rt, tokens, runtime_name, threads, test_timeout, run_ignored, colored, fmt, failures,
-        root_token,
-    );
-    let erased: Pin<Box<dyn Future<Output = Box<dyn Any + Send>> + Send + 'static>> =
-        Box::pin(async move {
-            let summary: Box<dyn Any + Send> = Box::new(fut.await);
-            summary
-        });
-    let result = dyn_rt.block_on_erased(erased);
-    *result
-        .downcast::<TestSummary>()
-        .unwrap_or_else(|_| unreachable!("block_on_erased produced unexpected type"))
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn group_future(
-    dyn_rt: &'static dyn DynRuntime,
-    tokens: Vec<&'static TestToken>,
-    runtime_name: &'static str,
-    threads: usize,
-    test_timeout: Option<Duration>,
-    run_ignored: RunIgnored,
-    colored: bool,
-    fmt: Format,
-    failures: Arc<Mutex<Vec<FailureInfo>>>,
-    root_token: CancellationToken,
-) -> TestSummary {
-    let first = tokens[0];
-
-    let global_box: Box<dyn Any + Send + Sync> =
-        match (first.make_global)(dyn_rt, root_token.clone()).await {
-            Ok(g) => g,
-            Err(e) => {
-                eprintln!(
-                    "error: FATAL: failed to create global context [{runtime_name}]: {e}"
-                );
-                return TestSummary {
-                    panicked: tokens.len(),
-                    total: tokens.len(),
-                    ..TestSummary::zero()
-                };
-            }
-        };
-
-    let global_ptr: SendPtr<dyn Any + Send + Sync> = SendPtr(Box::into_raw(global_box));
-    #[allow(unsafe_code)]
-    let global_ref: &'static (dyn Any + Send + Sync) =
-        unsafe { &*global_ptr.0 };
-
-    let mut summary = TestSummary::zero();
-    summary.total = tokens.len();
-
-    let mut active: Vec<&'static TestToken> = Vec::new();
-    for token in &tokens {
-        let skip = match run_ignored {
-            RunIgnored::Normal => token.ignored,
-            RunIgnored::Only | RunIgnored::Include => false,
-        };
-        if skip {
-            print_ignored_line(token, runtime_name, fmt, colored);
-            summary.ignored += 1;
-        } else {
-            active.push(token);
-        }
-    }
-
-    let mut in_flight: FuturesUnordered<_> = FuturesUnordered::new();
-    let mut queued = active.into_iter();
-
-    // Seed the in-flight pool only if we're not already cancelled. This
-    // guarantees that a run cancelled before any test starts simply prints
-    // each queued test as cancelled and returns.
-    if !root_token.is_cancelled() {
-        for _ in 0..threads {
-            match queued.next() {
-                Some(token) => {
-                    in_flight.push(spawn_test(
-                        dyn_rt,
-                        global_ref,
-                        token,
-                        test_timeout,
-                        root_token.clone(),
-                    ));
-                }
-                None => break,
-            }
-        }
-    }
-
-    while let Some((token, outcome)) = in_flight.next().await {
-        accumulate_outcome(
-            token.name, runtime_name, &outcome, &mut summary, &failures, fmt, colored,
-        );
-        // Dispatch the next queued test only if the run has not been
-        // cancelled. Already-running tests are allowed to finish gracefully;
-        // not-yet-started ones are reported as cancelled after the loop.
-        if !root_token.is_cancelled()
-            && let Some(next) = queued.next()
-        {
-            in_flight.push(spawn_test(
-                dyn_rt,
-                global_ref,
-                next,
-                test_timeout,
-                root_token.clone(),
-            ));
-        }
-    }
-
-    // Remaining queue entries were never dispatched because the run was
-    // cancelled mid-stream (or never started it in the first place).
-    for skipped in queued {
-        print_cancelled_line(skipped, runtime_name, fmt, colored);
-        summary.cancelled += 1;
-    }
-
-    #[allow(unsafe_code)]
-    let global_box: Box<dyn Any + Send + Sync> =
-        unsafe { Box::from_raw(global_ptr.0) };
-
-    // Always run global teardown, even after cancellation, so per-group
-    // resources get a chance to clean up. Catch unwind so a panicking
-    // teardown cannot poison the runner thread.
-    use futures_util::FutureExt as _;
-    match std::panic::AssertUnwindSafe((first.teardown_global)(global_box))
-        .catch_unwind()
-        .await
-    {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            eprintln!("warning: global teardown failed [{runtime_name}]: {e}");
-        }
-        Err(_payload) => {
-            eprintln!("warning: global teardown panicked [{runtime_name}]");
-        }
-    }
-
-    summary
-}
-
-fn accumulate_outcome(
-    name: &'static str,
-    runtime_name: &'static str,
-    outcome: &TestOutcome,
-    summary: &mut TestSummary,
-    failures: &Arc<Mutex<Vec<FailureInfo>>>,
-    fmt: Format,
-    colored: bool,
-) {
-    print_test_result(name, runtime_name, outcome, fmt, colored);
-    match outcome {
-        TestOutcome::Passed { .. } => summary.passed += 1,
-        TestOutcome::Failed { message, .. } => {
-            summary.failed += 1;
-            let mut guard = failures.lock().expect("failures mutex poisoned");
-            guard.push(FailureInfo { name, message: message.clone() });
-        }
-        TestOutcome::Panicked { .. } => summary.panicked += 1,
-        TestOutcome::TimedOut => summary.timed_out += 1,
-        TestOutcome::Cancelled => summary.cancelled += 1,
-    }
-}
-
-fn print_ignored_line(
-    token: &'static TestToken,
-    runtime_name: &'static str,
-    fmt: Format,
-    colored: bool,
-) {
-    match fmt {
-        Format::Terse => {
-            print!("{}", yellow("i", colored));
-            let _flush = io::stdout().flush();
-        }
-        Format::Pretty => {
-            let label = yellow("ignored", colored);
-            if token.ignore_reason.is_empty() {
-                println!("test {} [{}] ... {}", token.name, runtime_name, label);
-            } else {
-                println!(
-                    "test {} [{}] ... {}, {}",
-                    token.name, runtime_name, label, token.ignore_reason
-                );
-            }
-        }
-    }
-}
-
-fn print_cancelled_line(
-    token: &'static TestToken,
-    runtime_name: &'static str,
-    fmt: Format,
-    colored: bool,
-) {
-    match fmt {
-        Format::Terse => {
-            print!("{}", yellow("c", colored));
-            let _flush = io::stdout().flush();
-        }
-        Format::Pretty => {
-            println!(
-                "test {} [{}] ... {}",
-                token.name,
-                runtime_name,
-                yellow("cancelled", colored),
-            );
-        }
-    }
-}
-
-fn print_test_result(
-    name: &'static str,
-    runtime_name: &'static str,
-    outcome: &TestOutcome,
-    fmt: Format,
-    colored: bool,
-) {
-    match fmt {
-        Format::Terse => {
-            let ch = match outcome {
-                TestOutcome::Passed { .. } => ".".to_owned(),
-                TestOutcome::Failed { .. } | TestOutcome::Panicked { .. } | TestOutcome::TimedOut => {
-                    red("F", colored)
-                }
-                TestOutcome::Cancelled => yellow("c", colored),
-            };
-            print!("{ch}");
-            let _flush = io::stdout().flush();
-        }
-        Format::Pretty => {
-            let status = match outcome {
-                TestOutcome::Passed { elapsed } => {
-                    format!("{} ({elapsed:.2?})", green("ok", colored))
-                }
-                TestOutcome::Failed { elapsed, .. } => {
-                    format!("{} ({elapsed:.2?})", red("FAILED", colored))
-                }
-                TestOutcome::Panicked { elapsed } => {
-                    format!("{} ({elapsed:.2?})", red("FAILED (panicked)", colored))
-                }
-                TestOutcome::TimedOut => red("FAILED (timed out)", colored),
-                TestOutcome::Cancelled => yellow("cancelled", colored),
-            };
-            println!("test {name} [{runtime_name}] ... {status}");
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// spawn_test
-// ---------------------------------------------------------------------------
-
-async fn spawn_test(
-    dyn_rt: &'static dyn DynRuntime,
-    global: &'static (dyn Any + Send + Sync),
-    token: &'static TestToken,
-    test_timeout: Option<Duration>,
-    root_token: CancellationToken,
-) -> (&'static TestToken, TestOutcome) {
-    let name = token.name;
-    let start = Instant::now();
-
-    // Per-test token: a child of the root token so root cancellation still
-    // fans out, but isolated enough that a per-test timeout can cancel only
-    // this test without affecting siblings.
-    let per_test_token = root_token.child_token();
-
-    let ctx_box: Box<dyn Any + Send> =
-        match (token.make_test_ctx)(global, per_test_token.clone()).await {
-            Ok(c) => c,
-            Err(e) => {
-                let elapsed = start.elapsed();
-                let message = format!("failed to create test context: {e}");
-                return (token, TestOutcome::Failed { elapsed, message });
-            }
-        };
-
-    let ctx_ptr: SendPtr<dyn Any + Send> = SendPtr(Box::into_raw(ctx_box));
-    #[allow(unsafe_code)]
-    let ctx_ref: &'static mut (dyn Any + Send) = unsafe { &mut *ctx_ptr.0 };
-
-    let test_fut = Box::pin(async move { (token.run)(ctx_ref).await });
-
-    let spawn_result = dyn_rt
-        .spawn_dyn(Box::pin(execute_test(
-            test_fut,
-            test_timeout,
-            dyn_rt,
-            per_test_token.clone(),
-        )))
-        .await;
-
-    // SAFETY: spawn_dyn has completed; ctx_ref is no longer held by the future.
-    #[allow(unsafe_code)]
-    let ctx_box: Box<dyn Any + Send> = unsafe { Box::from_raw(ctx_ptr.0) };
-
-    let elapsed = start.elapsed();
-
-    let outcome = match spawn_result {
-        Err(_join_err) => TestOutcome::Panicked { elapsed },
-        Ok(boxed) => {
-            let result = boxed
-                .downcast::<SpawnResult>()
-                .expect("spawn_test: unexpected result type from execute_test");
-            match *result {
-                SpawnResult::Panicked => TestOutcome::Panicked { elapsed },
-                SpawnResult::TimedOut => TestOutcome::TimedOut,
-                SpawnResult::Cancelled => TestOutcome::Cancelled,
-                SpawnResult::Completed(Ok(())) => TestOutcome::Passed { elapsed },
-                SpawnResult::Completed(Err(ref e)) => {
-                    TestOutcome::Failed { elapsed, message: e.to_string() }
-                }
-            }
-        }
-    };
-
-    // Always run per-test teardown — even on timeout, cancellation, or panic
-    // — so user-side cleanup is guaranteed to run. The teardown itself is
-    // also wrapped in `catch_unwind` so a panicking teardown cannot destroy
-    // the runner's accounting.
-    use futures_util::FutureExt as _;
-    match std::panic::AssertUnwindSafe((token.teardown_test)(ctx_box))
-        .catch_unwind()
-        .await
-    {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            eprintln!("warning: test teardown failed [{name}]: {e}");
-        }
-        Err(_payload) => {
-            eprintln!("warning: test teardown panicked [{name}]");
-        }
-    }
-
-    (token, outcome)
-}
-
-/// Runs the test future inside `spawn_dyn`, applying an optional per-test
-/// timeout and honouring the run's root cancellation token.
-async fn execute_test(
-    test_fut: Pin<Box<dyn Future<Output = Result<(), crate::test_case::BoxError>> + Send>>,
-    test_timeout: Option<Duration>,
-    dyn_rt: &'static dyn DynRuntime,
-    root_token: CancellationToken,
-) -> Box<dyn Any + Send> {
-    Box::new(run_with_timeout_and_cancel(test_fut, test_timeout, dyn_rt, root_token).await)
-}
-
-async fn run_with_timeout_and_cancel(
-    test_fut: Pin<Box<dyn Future<Output = Result<(), crate::test_case::BoxError>> + Send>>,
-    test_timeout: Option<Duration>,
-    dyn_rt: &'static dyn DynRuntime,
-    per_test_token: CancellationToken,
-) -> SpawnResult {
-    use futures_util::FutureExt as _;
-    use futures_util::future::{Either, select};
-
-    // Wrap the test future in `catch_unwind` so panics surface as
-    // `SpawnResult::Panicked` instead of aborting the group thread, then
-    // route it through `run_until_cancelled(per_test_token, …)` so any
-    // cancellation — per-test timeout, root cancel, SIGINT/SIGTERM — collapses
-    // the wrapped future on the next poll.
-    let catch_fut = std::panic::AssertUnwindSafe(test_fut).catch_unwind();
-    let cancellable = Box::pin(per_test_token.run_until_cancelled(catch_fut));
-
-    if let Some(dur) = test_timeout {
-        match select(cancellable, dyn_rt.sleep_dyn(dur)).await {
-            // `run_until_cancelled` yields `Some(inner_output)` on completion
-            // and `None` on cancellation.
-            Either::Left((Some(Ok(r)), _)) => SpawnResult::Completed(r),
-            Either::Left((Some(Err(_payload)), _)) => SpawnResult::Panicked,
-            Either::Left((None, _)) => SpawnResult::Cancelled,
-            Either::Right(_pending_test_fut) => {
-                // The test did not finish before the per-test watchdog fired.
-                // Cancel the per-test token so the test body observes the
-                // signal and can wind down gracefully; dropping
-                // `_pending_test_fut` at the end of this block then releases
-                // its resources. We intentionally do not wait for graceful
-                // shutdown here — the test has already blown its budget.
-                per_test_token.cancel();
-                SpawnResult::TimedOut
-            }
-        }
-    } else {
-        match cancellable.await {
-            Some(Ok(r)) => SpawnResult::Completed(r),
-            Some(Err(_payload)) => SpawnResult::Panicked,
-            None => SpawnResult::Cancelled,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Signal handling
 // ---------------------------------------------------------------------------
 
-/// Install a best-effort SIGINT/SIGTERM handler on Unix that cancels `token`
-/// on delivery, so in-flight tests can shut down cooperatively instead of
-/// being killed.
 #[cfg(unix)]
 fn install_signal_handler(token: CancellationToken) {
     use signal_hook::consts::{SIGINT, SIGTERM};
@@ -958,36 +609,8 @@ fn install_signal_handler(token: CancellationToken) {
         });
 }
 
-/// Non-Unix fallback: no signal handling. The runner still exits normally
-/// once its caller drops or when a test completes; platform-specific console
-/// handlers could be added here later if needed.
 #[cfg(not(unix))]
 fn install_signal_handler(_token: CancellationToken) {}
-
-// ---------------------------------------------------------------------------
-// SendPtr
-// ---------------------------------------------------------------------------
-
-/// Raw-pointer newtype that asserts `Send`/`Sync` so the runner's async
-/// group/test futures, which hand out a `&'static` view of a heap allocation
-/// and reclaim it via `Box::from_raw`, remain `Send + Sync` across await points.
-///
-/// Safety: only used with owned `Box<T>` allocations where the target satisfies
-/// the corresponding bounds (`T: Send + Sync` for the global context,
-/// `T: Send` for per-test contexts). The pointer is owned, never shared, and
-/// only dereferenced inside `#[allow(unsafe_code)]` blocks in this module.
-#[derive(Debug)]
-struct SendPtr<T: ?Sized>(*mut T);
-
-#[allow(unsafe_code)]
-// SAFETY: `SendPtr` owns its allocation exclusively; callers only wrap pointers
-// whose targets are themselves `Send`.
-unsafe impl<T: ?Sized + Send> Send for SendPtr<T> {}
-
-#[allow(unsafe_code)]
-// SAFETY: the pointer is dereferenced on a single thread at a time; callers
-// only wrap pointers whose targets are themselves `Sync`.
-unsafe impl<T: ?Sized + Sync> Sync for SendPtr<T> {}
 
 // ---------------------------------------------------------------------------
 // Tests

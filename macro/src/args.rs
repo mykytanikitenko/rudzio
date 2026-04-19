@@ -1,5 +1,3 @@
-use proc_macro2::TokenStream;
-use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::{bracketed, parenthesized, Ident, Path, Token};
 
@@ -28,18 +26,6 @@ impl RuntimeConfig {
             leading_colon: self.runtime.leading_colon,
             segments,
         }
-    }
-
-    pub(crate) fn global_type(&self) -> TokenStream {
-        let base = &self.global;
-        let runtime = self.runtime_type();
-        quote! { #base::<'_, #runtime> }
-    }
-
-    pub(crate) fn test_type(&self) -> TokenStream {
-        let base = &self.test;
-        let runtime = self.runtime_type();
-        quote! { #base::<'_, #runtime> }
     }
 }
 
@@ -204,28 +190,6 @@ mod tests {
         assert!(
             msg.contains("bare") || msg.contains("generic") || msg.contains("lifetime"),
             "error should explain that generics are injected by the macro, got: {msg}"
-        );
-    }
-
-    #[::std::prelude::rust_2024::test]
-    fn global_type_wraps_bare_path_with_lifetime_and_runtime() {
-        let config: RuntimeConfig = syn::parse_str(
-            "( runtime = Multithread::new, global_context = common_context::Global, test_context = common_context::Test )"
-        ).unwrap();
-        assert_eq!(
-            render(&config.global_type()),
-            "common_context::Global::<'_,Multithread>"
-        );
-    }
-
-    #[::std::prelude::rust_2024::test]
-    fn test_type_wraps_bare_path_with_lifetime_and_runtime() {
-        let config: RuntimeConfig = syn::parse_str(
-            "( runtime = Multithread::new, global_context = common_context::Global, test_context = common_context::Test )"
-        ).unwrap();
-        assert_eq!(
-            render(&config.test_type()),
-            "common_context::Test::<'_,Multithread>"
         );
     }
 
