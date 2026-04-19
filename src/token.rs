@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::suite::SuiteRunner;
+use crate::suite::{RuntimeGroupKey, RuntimeGroupOwner, TestRunFn};
 
 /// A self-contained, type-erased descriptor for a single test.
 ///
@@ -8,11 +8,15 @@ use crate::suite::SuiteRunner;
 /// so that `rudzio::run()` can discover all tests at process startup without
 /// needing to know about any module structure.
 ///
-/// All per-suite orchestration (creating the runtime, setting up the global
-/// context, dispatching the test body, tearing down) lives in
-/// [`SuiteRunner`]. Every token belonging to the same `#[rudzio::suite]`
-/// invocation points at the same `&'static dyn SuiteRunner`; the runner uses
-/// `suite_local_index` to pick the correct test body inside that suite.
+/// The lifecycle (runtime + global setup/teardown, dispatching test bodies,
+/// timing out, cancelling) lives in the per-`(R, G)` [`RuntimeGroupOwner`].
+/// Tokens that share the same `runtime_group_key` are coalesced at startup
+/// and run together on one OS thread, one runtime, one global instance —
+/// even when emitted by different `#[rudzio::suite]` blocks.
+///
+/// `run_test` is a per-test HRTB unsafe fn pointer the owner invokes with
+/// pointers to its concrete runtime and global; the macro guarantees the
+/// pointed-to types match the owner's `group_key`.
 #[derive(Clone, Copy)]
 pub struct TestToken {
     pub name: &'static str,
@@ -22,15 +26,17 @@ pub struct TestToken {
     pub file: &'static str,
     /// Source line number, used to sort tests into stable source order.
     pub line: u32,
-    /// Display name of the runtime constructor for this suite (e.g.
-    /// `"Multithread::new"`). Mirrors `suite_runner.runtime_name()` but is
-    /// available without an indirection so the runner can render listing
-    /// output without instantiating anything.
+    /// Display name of the runtime constructor for this group.
     pub runtime_name: &'static str,
-    /// Pointer to the per-suite orchestrator.
-    pub suite_runner: &'static dyn SuiteRunner,
-    /// Index into the suite's internal test dispatch table.
-    pub suite_local_index: usize,
+    /// Compile-time hash of `(runtime_path, global_path)`. Tokens sharing
+    /// this key run on one shared runtime + global.
+    pub runtime_group_key: RuntimeGroupKey,
+    /// Pointer to a [`RuntimeGroupOwner`] for this `(R, G)` pair. Multiple
+    /// tokens with the same `runtime_group_key` may carry distinct (but
+    /// functionally equivalent) owner pointers; the runner picks any one.
+    pub runtime_group_owner: &'static dyn RuntimeGroupOwner,
+    /// Per-test dispatch fn — see [`TestRunFn`] for the safety contract.
+    pub run_test: TestRunFn,
 }
 
 impl fmt::Debug for TestToken {
@@ -42,7 +48,7 @@ impl fmt::Debug for TestToken {
             .field("file", &self.file)
             .field("line", &self.line)
             .field("runtime_name", &self.runtime_name)
-            .field("suite_local_index", &self.suite_local_index)
+            .field("runtime_group_key", &self.runtime_group_key)
             .finish_non_exhaustive()
     }
 }

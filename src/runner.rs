@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 use crate::suite::{
-    RunIgnoredMode, SuiteId, SuiteReporter, SuiteRunRequest, SuiteRunner, SuiteSummary, TestOutcome,
+    RunIgnoredMode, RuntimeGroupKey, RuntimeGroupOwner, SuiteReporter, SuiteRunRequest,
+    SuiteSummary, TestOutcome,
 };
 use crate::token::{TestToken, TEST_TOKENS};
 
@@ -477,11 +478,14 @@ pub fn run() -> ! {
         });
     }
 
-    // Group tokens by suite_id (TypeId of a macro-generated ZST marker).
-    let mut groups: HashMap<SuiteId, Vec<&'static TestToken>> = HashMap::new();
+    // Group tokens by runtime_group_key (compile-time hash of the
+    // (runtime, global) path strings). Tokens that share a key share an OS
+    // thread, a runtime instance, and a global context — even when emitted
+    // by different `#[rudzio::suite]` blocks.
+    let mut groups: HashMap<RuntimeGroupKey, Vec<&'static TestToken>> = HashMap::new();
     for token in &filtered_tokens {
         groups
-            .entry(token.suite_runner.suite_id())
+            .entry(token.runtime_group_key)
             .or_default()
             .push(token);
     }
@@ -497,13 +501,23 @@ pub fn run() -> ! {
     let handles: Vec<_> = groups
         .into_values()
         .map(|mut group_tokens| {
-            // Stable source order (file, line) within a suite.
+            // Stable source order (file, line) across the whole group.
             group_tokens.sort_by_key(|t| (t.file, t.line));
-            let runner: &'static dyn SuiteRunner = group_tokens[0].suite_runner;
+            // All tokens in this group share `runtime_group_key`; their
+            // `runtime_group_owner` pointers are functionally equivalent
+            // (same R, same G constructors emitted by separate suite
+            // blocks). Pick the first one to drive the group.
+            let owner: &'static dyn RuntimeGroupOwner = group_tokens[0].runtime_group_owner;
             let req_threads = args.threads;
             let req_timeout = args.test_timeout;
             let req_run_ignored = args.run_ignored;
-            let req_root = root_token.clone();
+            // Each group gets a CHILD of the run-wide root so that the
+            // global's teardown (which a user impl can validly cancel
+            // wholesale) only fans out within this group, not across to
+            // sibling groups still in-flight on other threads. SIGINT /
+            // SIGTERM / --run-timeout still propagate because they cancel
+            // the parent.
+            let req_root = root_token.child_token();
             let reporter = Arc::clone(&reporter);
             thread::spawn(move || {
                 let req = SuiteRunRequest {
@@ -513,7 +527,7 @@ pub fn run() -> ! {
                     run_ignored: req_run_ignored,
                     root_token: req_root,
                 };
-                runner.run_suite(req, &*reporter)
+                owner.run_group(req, &*reporter)
             })
         })
         .collect();

@@ -11,8 +11,8 @@ pub use context::{Global, Test};
 pub use runner::{run, RunConfig, TestSummary};
 pub use runtime::{JoinError, Runtime};
 pub use suite::{
-    RunIgnoredMode, SuiteId, SuiteRunRequest, SuiteRunner, SuiteReporter, SuiteSummary,
-    TestOutcome,
+    fnv1a64, RunIgnoredMode, RuntimeGroupKey, RuntimeGroupOwner, SuiteId, SuiteRunRequest,
+    SuiteReporter, SuiteSummary, TestOutcome, TestRunFn,
 };
 pub use test_case::{box_error, BoxError, TestCase, TestFn};
 pub use token::{TestToken, TEST_TOKENS};

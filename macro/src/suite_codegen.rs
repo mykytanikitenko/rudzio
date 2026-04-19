@@ -104,59 +104,43 @@ fn generate_per_config(
     let test_base = &cfg.test;
     let runtime_name_str = quote!(#runtime_ctor).to_string();
 
-    let suite_id_struct =
-        format_ident!("__RudzioSuiteId_{}_{}", mod_name, cfg_idx);
-    let suite_struct = format_ident!("__RudzioSuite_{}_{}", mod_name, cfg_idx);
-    let suite_static = format_ident!(
-        "__RUDZIO_SUITE_{}_{}",
+    // Stable id derived from the (runtime_type, global_base) path strings.
+    // Two suite blocks declaring the same (R, G) get the same key and share
+    // an OS thread / runtime / global at runtime.
+    let group_key_source = format!(
+        "{}::{}",
+        quote!(#runtime_type),
+        quote!(#global_base),
+    );
+
+    let owner_struct = format_ident!("__RudzioOwner_{}_{}", mod_name, cfg_idx);
+    let owner_static = format_ident!(
+        "__RUDZIO_OWNER_{}_{}",
         mod_name.to_string().to_ascii_uppercase(),
         cfg_idx,
     );
-    let run_one_fn = format_ident!("__rudzio_run_one_{}_{}", mod_name, cfg_idx);
 
-    // Build the per-test dispatch arms (matched on suite_local_index).
-    let dispatch_arms: Vec<_> = tests
-        .iter()
-        .enumerate()
-        .map(|(idx, test)| {
-            let test_name = &test.sig.ident;
-            let is_async = is_async_fn(test);
-            let call = if is_async {
-                quote! {
-                    #mod_name::#test_name(__rudzio_ctx).await
-                        .map_err(|e| ::rudzio::test_case::box_error(e))
-                }
-            } else {
-                quote! {
-                    #mod_name::#test_name(__rudzio_ctx)
-                        .map_err(|e| ::rudzio::test_case::box_error(e))
-                }
-            };
-            quote! { #idx => { #call } }
-        })
-        .collect();
-
-    // Suite-level types and static instance.
+    // Suite-level owner ZST + static instance.
     helper_items.push(quote! {
         #[doc(hidden)]
         #[allow(non_camel_case_types)]
-        struct #suite_id_struct;
-
-        #[doc(hidden)]
-        #[allow(non_camel_case_types)]
-        struct #suite_struct;
+        struct #owner_struct;
 
         #[doc(hidden)]
         #[allow(non_upper_case_globals)]
-        static #suite_static: #suite_struct = #suite_struct;
+        static #owner_static: #owner_struct = #owner_struct;
     });
 
-    // The per-suite SuiteRunner impl.
+    // The per-(R, G) RuntimeGroupOwner impl. Multiple suite blocks sharing
+    // (R, G) all emit functionally equivalent owners; the runner picks any
+    // one and ignores the rest.
     helper_items.push(quote! {
-        impl ::rudzio::suite::SuiteRunner for #suite_struct {
+        impl ::rudzio::suite::RuntimeGroupOwner for #owner_struct {
             #[inline]
-            fn suite_id(&self) -> ::rudzio::suite::SuiteId {
-                ::rudzio::suite::SuiteId(::std::any::TypeId::of::<#suite_id_struct>())
+            fn group_key(&self) -> ::rudzio::suite::RuntimeGroupKey {
+                ::rudzio::suite::RuntimeGroupKey(
+                    ::rudzio::suite::fnv1a64(#group_key_source),
+                )
             }
 
             #[inline]
@@ -164,7 +148,7 @@ fn generate_per_config(
                 #runtime_name_str
             }
 
-            fn run_suite(
+            fn run_group(
                 &self,
                 req: ::rudzio::suite::SuiteRunRequest<'_>,
                 reporter: &dyn ::rudzio::suite::SuiteReporter,
@@ -178,10 +162,9 @@ fn generate_per_config(
 
                 const RUNTIME_NAME: &str = #runtime_name_str;
 
-                // Step 1: create the runtime as a local value. The runtime
-                // lives until the end of `run_suite`; nothing here is leaked
-                // to `'static`.
-                let rt = match #runtime_ctor() {
+                // Step 1: create the runtime as a local value. Lives until
+                // the end of `run_group`; nothing leaked to `'static`.
+                let rt: #runtime_type = match #runtime_ctor() {
                     Ok(r) => r,
                     Err(e) => {
                         let msg = ::std::format!(
@@ -205,9 +188,7 @@ fn generate_per_config(
                     }
                 };
 
-                // Step 2: classify tokens into ignored vs active. Ignored
-                // tests are reported eagerly so the listing order matches
-                // libtest's behaviour.
+                // Step 2: classify ignored vs active.
                 let mut summary = ::rudzio::suite::SuiteSummary::zero();
                 summary.total = req.tokens.len();
                 let mut active: ::std::vec::Vec<&'static ::rudzio::token::TestToken> =
@@ -226,8 +207,8 @@ fn generate_per_config(
                     }
                 }
 
-                // Step 3: drive the suite to completion under the runtime's
-                // own block_on. Borrows of `&rt` are scoped to this call;
+                // Step 3: drive the suite under the runtime's own block_on.
+                // Borrows of `&rt` and `&global` are scoped to this call;
                 // every lifetime here is tied to the local stack frame.
                 let async_summary: ::rudzio::suite::SuiteSummary =
                     ::rudzio::runtime::Runtime::block_on(&rt, async {
@@ -257,20 +238,51 @@ fn generate_per_config(
                             }
                         };
 
+                        // Pointers we hand to each per-test fn pointer. The
+                        // pointed-to types match the token's group_key —
+                        // guaranteed by the macro that emits both sides.
+                        let runtime_ptr: *const () = (&rt as *const #runtime_type).cast::<()>();
+                        let global_ptr: *const () =
+                            (&global as *const #global_base::<'_, #runtime_type>).cast::<()>();
+
                         let mut in_flight = FuturesUnordered::new();
                         let mut queued = active.into_iter();
+
+                        let dispatch = |tok: &'static ::rudzio::token::TestToken| {
+                            // SAFETY: `tok.run_test` was emitted by the same
+                            // suite macro that emitted this owner; its
+                            // `runtime_group_key` matches `self.group_key()`,
+                            // so the pointed-to types are exactly those the
+                            // fn ptr expects.
+                            #[allow(unsafe_code)]
+                            unsafe {
+                                (tok.run_test)(
+                                    runtime_ptr,
+                                    global_ptr,
+                                    ::std::marker::PhantomData,
+                                    tok,
+                                    req.test_timeout,
+                                    req.root_token.clone(),
+                                    reporter,
+                                )
+                            }
+                        };
 
                         if !req.root_token.is_cancelled() {
                             for _ in 0..req.threads {
                                 let ::std::option::Option::Some(tok) = queued.next() else { break };
-                                in_flight.push(#run_one_fn(
-                                    &global,
-                                    tok,
-                                    req.test_timeout,
-                                    req.root_token.clone(),
-                                    &rt,
-                                    reporter,
-                                ));
+                                let fut: ::std::pin::Pin<::std::boxed::Box<
+                                    dyn ::std::future::Future<
+                                        Output = (
+                                            &'static ::rudzio::token::TestToken,
+                                            ::rudzio::suite::TestOutcome,
+                                        ),
+                                    > + '_,
+                                >> = ::std::boxed::Box::pin(async move {
+                                    let outcome = dispatch(tok).await;
+                                    (tok, outcome)
+                                });
+                                in_flight.push(fut);
                             }
                         }
 
@@ -286,14 +298,18 @@ fn generate_per_config(
                             if !req.root_token.is_cancelled()
                                 && let ::std::option::Option::Some(next) = queued.next()
                             {
-                                in_flight.push(#run_one_fn(
-                                    &global,
-                                    next,
-                                    req.test_timeout,
-                                    req.root_token.clone(),
-                                    &rt,
-                                    reporter,
-                                ));
+                                let fut: ::std::pin::Pin<::std::boxed::Box<
+                                    dyn ::std::future::Future<
+                                        Output = (
+                                            &'static ::rudzio::token::TestToken,
+                                            ::rudzio::suite::TestOutcome,
+                                        ),
+                                    > + '_,
+                                >> = ::std::boxed::Box::pin(async move {
+                                    let outcome = dispatch(next).await;
+                                    (next, outcome)
+                                });
+                                in_flight.push(fut);
                             }
                         }
 
@@ -302,9 +318,9 @@ fn generate_per_config(
                             summary.cancelled += 1;
                         }
 
-                        // Drop in_flight before consuming global; the borrows
-                        // that the (now-empty) FuturesUnordered held against
-                        // `&global` would otherwise still be considered live.
+                        // Drop in_flight before consuming global; the now-empty
+                        // FuturesUnordered would otherwise still be considered
+                        // a live borrow.
                         ::std::mem::drop(in_flight);
 
                         match ::std::panic::AssertUnwindSafe(global.teardown())
@@ -335,101 +351,124 @@ fn generate_per_config(
         }
     });
 
-    // The per-test orchestrator. Free async fn so its return type stays
-    // consistent across all `in_flight.push(...)` calls.
-    helper_items.push(quote! {
-        #[doc(hidden)]
-        #[allow(non_snake_case)]
-        async fn #run_one_fn<'g>(
-            global: &'g #global_base::<'g, #runtime_type>,
-            token: &'static ::rudzio::token::TestToken,
-            test_timeout: ::std::option::Option<::std::time::Duration>,
-            root_token: ::rudzio::tokio_util::sync::CancellationToken,
-            rt: &'g #runtime_type,
-            reporter: &'g dyn ::rudzio::suite::SuiteReporter,
-        ) -> (
-            &'static ::rudzio::token::TestToken,
-            ::rudzio::suite::TestOutcome,
-        ) {
-            use ::rudzio::context::Global as _;
-            use ::rudzio::context::Test as _;
-            use ::rudzio::runtime::Runtime as _;
-            use ::rudzio::futures_util::FutureExt as _;
-
-            let start = ::std::time::Instant::now();
-            let per_test_token = root_token.child_token();
-
-            let ctx = match global.context(per_test_token.clone()).await {
-                ::std::result::Result::Ok(c) => c,
-                ::std::result::Result::Err(e) => {
-                    return (
-                        token,
-                        ::rudzio::suite::TestOutcome::Failed {
-                            elapsed: start.elapsed(),
-                            message: ::std::format!("failed to create test context: {}", e),
-                        },
-                    );
-                }
-            };
-
-            let test_outcome = {
-                let test_fut = async {
-                    let __rudzio_ctx: &#test_base::<'_, #runtime_type> = &ctx;
-                    match token.suite_local_index {
-                        #(#dispatch_arms),*,
-                        _ => ::std::panic!(
-                            "rudzio internal error: suite_local_index out of range"
-                        ),
-                    }
-                };
-
-                let cancel_for_helper = per_test_token.clone();
-                ::rudzio::suite::run_test_with_timeout_and_cancel(
-                    test_fut,
-                    test_timeout,
-                    cancel_for_helper,
-                    |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
-                ).await
-            };
-
-            let outcome = ::rudzio::suite::fill_elapsed(test_outcome, start.elapsed());
-
-            let name = token.name;
-            match ::std::panic::AssertUnwindSafe(ctx.teardown())
-                .catch_unwind()
-                .await
-            {
-                ::std::result::Result::Ok(::std::result::Result::Ok(())) => {}
-                ::std::result::Result::Ok(::std::result::Result::Err(e)) => {
-                    reporter.report_warning(&::std::format!(
-                        "test teardown failed [{}]: {}",
-                        name, e,
-                    ));
-                }
-                ::std::result::Result::Err(_) => {
-                    reporter.report_warning(&::std::format!(
-                        "test teardown panicked [{}]",
-                        name,
-                    ));
-                }
-            }
-
-            (token, outcome)
-        }
-    });
-
-    // One TestToken static per test, all pointing at the same suite static.
-    for (idx, test) in tests.iter().enumerate() {
+    // One per-test HRTB unsafe fn pointer + one TestToken static per test.
+    for test in tests {
         let test_name = &test.sig.ident;
         let test_name_str = test_name.to_string();
         let (ignored, ignore_reason) = extract_ignore_reason(test);
         let source_line = test.sig.ident.span().unwrap().start().line() as u32;
+        let is_async = is_async_fn(test);
+
         let token_static = format_ident!(
             "__RUDZIO_TOKEN_{}_{}_{}",
             mod_name.to_string().to_ascii_uppercase(),
             test_name.to_string().to_ascii_uppercase(),
             cfg_idx,
         );
+        let run_test_fn = format_ident!(
+            "__rudzio_run_test_{}_{}_{}",
+            mod_name, test_name, cfg_idx,
+        );
+
+        let dispatch_call = if is_async {
+            quote! {
+                #mod_name::#test_name(__rudzio_ctx).await
+                    .map_err(|e| ::rudzio::test_case::box_error(e))
+            }
+        } else {
+            quote! {
+                #mod_name::#test_name(__rudzio_ctx)
+                    .map_err(|e| ::rudzio::test_case::box_error(e))
+            }
+        };
+
+        helper_items.push(quote! {
+            #[doc(hidden)]
+            #[allow(non_snake_case)]
+            unsafe fn #run_test_fn<'g>(
+                runtime_ptr: *const (),
+                global_ptr: *const (),
+                _phantom: ::std::marker::PhantomData<&'g ()>,
+                token: &'static ::rudzio::token::TestToken,
+                test_timeout: ::std::option::Option<::std::time::Duration>,
+                root_token: ::rudzio::tokio_util::sync::CancellationToken,
+                reporter: &'g dyn ::rudzio::suite::SuiteReporter,
+            ) -> ::std::pin::Pin<::std::boxed::Box<
+                dyn ::std::future::Future<Output = ::rudzio::suite::TestOutcome> + 'g
+            >> {
+                use ::rudzio::context::Global as _;
+                use ::rudzio::context::Test as _;
+                use ::rudzio::runtime::Runtime as _;
+                use ::rudzio::futures_util::FutureExt as _;
+
+                ::std::boxed::Box::pin(async move {
+                    // SAFETY: caller (the runtime group owner) hands us
+                    // pointers whose `runtime_group_key` matches this fn's;
+                    // the macro emitted both sides, so the concrete types
+                    // are `#runtime_type` and `#global_base::<'g, …>`.
+                    #[allow(unsafe_code)]
+                    let rt: &'g #runtime_type =
+                        unsafe { &*(runtime_ptr as *const #runtime_type) };
+                    #[allow(unsafe_code)]
+                    let global: &'g #global_base::<'g, #runtime_type> = unsafe {
+                        &*(global_ptr as *const #global_base::<'g, #runtime_type>)
+                    };
+
+                    let start = ::std::time::Instant::now();
+                    let per_test_token = root_token.child_token();
+
+                    let ctx = match global.context(per_test_token.clone()).await {
+                        ::std::result::Result::Ok(c) => c,
+                        ::std::result::Result::Err(e) => {
+                            return ::rudzio::suite::TestOutcome::Failed {
+                                elapsed: start.elapsed(),
+                                message: ::std::format!(
+                                    "failed to create test context: {}", e,
+                                ),
+                            };
+                        }
+                    };
+
+                    let test_outcome = {
+                        let test_fut = async {
+                            let __rudzio_ctx: &#test_base::<'_, #runtime_type> = &ctx;
+                            #dispatch_call
+                        };
+
+                        ::rudzio::suite::run_test_with_timeout_and_cancel(
+                            test_fut,
+                            test_timeout,
+                            per_test_token.clone(),
+                            |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
+                        ).await
+                    };
+
+                    let outcome = ::rudzio::suite::fill_elapsed(test_outcome, start.elapsed());
+
+                    let name = token.name;
+                    match ::std::panic::AssertUnwindSafe(ctx.teardown())
+                        .catch_unwind()
+                        .await
+                    {
+                        ::std::result::Result::Ok(::std::result::Result::Ok(())) => {}
+                        ::std::result::Result::Ok(::std::result::Result::Err(e)) => {
+                            reporter.report_warning(&::std::format!(
+                                "test teardown failed [{}]: {}",
+                                name, e,
+                            ));
+                        }
+                        ::std::result::Result::Err(_) => {
+                            reporter.report_warning(&::std::format!(
+                                "test teardown panicked [{}]",
+                                name,
+                            ));
+                        }
+                    }
+
+                    outcome
+                })
+            }
+        });
 
         token_statics.push(quote! {
             #[::rudzio::linkme::distributed_slice(::rudzio::token::TEST_TOKENS)]
@@ -443,8 +482,11 @@ fn generate_per_config(
                 file: ::std::file!(),
                 line: #source_line,
                 runtime_name: #runtime_name_str,
-                suite_runner: &#suite_static,
-                suite_local_index: #idx,
+                runtime_group_key: ::rudzio::suite::RuntimeGroupKey(
+                    ::rudzio::suite::fnv1a64(#group_key_source),
+                ),
+                runtime_group_owner: &#owner_static,
+                run_test: #run_test_fn,
             };
         });
     }

@@ -8,12 +8,19 @@
 
 use std::error::Error;
 use std::fmt;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rudzio::context;
 use rudzio::runtime::tokio::{CurrentThread, Multithread};
 use rudzio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
+
+/// Counts how many times `BaseGlobal::setup` runs across the whole process.
+/// Two `#[rudzio::suite]` blocks declaring the same `(R, G)` should share
+/// one global; with two runtime kinds (Multithread + CurrentThread) we
+/// expect this to land at exactly 2.
+static SETUP_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug)]
 struct NeverFails;
@@ -62,6 +69,7 @@ where
     }
 
     async fn setup(rt: &'cg R, cancel: CancellationToken) -> Result<Self, Self::SetupError> {
+        let _ = SETUP_CALLS.fetch_add(1, Ordering::SeqCst);
         Ok(Self {
             cancel,
             rt,
@@ -143,6 +151,49 @@ mod scenarios {
 
     #[rudzio::test]
     async fn no_ctx_use(_ctx: &BaseTest) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+// Second suite block declaring the same (Multithread + CurrentThread, BaseGlobal)
+// pair — must coalesce with `scenarios` and share one runtime + one global per
+// runtime kind, not spin up fresh ones.
+#[rudzio::suite([
+    (
+        runtime = Multithread::new,
+        global_context = BaseGlobal,
+        test_context = BaseTest,
+    ),
+    (
+        runtime = CurrentThread::new,
+        global_context = BaseGlobal,
+        test_context = BaseTest,
+    ),
+])]
+mod sharing {
+    use super::BaseTest;
+
+    #[rudzio::test]
+    async fn shares_runtime_with_scenarios(_ctx: &BaseTest) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn shares_global_with_scenarios(ctx: &BaseTest) -> anyhow::Result<()> {
+        ctx.rt.yield_now().await;
+        Ok(())
+    }
+
+    /// Asserts BaseGlobal::setup ran at most twice across the whole process
+    /// (once per (R, G) pair: Multithread+BaseGlobal and CurrentThread+BaseGlobal).
+    /// If two blocks with the same (R, G) didn't coalesce, this would be 4.
+    #[rudzio::test]
+    async fn global_setup_was_shared(_ctx: &BaseTest) -> anyhow::Result<()> {
+        let calls = super::SETUP_CALLS.load(std::sync::atomic::Ordering::SeqCst);
+        anyhow::ensure!(
+            calls <= 2,
+            "expected ≤2 setup calls (one per runtime kind); got {calls}",
+        );
         Ok(())
     }
 }

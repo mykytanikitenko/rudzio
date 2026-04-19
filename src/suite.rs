@@ -1,17 +1,24 @@
-//! Per-suite runner abstraction.
+//! Per-`(runtime, global)` orchestration abstraction.
 //!
-//! Each `#[rudzio::suite]` invocation generates one zero-sized type that
-//! implements [`SuiteRunner`]. The implementation owns the orchestration of
-//! its suite end-to-end: it creates the concrete runtime, sets up the global
-//! context, dispatches each selected test against the right concrete test
-//! function, and tears everything down — all inside a single function with
-//! locally scoped lifetimes.
+//! Each `#[rudzio::suite]` block emits one zero-sized type that implements
+//! [`RuntimeGroupOwner`]. Multiple suite blocks declaring the same
+//! `(runtime, global_context)` pair are assigned the same
+//! [`RuntimeGroupKey`] (a compile-time FNV-1a hash of the path strings) and
+//! coalesced at startup so they share **one** OS thread, **one** runtime
+//! instance, and **one** global context. Within that single async loop,
+//! per-test dispatch is performed via an HRTB unsafe fn pointer stored on
+//! every [`TestToken`] — the owner provides its concrete runtime + global
+//! pointers, and the test fn casts them back to the matching concrete types
+//! it was generated for. The `runtime_group_key` match makes this
+//! safe-by-construction at the macro level.
 //!
-//! The runner module groups [`TestToken`]s by [`SuiteId`] and hands the
-//! per-suite slice to the matching `SuiteRunner`, which is the same `&'static
-//! dyn SuiteRunner` for every token belonging to that suite.
+//! No `'static` substitution anywhere: the runtime and the global live on
+//! the owner's stack frame for the whole `run_group` call, and per-test
+//! borrows are scoped to the HRTB fn's `'g` lifetime.
 
 use std::any::TypeId;
+use std::marker::PhantomData;
+use std::pin::Pin;
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
@@ -19,11 +26,36 @@ use tokio_util::sync::CancellationToken;
 use crate::test_case::BoxError;
 use crate::token::TestToken;
 
-/// Stable identifier for a `#[rudzio::suite]` instance.
+/// Compile-time FNV-1a-64 hash of `s`.
 ///
-/// Wraps the `TypeId` of a macro-generated zero-sized marker struct that
-/// carries no lifetime parameters of its own — keeping the chain
-/// `'runtime: 'global_context: 'test_context` from leaking into key material.
+/// Used by the suite macro to derive a stable [`RuntimeGroupKey`] from the
+/// concatenated `(runtime_path, global_path)` token strings without needing
+/// any runtime registry.
+#[doc(hidden)]
+#[must_use]
+pub const fn fnv1a64(s: &str) -> u64 {
+    let bytes = s.as_bytes();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        i += 1;
+    }
+    hash
+}
+
+/// Stable identifier for a `(runtime_type, global_type)` pair.
+///
+/// Two tokens with the same key share an OS thread, a runtime instance, and
+/// a global context, even if they were emitted by different
+/// `#[rudzio::suite]` invocations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RuntimeGroupKey(pub u64);
+
+/// Legacy id retained for the public re-export surface. Now unused
+/// internally but kept as a thin newtype around `TypeId` for callers that
+/// reach for `rudzio::SuiteId`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SuiteId(pub TypeId);
 
@@ -48,7 +80,7 @@ pub enum TestOutcome {
     Cancelled,
 }
 
-/// Aggregated per-suite counts.
+/// Aggregated per-group counts.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SuiteSummary {
     pub passed: usize,
@@ -90,7 +122,7 @@ impl SuiteSummary {
     }
 }
 
-/// Sink the [`SuiteRunner`] uses to publish per-test progress and
+/// Sink the [`RuntimeGroupOwner`] uses to publish per-test progress and
 /// non-fatal warnings as soon as they happen, so the runner can render
 /// `--format=pretty` lines and `--format=terse` dots in real time.
 pub trait SuiteReporter: Send + Sync {
@@ -111,10 +143,7 @@ pub trait SuiteReporter: Send + Sync {
     fn report_warning(&self, message: &str);
 }
 
-/// Inputs handed to [`SuiteRunner::run_suite`].
-///
-/// Borrows `tokens` from the main runner — the suite must not retain it
-/// past the call.
+/// Inputs handed to [`RuntimeGroupOwner::run_group`].
 #[derive(Debug)]
 pub struct SuiteRunRequest<'a> {
     pub tokens: &'a [&'static TestToken],
@@ -124,21 +153,47 @@ pub struct SuiteRunRequest<'a> {
     pub root_token: CancellationToken,
 }
 
-/// Per-suite orchestration trait.
+/// HRTB unsafe fn pointer stored on every [`TestToken`].
 ///
-/// Implemented by macro-generated ZSTs. The implementation creates the
-/// runtime as a local value, lets the global context borrow it, hands the
-/// per-test context out by reference, and tears everything down — all
-/// without `'static` substitution and without needing `Any` for downcasting.
-pub trait SuiteRunner: Send + Sync + 'static {
-    /// Identifier shared by every [`TestToken`] belonging to this suite.
-    fn suite_id(&self) -> SuiteId;
+/// The owner picks `'g` (its local stack frame's lifetime), provides
+/// `runtime_ptr` and `global_ptr` cast from its own concrete `R`/`G` values,
+/// and the macro-generated body casts them back. Safety relies on the
+/// per-token `runtime_group_key` matching the owner's
+/// [`RuntimeGroupOwner::group_key`] — guaranteed by the suite macro.
+///
+/// The returned future drives the test body end to end:
+///   1. creates the per-test context via `Global::context`;
+///   2. dispatches the user's test fn (sync or async) under a per-test
+///      cancellation token and the optional per-test timeout;
+///   3. always runs `Test::teardown` (catching panics and surfacing them
+///      via `reporter`).
+pub type TestRunFn = for<'g> unsafe fn(
+    runtime_ptr: *const (),
+    global_ptr: *const (),
+    _phantom: PhantomData<&'g ()>,
+    token: &'static TestToken,
+    test_timeout: Option<Duration>,
+    root_token: CancellationToken,
+    reporter: &'g dyn SuiteReporter,
+) -> Pin<Box<dyn Future<Output = TestOutcome> + 'g>>;
+
+/// Per-`(runtime_type, global_type)` lifecycle owner.
+///
+/// The macro emits one ZST per `#[rudzio::suite]` invocation; instances with
+/// the same [`group_key`] are functionally equivalent and the runner picks
+/// any one of them to drive a group.
+pub trait RuntimeGroupOwner: Send + Sync + 'static {
+    /// Stable id derived from the `(runtime_path, global_path)` token
+    /// strings at macro-time.
+    fn group_key(&self) -> RuntimeGroupKey;
 
     /// Display name of the runtime constructor (e.g. `"Multithread::new"`).
     fn runtime_name(&self) -> &'static str;
 
-    /// Drive the suite to completion on the calling OS thread.
-    fn run_suite(
+    /// Drive the whole group: create runtime, set up global, dispatch every
+    /// `req.tokens` entry via its [`TestToken::run_test`] fn pointer, tear
+    /// down. Called from a dedicated OS thread.
+    fn run_group(
         &self,
         req: SuiteRunRequest<'_>,
         reporter: &dyn SuiteReporter,
@@ -148,13 +203,12 @@ pub trait SuiteRunner: Send + Sync + 'static {
 /// Runs `test_fut` under the per-test cancellation token and the optional
 /// per-test timeout, classifying the resulting state into a [`TestOutcome`].
 ///
-/// The `elapsed` field on the resulting outcome is left at `Duration::ZERO`;
-/// the caller (which knows the start `Instant`) is expected to fill it in.
+/// The `elapsed` field is left at `Duration::ZERO`; the caller fills it in.
 ///
-/// Used by macro-generated suite implementations. No `Send` bound on
-/// `test_fut`/`sleep` — the suite runner drives them inside `block_on` on
-/// the calling thread, never spawned, so single-threaded runtimes (and
-/// `!Send` test bodies on them) work too.
+/// Used by macro-generated per-test fns. No `Send` bound on
+/// `test_fut`/`sleep` — the owner drives them inside `block_on` on the
+/// calling thread, never spawned, so single-threaded runtimes (and `!Send`
+/// test bodies on them) work too.
 #[doc(hidden)]
 pub async fn run_test_with_timeout_and_cancel<F, S>(
     test_fut: F,
