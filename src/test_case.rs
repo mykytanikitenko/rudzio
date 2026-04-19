@@ -1,0 +1,58 @@
+use std::any::Any;
+use std::error;
+use std::fmt;
+use std::pin::Pin;
+
+pub type BoxError = Box<dyn error::Error + Send + Sync + 'static>;
+
+/// Wraps any `Display + Debug` value as a `BoxError`.
+/// Used by generated code to support error types (e.g. `anyhow::Error`)
+/// that don't implement `std::error::Error` directly.
+#[derive(Debug)]
+struct DisplayError(String);
+
+impl fmt::Display for DisplayError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl error::Error for DisplayError {}
+
+/// Convert any `Display` error into a [`BoxError`].
+#[inline]
+pub fn box_error<E: fmt::Display>(e: E) -> BoxError {
+    Box::new(DisplayError(format!("{e:#}")))
+}
+
+pub type TestFn =
+    for<'body> fn(
+        &'body mut dyn Any,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BoxError>> + Send + 'body>>;
+
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct TestCase {
+    pub func: TestFn,
+    pub ignore_reason: &'static str,
+    pub ignored: bool,
+    pub name: &'static str,
+}
+
+impl TestCase {
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        func: TestFn,
+        ignore_reason: &'static str,
+        ignored: bool,
+        name: &'static str,
+    ) -> Self {
+        Self {
+            func,
+            ignore_reason,
+            ignored,
+            name,
+        }
+    }
+}

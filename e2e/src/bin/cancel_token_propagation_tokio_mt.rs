@@ -1,0 +1,42 @@
+//! Verifies that `common_context::Test::teardown` cancels the per-test
+//! cancellation token, waking any task that was waiting on it.
+//!
+//! Structure:
+//!   - The test body spawns a tracked future that `await`s the cancel token,
+//!     then emits a marker log.
+//!   - The test body returns without cancelling the token itself.
+//!   - When per-test teardown fires, the token is cancelled; the spawned
+//!     future wakes up and logs the marker.
+//!   - The global tracker drain guarantees we see the marker before exit.
+
+use common_context::Test;
+use rudzio::runtime::tokio::Multithread;
+
+#[rudzio::suite([
+    (
+        runtime = Multithread::new,
+        global_context = common_context::Global,
+        test_context = Test,
+    ),
+])]
+mod tests {
+    use super::Test;
+
+    #[rudzio::test]
+    fn cancel_token_wakes_on_teardown(ctx: &Test) -> anyhow::Result<()> {
+        let token = ctx.cancel_token().clone();
+        let _join = ctx.spawn_tracked(async move {
+            token.cancelled().await;
+            println!("cancel_propagation_marker");
+        });
+        // Sanity-check: the token must NOT be cancelled while the test body
+        // is running; the cancel has to come from `Test::teardown`.
+        if ctx.cancel_token().is_cancelled() {
+            anyhow::bail!("cancel token was set before teardown ran");
+        }
+        Ok(())
+    }
+}
+
+#[rudzio::main]
+fn main() {}

@@ -1,0 +1,24 @@
+[package]
+name = "rudzio-e2e"
+version = "0.1.0"
+edition = { workspace = true }
+publish = false
+description = "End-to-end tests for the rudzio framework. Each binary is a scenario; the integration test runs them and asserts the outcome."
+
+[dependencies]
+anyhow = "=1.0.102"
+common-context = { workspace = true }
+rudzio = { workspace = true, features = ["runtime-tokio", "runtime-compio", "runtime-embassy"] }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+
+[dev-dependencies]
+trybuild = { workspace = true }
+
+# Integration tests drive child processes and deliver Unix signals to them
+# to exercise the runner's SIGINT/SIGTERM handling.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "=0.2.185"
+
+[lints]
+workspace = true

@@ -1,0 +1,143 @@
+[package]
+name = "rudzio"
+version = "0.1.0"
+edition = { workspace = true }
+description = "Async testing framework with pluggable runtimes (tokio, compio) and per-test context setup/teardown."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/mykytanikitenko/rudzio"
+readme = "README.md"
+keywords = ["testing", "async", "tokio", "compio", "runtime"]
+categories = ["development-tools::testing", "asynchronous"]
+
+[dependencies]
+futures-util = { workspace = true }
+linkme = { workspace = true }
+rudzio-macro = { workspace = true }
+tokio-util = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"], optional = true }
+compio-runtime = { workspace = true, features = ["time"], optional = true }
+embassy-executor = { workspace = true, optional = true }
+send_wrapper = { workspace = true, features = ["futures"], optional = true }
+
+# Signal handling is unconditional on Unix so the runner always cancels
+# gracefully on both SIGINT and SIGTERM without any feature opt-in.
+[target.'cfg(unix)'.dependencies]
+signal-hook = { workspace = true }
+
+[features]
+runtime-tokio = ["dep:tokio", "dep:send_wrapper"]
+runtime-compio = ["dep:compio-runtime", "dep:send_wrapper"]
+runtime-embassy = ["dep:embassy-executor", "dep:send_wrapper"]
+
+[lints]
+workspace = true
+
+[workspace]
+resolver = "3"
+members = [
+  "common-context",
+  "e2e",
+  "macro",
+]
+
+[workspace.package]
+edition = "2024"
+
+[workspace.dependencies]
+# Local crates
+common-context = { version = "0.1.0", path = "common-context" }
+rudzio = { version = "0.1.0", path = "." }
+rudzio-macro = { version = "0.1.0", path = "macro" }
+
+# External crates (pinned to exact versions for reproducible builds)
+compio-runtime = "=0.11.0"
+signal-hook = "=0.4.4"
+embassy-executor = { version = "=0.7.0", features = ["arch-std"] }
+futures-util = "=0.3.32"
+proc-macro2 = "=1.0.106"
+quote = "=1.0.45"
+send_wrapper = "=0.6.0"
+syn = "=2.0.117"
+tokio = { version = "=1.52.1", features = ["rt", "macros", "time"] }
+tokio-util = { version = "=0.7.18", features = ["rt"] }
+trybuild = "=1.0.116"
+linkme = "=0.3.31"
+
+# ===========================================================================
+# Rust compiler lints
+# ===========================================================================
+[workspace.lints.rust]
+warnings = "deny"
+
+future_incompatible = { level = "deny", priority = -1 }
+keyword_idents = { level = "deny", priority = -1 }
+let_underscore = { level = "deny", priority = -1 }
+nonstandard_style = { level = "deny", priority = -1 }
+refining_impl_trait = { level = "deny", priority = -1 }
+rust_2018_idioms = { level = "deny", priority = -1 }
+rust_2021_compatibility = { level = "deny", priority = -1 }
+rust_2024_compatibility = { level = "deny", priority = -1 }
+unused = { level = "deny", priority = -1 }
+
+unsafe_code = "deny"
+
+macro_use_extern_crate = "deny"
+meta_variable_misuse = "deny"
+missing_copy_implementations = "deny"
+missing_debug_implementations = "deny"
+non_ascii_idents = "deny"
+redundant_imports = "deny"
+redundant_lifetimes = "deny"
+trivial_casts = "deny"
+trivial_numeric_casts = "deny"
+unit_bindings = "deny"
+unreachable_pub = "deny"
+unused_import_braces = "deny"
+unused_lifetimes = "deny"
+unused_qualifications = "deny"
+unused_results = "deny"
+variant_size_differences = "deny"
+
+# ===========================================================================
+# Clippy lints
+# ===========================================================================
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+complexity = { level = "deny", priority = -1 }
+correctness = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+restriction = { level = "deny", priority = -1 }
+style = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+
+blanket_clippy_restriction_lints = { level = "allow", priority = 1 }
+cargo_common_metadata = { level = "allow", priority = 1 }
+multiple_crate_versions = { level = "allow", priority = 1 }
+error_impl_error = { level = "allow", priority = 1 }
+field_scoped_visibility_modifiers = { level = "allow", priority = 1 }
+implicit_return = { level = "allow", priority = 1 }
+missing_trait_methods = { level = "allow", priority = 1 }
+mod_module_files = { level = "allow", priority = 1 }
+multiple_inherent_impl = { level = "allow", priority = 1 }
+pattern_type_mismatch = { level = "allow", priority = 1 }
+pub_use = { level = "allow", priority = 1 }
+pub_with_shorthand = { level = "allow", priority = 1 }
+question_mark_used = { level = "allow", priority = 1 }
+redundant_pub_crate = { level = "allow", priority = 1 }
+redundant_type_annotations = { level = "allow", priority = 1 }
+semicolon_outside_block = { level = "allow", priority = 1 }
+std_instead_of_alloc = { level = "allow", priority = 1 }
+std_instead_of_core = { level = "allow", priority = 1 }
+separated_literal_suffix = { level = "allow", priority = 1 }
+single_call_fn = { level = "allow", priority = 1 }
+tests_outside_test_module = { level = "allow", priority = 1 }
+# Test bodies under #[rudzio::test] must return Result<(), E> to match the
+# runner's match arms, even when the body can never produce an error.
+unnecessary_wraps = { level = "allow", priority = 1 }
+# Many test binaries include intentional panics and unreachable! calls to
+# exercise the framework's panic handling. Their signature keeps a Result
+# return so the surrounding framework machinery still type-checks.
+panic_in_result_fn = { level = "allow", priority = 1 }
