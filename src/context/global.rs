@@ -21,7 +21,7 @@ use crate::runtime::Runtime;
 /// 8. Drop runtime
 pub trait Global<'context_global, R>: Send + Sync + 'context_global
 where
-    R: Runtime<'context_global> + Sync,
+    R: for<'r> Runtime<'r> + Sync,
 {
     /// Error returned by [`Self::context`].
     type ContextError: fmt::Display + fmt::Debug + Send + Sync + 'context_global;
@@ -33,8 +33,19 @@ where
     type TeardownError: fmt::Display + fmt::Debug + Send + Sync + 'context_global;
 
     /// The per-test context type produced by [`Self::context`].
-    /// Uses '`context_global` as its lifetime since it borrows from Global.
-    type Test: super::Test<'context_global, R>;
+    ///
+    /// Generic over `'test_context` — the third tier of the hierarchy
+    /// `'runtime: 'context_global: 'test_context`. The test value is born
+    /// when the runner calls [`Self::context`] and dies when its
+    /// `Test::teardown` finishes, so its data may borrow from Global only
+    /// for that strictly-shorter window. Encoding that here (rather than
+    /// reusing `'context_global`) lets the runner give the test fn a
+    /// `&'test_context (mut) Self::Test<'test_context>` borrow whose
+    /// lifetime is genuinely the per-test borrow — needed for any test fn
+    /// that takes `&mut TestCtx` to compile.
+    type Test<'test_context>: super::Test<'test_context, R>
+    where
+        Self: 'test_context;
 
     /// Create a fresh per-test context.
     ///
@@ -44,14 +55,14 @@ where
     /// (or root-level cancels that fan out through the parent/child chain)
     /// propagate into the test body.
     ///
-    /// `'test_context` names the third tier of the lifetime hierarchy:
-    /// `'runtime: 'context_global: 'test_context`. It is the duration of
-    /// the `&self` borrow that produces the test — the test runner's own
-    /// per-test stack frame.
+    /// `'test_context` is the duration of the `&self` borrow that produces
+    /// the test — the test runner's own per-test stack frame.
     fn context<'test_context>(
         &'test_context self,
         cancel: CancellationToken,
-    ) -> impl Future<Output = Result<Self::Test, Self::ContextError>> + Send + 'test_context;
+    ) -> impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>>
+           + Send
+           + 'test_context;
 
     /// Create the shared state. Called once per runtime group.
     ///

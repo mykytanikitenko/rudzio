@@ -60,17 +60,20 @@ where
 
 impl<'cg, R> Global<'cg, R> for TeardownGlobal<'cg, R>
 where
-    R: ::rudzio::runtime::Runtime<'cg> + Sync,
+    R: for<'r> ::rudzio::runtime::Runtime<'r> + Sync,
 {
     type ContextError = Infallible;
     type SetupError = Infallible;
     type TeardownError = Infallible;
-    type Test = TeardownTest<'cg, R>;
+    type Test<'test_context>
+        = TeardownTest<'test_context, R>
+    where
+        Self: 'test_context;
 
-    async fn context(
-        &self,
+    async fn context<'test_context>(
+        &'test_context self,
         cancel: CancellationToken,
-    ) -> Result<Self::Test, Self::ContextError> {
+    ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Ok(TeardownTest {
             cancel,
             _marker: std::marker::PhantomData,

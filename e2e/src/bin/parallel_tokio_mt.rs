@@ -57,14 +57,20 @@ where
 
 impl<'cg, R> context::Global<'cg, R> for ParallelGlobal<'cg, R>
 where
-    R: Runtime<'cg> + Sync,
+    R: for<'r> Runtime<'r> + Sync,
 {
     type ContextError = NeverFails;
     type SetupError = NeverFails;
     type TeardownError = NeverFails;
-    type Test = ParallelTest<'cg, R>;
+    type Test<'test_context>
+        = ParallelTest<'test_context, R>
+    where
+        Self: 'test_context;
 
-    async fn context(&self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<Self::Test, Self::ContextError> {
+    async fn context<'test_context>(
+        &'test_context self,
+        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+    ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Ok(ParallelTest {
             _marker: PhantomData,
             barrier: Arc::clone(&self.barrier),

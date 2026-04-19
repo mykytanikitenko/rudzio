@@ -52,14 +52,20 @@ where
 
 impl<'cg, R> context::Global<'cg, R> for BrokenContextGlobal<'cg, R>
 where
-    R: Runtime<'cg> + Sync,
+    R: for<'r> Runtime<'r> + Sync,
 {
     type ContextError = ContextErr;
     type SetupError = ContextErr;
     type TeardownError = ContextErr;
-    type Test = NeverBuiltTest<'cg, R>;
+    type Test<'test_context>
+        = NeverBuiltTest<'test_context, R>
+    where
+        Self: 'test_context;
 
-    async fn context(&self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<Self::Test, Self::ContextError> {
+    async fn context<'test_context>(
+        &'test_context self,
+        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+    ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Err(ContextErr)
     }
 

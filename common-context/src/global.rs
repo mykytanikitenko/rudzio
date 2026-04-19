@@ -99,18 +99,23 @@ where
 
 impl<'context_global, R> context::Global<'context_global, R> for Global<'context_global, R>
 where
-    R: Runtime<'context_global> + Sync,
+    R: for<'r> Runtime<'r> + Sync,
 {
     type ContextError = Infallible;
     type SetupError = Infallible;
     type TeardownError = Infallible;
-    type Test = Test<'context_global, R>;
+    type Test<'test_context>
+        = Test<'test_context, R>
+    where
+        Self: 'test_context;
 
     #[inline]
-    fn context(
-        &self,
+    fn context<'test_context>(
+        &'test_context self,
         cancel: CancellationToken,
-    ) -> impl Future<Output = Result<Self::Test, Self::ContextError>> + Send + '_ {
+    ) -> impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>>
+           + Send
+           + 'test_context {
         // Use the per-test token the runner supplies directly — it is already
         // a child of the root cancel token the global context was built with,
         // so root-level cancellation still propagates.
