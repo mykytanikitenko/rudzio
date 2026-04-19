@@ -5,7 +5,9 @@ use syn::{Ident, Item, ItemFn, ItemMod, Path};
 
 use crate::args::{MainArgs, RuntimeConfig};
 use crate::codegen::extract_ignore_reason;
-use crate::transform::{has_test_attr, is_async_fn, is_test_attr, transform_test_signature};
+use crate::transform::{
+    first_param_is_mut_ref, has_test_attr, is_async_fn, is_test_attr, transform_test_signature,
+};
 
 pub(crate) fn expand_suite(args: MainArgs, input_mod: ItemMod) -> TokenStream {
     let items = match &input_mod.content {
@@ -101,7 +103,7 @@ fn generate_per_config(
     let runtime_ctor = &cfg.runtime;
     let runtime_type = cfg.runtime_type();
     let global_base = &cfg.global;
-    let test_base = &cfg.test;
+    let _test_base = &cfg.test;
     let runtime_name_str = quote!(#runtime_ctor).to_string();
 
     // Stable id derived from the (runtime_type, global_base) path strings.
@@ -358,6 +360,7 @@ fn generate_per_config(
         let (ignored, ignore_reason) = extract_ignore_reason(test);
         let source_line = test.sig.ident.span().unwrap().start().line() as u32;
         let is_async = is_async_fn(test);
+        let wants_mut = first_param_is_mut_ref(test);
 
         let token_static = format_ident!(
             "__RUDZIO_TOKEN_{}_{}_{}",
@@ -370,14 +373,24 @@ fn generate_per_config(
             mod_name, test_name, cfg_idx,
         );
 
+        // Inline `&ctx` / `&mut ctx` into the call site so no intermediate
+        // `let __rudzio_ctx = ...` binding is captured by the test_fut
+        // coroutine — that binding made NLL pessimistically extend the
+        // borrow past the .await, blocking the subsequent ctx.teardown().
+        let dispatch_arg = if wants_mut {
+            quote! { &mut ctx }
+        } else {
+            quote! { &ctx }
+        };
+
         let dispatch_call = if is_async {
             quote! {
-                #mod_name::#test_name(__rudzio_ctx).await
+                #mod_name::#test_name(#dispatch_arg).await
                     .map_err(|e| ::rudzio::test_case::box_error(e))
             }
         } else {
             quote! {
-                #mod_name::#test_name(__rudzio_ctx)
+                #mod_name::#test_name(#dispatch_arg)
                     .map_err(|e| ::rudzio::test_case::box_error(e))
             }
         };
@@ -417,7 +430,10 @@ fn generate_per_config(
                     let start = ::std::time::Instant::now();
                     let per_test_token = root_token.child_token();
 
-                    let ctx = match global.context(per_test_token.clone()).await {
+                    // `mut` so the test fn can take `&mut ctx` if its first
+                    // parameter is `&mut Self::Test`. Harmless when not.
+                    #[allow(unused_mut)]
+                    let mut ctx = match global.context(per_test_token.clone()).await {
                         ::std::result::Result::Ok(c) => c,
                         ::std::result::Result::Err(e) => {
                             return ::rudzio::suite::TestOutcome::Failed {
@@ -431,7 +447,6 @@ fn generate_per_config(
 
                     let test_outcome = {
                         let test_fut = async {
-                            let __rudzio_ctx: &#test_base::<'_, #runtime_type> = &ctx;
                             #dispatch_call
                         };
 

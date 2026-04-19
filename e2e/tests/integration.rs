@@ -114,6 +114,18 @@ fn log_of(out: &Output) -> String {
 }
 
 #[test]
+fn mut_test_context_is_borrowable() {
+    let out = run(env!("CARGO_BIN_EXE_mutable_test_context"));
+    let log = log_of(&out);
+    assert_eq!(out.status.code(), Some(0), "expected exit 0, output:\n{log}");
+    assert!(log.contains("3 passed"), "output:\n{log}");
+    assert!(log.contains("0 failed"), "output:\n{log}");
+    assert!(log.contains("mutates_via_mut_borrow"), "output:\n{log}");
+    assert!(log.contains("sync_mutates_via_mut_borrow"), "output:\n{log}");
+    assert!(log.contains("fresh_ctx_per_test"), "output:\n{log}");
+}
+
+#[test]
 fn passing_tokio_mt_succeeds() {
     let out = run(env!("CARGO_BIN_EXE_passing_tokio_mt"));
     let log = log_of(&out);

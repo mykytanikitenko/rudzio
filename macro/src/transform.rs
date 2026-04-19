@@ -18,10 +18,40 @@ pub(crate) fn is_async_fn(func: &ItemFn) -> bool {
     func.sig.asyncness.is_some()
 }
 
-/// Transform test function signature to add generic lifetime and runtime type.
+/// Returns `true` if `func`'s first parameter is `&mut T` (in any form).
+///
+/// Used by the suite codegen to decide whether to dispatch the test with
+/// `&mut ctx` (and bind the per-test context as `let mut ctx = …`).
+pub(crate) fn first_param_is_mut_ref(func: &ItemFn) -> bool {
+    let Some(first) = func.sig.inputs.first() else {
+        return false;
+    };
+    let syn::FnArg::Typed(pat_type) = first else {
+        return false;
+    };
+    let syn::Type::Reference(type_ref) = &*pat_type.ty else {
+        return false;
+    };
+    type_ref.mutability.is_some()
+}
+
+/// Transform test function signature to add generic lifetimes and runtime type.
 ///
 /// Converts: `async fn test(ctx: &BaseTestContext) -> Result<()>`
-/// To:       `async fn test<'a, R: Runtime<'a>>(ctx: &'a BaseTestContext<'a, R>) -> Result<()>`
+/// To:       `async fn test<'tc, 'cg: 'tc, R: Runtime<'cg> + Sync>(ctx: &'tc BaseTestContext<'cg, R>) -> Result<()>`
+///
+/// Two distinct lifetimes are emitted on purpose:
+///   - `'cg` is the lifetime parameter on the user's context type (the
+///     "global context" tier). The runtime borrow inside the type lives
+///     for `'cg`.
+///   - `'tc` is the per-test borrow lifetime — the duration of the
+///     `&` (or `&mut`) the runner hands the test fn. It is strictly
+///     `'cg: 'tc` (the borrow can't outlive the value it borrows from).
+///
+/// Collapsing both into a single `'a` (as the previous implementation did)
+/// forces the borrow to live as long as the type itself, which the borrow
+/// checker then refuses to release before the post-test
+/// `ctx.teardown()` move, breaking `&mut TestContext` test signatures.
 ///
 /// If the context type already has generic arguments, leaves it unchanged.
 pub(crate) fn transform_test_signature(mut func: ItemFn) -> ItemFn {
@@ -41,21 +71,22 @@ pub(crate) fn transform_test_signature(mut func: ItemFn) -> ItemFn {
     if should_transform {
         if let Some(first_param) = func.sig.inputs.first_mut()
             && let syn::FnArg::Typed(pat_type) = first_param
-                && let syn::Type::Reference(type_ref) = &*pat_type.ty
-                    && let syn::Type::Path(type_path) = &*type_ref.elem {
-                        let inner_type: syn::Type = syn::parse_quote! {
-                            #type_path<'a, R>
-                        };
-                        *pat_type.ty = syn::Type::Reference(syn::TypeReference {
-                            and_token: type_ref.and_token,
-                            lifetime: Some(syn::Lifetime::new("'a", Span::call_site())),
-                            mutability: type_ref.mutability,
-                            elem: Box::new(inner_type),
-                        });
-                    }
+            && let syn::Type::Reference(type_ref) = &*pat_type.ty
+            && let syn::Type::Path(type_path) = &*type_ref.elem
+        {
+            let inner_type: syn::Type = syn::parse_quote! {
+                #type_path<'cg, R>
+            };
+            *pat_type.ty = syn::Type::Reference(syn::TypeReference {
+                and_token: type_ref.and_token,
+                lifetime: Some(syn::Lifetime::new("'tc", Span::call_site())),
+                mutability: type_ref.mutability,
+                elem: Box::new(inner_type),
+            });
+        }
 
         func.sig.generics = syn::parse_quote! {
-            <'a, R: ::rudzio::runtime::Runtime<'a> + ::std::marker::Sync>
+            <'tc, 'cg: 'tc, R: ::rudzio::runtime::Runtime<'cg> + ::std::marker::Sync>
         };
     }
 
