@@ -9,13 +9,6 @@
 //! all should execute, and the summary should report 1/1/1 for passed /
 //! failed / panicked with exit code 1.
 
-// The `sync_panics` body intentionally panics to exercise rudzio's
-// sync-path panic isolation.
-#![allow(
-    clippy::panic,
-    reason = "test fixture intentionally panics to exercise the framework"
-)]
-
 use common_context::Test;
 use rudzio::runtime::tokio::Multithread;
 

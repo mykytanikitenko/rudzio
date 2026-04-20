@@ -11,12 +11,6 @@
 //!   panic unwinds the entire runtime thread. `after_panic` never executes
 //!   and the partial summary computed inside `rt.block_on` is lost.
 
-// Test body intentionally panics to exercise rudzio's panic isolation.
-#![allow(
-    clippy::panic,
-    reason = "test fixture intentionally panics to exercise the framework"
-)]
-
 use common_context::Test;
 use rudzio::runtime::tokio::Multithread;
 

@@ -4,12 +4,6 @@
 //!     (the macro expands to `#(#test_executions)*` awaited one at a time);
 //!   - the final summary counts across multiple panics are correct.
 
-// Test bodies panic on purpose to exercise rudzio's panic isolation.
-#![allow(
-    clippy::panic,
-    reason = "test fixture intentionally panics to exercise the framework"
-)]
-
 use common_context::Test;
 use rudzio::runtime::tokio::Multithread;
 

@@ -4,13 +4,6 @@
 //! Failed (not Panicked — that's reserved for setup failure) and the run
 //! exits with code 1.
 
-// Test bodies use `unreachable!` to assert they never execute when the
-// framework short-circuits them via a failing context.
-#![allow(
-    clippy::unreachable,
-    reason = "test fixture intentionally exercises unreachable branches"
-)]
-
 use std::error::Error;
 use std::fmt;
 use std::marker::PhantomData;

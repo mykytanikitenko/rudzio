@@ -7,14 +7,6 @@
 //! were serialised, the first group's test would wait forever — the
 //! watchdog thread then exits the process with code 2.
 
-// The watchdog thread intentionally short-circuits the process with
-// `eprintln!` + `process::exit` when the barrier doesn't release.
-#![allow(
-    clippy::print_stderr,
-    clippy::exit,
-    reason = "watchdog uses stderr + exit(2) to short-circuit a deadlock"
-)]
-
 use std::error::Error;
 use std::fmt;
 use std::marker::PhantomData;
