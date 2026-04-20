@@ -115,7 +115,8 @@ fn generate_per_config(
         quote!(#global_base),
     );
 
-    let owner_struct = format_ident!("__RudzioOwner_{}_{}", mod_name, cfg_idx);
+    let mod_camel = to_upper_camel(&mod_name.to_string());
+    let owner_struct = format_ident!("__RudzioOwner{}{}", mod_camel, cfg_idx);
     let owner_static = format_ident!(
         "__RUDZIO_OWNER_{}_{}",
         mod_name.to_string().to_ascii_uppercase(),
@@ -125,11 +126,9 @@ fn generate_per_config(
     // Suite-level owner ZST + static instance.
     helper_items.push(quote! {
         #[doc(hidden)]
-        #[allow(non_camel_case_types)]
         struct #owner_struct;
 
         #[doc(hidden)]
-        #[allow(non_upper_case_globals)]
         static #owner_static: #owner_struct = #owner_struct;
     });
 
@@ -383,6 +382,12 @@ fn generate_per_config(
             quote! { &ctx }
         };
 
+        let ctx_binding = if wants_mut {
+            quote! { let mut ctx }
+        } else {
+            quote! { let ctx }
+        };
+
         let dispatch_call = if is_async {
             quote! {
                 #mod_name::#test_name(#dispatch_arg).await
@@ -397,7 +402,6 @@ fn generate_per_config(
 
         helper_items.push(quote! {
             #[doc(hidden)]
-            #[allow(non_snake_case)]
             unsafe fn #run_test_fn<'g>(
                 runtime_ptr: *const (),
                 global_ptr: *const (),
@@ -430,10 +434,7 @@ fn generate_per_config(
                     let start = ::std::time::Instant::now();
                     let per_test_token = root_token.child_token();
 
-                    // `mut` so the test fn can take `&mut ctx` if its first
-                    // parameter is `&mut Self::Test`. Harmless when not.
-                    #[allow(unused_mut)]
-                    let mut ctx = match global.context(per_test_token.clone()).await {
+                    #ctx_binding = match global.context(per_test_token.clone()).await {
                         ::std::result::Result::Ok(c) => c,
                         ::std::result::Result::Err(e) => {
                             return ::rudzio::suite::TestOutcome::Failed {
@@ -489,7 +490,6 @@ fn generate_per_config(
             #[::rudzio::linkme::distributed_slice(::rudzio::token::TEST_TOKENS)]
             #[linkme(crate = ::rudzio::linkme)]
             #[doc(hidden)]
-            #[allow(non_upper_case_globals)]
             static #token_static: ::rudzio::token::TestToken = ::rudzio::token::TestToken {
                 name: #test_name_str,
                 ignored: #ignored,
@@ -505,4 +505,19 @@ fn generate_per_config(
             };
         });
     }
+}
+
+/// Convert a snake_case identifier to UpperCamelCase. Splits on `_`,
+/// uppercases the first char of each segment, and drops the underscores
+/// so the result conforms to Rust's type-name convention.
+fn to_upper_camel(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for segment in s.split('_').filter(|seg| !seg.is_empty()) {
+        let mut chars = segment.chars();
+        if let Some(first) = chars.next() {
+            out.extend(first.to_uppercase());
+            out.push_str(chars.as_str());
+        }
+    }
+    out
 }
