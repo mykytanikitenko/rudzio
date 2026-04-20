@@ -4,7 +4,6 @@
 //! a `#[rudzio::test]` body caused rustc to emit "lifetime bound not
 //! satisfied" pointing at the `#[rudzio::suite]` attribute — because the
 //! macro hard-coded `'static` into the generated helper fns.
-#![allow(dead_code)]
 
 use std::error::Error;
 use std::fmt;
@@ -150,7 +149,7 @@ mod scenarios {
 
     #[rudzio::test]
     async fn ctx_spawn(ctx: &BaseTest) -> anyhow::Result<()> {
-        let handle = ctx.rt.spawn(async { 7_u32 });
+        let handle = ctx.rt.spawn(ctx.tracker.track_future(async { 7_u32 }));
         assert_eq!(handle.await.ok(), Some(7));
         Ok(())
     }
