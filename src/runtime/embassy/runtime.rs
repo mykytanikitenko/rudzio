@@ -6,6 +6,11 @@
 //! no cross-thread channels on the block-on path, no `ForceSend`-style
 //! wrappers.
 
+#![allow(
+    unsafe_code,
+    reason = "unsafe glue around embassy_executor::raw::Executor — see per-site SAFETY comments"
+)]
+
 use std::fmt;
 use std::io;
 use std::pin::Pin;
@@ -25,7 +30,6 @@ use crate::runtime::{JoinError, Runtime as RuntimeTrait};
 /// Required by `embassy_executor::raw::Executor`; must be a global symbol
 /// named `__pender`. We route the signal to the `Signaler` associated with
 /// the executor via the `context` pointer that `Executor::new` stored.
-#[allow(unsafe_code)]
 #[unsafe(export_name = "__pender")]
 fn __pender(context: *mut ()) {
     // SAFETY: `context` is the `&'static Signaler` pointer we passed to
@@ -126,7 +130,6 @@ impl Runtime {
             }
             // SAFETY: the executor was initialized by `Runtime::new` and we
             // never re-enter `poll` (this loop is the sole caller).
-            #[allow(unsafe_code)]
             unsafe {
                 self.executor.poll();
             }
@@ -155,7 +158,7 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
         // Lifetime extension: the `drive_until` loop below blocks this thread
         // until the task has completed, so the task can never outlive borrows
         // captured by `fut`.
-        #[allow(unsafe_code, trivial_casts)]
+        #[allow(trivial_casts)]
         let fut_static: Pin<Box<dyn Future<Output = F::Output> + 'static>> = unsafe {
             core::mem::transmute::<
                 Pin<Box<dyn Future<Output = F::Output> + 'rt>>,
@@ -168,7 +171,6 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
             // SAFETY: `slot` is alive for the whole `drive_until` call below
             // (same stack frame) and no other code holds the pointer while
             // this write executes (single-threaded executor).
-            #[allow(unsafe_code)]
             unsafe {
                 *slot_ptr.0 = Some(output);
             }
@@ -228,12 +230,11 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
 
 /// Raw pointer to a caller-owned output slot. Wrapped so the runtime can hand
 /// it to an `async move` block without dragging `Send` into the spawn
-/// machinery. Dereferenced only under a scoped `#[allow(unsafe_code)]` at a
-/// single write site.
+/// machinery. Dereferenced only at a single write site; see module-level
+/// `unsafe_code` allow.
 #[derive(Debug)]
 struct SlotPtr<T>(*mut Option<T>);
 
-#[allow(unsafe_code)]
 // SAFETY: `SlotPtr` is only handed off between the group thread and its own
 // embassy task (same OS thread); no concurrent access ever occurs.
 unsafe impl<T> Send for SlotPtr<T> {}
