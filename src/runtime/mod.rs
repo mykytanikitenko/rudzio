@@ -9,6 +9,8 @@ mod rt;
 pub mod compio;
 #[cfg(feature = "runtime-embassy")]
 pub mod embassy;
+#[cfg(feature = "runtime-futures")]
+pub mod futures;
 #[cfg(feature = "runtime-tokio")]
 pub mod tokio;
 

@@ -1,20 +1,19 @@
 //! Teardown-always-runs fixture.
 //!
 //! The custom `TeardownTest` prints a marker in its `teardown` impl, and the
-//! custom `TeardownGlobal` does the same. The test body itself times out, so
-//! the assertions below prove that both per-test and global teardown still
+//! custom `TeardownSuite` does the same. The test body itself times out, so
+//! the assertions below prove that both per-test and suite teardown still
 //! run after the runner's per-test watchdog fires.
 
 use std::time::Duration;
 
-use rudzio::context::{Global, Test};
-use rudzio::runtime::tokio::Multithread;
+use rudzio::context::{Suite, Test};
 
 #[rudzio::suite([
     (
-        runtime = Multithread::new,
-        global_context = TeardownGlobal,
-        test_context = TeardownTest,
+        runtime = rudzio::runtime::tokio::Multithread::new,
+        suite = TeardownSuite,
+        test = TeardownTest,
     ),
 ])]
 mod tests {
@@ -42,23 +41,23 @@ use std::convert::Infallible;
 
 use ::rudzio::tokio_util::sync::CancellationToken;
 
-pub struct TeardownGlobal<'cg, R>
+pub struct TeardownSuite<'suite_context, R>
 where
-    R: ::rudzio::runtime::Runtime<'cg> + Sync,
+    R: ::rudzio::runtime::Runtime<'suite_context> + Sync,
 {
-    _marker: std::marker::PhantomData<&'cg R>,
+    _marker: std::marker::PhantomData<&'suite_context R>,
 }
 
-impl<'cg, R> std::fmt::Debug for TeardownGlobal<'cg, R>
+impl<'suite_context, R> std::fmt::Debug for TeardownSuite<'suite_context, R>
 where
-    R: ::rudzio::runtime::Runtime<'cg> + Sync,
+    R: ::rudzio::runtime::Runtime<'suite_context> + Sync,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TeardownGlobal").finish_non_exhaustive()
+        f.debug_struct("TeardownSuite").finish_non_exhaustive()
     }
 }
 
-impl<'cg, R> Global<'cg, R> for TeardownGlobal<'cg, R>
+impl<'suite_context, R> Suite<'suite_context, R> for TeardownSuite<'suite_context, R>
 where
     R: for<'r> ::rudzio::runtime::Runtime<'r> + Sync,
 {
@@ -80,38 +79,38 @@ where
         })
     }
 
-    async fn setup(_rt: &'cg R, _cancel: CancellationToken) -> Result<Self, Self::SetupError> {
+    async fn setup(_rt: &'suite_context R, _cancel: CancellationToken, _config: &'suite_context ::rudzio::Config) -> Result<Self, Self::SetupError> {
         Ok(Self {
             _marker: std::marker::PhantomData,
         })
     }
 
     async fn teardown(self) -> Result<(), Self::TeardownError> {
-        println!("teardown_global_marker");
+        println!("teardown_suite_marker");
         Ok(())
     }
 }
 
-pub struct TeardownTest<'tc, R>
+pub struct TeardownTest<'test_context, R>
 where
-    R: ::rudzio::runtime::Runtime<'tc> + Sync,
+    R: ::rudzio::runtime::Runtime<'test_context> + Sync,
 {
     cancel: CancellationToken,
-    _marker: std::marker::PhantomData<&'tc R>,
+    _marker: std::marker::PhantomData<&'test_context R>,
 }
 
-impl<'tc, R> std::fmt::Debug for TeardownTest<'tc, R>
+impl<'test_context, R> std::fmt::Debug for TeardownTest<'test_context, R>
 where
-    R: ::rudzio::runtime::Runtime<'tc> + Sync,
+    R: ::rudzio::runtime::Runtime<'test_context> + Sync,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TeardownTest").finish_non_exhaustive()
     }
 }
 
-impl<'tc, R> Test<'tc, R> for TeardownTest<'tc, R>
+impl<'test_context, R> Test<'test_context, R> for TeardownTest<'test_context, R>
 where
-    R: ::rudzio::runtime::Runtime<'tc> + Sync,
+    R: ::rudzio::runtime::Runtime<'test_context> + Sync,
 {
     type TeardownError = Infallible;
 

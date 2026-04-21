@@ -9,14 +9,23 @@ readme = "README.md"
 keywords = ["testing", "async", "tokio", "compio", "runtime"]
 categories = ["development-tools::testing", "asynchronous"]
 
+# Single `#[rudzio::main]` per crate aggregates every `#[rudzio::test]` under
+# `tests/`; Cargo's auto-discovery would otherwise promote each file to its
+# own test binary.
+autotests = false
+
 [dependencies]
-futures-util = { workspace = true }
+# `channel` enables `SpawnExt::spawn_with_handle` / `LocalSpawnExt::spawn_local_with_handle`,
+# used by the futures-executor runtime.
+futures-util = { workspace = true, features = ["channel"] }
 linkme = { workspace = true }
 rudzio-macro = { workspace = true }
 tokio-util = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"], optional = true }
 compio-runtime = { workspace = true, features = ["time"], optional = true }
 embassy-executor = { workspace = true, optional = true }
+futures-executor = { workspace = true, features = ["thread-pool"], optional = true }
+futures-timer = { workspace = true, optional = true }
 send_wrapper = { workspace = true, features = ["futures"], optional = true }
 
 # Signal handling is unconditional on Unix so the runner always cancels
@@ -24,10 +33,28 @@ send_wrapper = { workspace = true, features = ["futures"], optional = true }
 [target.'cfg(unix)'.dependencies]
 signal-hook = { workspace = true }
 
+# Self dev-dep turns on `runtime-tokio` for the in-crate integration tests
+# that run under `#[rudzio::main]`. Cargo unifies features, so this does not
+# cause a duplicate build.
+[dev-dependencies]
+# Dogfood under every runtime rudzio ships.
+rudzio = { path = ".", features = ["common", "runtime-tokio", "runtime-compio", "runtime-embassy", "runtime-futures"] }
+anyhow = "=1.0.102"
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
+harness = false
+
 [features]
+# Opt-in: the ready-made `Suite` / `Test` pair in `rudzio::common::context`.
+# Off by default so consumers that implement their own context types don't
+# pay for code they don't use.
+common = []
 runtime-tokio = ["dep:tokio", "dep:send_wrapper"]
 runtime-compio = ["dep:compio-runtime", "dep:send_wrapper"]
 runtime-embassy = ["dep:embassy-executor", "dep:send_wrapper"]
+runtime-futures = ["dep:futures-executor", "dep:futures-timer", "dep:send_wrapper"]
 
 [lints]
 workspace = true
@@ -35,24 +62,31 @@ workspace = true
 [workspace]
 resolver = "3"
 members = [
-  "common-context",
   "e2e",
   "macro",
+  "macro-internals",
 ]
+# `test-runner/` is intentionally OUT of the workspace. Its dep on
+# `rudzio` with `features = ["tests"]` would otherwise unify into every
+# other binary that links rudzio and pollute them with the whole test
+# suite. Invoke it directly: `(cd test-runner && cargo run)`.
+exclude = ["test-runner"]
 
 [workspace.package]
 edition = "2024"
 
 [workspace.dependencies]
 # Local crates
-common-context = { version = "0.1.0", path = "common-context" }
 rudzio = { version = "0.1.0", path = "." }
 rudzio-macro = { version = "0.1.0", path = "macro" }
+rudzio-macro-internals = { version = "0.1.0", path = "macro-internals" }
 
 # External crates (pinned to exact versions for reproducible builds)
 compio-runtime = "=0.11.0"
 signal-hook = "=0.4.4"
 embassy-executor = { version = "=0.7.0", features = ["arch-std"] }
+futures-executor = "=0.3.32"
+futures-timer = "=3.0.3"
 futures-util = "=0.3.32"
 proc-macro2 = "=1.0.106"
 quote = "=1.0.45"

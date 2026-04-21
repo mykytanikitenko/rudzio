@@ -11,14 +11,13 @@
 //!   panic unwinds the entire runtime thread. `after_panic` never executes
 //!   and the partial summary computed inside `rt.block_on` is lost.
 
-use common_context::Test;
-use rudzio::runtime::tokio::Multithread;
+use rudzio::common::context::Test;
 
 #[rudzio::suite([
     (
-        runtime = Multithread::new,
-        global_context = common_context::Global,
-        test_context = Test,
+        runtime = rudzio::runtime::tokio::Multithread::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
     ),
 ])]
 mod tests {

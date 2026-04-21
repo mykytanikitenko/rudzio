@@ -4,41 +4,41 @@ use std::fmt;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-use rudzio::context;
-use rudzio::runtime::{JoinError, Runtime};
+use crate::context;
+use crate::runtime::{JoinError, Runtime};
 
-use crate::test_context::Test;
+use super::test::Test;
 
-pub struct Global<'context_global, R>
+pub struct Suite<'suite_context, R>
 where
-    R: Runtime<'context_global> + Sync,
+    R: Runtime<'suite_context> + Sync,
 {
     /// Root cancellation token whose children are handed out to per-test contexts.
     cancel: CancellationToken,
-    /// Borrow of the async runtime driving the global context.
-    rt: &'context_global R,
+    /// Borrow of the async runtime driving the suite context.
+    rt: &'suite_context R,
     /// Tracks spawned background tasks so teardown can wait for them.
     tracker: TaskTracker,
 }
 
-impl<'context_global, R> fmt::Debug for Global<'context_global, R>
+impl<'suite_context, R> fmt::Debug for Suite<'suite_context, R>
 where
-    R: Runtime<'context_global> + Sync,
+    R: Runtime<'suite_context> + Sync,
 {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Global").finish_non_exhaustive()
+        f.debug_struct("Suite").finish_non_exhaustive()
     }
 }
 
-impl<'context_global, R> Global<'context_global, R>
+impl<'suite_context, R> Suite<'suite_context, R>
 where
-    R: Runtime<'context_global> + Sync,
+    R: Runtime<'suite_context> + Sync,
 {
     #[inline]
     pub fn block_on<F>(&self, fut: F) -> F::Output
     where
-        F: Future + 'context_global,
+        F: Future + 'suite_context,
         F::Output: 'static,
     {
         self.rt.block_on(fut)
@@ -54,7 +54,7 @@ where
     pub fn spawn<F>(
         &self,
         fut: F,
-    ) -> impl Future<Output = Result<F::Output, JoinError>> + Send + 'context_global
+    ) -> impl Future<Output = Result<F::Output, JoinError>> + Send + 'suite_context
     where
         F: Future + Send + 'static,
         F::Output: Send,
@@ -66,7 +66,7 @@ where
     pub fn spawn_blocking<F, T>(
         &self,
         func: F,
-    ) -> impl Future<Output = Result<T, JoinError>> + Send + 'context_global
+    ) -> impl Future<Output = Result<T, JoinError>> + Send + 'suite_context
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
@@ -78,7 +78,7 @@ where
     pub fn spawn_local<F>(
         &self,
         fut: F,
-    ) -> impl Future<Output = Result<F::Output, JoinError>> + 'context_global
+    ) -> impl Future<Output = Result<F::Output, JoinError>> + 'suite_context
     where
         F: Future + 'static,
     {
@@ -92,12 +92,12 @@ where
     }
 
     #[inline]
-    pub fn yield_now(&self) -> impl Future<Output = ()> + 'context_global {
+    pub fn yield_now(&self) -> impl Future<Output = ()> + 'suite_context {
         self.rt.yield_now()
     }
 }
 
-impl<'context_global, R> context::Global<'context_global, R> for Global<'context_global, R>
+impl<'suite_context, R> context::Suite<'suite_context, R> for Suite<'suite_context, R>
 where
     R: for<'r> Runtime<'r> + Sync,
 {
@@ -117,7 +117,7 @@ where
            + Send
            + 'test_context {
         // Use the per-test token the runner supplies directly — it is already
-        // a child of the root cancel token the global context was built with,
+        // a child of the root cancel token the suite context was built with,
         // so root-level cancellation still propagates.
         let tracker = self.tracker.clone();
         async move {
@@ -131,8 +131,9 @@ where
 
     #[inline]
     async fn setup(
-        rt: &'context_global R,
+        rt: &'suite_context R,
         cancel: CancellationToken,
+        _config: &'suite_context crate::config::Config,
     ) -> Result<Self, Self::SetupError> {
         // Root cancel is a child of the runner's token so that run-level
         // cancellation (timeout, SIGINT, SIGTERM) propagates to every test.

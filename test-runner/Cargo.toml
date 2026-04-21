@@ -1,0 +1,25 @@
+[package]
+name = "rudzio-test-runner"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Workspace-wide test runner: one #[rudzio::main] binary that aggregates `linkme`-collected tokens from rudzio's own dogfood suite and from macro-internals' integration tests, both included via `#[path]`."
+
+# Deliberately its own (single-crate) workspace so this crate's feature
+# activations do not unify into the parent workspace's e2e fixture
+# binaries via Cargo's workspace-wide feature unification.
+[workspace]
+
+[dependencies]
+anyhow = "=1.0.102"
+rudzio = { path = "..", features = ["common", "runtime-tokio", "runtime-compio", "runtime-embassy", "runtime-futures"] }
+# Direct dep so the `#[path]`-included macro-internals test files can
+# `use rudzio_macro_internals::*`.
+rudzio-macro-internals = { path = "../macro-internals" }
+quote = "=1.0.45"
+syn = { version = "=2.0.117", features = ["full", "extra-traits"] }
+
+[lints.rust]
+warnings = "deny"
+unsafe_code = "deny"
+unused = "deny"

@@ -8,12 +8,15 @@ use send_wrapper::SendWrapper;
 use tokio::runtime::{Builder, Runtime as TokioRuntime};
 use tokio::time::sleep;
 
+use crate::config::Config;
 use crate::runtime::tokio::error::tokio_join_error_to_join_error;
 use crate::runtime::{JoinError, Runtime};
 
 pub struct Multithread {
     /// Underlying tokio multi-thread runtime.
     rt: TokioRuntime,
+    /// Resolved [`Config`] this runtime was constructed from.
+    config: Config,
 }
 
 impl fmt::Debug for Multithread {
@@ -24,17 +27,45 @@ impl fmt::Debug for Multithread {
 }
 
 impl Multithread {
+    /// Build a tokio multi-thread runtime.
+    ///
+    /// Fields consulted from [`Config`]:
+    /// - [`Config::threads`] → `tokio::runtime::Builder::worker_threads`.
+    ///
+    /// Other fields (`concurrency_limit`, `test_timeout`, `run_timeout`,
+    /// `env`, `unparsed`, …) are retained via [`Runtime::config`] for the
+    /// test body to inspect but are not consumed here. To surface
+    /// additional tokio knobs (`max_blocking_threads`, `thread_stack_size`,
+    /// etc.), write a custom constructor that reads `config.env` /
+    /// `config.unparsed` and call `Builder` directly.
+    ///
     /// # Errors
     ///
     /// Returns an error if the tokio runtime cannot be built.
     #[inline]
-    pub fn new() -> io::Result<Self> {
-        let rt = Builder::new_multi_thread().enable_all().build()?;
-        Ok(Self { rt })
+    pub fn new(config: &Config) -> io::Result<Self> {
+        let rt = Builder::new_multi_thread()
+            .worker_threads(config.threads)
+            .enable_all()
+            .build()?;
+        Ok(Self {
+            rt,
+            config: config.clone(),
+        })
     }
 }
 
 impl<'rt> Runtime<'rt> for Multithread {
+    #[inline]
+    fn config(&self) -> &Config {
+        &self.config
+    }
+
+    #[inline]
+    fn name(&self) -> &'static str {
+        "tokio::Multithread"
+    }
+
     #[inline]
     fn block_on<F>(&self, fut: F) -> F::Output
     where

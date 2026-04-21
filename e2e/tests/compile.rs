@@ -1,11 +1,20 @@
-//! Compile-level assertions for the rudzio macro.
-//!
-//! Currently contains one failing expectation: a sync (non-`async`) test body
-//! should be accepted by `#[rudzio::main]` but the generated `spawn_blocking`
-//! arm does not compile.
+//! Compile-level assertions for the rudzio macro, driven by `trybuild`.
 
-#[test]
-fn sync_test_should_compile() {
-    let cases = trybuild::TestCases::new();
-    cases.pass("tests/fixtures/sync_test.rs");
+
+#[rudzio::suite([
+    (
+        runtime = rudzio::runtime::tokio::Multithread::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+])]
+mod tests {
+    use rudzio::common::context::Test;
+
+    #[rudzio::test]
+    fn sync_test_should_compile(_ctx: &Test) -> anyhow::Result<()> {
+        let cases = trybuild::TestCases::new();
+        cases.pass("tests/fixtures/sync_test.rs");
+        Ok(())
+    }
 }

@@ -1,0 +1,35 @@
+[package]
+name = "rudzio-macro-internals"
+version = "0.1.0"
+edition = { workspace = true }
+description = "Internal AST-manipulation library backing `rudzio-macro`. Not a proc-macro crate, so consumers (including the macro's own integration tests) can import its regular items."
+license = "MIT OR Apache-2.0"
+
+# Single `#[rudzio::main]` per crate: one test binary aggregating every
+# `#[rudzio::test]` across the submodules under `tests/`.
+autotests = false
+
+[dependencies]
+# `span-locations` exposes `Span::start()` / `Span::end()` even when this
+# crate is compiled as a regular library (for tests or other consumers).
+# In proc-macro context those methods come from rustc directly; elsewhere
+# proc-macro2's own tracking kicks in.
+proc-macro2 = { workspace = true, features = ["span-locations"] }
+quote = { workspace = true }
+syn = { workspace = true, features = ["full", "extra-traits"] }
+
+# Integration tests run under `#[rudzio::main]` — the framework exercises its
+# own parser/codegen logic. The dev-dep cycle (internals -> dev -> rudzio ->
+# rudzio-macro -> internals) is fine because dev-deps are not part of the
+# normal dependency graph.
+[dev-dependencies]
+rudzio = { workspace = true, features = ["runtime-tokio", "common"] }
+anyhow = "=1.0.102"
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
+harness = false
+
+[lints]
+workspace = true

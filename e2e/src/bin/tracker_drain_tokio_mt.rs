@@ -1,4 +1,4 @@
-//! Verifies that `common_context::Global::teardown` drains the shared
+//! Verifies that `rudzio::common::context::Suite::teardown` drains the shared
 //! `TaskTracker` before returning. If it didn't, the runtime would be
 //! dropped while the tracked task is still sleeping, the task would be
 //! cancelled, and the marker log would never reach stdout.
@@ -11,15 +11,14 @@
 
 use std::time::Duration;
 
-use common_context::Test;
-use rudzio::runtime::tokio::Multithread;
+use rudzio::common::context::Test;
 use tokio::time::sleep;
 
 #[rudzio::suite([
     (
-        runtime = Multithread::new,
-        global_context = common_context::Global,
-        test_context = Test,
+        runtime = rudzio::runtime::tokio::Multithread::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
     ),
 ])]
 mod tests {

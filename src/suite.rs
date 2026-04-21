@@ -1,20 +1,20 @@
-//! Per-`(runtime, global)` orchestration abstraction.
+//! Per-`(runtime, suite)` orchestration abstraction.
 //!
 //! Each `#[rudzio::suite]` block emits one zero-sized type that implements
 //! [`RuntimeGroupOwner`]. Multiple suite blocks declaring the same
-//! `(runtime, global_context)` pair are assigned the same
+//! `(runtime, suite)` pair are assigned the same
 //! [`RuntimeGroupKey`] (a compile-time FNV-1a hash of the path strings) and
 //! coalesced at startup so they share **one** OS thread, **one** runtime
-//! instance, and **one** global context. Within that single async loop,
+//! instance, and **one** suite context. Within that single async loop,
 //! per-test dispatch is performed via an HRTB unsafe fn pointer stored on
-//! every [`TestToken`] — the owner provides its concrete runtime + global
+//! every [`TestToken`] — the owner provides its concrete runtime + suite
 //! pointers, and the test fn casts them back to the matching concrete types
 //! it was generated for. The `runtime_group_key` match makes this
 //! safe-by-construction at the macro level.
 //!
-//! No `'static` substitution anywhere: the runtime and the global live on
+//! No `'static` substitution anywhere: the runtime and the suite live on
 //! the owner's stack frame for the whole `run_group` call, and per-test
-//! borrows are scoped to the HRTB fn's `'g` lifetime.
+//! borrows are scoped to the HRTB fn's `'s` lifetime.
 
 use std::any::TypeId;
 use std::marker::PhantomData;
@@ -23,13 +23,14 @@ use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
+use crate::config::Config;
 use crate::test_case::BoxError;
 use crate::token::TestToken;
 
 /// Compile-time FNV-1a-64 hash of `s`.
 ///
 /// Used by the suite macro to derive a stable [`RuntimeGroupKey`] from the
-/// concatenated `(runtime_path, global_path)` token strings without needing
+/// concatenated `(runtime_path, suite_path)` token strings without needing
 /// any runtime registry.
 #[doc(hidden)]
 #[must_use]
@@ -45,10 +46,10 @@ pub const fn fnv1a64(s: &str) -> u64 {
     hash
 }
 
-/// Stable identifier for a `(runtime_type, global_type)` pair.
+/// Stable identifier for a `(runtime_type, suite_type)` pair.
 ///
 /// Two tokens with the same key share an OS thread, a runtime instance, and
-/// a global context, even if they were emitted by different
+/// a suite context, even if they were emitted by different
 /// `#[rudzio::suite]` invocations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RuntimeGroupKey(pub u64);
@@ -58,17 +59,6 @@ pub struct RuntimeGroupKey(pub u64);
 /// reach for `rudzio::SuiteId`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SuiteId(pub TypeId);
-
-/// How `#[ignore]`d tests should be treated for this run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RunIgnoredMode {
-    /// Default: skip tests marked `#[ignore]`, report them as ignored.
-    Normal,
-    /// `--ignored`: only run ignored tests.
-    Only,
-    /// `--include-ignored`: run every test, ignored or not.
-    Include,
-}
 
 /// Per-test outcome reported back to the runner.
 #[derive(Debug)]
@@ -147,50 +137,50 @@ pub trait SuiteReporter: Send + Sync {
 #[derive(Debug)]
 pub struct SuiteRunRequest<'a> {
     pub tokens: &'a [&'static TestToken],
-    pub threads: usize,
-    pub test_timeout: Option<Duration>,
-    pub run_ignored: RunIgnoredMode,
+    /// Resolved CLI / environment configuration for this run. Shared by
+    /// every group; runtime constructors may inspect it (e.g. to size
+    /// worker pools).
+    pub config: &'a Config,
     pub root_token: CancellationToken,
 }
 
 /// HRTB unsafe fn pointer stored on every [`TestToken`].
 ///
-/// The owner picks `'g` (its local stack frame's lifetime), provides
-/// `runtime_ptr` and `global_ptr` cast from its own concrete `R`/`G` values,
+/// The owner picks `'s` (its local stack frame's lifetime), provides
+/// `runtime_ptr` and `suite_ptr` cast from its own concrete `R`/`S` values,
 /// and the macro-generated body casts them back. Safety relies on the
 /// per-token `runtime_group_key` matching the owner's
 /// [`RuntimeGroupOwner::group_key`] — guaranteed by the suite macro.
 ///
 /// The returned future drives the test body end to end:
-///   1. creates the per-test context via `Global::context`;
+///   1. creates the per-test context via `Suite::context`;
 ///   2. dispatches the user's test fn (sync or async) under a per-test
 ///      cancellation token and the optional per-test timeout;
 ///   3. always runs `Test::teardown` (catching panics and surfacing them
 ///      via `reporter`).
-pub type TestRunFn = for<'g> unsafe fn(
+pub type TestRunFn = for<'s> unsafe fn(
     runtime_ptr: *const (),
-    global_ptr: *const (),
-    _phantom: PhantomData<&'g ()>,
+    suite_ptr: *const (),
+    _phantom: PhantomData<&'s ()>,
     token: &'static TestToken,
     test_timeout: Option<Duration>,
     root_token: CancellationToken,
-    reporter: &'g dyn SuiteReporter,
-) -> Pin<Box<dyn Future<Output = TestOutcome> + 'g>>;
+    reporter: &'s dyn SuiteReporter,
+) -> Pin<Box<dyn Future<Output = TestOutcome> + 's>>;
 
-/// Per-`(runtime_type, global_type)` lifecycle owner.
+/// Per-`(runtime_type, suite_type)` lifecycle owner.
 ///
 /// The macro emits one ZST per `#[rudzio::suite]` invocation; instances with
 /// the same [`group_key`] are functionally equivalent and the runner picks
-/// any one of them to drive a group.
+/// any one of them to drive a group. The runtime's display label comes from
+/// [`Runtime::name`](crate::runtime::Runtime::name); the owner itself
+/// carries only the stable group id.
 pub trait RuntimeGroupOwner: Send + Sync + 'static {
-    /// Stable id derived from the `(runtime_path, global_path)` token
+    /// Stable id derived from the `(runtime_path, suite_path)` token
     /// strings at macro-time.
     fn group_key(&self) -> RuntimeGroupKey;
 
-    /// Display name of the runtime constructor (e.g. `"Multithread::new"`).
-    fn runtime_name(&self) -> &'static str;
-
-    /// Drive the whole group: create runtime, set up global, dispatch every
+    /// Drive the whole group: create runtime, set up suite, dispatch every
     /// `req.tokens` entry via its [`TestToken::run_test`] fn pointer, tear
     /// down. Called from a dedicated OS thread.
     fn run_group(

@@ -1,5 +1,5 @@
-pub mod global;
+pub mod suite;
 pub mod test;
 
-pub use global::Global;
+pub use suite::Suite;
 pub use test::Test;

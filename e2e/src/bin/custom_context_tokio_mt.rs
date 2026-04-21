@@ -1,12 +1,12 @@
-//! Hand-rolled `context::Global` / `context::Test` implementations,
-//! independent of the `common-context` crate.
+//! Hand-rolled `context::Suite` / `context::Test` implementations,
+//! independent of the `rudzio::common::context` module.
 //!
 //! Guards two things:
 //!   - the public trait surface in `rudzio::context` stays implementable
-//!     downstream without depending on our helper crate;
+//!     downstream without depending on our helper module;
 //!   - the name-collision fix (`use ::rudzio::context::Test as _;` inside the
-//!     macro output) still works when the user names their struct `MyGlobal`
-//!     / `MyTest` rather than `Global` / `Test`.
+//!     macro output) still works when the user names their struct `MySuite`
+//!     / `MyTest` rather than `Suite` / `Test`.
 //!
 //! Also exercises a non-`anyhow` error type as the `SetupError` /
 //! `ContextError` / `TeardownError` associated types.
@@ -17,7 +17,6 @@ use std::marker::PhantomData;
 
 use rudzio::context;
 use rudzio::runtime::Runtime;
-use rudzio::runtime::tokio::Multithread;
 
 /// Sentinel error type that never occurs in practice.
 #[derive(Debug)]
@@ -31,25 +30,25 @@ impl fmt::Display for NeverFails {
 
 impl Error for NeverFails {}
 
-/// Custom global context with no shared state beyond a runtime borrow.
-struct MyGlobal<'cg, R>
+/// Custom suite context with no shared state beyond a runtime borrow.
+struct MySuite<'suite_context, R>
 where
-    R: Runtime<'cg> + Sync,
+    R: Runtime<'suite_context> + Sync,
 {
     /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'cg R>,
+    _marker: PhantomData<&'suite_context R>,
 }
 
-impl<'cg, R> fmt::Debug for MyGlobal<'cg, R>
+impl<'suite_context, R> fmt::Debug for MySuite<'suite_context, R>
 where
-    R: Runtime<'cg> + Sync,
+    R: Runtime<'suite_context> + Sync,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MyGlobal").finish_non_exhaustive()
+        f.debug_struct("MySuite").finish_non_exhaustive()
     }
 }
 
-impl<'cg, R> context::Global<'cg, R> for MyGlobal<'cg, R>
+impl<'suite_context, R> context::Suite<'suite_context, R> for MySuite<'suite_context, R>
 where
     R: for<'r> Runtime<'r> + Sync,
 {
@@ -70,7 +69,7 @@ where
         })
     }
 
-    async fn setup(_rt: &'cg R, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<Self, Self::SetupError> {
+    async fn setup(_rt: &'suite_context R, _cancel: ::rudzio::tokio_util::sync::CancellationToken, _config: &'suite_context ::rudzio::Config) -> Result<Self, Self::SetupError> {
         Ok(Self {
             _marker: PhantomData,
         })
@@ -82,26 +81,26 @@ where
 }
 
 /// Custom per-test context with no state.
-struct MyTest<'tc, R>
+struct MyTest<'test_context, R>
 where
-    R: Runtime<'tc> + Sync,
+    R: Runtime<'test_context> + Sync,
 {
     /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'tc R>,
+    _marker: PhantomData<&'test_context R>,
 }
 
-impl<'tc, R> fmt::Debug for MyTest<'tc, R>
+impl<'test_context, R> fmt::Debug for MyTest<'test_context, R>
 where
-    R: Runtime<'tc> + Sync,
+    R: Runtime<'test_context> + Sync,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MyTest").finish_non_exhaustive()
     }
 }
 
-impl<'tc, R> context::Test<'tc, R> for MyTest<'tc, R>
+impl<'test_context, R> context::Test<'test_context, R> for MyTest<'test_context, R>
 where
-    R: Runtime<'tc> + Sync,
+    R: Runtime<'test_context> + Sync,
 {
     type TeardownError = NeverFails;
 
@@ -112,9 +111,9 @@ where
 
 #[rudzio::suite([
     (
-        runtime = Multithread::new,
-        global_context = MyGlobal,
-        test_context = MyTest,
+        runtime = rudzio::runtime::tokio::Multithread::new,
+        suite = MySuite,
+        test = MyTest,
     ),
 ])]
 mod tests {

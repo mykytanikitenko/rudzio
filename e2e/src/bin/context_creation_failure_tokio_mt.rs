@@ -1,4 +1,4 @@
-//! Exercises the per-test branch where `Global::context(...)` returns `Err`.
+//! Exercises the per-test branch where `Suite::context(...)` returns `Err`.
 //!
 //! Per the macro: every test whose context creation fails is counted as
 //! Failed (not Panicked — that's reserved for setup failure) and the run
@@ -10,7 +10,6 @@ use std::marker::PhantomData;
 
 use rudzio::context;
 use rudzio::runtime::Runtime;
-use rudzio::runtime::tokio::Multithread;
 
 /// Error type used to fail context creation on purpose.
 #[derive(Debug)]
@@ -24,26 +23,26 @@ impl fmt::Display for ContextErr {
 
 impl Error for ContextErr {}
 
-/// Global context that always fails to produce a per-test context.
-struct BrokenContextGlobal<'cg, R>
+/// Suite context that always fails to produce a per-test context.
+struct BrokenContextSuite<'suite_context, R>
 where
-    R: Runtime<'cg> + Sync,
+    R: Runtime<'suite_context> + Sync,
 {
     /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'cg R>,
+    _marker: PhantomData<&'suite_context R>,
 }
 
-impl<'cg, R> fmt::Debug for BrokenContextGlobal<'cg, R>
+impl<'suite_context, R> fmt::Debug for BrokenContextSuite<'suite_context, R>
 where
-    R: Runtime<'cg> + Sync,
+    R: Runtime<'suite_context> + Sync,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BrokenContextGlobal")
+        f.debug_struct("BrokenContextSuite")
             .finish_non_exhaustive()
     }
 }
 
-impl<'cg, R> context::Global<'cg, R> for BrokenContextGlobal<'cg, R>
+impl<'suite_context, R> context::Suite<'suite_context, R> for BrokenContextSuite<'suite_context, R>
 where
     R: for<'r> Runtime<'r> + Sync,
 {
@@ -62,7 +61,7 @@ where
         Err(ContextErr)
     }
 
-    async fn setup(_rt: &'cg R, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<Self, Self::SetupError> {
+    async fn setup(_rt: &'suite_context R, _cancel: ::rudzio::tokio_util::sync::CancellationToken, _config: &'suite_context ::rudzio::Config) -> Result<Self, Self::SetupError> {
         Ok(Self {
             _marker: PhantomData,
         })
@@ -74,27 +73,27 @@ where
 }
 
 /// Test context placeholder; never actually constructed because
-/// [`BrokenContextGlobal::context`] always errors.
-struct NeverBuiltTest<'tc, R>
+/// [`BrokenContextSuite::context`] always errors.
+struct NeverBuiltTest<'test_context, R>
 where
-    R: Runtime<'tc> + Sync,
+    R: Runtime<'test_context> + Sync,
 {
     /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'tc R>,
+    _marker: PhantomData<&'test_context R>,
 }
 
-impl<'tc, R> fmt::Debug for NeverBuiltTest<'tc, R>
+impl<'test_context, R> fmt::Debug for NeverBuiltTest<'test_context, R>
 where
-    R: Runtime<'tc> + Sync,
+    R: Runtime<'test_context> + Sync,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NeverBuiltTest").finish_non_exhaustive()
     }
 }
 
-impl<'tc, R> context::Test<'tc, R> for NeverBuiltTest<'tc, R>
+impl<'test_context, R> context::Test<'test_context, R> for NeverBuiltTest<'test_context, R>
 where
-    R: Runtime<'tc> + Sync,
+    R: Runtime<'test_context> + Sync,
 {
     type TeardownError = ContextErr;
 
@@ -105,9 +104,9 @@ where
 
 #[rudzio::suite([
     (
-        runtime = Multithread::new,
-        global_context = BrokenContextGlobal,
-        test_context = NeverBuiltTest,
+        runtime = rudzio::runtime::tokio::Multithread::new,
+        suite = BrokenContextSuite,
+        test = NeverBuiltTest,
     ),
 ])]
 mod tests {

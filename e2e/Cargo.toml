@@ -5,10 +5,13 @@ edition = { workspace = true }
 publish = false
 description = "End-to-end tests for the rudzio framework. Each binary is a scenario; the integration test runs them and asserts the outcome."
 
+# Cargo would otherwise treat every `tests/*.rs` file as a separate test
+# binary, defeating the point of a single `#[rudzio::main]` per crate.
+autotests = false
+
 [dependencies]
 anyhow = "=1.0.102"
-common-context = { workspace = true }
-rudzio = { workspace = true, features = ["runtime-tokio", "runtime-compio", "runtime-embassy"] }
+rudzio = { workspace = true, features = ["runtime-tokio", "runtime-compio", "runtime-embassy", "runtime-futures", "common"] }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 
@@ -19,6 +22,14 @@ trybuild = { workspace = true }
 # to exercise the runner's SIGINT/SIGTERM handling.
 [target.'cfg(unix)'.dev-dependencies]
 libc = "=0.2.185"
+
+# Rudzio tests itself: one `#[rudzio::main]` collects every `#[rudzio::test]`
+# across the whole test binary (both integration scenarios and trybuild
+# compile checks), so there is a single test entry point per crate.
+[[test]]
+name = "main"
+path = "tests/main.rs"
+harness = false
 
 # Cargo forbids mixing `lints.workspace = true` with per-crate `[lints.*]`
 # table overrides, so the workspace lint policy is mirrored here and a few

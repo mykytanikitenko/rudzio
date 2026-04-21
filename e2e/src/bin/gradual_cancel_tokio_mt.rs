@@ -3,20 +3,19 @@
 //! The test spawns a tracked background task that awaits the context's cancel
 //! token, prints a cleanup marker once the token fires, and then returns. The
 //! run is driven with `--run-timeout=1`, so the root token is cancelled while
-//! the task is still in-flight. Global teardown calls `tracker.wait()`, which
+//! the task is still in-flight. Suite teardown calls `tracker.wait()`, which
 //! cannot return until the tracked task finishes — the marker therefore
 //! always appears in the output before the process exits.
 
 use std::time::Duration;
 
-use common_context::Test;
-use rudzio::runtime::tokio::Multithread;
+use rudzio::common::context::Test;
 
 #[rudzio::suite([
     (
-        runtime = Multithread::new,
-        global_context = common_context::Global,
-        test_context = Test,
+        runtime = rudzio::runtime::tokio::Multithread::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
     ),
 ])]
 mod tests {

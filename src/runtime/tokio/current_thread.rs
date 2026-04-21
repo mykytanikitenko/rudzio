@@ -9,6 +9,7 @@ use tokio::runtime::{Builder, Runtime as TokioRuntime};
 use tokio::task::LocalSet;
 use tokio::time::sleep;
 
+use crate::config::Config;
 use crate::runtime::tokio::error::tokio_join_error_to_join_error;
 use crate::runtime::{JoinError, Runtime};
 
@@ -22,6 +23,8 @@ pub struct CurrentThread {
     local_set: SendWrapper<LocalSet>,
     /// Underlying tokio current-thread runtime.
     rt: TokioRuntime,
+    /// Resolved [`Config`] this runtime was constructed from.
+    config: Config,
 }
 
 impl fmt::Debug for CurrentThread {
@@ -32,18 +35,40 @@ impl fmt::Debug for CurrentThread {
 }
 
 impl CurrentThread {
+    /// Build a current-thread tokio runtime.
+    ///
+    /// Fields consulted from [`Config`]: **none** — this runtime is
+    /// single-threaded by design, so `config.threads` would be misleading
+    /// here. The full config is still stored and exposed via
+    /// [`Runtime::config`](super::super::Runtime::config) so test bodies
+    /// can read whatever they like (e.g. `config.env`, `config.unparsed`).
+    ///
     /// # Errors
     ///
     /// Returns an error if the tokio runtime cannot be built.
     #[inline]
-    pub fn new() -> io::Result<Self> {
+    pub fn new(config: &Config) -> io::Result<Self> {
         let rt = Builder::new_current_thread().enable_all().build()?;
         let local_set = SendWrapper::new(LocalSet::new());
-        Ok(Self { local_set, rt })
+        Ok(Self {
+            local_set,
+            rt,
+            config: config.clone(),
+        })
     }
 }
 
 impl<'rt> Runtime<'rt> for CurrentThread {
+    #[inline]
+    fn config(&self) -> &Config {
+        &self.config
+    }
+
+    #[inline]
+    fn name(&self) -> &'static str {
+        "tokio::CurrentThread"
+    }
+
     #[inline]
     fn block_on<F>(&self, fut: F) -> F::Output
     where

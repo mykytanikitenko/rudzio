@@ -2,6 +2,7 @@ use std::future::poll_fn;
 use std::task::Poll;
 use std::time::Duration;
 
+use crate::config::Config;
 use crate::runtime::JoinError;
 
 /// Async runtime abstraction.
@@ -13,6 +14,17 @@ use crate::runtime::JoinError;
 /// `Send + Sync` assertion happens one level up, inside the `DynRuntime`
 /// adapter that the runner actually holds.
 pub trait Runtime<'rt>: 'rt {
+    /// The [`Config`] this runtime was constructed from. Exposed so suite
+    /// contexts (and anything downstream) can reach the resolved CLI and
+    /// environment without re-parsing.
+    fn config(&self) -> &Config;
+
+    /// Human-readable label for this runtime, used by the default reporter
+    /// in `test <name> [<runtime>] ... <outcome>` lines. Should be unique
+    /// enough across runtimes the test binary mixes (e.g. `tokio::Multithread`
+    /// vs `compio::Runtime`).
+    fn name(&self) -> &'static str;
+
     /// Block the current thread until `fut` completes.
     ///
     /// `fut` is not required to be `Send`: `block_on` drives it on the
