@@ -1,15 +1,12 @@
 //! Workspace-aggregated `#[rudzio::main]` binary.
 //!
-//! This binary links against every testable crate in the workspace whose
-//! tests live in lib code — specifically `rudzio` (via its `tests`
-//! feature) — and additionally recompiles the `rudzio-macro-internals`
-//! integration tests into this binary via `#[path]` includes (they can't
-//! live in lib code because macro-internals would need a feature-gated
-//! dep on `rudzio` which Cargo rejects as a cycle).
-//!
-//! `rudzio-e2e`'s tests stay per-crate because they reference
-//! `env!("CARGO_BIN_EXE_...")` which is only set for integration tests of
-//! the crate defining those binaries.
+//! Pulls every testable crate's integration-test source file into this
+//! binary via `#[path]`, so every `#[rudzio::test]` token registered
+//! through `linkme` lands in one `TEST_TOKENS` slice and one runner
+//! schedules them all together. `rudzio::build::expose_bins` (in
+//! `build.rs`) populates `CARGO_BIN_EXE_<n>` for the `rudzio-fixtures`
+//! bin targets so the aggregated integration file's `env!(...)` calls
+//! resolve at compile time.
 
 // `linkme::distributed_slice` expansion emits statics with
 // `#[link_section]`, which rustc classifies as `unsafe_code`. The tests

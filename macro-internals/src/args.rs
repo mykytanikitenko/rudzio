@@ -1,5 +1,5 @@
 use syn::parse::{Parse, ParseStream};
-use syn::{bracketed, parenthesized, Ident, Path, Token};
+use syn::{Ident, Path, Token, bracketed, parenthesized};
 
 #[derive(Debug)]
 pub struct MainArgs {
@@ -17,13 +17,7 @@ impl RuntimeConfig {
     /// Drop the constructor segment (`::new`) and keep just the runtime type.
     pub fn runtime_type(&self) -> Path {
         let take_n = self.runtime.segments.len().saturating_sub(1);
-        let segments = self
-            .runtime
-            .segments
-            .iter()
-            .take(take_n)
-            .cloned()
-            .collect();
+        let segments = self.runtime.segments.iter().take(take_n).cloned().collect();
         Path {
             leading_colon: self.runtime.leading_colon,
             segments,
@@ -61,10 +55,7 @@ impl Parse for RuntimeConfig {
 
         let test_kw: Ident = content.parse()?;
         if test_kw != "test" {
-            return Err(syn::Error::new_spanned(
-                test_kw,
-                "expected `test` keyword",
-            ));
+            return Err(syn::Error::new_spanned(test_kw, "expected `test` keyword"));
         }
         let _: Token![=] = content.parse()?;
         let test: Path = content.parse()?;

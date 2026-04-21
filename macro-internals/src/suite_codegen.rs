@@ -106,11 +106,7 @@ fn generate_per_config(
     // Stable id derived from the (runtime_type, suite_base) path strings.
     // Two suite blocks declaring the same (R, S) get the same key and share
     // an OS thread / runtime / suite at runtime.
-    let group_key_source = format!(
-        "{}::{}",
-        quote!(#runtime_type),
-        quote!(#suite_base),
-    );
+    let group_key_source = format!("{}::{}", quote!(#runtime_type), quote!(#suite_base),);
 
     let mod_camel = to_upper_camel(&mod_name.to_string());
     let owner_struct = format_ident!("__RudzioOwner{}{}", mod_camel, cfg_idx);
@@ -359,10 +355,8 @@ fn generate_per_config(
             test_name.to_string().to_ascii_uppercase(),
             cfg_idx,
         );
-        let run_test_fn = format_ident!(
-            "__rudzio_run_test_{}_{}_{}",
-            mod_name, test_name, cfg_idx,
-        );
+        let run_test_fn =
+            format_ident!("__rudzio_run_test_{}_{}_{}", mod_name, test_name, cfg_idx,);
 
         // Inline `&ctx` / `&mut ctx` into the call site so no intermediate
         // `let __rudzio_ctx = ...` binding is captured by the test_fut
@@ -425,8 +419,10 @@ fn generate_per_config(
 
                     let start = ::std::time::Instant::now();
                     let per_test_token = root_token.child_token();
+                    let config: &'s ::rudzio::config::Config =
+                        ::rudzio::runtime::Runtime::config(rt);
 
-                    #ctx_binding = match suite.context(per_test_token.clone()).await {
+                    #ctx_binding = match suite.context(per_test_token.clone(), config).await {
                         ::std::result::Result::Ok(c) => c,
                         ::std::result::Result::Err(e) => {
                             return ::rudzio::suite::TestOutcome::Failed {

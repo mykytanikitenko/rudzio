@@ -113,9 +113,9 @@ where
     fn context<'test_context>(
         &'test_context self,
         cancel: CancellationToken,
-    ) -> impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>>
-           + Send
-           + 'test_context {
+        config: &'test_context crate::config::Config,
+    ) -> impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>> + Send + 'test_context
+    {
         // Use the per-test token the runner supplies directly — it is already
         // a child of the root cancel token the suite context was built with,
         // so root-level cancellation still propagates.
@@ -125,6 +125,7 @@ where
                 cancel,
                 rt: self.rt,
                 tracker,
+                config,
             })
         }
     }

@@ -1,6 +1,6 @@
 //! Signature-transform tests, dogfooded on rudzio.
 
-use syn::{parse_quote, ItemFn};
+use syn::{ItemFn, parse_quote};
 
 use rudzio_macro_internals::transform::transform_test_signature;
 
@@ -12,7 +12,7 @@ use rudzio_macro_internals::transform::transform_test_signature;
     ),
 ])]
 mod tests {
-    use super::{parse_quote, transform_test_signature, ItemFn};
+    use super::{ItemFn, parse_quote, transform_test_signature};
     use rudzio::common::context::Test;
 
     #[rudzio::test]

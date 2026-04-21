@@ -6,7 +6,9 @@ use std::fmt;
 use std::io;
 use std::time::Duration;
 
-use ::futures_executor::{LocalPool, LocalSpawner, ThreadPool as FuturesThreadPool, ThreadPoolBuilder};
+use ::futures_executor::{
+    LocalPool, LocalSpawner, ThreadPool as FuturesThreadPool, ThreadPoolBuilder,
+};
 use ::futures_timer::Delay;
 use ::futures_util::FutureExt;
 use ::futures_util::task::{LocalSpawnExt as _, SpawnExt as _};

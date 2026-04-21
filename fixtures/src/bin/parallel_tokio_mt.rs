@@ -69,6 +69,7 @@ where
     async fn context<'test_context>(
         &'test_context self,
         _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _config: &'test_context ::rudzio::Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Ok(ParallelTest {
             _marker: PhantomData,
@@ -76,7 +77,11 @@ where
         })
     }
 
-    async fn setup(_rt: &'suite_context R, _cancel: ::rudzio::tokio_util::sync::CancellationToken, _config: &'suite_context ::rudzio::Config) -> Result<Self, Self::SetupError> {
+    async fn setup(
+        _rt: &'suite_context R,
+        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _config: &'suite_context ::rudzio::Config,
+    ) -> Result<Self, Self::SetupError> {
         Ok(Self {
             _marker: PhantomData,
             barrier: Arc::new(Barrier::new(PARTIES)),
@@ -142,39 +147,42 @@ mod tests {
     #[rudzio::test]
     async fn first_hits_barrier(ctx: &ParallelTest) -> anyhow::Result<()> {
         let barrier = ctx.barrier();
-        let _wait: BarrierWaitResult = timeout(BARRIER_TIMEOUT, barrier.wait())
-            .await
-            .map_err(|_elapsed| {
-                anyhow::anyhow!(
-                    "barrier timed out \u{2014} runner did not dispatch concurrently"
-                )
-            })?;
+        let _wait: BarrierWaitResult =
+            timeout(BARRIER_TIMEOUT, barrier.wait())
+                .await
+                .map_err(|_elapsed| {
+                    anyhow::anyhow!(
+                        "barrier timed out \u{2014} runner did not dispatch concurrently"
+                    )
+                })?;
         Ok(())
     }
 
     #[rudzio::test]
     async fn second_hits_barrier(ctx: &ParallelTest) -> anyhow::Result<()> {
         let barrier = ctx.barrier();
-        let _wait: BarrierWaitResult = timeout(BARRIER_TIMEOUT, barrier.wait())
-            .await
-            .map_err(|_elapsed| {
-                anyhow::anyhow!(
-                    "barrier timed out \u{2014} runner did not dispatch concurrently"
-                )
-            })?;
+        let _wait: BarrierWaitResult =
+            timeout(BARRIER_TIMEOUT, barrier.wait())
+                .await
+                .map_err(|_elapsed| {
+                    anyhow::anyhow!(
+                        "barrier timed out \u{2014} runner did not dispatch concurrently"
+                    )
+                })?;
         Ok(())
     }
 
     #[rudzio::test]
     async fn third_hits_barrier(ctx: &ParallelTest) -> anyhow::Result<()> {
         let barrier = ctx.barrier();
-        let _wait: BarrierWaitResult = timeout(BARRIER_TIMEOUT, barrier.wait())
-            .await
-            .map_err(|_elapsed| {
-                anyhow::anyhow!(
-                    "barrier timed out \u{2014} runner did not dispatch concurrently"
-                )
-            })?;
+        let _wait: BarrierWaitResult =
+            timeout(BARRIER_TIMEOUT, barrier.wait())
+                .await
+                .map_err(|_elapsed| {
+                    anyhow::anyhow!(
+                        "barrier timed out \u{2014} runner did not dispatch concurrently"
+                    )
+                })?;
         Ok(())
     }
 }

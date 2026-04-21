@@ -64,6 +64,7 @@ where
     async fn context<'test_context>(
         &'test_context self,
         cancel: CancellationToken,
+        _config: &'test_context ::rudzio::Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Ok(BaseTest {
             cancel,
@@ -72,7 +73,11 @@ where
         })
     }
 
-    async fn setup(rt: &'suite_context R, cancel: CancellationToken, _config: &'suite_context ::rudzio::Config) -> Result<Self, Self::SetupError> {
+    async fn setup(
+        rt: &'suite_context R,
+        cancel: CancellationToken,
+        _config: &'suite_context ::rudzio::Config,
+    ) -> Result<Self, Self::SetupError> {
         let _ = SETUP_CALLS.fetch_add(1, Ordering::SeqCst);
         Ok(Self {
             cancel,

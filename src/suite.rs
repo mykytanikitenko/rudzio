@@ -183,11 +183,7 @@ pub trait RuntimeGroupOwner: Send + Sync + 'static {
     /// Drive the whole group: create runtime, set up suite, dispatch every
     /// `req.tokens` entry via its [`TestToken::run_test`] fn pointer, tear
     /// down. Called from a dedicated OS thread.
-    fn run_group(
-        &self,
-        req: SuiteRunRequest<'_>,
-        reporter: &dyn SuiteReporter,
-    ) -> SuiteSummary;
+    fn run_group(&self, req: SuiteRunRequest<'_>, reporter: &dyn SuiteReporter) -> SuiteSummary;
 }
 
 /// Runs `test_fut` under the per-test cancellation token and the optional
@@ -219,16 +215,16 @@ where
     if let Some(dur) = test_timeout {
         let sleep_fut = std::pin::pin!(sleep(dur));
         match select(cancellable, sleep_fut).await {
-            Either::Left((Some(Ok(Ok(()))), _)) => {
-                TestOutcome::Passed { elapsed: Duration::ZERO }
-            }
+            Either::Left((Some(Ok(Ok(()))), _)) => TestOutcome::Passed {
+                elapsed: Duration::ZERO,
+            },
             Either::Left((Some(Ok(Err(e))), _)) => TestOutcome::Failed {
                 elapsed: Duration::ZERO,
                 message: e.to_string(),
             },
-            Either::Left((Some(Err(_payload)), _)) => {
-                TestOutcome::Panicked { elapsed: Duration::ZERO }
-            }
+            Either::Left((Some(Err(_payload)), _)) => TestOutcome::Panicked {
+                elapsed: Duration::ZERO,
+            },
             Either::Left((None, _)) => TestOutcome::Cancelled,
             Either::Right(_) => {
                 per_test_token.cancel();
@@ -237,12 +233,16 @@ where
         }
     } else {
         match cancellable.await {
-            Some(Ok(Ok(()))) => TestOutcome::Passed { elapsed: Duration::ZERO },
+            Some(Ok(Ok(()))) => TestOutcome::Passed {
+                elapsed: Duration::ZERO,
+            },
             Some(Ok(Err(e))) => TestOutcome::Failed {
                 elapsed: Duration::ZERO,
                 message: e.to_string(),
             },
-            Some(Err(_payload)) => TestOutcome::Panicked { elapsed: Duration::ZERO },
+            Some(Err(_payload)) => TestOutcome::Panicked {
+                elapsed: Duration::ZERO,
+            },
             None => TestOutcome::Cancelled,
         }
     }

@@ -1,6 +1,5 @@
 //! Compile-level assertions for the rudzio macro, driven by `trybuild`.
 
-
 #[rudzio::suite([
     (
         runtime = rudzio::runtime::tokio::Multithread::new,

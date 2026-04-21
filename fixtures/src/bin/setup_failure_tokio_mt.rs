@@ -56,11 +56,16 @@ where
     async fn context<'test_context>(
         &'test_context self,
         _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _config: &'test_context ::rudzio::Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Err(SetupFailed)
     }
 
-    async fn setup(_rt: &'suite_context R, _cancel: ::rudzio::tokio_util::sync::CancellationToken, _config: &'suite_context ::rudzio::Config) -> Result<Self, Self::SetupError> {
+    async fn setup(
+        _rt: &'suite_context R,
+        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _config: &'suite_context ::rudzio::Config,
+    ) -> Result<Self, Self::SetupError> {
         Err(SetupFailed)
     }
 

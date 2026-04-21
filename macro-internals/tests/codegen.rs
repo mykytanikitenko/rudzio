@@ -1,6 +1,6 @@
 //! `#[ignore]` attribute parser tests, dogfooded on rudzio.
 
-use syn::{parse_quote, ItemFn};
+use syn::{ItemFn, parse_quote};
 
 use rudzio_macro_internals::codegen::extract_ignore_reason;
 
@@ -12,7 +12,7 @@ use rudzio_macro_internals::codegen::extract_ignore_reason;
     ),
 ])]
 mod tests {
-    use super::{extract_ignore_reason, parse_quote, ItemFn};
+    use super::{ItemFn, extract_ignore_reason, parse_quote};
     use rudzio::common::context::Test;
 
     #[rudzio::test]

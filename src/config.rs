@@ -9,8 +9,34 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
+
+/// Compile-time cargo metadata captured from `env!(...)` at the user's
+/// `#[rudzio::main]` expansion site. Lets test bodies resolve fixture
+/// paths relative to the test crate's manifest without calling out to
+/// `cargo` or parsing `Cargo.toml` at runtime.
+///
+/// Construct with the [`cargo_meta!`](crate::cargo_meta) macro — it
+/// expands to the `env!(...)` block in the caller's crate:
+///
+/// ```rust,ignore
+/// let meta = rudzio::cargo_meta!();
+/// ```
+#[derive(Debug, Clone)]
+pub struct CargoMeta {
+    /// `env!("CARGO_MANIFEST_DIR")` — absolute path to the crate that
+    /// invoked `#[rudzio::main]`.
+    pub manifest_dir: PathBuf,
+    /// `env!("CARGO_PKG_NAME")`.
+    pub pkg_name: String,
+    /// `env!("CARGO_PKG_VERSION")`.
+    pub pkg_version: String,
+    /// `env!("CARGO_CRATE_NAME")` — the `pkg_name` with `-` replaced by
+    /// `_`, or the target name for renamed targets.
+    pub crate_name: String,
+}
 
 /// Output rendering style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,22 +111,35 @@ pub struct Config {
     /// Snapshot of every environment variable at runner start. `BTreeMap`
     /// so iteration order is deterministic across runs.
     pub env: BTreeMap<String, String>,
+    /// Compile-time cargo metadata from the crate whose `#[rudzio::main]`
+    /// kicked off this run. Non-optional on purpose: `manifest_dir` is
+    /// the kind of field where "maybe absent" is a trap. If you need a
+    /// `Config` outside `#[rudzio::main]`, construct one with
+    /// [`cargo_meta!`](crate::cargo_meta).
+    pub cargo: CargoMeta,
 }
 
 impl Config {
     /// Read from `env::args()` and the whole process environment. Unknown
     /// flags are preserved in [`Self::unparsed`] instead of being dropped.
+    /// `cargo` comes from the call site via [`cargo_meta!`](crate::cargo_meta)
+    /// because the relevant values are only available as compile-time
+    /// `env!(...)` expansions in the user's crate.
     #[must_use]
-    pub fn parse() -> Self {
+    pub fn parse(cargo: CargoMeta) -> Self {
         let argv: Vec<String> = env::args().skip(1).collect();
         let env_snapshot: BTreeMap<String, String> = env::vars().collect();
-        Self::from_argv_and_env(argv, env_snapshot)
+        Self::from_argv_and_env(argv, env_snapshot, cargo)
     }
 
     /// Test-friendly parser. Takes argv + env explicitly so unit tests can
     /// exercise parsing without touching the ambient process environment.
     #[must_use]
-    pub fn from_argv_and_env(argv: Vec<String>, env: BTreeMap<String, String>) -> Self {
+    pub fn from_argv_and_env(
+        argv: Vec<String>,
+        env: BTreeMap<String, String>,
+        cargo: CargoMeta,
+    ) -> Self {
         let mut filter: Option<String> = None;
         let mut skip_filters: Vec<String> = Vec::new();
         let mut threads: Option<usize> = None;
@@ -118,7 +157,9 @@ impl Config {
             let arg = &argv[i];
 
             if let Some(rest) = arg.strip_prefix("--test-threads=") {
-                if let Ok(n) = rest.parse::<usize>() && n > 0 {
+                if let Ok(n) = rest.parse::<usize>()
+                    && n > 0
+                {
                     threads = Some(n);
                 }
             } else if arg == "--test-threads" {
@@ -130,7 +171,9 @@ impl Config {
                     threads = Some(n);
                 }
             } else if let Some(rest) = arg.strip_prefix("--concurrency-limit=") {
-                if let Ok(n) = rest.parse::<usize>() && n > 0 {
+                if let Ok(n) = rest.parse::<usize>()
+                    && n > 0
+                {
                     concurrency_limit = Some(n);
                 }
             } else if arg == "--concurrency-limit" {
@@ -157,7 +200,11 @@ impl Config {
                     };
                 }
             } else if let Some(rest) = arg.strip_prefix("--format=") {
-                format = if rest == "terse" { Format::Terse } else { Format::Pretty };
+                format = if rest == "terse" {
+                    Format::Terse
+                } else {
+                    Format::Pretty
+                };
             } else if arg == "--format" {
                 i += 1;
                 if argv.get(i).is_some_and(|s| s == "terse") {
@@ -233,6 +280,7 @@ impl Config {
             run_timeout,
             unparsed,
             env,
+            cargo,
         }
     }
 }
