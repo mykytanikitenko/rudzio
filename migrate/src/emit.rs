@@ -62,7 +62,24 @@ pub fn process_file(
     }
 
     let mut output = if rewrite.changed {
-        prettyplease::unparse(&tree)
+        // prettyplease panics on items syn parses as `Verbatim`
+        // (bodyless `fn X(&self) -> Y;` inside an impl block, as
+        // emitted by `#[ambassador::delegate_to_remote_methods]` and
+        // similar macros). Catch it so one unparseable file doesn't
+        // abort the whole run — warn and skip writing instead.
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            prettyplease::unparse(&tree)
+        })) {
+            Ok(s) => s,
+            Err(_) => {
+                report.warn(
+                    path.to_path_buf(),
+                    None,
+                    "prettyplease::unparse panicked on this file (likely an ImplItem::Verbatim — bodyless `fn X(&self);` from a macro such as `ambassador::delegate_to_remote_methods`); skipping the rewrite, original file left untouched",
+                );
+                return Ok(None);
+            }
+        }
     } else {
         (*source).clone()
     };

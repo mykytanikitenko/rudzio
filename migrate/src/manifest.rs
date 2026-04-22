@@ -118,12 +118,30 @@ fn ensure_test_entry(doc: &mut DocumentMut, entry: &IntegrationTestEntry) {
     let Some(arr) = tests_item.as_array_of_tables_mut() else {
         return;
     };
-    for existing in arr.iter() {
-        if existing
+    // Match against either the `name` (most common — our synthesized
+    // entries use the file stem as the name) or the `path` (covers
+    // crates that already have a custom `[[test]] path = "..."`
+    // layout pointing at the same file, possibly with a different
+    // `name`). If we find a match, ensure `harness = false` is set
+    // on it — otherwise rudzio's runner can't drive it — and leave
+    // the other fields untouched.
+    for existing in arr.iter_mut() {
+        let name_match = existing
             .get("name")
             .and_then(|v| v.as_str())
-            .is_some_and(|s| s == entry.name)
-        {
+            .is_some_and(|s| s == entry.name);
+        let path_match = existing
+            .get("path")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s == entry.path);
+        if name_match || path_match {
+            let harness_is_false = existing
+                .get("harness")
+                .and_then(|v| v.as_bool())
+                .is_some_and(|b| !b);
+            if !harness_is_false {
+                let _prev = existing.insert("harness", value(false));
+            }
             return;
         }
     }

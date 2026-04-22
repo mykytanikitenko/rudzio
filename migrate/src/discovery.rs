@@ -10,6 +10,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+// `fs` is used by the lib-module parser below; the old `fs::read_dir`
+// call in the removed `collect_rs_flat` is gone.
+
 use anyhow::{Context as _, Result};
 use ignore::WalkBuilder;
 
@@ -59,7 +62,12 @@ pub fn discover(repo_root: &Path) -> Result<Vec<Package>> {
             continue;
         };
         let src_files = collect_rs(&root.join("src"));
-        let tests_files = collect_rs_flat(&root.join("tests"));
+        // tests/ is walked recursively — crates with custom
+        // `[[test]] path = "tests/<suite>/mod.rs"` layouts keep
+        // source files in deeper subdirs like
+        // tests/integration/db/repository/files/create.rs, and a
+        // non-recursive scan would miss them and silently no-op.
+        let tests_files = collect_rs(&root.join("tests"));
         let lib_modules = collect_lib_modules(&root);
         packages.push(Package {
             name: pkg.name.to_string(),
@@ -166,27 +174,7 @@ fn collect_rs(dir: &Path) -> Vec<PathBuf> {
         .filter_map(std::result::Result::ok)
         .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
         .map(ignore::DirEntry::into_path)
-        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
-        .collect();
-    files.sort();
-    files
-}
-
-fn collect_rs_flat(dir: &Path) -> Vec<PathBuf> {
-    if !dir.exists() {
-        return Vec::new();
-    }
-    let Ok(rd) = fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut files: Vec<PathBuf> = rd
-        .filter_map(std::result::Result::ok)
-        .map(|e| e.path())
-        .filter(|p| {
-            p.is_file()
-                && p.extension().is_some_and(|e| e == "rs")
-                && !is_backup_file(p)
-        })
+        .filter(|p| p.extension().is_some_and(|e| e == "rs") && !is_backup_file(p))
         .collect();
     files.sort();
     files
