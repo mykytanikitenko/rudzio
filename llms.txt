@@ -1,0 +1,177 @@
+# rudzio
+
+> Async test framework for Rust with pluggable runtimes and per-test
+> `setup` / `teardown`. Tests run against a fresh per-test context
+> built on top of a shared per-suite context, on a runtime of your
+> choice (tokio multi-thread / current-thread, compio, futures,
+> embassy), with cancellation, per-test and per-run timeouts, panic
+> isolation, and SIGINT/SIGTERM handling wired up by the runner.
+
+The load-bearing idea is a three-tier lifetime hierarchy —
+`'runtime ⊃ 'suite_context ⊃ 'test_context` — carried end-to-end
+without ever substituting `'static`. A suite context is created once
+per `(runtime, suite)` group via `Suite::setup`; each test borrows
+it to make a `Test` via `Suite::context`, runs the body, calls
+`Test::teardown`, returns the borrow. Groups with the same
+`(runtime, suite)` pair across multiple `#[rudzio::suite(...)]`
+blocks collapse onto the same OS thread and instance at runtime via
+an FNV1a hash key; this is how "same test bodies under N runtimes"
+works without rewriting anything.
+
+The companion tool `rudzio-migrate` converts cargo-style
+`#[test]` / `#[tokio::test]` / `#[test_context(T)]` suites into
+rudzio shape. It gates on a clean git tree and an exact
+acknowledgement phrase, keeps backups plus pre-migration block
+comments above every converted fn, and is honest that the output
+is best-effort rather than guaranteed-compiling.
+
+## Docs
+
+- [README](README.md): user-facing overview — when to use rudzio, quick
+  example, the full concept walkthrough of `Runtime` / `Suite` /
+  `Test`, multi-runtime suites, custom contexts, workspace-wide
+  single-binary test runner, benchmarks, cancellation model, CLI
+  flags, the `Config` surface, and an honest notes-on-authorship
+  section.
+- [migrate/README.md](migrate/README.md): `rudzio-migrate` usage —
+  install, invocation, the three preflight gates (with verbatim
+  disclaimer text and the exact acknowledgement phrase), full
+  attribute scope-table of what migrates / warns / skips, backups
+  and preserve-originals behaviour, sample miette warning output,
+  known limits, and a review recipe.
+
+## User-facing surface (traits and types)
+
+- [src/context/runtime.rs](src/runtime/rt.rs): the `Runtime` trait.
+  `'runtime` is the outermost lifetime; implementors (tokio,
+  compio, futures-executor, embassy) provide `block_on`,
+  `spawn` / `spawn_local` / `spawn_blocking`, `yield_now`, plus
+  access to the resolved `Config`.
+- [src/context/suite.rs](src/context/suite.rs): the `Suite<'suite_context, R>`
+  trait. Owns per-group shared state. Associated GAT
+  `type Test<'test_context>` encodes the per-test borrow. `setup`
+  runs once per group; `context` makes each per-test value;
+  `teardown` fires after all tests.
+- [src/context/test.rs](src/context/test.rs): the `Test<'test_context, R>`
+  trait. One method, `teardown`. The fn macro dispatches around
+  it — setup / body / teardown is the invariant regardless of
+  whether the test takes a ctx param.
+- [src/common/context/](src/common/): the ready-made
+  `common::context::{Suite, Test}` pair, gated behind the
+  `common` feature. The default target for migrated tests and
+  most new suites.
+- [src/bench/](src/bench/): the benchmark layer reachable via
+  `#[rudzio::test(benchmark = <strategy>)]`. `Sequential` and
+  `Concurrent` strategies live in `src/bench/strategy.rs`;
+  `BenchReport` emits the detailed statistics block (std_dev,
+  MAD, IQR, CoV, outliers, percentiles).
+- [src/config.rs](src/config.rs): the `Config` struct and its
+  libtest-compatible CLI flag subset
+  (`--test-threads`, `--skip`, filter, `--bench`, `--list`,
+  `--include-ignored`, `--output=live|plain`, the
+  `--test-timeout` / `--run-timeout` pair).
+- [src/lib.rs](src/lib.rs): the crate's public re-export surface.
+  Browse here first if you're looking for "what name do I use".
+
+## Examples
+
+- [examples/basic.rs](examples/basic.rs): one runtime (tokio
+  Multithread), the common context, trivial suite (pass / yield /
+  `#[ignore]`). Start here.
+- [examples/multi_runtime.rs](examples/multi_runtime.rs): same
+  test bodies under three runtimes (tokio Multithread,
+  CurrentThread, compio) in one `#[rudzio::suite(...)]` block.
+- [examples/custom_context.rs](examples/custom_context.rs):
+  hand-rolled `Suite` / `Test` impls with shared suite-level
+  state — the pattern for custom per-group fixtures.
+- [examples/benchmark.rs](examples/benchmark.rs): bench-annotated
+  tests that run once as a smoke test by default and switch to
+  full strategy execution under `--bench`.
+
+## Migration tool
+
+- [migrate/src/lib.rs](migrate/src/lib.rs): module entry points.
+- [migrate/src/cli.rs](migrate/src/cli.rs): argv surface + the
+  `RuntimeChoice` enum.
+- [migrate/src/preflight.rs](migrate/src/preflight.rs): the three
+  gates (git repo check, clean-tree check, acknowledgement
+  phrase). The phrase itself lives in
+  [migrate/src/phrase.rs](migrate/src/phrase.rs) as a single
+  `pub const ACK_PHRASE`, preserved verbatim.
+- [migrate/src/detect.rs](migrate/src/detect.rs): attribute
+  classification — `#[test]`, `#[tokio::test(...)]`,
+  `#[async_std::test]`, `#[compio::test]`, `#[ignore]` variants,
+  `#[should_panic]`, `#[bench]`, `#[rstest]` / `#[case]` /
+  `#[values]`, `#[test_context(T)]`.
+- [migrate/src/rewrite.rs](migrate/src/rewrite.rs): the
+  `syn::visit_mut::VisitMut` pass that converts attributes,
+  signatures, and module structure. Also the `#[test_context(T)]`
+  bridge-type rewriter and the synth-mod wrapper for file-scope
+  test fns.
+- [migrate/src/emit.rs](migrate/src/emit.rs): the
+  parse → mutate → `prettyplease::unparse` pipeline and the
+  sentinel-based `/* pre-migration ... */` block-comment injection.
+- [migrate/src/runner_scaffold.rs](migrate/src/runner_scaffold.rs):
+  `tests/main.rs` generation — the `#[path]`-aggregation template
+  for lib crates, the `use <crate> as _;` fallback for bin-only.
+- [migrate/src/manifest.rs](migrate/src/manifest.rs):
+  `Cargo.toml` edits via `toml_edit` — `autotests = false`,
+  rudzio dep with the right runtime feature, `[[test]] harness = false`
+  entries.
+
+## Optional
+
+Internals that aren't part of the public API but matter for
+contributors or anyone tracing through a failure:
+
+- [macro/src/lib.rs](macro/src/lib.rs): the thin proc-macro crate
+  that defines the `#[rudzio::test]` / `#[rudzio::suite]` /
+  `#[rudzio::main]` attribute shells and delegates to
+  `macro-internals`.
+- [macro-internals/src/](macro-internals/src/): the real macro
+  work — `args.rs` parses the suite-attr tuple list,
+  `transform.rs` does the fn-signature transform
+  (`<'test_context, 'suite_context: 'test_context, R: Runtime + Sync>`
+  injection onto ctx-taking tests), `suite_codegen.rs` emits the
+  per-`(R, S)` `RuntimeGroupOwner` impl and the per-test HRTB
+  unsafe fn pointers, `codegen.rs` handles the per-test
+  `TestToken` registration into the `linkme` distributed slice.
+- [src/suite.rs](src/suite.rs): `SuiteRunRequest`,
+  `SuiteReporter`, `RuntimeGroupOwner`, `RuntimeGroupKey`,
+  `TestOutcome`, `SuiteSummary`. The macro-generated code talks
+  to this surface.
+- [src/token.rs](src/token.rs): `TestToken` (the per-test static
+  shape including `module_path`, `name`, `run_test` dispatch
+  pointer) and the `TEST_TOKENS` distributed slice.
+- [src/runner.rs](src/runner.rs): `run(CargoMeta) -> TestSummary`
+  — the entry point `#[rudzio::main]` expands into. Argv parsing,
+  runtime-group scheduling, signal wiring.
+- [src/output/](src/output/): live-region test output via
+  process-wide stdio capture (Unix `dup2` + pipe reader thread
+  + a dedicated drawer thread). `render.rs` is the main loop.
+  Non-live fallback under `--output=plain`.
+- [src/runtime/tokio/](src/runtime/tokio/),
+  [src/runtime/compio/](src/runtime/compio/),
+  [src/runtime/futures/](src/runtime/futures/),
+  [src/runtime/embassy/](src/runtime/embassy/): per-runtime
+  `Runtime` impls. The embassy one is the only module with a
+  crate-level `#![allow(unsafe_code)]` — the executor glue
+  genuinely needs `unsafe` for static `Executor::new()`
+  initialisation.
+- [tests/runner.rs](tests/runner.rs) +
+  [tests/main.rs](tests/main.rs): the in-crate dogfood suite —
+  one rudzio test binary that exercises the framework across
+  every bundled runtime.
+- [test-runner/src/](test-runner/src/): workspace-aggregated
+  rudzio runner that pulls every testable crate's integration
+  test file in via `#[path]` so all `#[rudzio::test]` tokens
+  land in one `TEST_TOKENS` slice and one runner schedules them
+  all together. The `build.rs` uses `rudzio::build::expose_bins`
+  to populate `CARGO_BIN_EXE_<name>` for fixture binaries.
+- [fixtures/](fixtures/): per-runtime fixture binaries used by
+  the integration-test harness to exercise cancellation,
+  panic-recovery, timeouts, and teardown-ordering edge cases.
+- [migrate/fixtures/](migrate/fixtures/): golden-test fixtures
+  for `rudzio-migrate` — 23 scenarios covering attribute
+  variants, flags, test_context, nested modules, workspaces,
+  and the two negative-path preflight gates.
