@@ -7,6 +7,7 @@
 //! trees. The `emit` module handles I/O.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use proc_macro2::TokenStream;
 use syn::punctuated::Punctuated;
@@ -39,7 +40,7 @@ pub struct FileRewrite {
 }
 
 pub fn rewrite_file(
-    source: &str,
+    source: Arc<String>,
     file: &mut syn::File,
     default_runtime: RuntimeChoice,
     preserve_originals: bool,
@@ -70,7 +71,7 @@ pub fn rewrite_file(
 struct Rewriter<'a, 'r> {
     default_runtime: RuntimeChoice,
     preserve_originals: bool,
-    source: &'a str,
+    source: Arc<String>,
     test_contexts: &'a TestContextResolver,
     file_path: std::path::PathBuf,
     report: &'r mut Report,
@@ -113,9 +114,8 @@ impl VisitMut for Rewriter<'_, '_> {
         if f.attrs.iter().any(detect::is_rstest_attr)
             || f.sig.inputs.iter().any(fn_arg_has_rstest_attr)
         {
-            self.report.warn(
-                self.file_path.clone(),
-                Some(f.sig.ident.span().start().line),
+            self.warn_span(
+                f.sig.ident.span(),
                 "test fn uses rstest (`#[rstest]` / `#[case]` / `#[values]`); left unchanged — rudzio has no parameterised-test equivalent, rewrite by hand",
             );
             return;
@@ -275,9 +275,8 @@ impl Rewriter<'_, '_> {
             return;
         };
         if has_self_receiver(f) {
-            self.report.warn(
-                self.file_path.clone(),
-                Some(f.sig.ident.span().start().line),
+            self.warn_span(
+                f.sig.ident.span(),
                 "test fn takes `self` receiver; rudzio tests are free fns — skipping",
             );
             return;
@@ -291,9 +290,8 @@ impl Rewriter<'_, '_> {
         if f.attrs.iter().any(detect::is_rstest_attr)
             || f.sig.inputs.iter().any(fn_arg_has_rstest_attr)
         {
-            self.report.warn(
-                self.file_path.clone(),
-                Some(f.sig.ident.span().start().line),
+            self.warn_span(
+                f.sig.ident.span(),
                 "test fn uses rstest (`#[rstest]` / `#[case]` / `#[values]`); left unchanged — rudzio has no parameterised-test equivalent, rewrite by hand",
             );
             return;
@@ -306,27 +304,21 @@ impl Rewriter<'_, '_> {
         // "lifetime and type arguments are not allowed on builtin
         // type `str`". Skip with a warning and let the user rewrite.
         if has_non_ctx_shaped_params(f) {
-            self.report.warn(
-                self.file_path.clone(),
-                Some(f.sig.ident.span().start().line),
+            self.warn_span(
+                f.sig.ident.span(),
                 "test fn has parameters that don't look like a single `&T` / `&mut T` context borrow (likely rstest #[case] / #[values]); left unchanged — rudzio has no parameterised-test equivalent, rewrite by hand",
             );
             return;
         }
 
         for extra in &detected.extra_tokio_args {
-            self.report.warn(
-                self.file_path.clone(),
-                Some(f.sig.ident.span().start().line),
+            self.warn_span(
+                f.sig.ident.span(),
                 format!("#[tokio::test] arg `{extra}` dropped; rudzio does not forward it"),
             );
         }
         if let Some(msg) = detected.kind.needs_compat_warning() {
-            self.report.warn(
-                self.file_path.clone(),
-                Some(f.sig.ident.span().start().line),
-                msg,
-            );
+            self.warn_span(f.sig.ident.span(), msg);
         }
 
         let original_snippet = if self.preserve_originals {
@@ -358,7 +350,7 @@ impl Rewriter<'_, '_> {
         let _inserted = self.rewrite.runtimes_used.insert(runtime);
         if self.mod_depth == 0 {
             if let Some(forced) = detected.kind.forced_runtime() {
-                let _inserted = self.file_scope_runtimes.insert(forced);
+                let _inserted_file_scope = self.file_scope_runtimes.insert(forced);
             }
         }
 
@@ -392,34 +384,48 @@ impl Rewriter<'_, '_> {
     }
 
     fn strip_companion_test_attrs(&mut self, attrs: &mut Vec<Attribute>) -> bool {
+        // Two-phase: first classify each attr and record the warnings
+        // we'd emit, then retain. This avoids borrowing `self` inside
+        // the `retain` closure.
+        enum Action {
+            Drop(Option<(proc_macro2::Span, String)>),
+            Keep,
+            DropResolved,
+        }
+        let mut actions: Vec<Action> = Vec::with_capacity(attrs.len());
         let mut had_resolved_test_context = false;
-        attrs.retain(|a| {
+        for a in attrs.iter() {
             if detect::is_should_panic_attr(a) {
-                self.report.warn(
-                    self.file_path.clone(),
-                    Some(a.span().start().line),
-                    "#[should_panic] stripped; rudzio does not support panic-expectation — rewrite the body to assert the panic manually",
-                );
-                return false;
+                actions.push(Action::Drop(Some((
+                    a.span(),
+                    "#[should_panic] stripped; rudzio does not support panic-expectation — rewrite the body to assert the panic manually".to_owned(),
+                ))));
+                continue;
             }
             if let Some(path) = detect::as_test_context(a) {
                 let key = detect::path_to_string(&path);
                 if self.test_contexts.plan_for(&key).is_some() {
                     had_resolved_test_context = true;
+                    actions.push(Action::DropResolved);
                 } else {
-                    self.report.warn(
-                        self.file_path.clone(),
-                        Some(a.span().start().line),
+                    actions.push(Action::Drop(Some((
+                        a.span(),
                         format!(
                             "#[test_context({key})] stripped without generating a bridge: no `impl AsyncTestContext for {key}` was found in this crate. Finish the migration by hand."
                         ),
-                    );
+                    ))));
                 }
-                return false;
+                continue;
             }
-            // Keep #[ignore], #[bench], plain doc comments, etc.
-            true
-        });
+            actions.push(Action::Keep);
+        }
+        for action in &actions {
+            if let Action::Drop(Some((span, msg))) = action {
+                self.warn_span(*span, msg.clone());
+            }
+        }
+        let mut iter = actions.into_iter();
+        attrs.retain(|_| matches!(iter.next(), Some(Action::Keep)));
         had_resolved_test_context
     }
 
@@ -439,9 +445,8 @@ impl Rewriter<'_, '_> {
             // only when the tool has *no* independent knowledge of
             // what the param should be (a resolved test_context case
             // is a known-good shape).
-            self.report.warn(
-                self.file_path.clone(),
-                Some(f.sig.ident.span().start().line),
+            self.warn_span(
+                f.sig.ident.span(),
                 "test fn has a non-trivial parameter list; preserved verbatim — verify the suite's `test = ...` path matches the intended context type",
             );
         }
@@ -454,9 +459,8 @@ impl Rewriter<'_, '_> {
                 // leave as-is
             }
             ReturnKind::Other => {
-                self.report.warn(
-                    self.file_path.clone(),
-                    Some(f.sig.ident.span().start().line),
+                self.warn_span(
+                    f.sig.ident.span(),
                     "test fn returned a non-Result type; wrapping in ::anyhow::Result<()> and discarding the return value",
                 );
                 let inner: syn::Block = f.block.as_ref().clone();
@@ -478,12 +482,27 @@ impl Rewriter<'_, '_> {
             .min()
             .unwrap_or_else(|| f.sig.fn_token.span.byte_range().start);
         let span_end = f.block.span().byte_range().end;
-        let len = self.source.len();
+        let src: &str = &self.source;
+        let len = src.len();
         if span_start < len && span_end <= len && span_start <= span_end {
-            self.source[span_start..span_end].to_owned()
+            src[span_start..span_end].to_owned()
         } else {
             String::new()
         }
+    }
+
+    fn warn_span(&mut self, span: proc_macro2::Span, message: impl Into<String>) {
+        let range = span.byte_range();
+        let offset = range.start;
+        let len = range.end.saturating_sub(range.start);
+        self.report.warn_with_span(
+            self.file_path.clone(),
+            span.start().line,
+            offset,
+            len,
+            Arc::clone(&self.source),
+            message,
+        );
     }
 }
 

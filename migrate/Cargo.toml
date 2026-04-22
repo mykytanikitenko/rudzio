@@ -13,10 +13,12 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 cargo_metadata = { workspace = true }
 ignore = { workspace = true }
+miette = { workspace = true }
 prettyplease = { workspace = true }
 proc-macro2 = { workspace = true, features = ["span-locations"] }
 quote = { workspace = true }
 syn = { workspace = true, features = ["full", "extra-traits", "visit", "visit-mut"] }
+thiserror = { workspace = true }
 toml_edit = { workspace = true }
 
 [dev-dependencies]
@@ -128,3 +130,8 @@ string_slice = "allow"
 too_many_lines = "allow"
 use_debug = "allow"
 wildcard_enum_match_arm = "allow"
+
+# `Arc<String>` is what miette's NamedSource expects for owned
+# source bytes; rc_buffer would push us to `Arc<str>` which forces
+# an `into_boxed_str` round-trip on every file read for no gain.
+rc_buffer = "allow"
