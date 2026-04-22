@@ -94,6 +94,28 @@ Four runnable examples in `examples/` cover the common shapes:
   tests that run once as smoke tests by default and switch into full
   strategy execution under `--bench`.
 
+## Migrating an existing suite
+
+The workspace ships [`rudzio-migrate`](migrate/README.md), a CLI that
+converts cargo-style `#[test]` / `#[tokio::test]` / `#[test_context(T)]`
+suites into rudzio shape. It runs on a clean git tree, rewrites
+sources in place, keeps a per-file backup plus a `/* pre-migration
+*/` block comment above every converted fn, and wires `Cargo.toml`
+for the `[[test]] harness = false` runner.
+
+```sh
+cargo install --path migrate
+rudzio-migrate --path /path/to/your/crate
+```
+
+It refuses to run on a dirty working tree and asks you to type an
+acknowledgement phrase — both gates are load-bearing, there is no
+`--force`. The tool does **not** guarantee the output compiles; the
+realistic outcome is "mostly compiles, a short warning list, review
+via `git diff` and address what's left". Full scope table, known
+limits, and the recipe are in
+[`migrate/README.md`](migrate/README.md).
+
 ## Concepts
 
 Three traits, three lifetimes, in strict outer-to-inner order:
