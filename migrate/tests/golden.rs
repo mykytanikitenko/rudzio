@@ -91,7 +91,7 @@ fn golden_dirty_tree_refusal() {
     let output = run_migrate(path, &["--dry-run"], "").expect("spawn");
     assert_eq!(
         output.status.code(),
-        Some(1),
+        Some(1_i32),
         "expected exit 1 for dirty tree; got {:?}\nstdout:\n{}\nstderr:\n{}",
         output.status,
         String::from_utf8_lossy(&output.stdout),
@@ -125,7 +125,7 @@ fn golden_wrong_acknowledgement() {
     let output = run_migrate(path, &[], wrong).expect("spawn");
     assert_eq!(
         output.status.code(),
-        Some(1),
+        Some(1_i32),
         "expected exit 1 for wrong ack; got {:?}\nstdout:\n{}\nstderr:\n{}",
         output.status,
         String::from_utf8_lossy(&output.stdout),
