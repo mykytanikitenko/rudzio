@@ -1,0 +1,27 @@
+pub fn a_answer() -> i32 {
+    10
+}
+#[::rudzio::suite(
+    [(
+        runtime = ::rudzio::runtime::tokio::Multithread::new,
+        suite = ::rudzio::common::context::Suite,
+        test = ::rudzio::common::context::Test,
+    ),
+    ]
+)]
+#[cfg(test)]
+mod tests {
+    use ::rudzio::common::context::Test;
+    use super::*;
+    /* pre-migration (rudzio-migrate):
+    #[test]
+    fn a_works() {
+        assert_eq!(a_answer(), 10);
+    }
+    */
+    #[::rudzio::test]
+    async fn a_works(_ctx: &Test) -> ::anyhow::Result<()> {
+        assert_eq!(a_answer(), 10);
+        ::core::result::Result::Ok(())
+    }
+}

@@ -1,0 +1,6 @@
+[package]
+name = "no_shared_runner_flag"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
