@@ -62,7 +62,7 @@ pub struct RuntimeGroupKey(pub u64);
 pub struct SuiteId(pub TypeId);
 
 /// Per-test outcome reported back to the runner.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TestOutcome {
     Passed {
         elapsed: Duration,

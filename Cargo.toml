@@ -18,6 +18,10 @@ autotests = false
 # `channel` enables `SpawnExt::spawn_with_handle` / `LocalSpawnExt::spawn_local_with_handle`,
 # used by the futures-executor runtime.
 futures-util = { workspace = true, features = ["channel"] }
+# Wait-free MPSC + select! macro used by the live-output drawer thread
+# (`src/output/render.rs`) to multiplex lifecycle events, pipe byte chunks,
+# a redraw timer, and a shutdown signal.
+crossbeam-channel = { workspace = true }
 linkme = { workspace = true }
 rudzio-macro = { workspace = true }
 tokio-util = { workspace = true }
@@ -34,8 +38,14 @@ cargo_metadata = { workspace = true, optional = true }
 
 # Signal handling is unconditional on Unix so the runner always cancels
 # gracefully on both SIGINT and SIGTERM without any feature opt-in.
+#
+# libc is Unix-only here because the live-output capture
+# (`src/output/pipe.rs`) uses `dup`/`dup2`/`pipe`/`setvbuf`/`fcntl` to
+# redirect process-wide stdio through anonymous pipes; no Windows port
+# yet (feature no-ops on non-unix).
 [target.'cfg(unix)'.dependencies]
 signal-hook = { workspace = true }
+libc = { workspace = true }
 
 # Self dev-dep turns on `runtime-tokio` for the in-crate integration tests
 # that run under `#[rudzio::main]`. Cargo unifies features, so this does not
@@ -89,6 +99,7 @@ rudzio-macro-internals = { version = "0.1.0", path = "macro-internals" }
 anyhow = "=1.0.102"
 cargo_metadata = "=0.19.2"
 compio-runtime = "=0.11.0"
+crossbeam-channel = "=0.5.15"
 libc = "=0.2.185"
 signal-hook = "=0.4.4"
 embassy-executor = { version = "=0.7.0", features = ["arch-std"] }

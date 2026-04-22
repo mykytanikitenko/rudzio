@@ -132,6 +132,223 @@ impl BenchReport {
         )
     }
 
+    /// Population standard deviation of the successful-iteration
+    /// durations. `None` when fewer than two samples are available
+    /// (σ is undefined for n ≤ 1).
+    #[must_use]
+    pub fn std_dev(&self) -> Option<Duration> {
+        if self.samples.len() < 2 {
+            return None;
+        }
+        let mean_ns = self.mean()?.as_nanos();
+        #[expect(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "Benchmark statistics; precision loss well within measurement noise."
+        )]
+        {
+            let n = self.samples.len() as f64;
+            let mean = mean_ns as f64;
+            let variance: f64 = self
+                .samples
+                .iter()
+                .map(|s| {
+                    let d = s.as_nanos() as f64 - mean;
+                    d * d
+                })
+                .sum::<f64>()
+                / n;
+            Some(Duration::from_nanos(variance.sqrt() as u64))
+        }
+    }
+
+    /// Median absolute deviation — a robust dispersion measure that
+    /// is less sensitive to outliers than the standard deviation.
+    /// `None` when there are no samples.
+    #[must_use]
+    pub fn mad(&self) -> Option<Duration> {
+        if self.samples.is_empty() {
+            return None;
+        }
+        let median_ns = self.median()?.as_nanos();
+        let mut deviations: Vec<u128> = self
+            .samples
+            .iter()
+            .map(|s| s.as_nanos().abs_diff(median_ns))
+            .collect();
+        deviations.sort_unstable();
+        let mid = deviations.len() / 2;
+        Some(Duration::from_nanos(
+            u64::try_from(deviations[mid]).unwrap_or(u64::MAX),
+        ))
+    }
+
+    /// Interquartile range: p75 - p25. `None` when percentile
+    /// computation yields nothing (no samples).
+    #[must_use]
+    pub fn iqr(&self) -> Option<Duration> {
+        let p25 = self.percentile(0.25)?;
+        let p75 = self.percentile(0.75)?;
+        Some(p75.saturating_sub(p25))
+    }
+
+    /// Range: max - min. `None` when there are no samples.
+    #[must_use]
+    pub fn range(&self) -> Option<Duration> {
+        Some(self.max()?.saturating_sub(self.min()?))
+    }
+
+    /// Coefficient of variation: σ / mean. A unitless measure of
+    /// relative spread (1.0 = σ equals the mean — very noisy). `None`
+    /// when mean is zero or σ is unavailable.
+    #[must_use]
+    pub fn coefficient_of_variation(&self) -> Option<f64> {
+        let mean = self.mean()?.as_nanos();
+        let sd = self.std_dev()?.as_nanos();
+        if mean == 0 {
+            return None;
+        }
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "Benchmark statistics; precision loss well within measurement noise."
+        )]
+        {
+            Some(sd as f64 / mean as f64)
+        }
+    }
+
+    /// Throughput in successful iterations per second, derived from
+    /// sample count and [`Self::total_elapsed`]. For
+    /// [`strategy::Concurrent`] this reflects *real* throughput
+    /// (wall-clock) rather than per-iteration latency, which matters
+    /// when comparing strategies.
+    ///
+    /// [`strategy::Concurrent`]: crate::bench::strategy::Concurrent
+    #[must_use]
+    pub fn throughput_per_sec(&self) -> Option<f64> {
+        let secs = self.total_elapsed.as_secs_f64();
+        if secs <= 0.0 || self.samples.is_empty() {
+            return None;
+        }
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "Benchmark statistics; precision loss well within measurement noise."
+        )]
+        {
+            Some(self.samples.len() as f64 / secs)
+        }
+    }
+
+    /// Rough outlier count — samples more than `k × σ` from the mean
+    /// (default `k = 3`). `None` when σ is unavailable.
+    #[must_use]
+    pub fn outlier_count(&self, k: f64) -> Option<usize> {
+        let mean_ns = self.mean()?.as_nanos();
+        let sd_ns = self.std_dev()?.as_nanos();
+        #[expect(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "Benchmark statistics; precision loss well within measurement noise."
+        )]
+        {
+            let threshold = (sd_ns as f64 * k) as u128;
+            Some(
+                self.samples
+                    .iter()
+                    .filter(|s| s.as_nanos().abs_diff(mean_ns) > threshold)
+                    .count(),
+            )
+        }
+    }
+
+    /// Multi-line detailed statistics block — intended for rendering
+    /// directly after a benchmark status line. Lines are indented two
+    /// spaces so they visually nest under the `[BENCH]` status row.
+    ///
+    /// Includes: sample count, throughput, wall-clock elapsed, min /
+    /// max / range, mean / median, σ / MAD / coefficient of variation,
+    /// p1 / p5 / p10 / p25 / p50 / p75 / p90 / p95 / p99 / p99.9, IQR,
+    /// outlier count (>3σ), and failure / panic tallies when present.
+    #[must_use]
+    pub fn detailed_summary(&self) -> String {
+        let n = self.samples.len();
+        if n == 0 {
+            let mut out = format!("  no successful samples (iterations: {})\n", self.iterations);
+            if !self.failures.is_empty() {
+                out.push_str(&format!("  failed iterations: {}\n", self.failures.len()));
+            }
+            if self.panics > 0 {
+                out.push_str(&format!("  panicked iterations: {}\n", self.panics));
+            }
+            return out;
+        }
+        let mut out = String::new();
+        out.push_str(&format!("  samples:           {n}\n"));
+        out.push_str(&format!(
+            "  wall-clock:        {:.2?}\n",
+            self.total_elapsed
+        ));
+        if let Some(t) = self.throughput_per_sec() {
+            out.push_str(&format!("  throughput:        {t:.2} iter/s\n"));
+        }
+        if let (Some(min), Some(max)) = (self.min(), self.max()) {
+            out.push_str(&format!("  min / max:         {min:.2?} / {max:.2?}\n"));
+        }
+        if let Some(r) = self.range() {
+            out.push_str(&format!("  range:             {r:.2?}\n"));
+        }
+        if let Some(m) = self.mean() {
+            out.push_str(&format!("  mean:              {m:.2?}\n"));
+        }
+        if let Some(m) = self.median() {
+            out.push_str(&format!("  median:            {m:.2?}\n"));
+        }
+        if let Some(sd) = self.std_dev() {
+            out.push_str(&format!("  std dev:           {sd:.2?}\n"));
+        }
+        if let Some(mad) = self.mad() {
+            out.push_str(&format!("  MAD:               {mad:.2?}\n"));
+        }
+        if let Some(cv) = self.coefficient_of_variation() {
+            out.push_str(&format!("  coeff of variation:{cv:>8.3}\n"));
+        }
+        if let Some(iqr) = self.iqr() {
+            out.push_str(&format!("  IQR (p75 − p25):   {iqr:.2?}\n"));
+        }
+        if let Some(outliers) = self.outlier_count(3.0) {
+            out.push_str(&format!("  outliers (>3σ):    {outliers}\n"));
+        }
+        out.push_str("  percentiles:\n");
+        for (p, label) in [
+            (0.01, "p1"),
+            (0.05, "p5"),
+            (0.10, "p10"),
+            (0.25, "p25"),
+            (0.50, "p50"),
+            (0.75, "p75"),
+            (0.90, "p90"),
+            (0.95, "p95"),
+            (0.99, "p99"),
+            (0.999, "p99.9"),
+        ] {
+            if let Some(v) = self.percentile(p) {
+                out.push_str(&format!("    {label:>6}:         {v:.2?}\n"));
+            }
+        }
+        if !self.failures.is_empty() {
+            out.push_str(&format!(
+                "  failed iterations: {}\n",
+                self.failures.len(),
+            ));
+        }
+        if self.panics > 0 {
+            out.push_str(&format!("  panicked iterations: {}\n", self.panics));
+        }
+        out
+    }
+
     /// Render a horizontal ASCII histogram with `buckets` bars of `width`
     /// characters each.
     ///
