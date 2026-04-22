@@ -96,6 +96,7 @@ impl VisitMut for Rewriter<'_, '_> {
         }
         visit_mut::visit_file_mut(self, file);
         self.wrap_file_scope_test_fns(file);
+        self.ensure_tests_binary_has_main(file);
     }
 
     fn visit_item_mod_mut(&mut self, m: &mut ItemMod) {
@@ -200,9 +201,32 @@ impl Rewriter<'_, '_> {
         }
     }
 
+    /// Post-pass: any file under a `tests/` directory whose contents
+    /// we just modified into a rudzio shape is about to become an
+    /// independent test binary (via `[[test]] harness = false`).
+    /// Cargo needs a `fn main` in such a binary; append a
+    /// `#[rudzio::main] fn main() {}` if one isn't already there and
+    /// the file actually has something for rudzio to run.
+    fn ensure_tests_binary_has_main(&mut self, file: &mut syn::File) {
+        if !is_under_tests_dir(&self.file_path) {
+            return;
+        }
+        if !self.rewrite.changed {
+            return;
+        }
+        if file.items.iter().any(item_is_fn_main) {
+            return;
+        }
+        let main_fn: Item = syn::parse_quote! {
+            #[::rudzio::main]
+            fn main() {}
+        };
+        file.items.push(main_fn);
+    }
+
     /// Post-pass: pull every converted file-scope `#[rudzio::test]`
     /// fn into a synthesized `#[cfg(test)] #[rudzio::suite([...])] mod
-    /// __rudzio_migrated_tests { ... }` so rudzio's runner actually
+    /// tests { ... }` so rudzio's runner actually
     /// sees them (a bare `#[rudzio::test]` at file scope registers no
     /// tokens and leaves the `Test` type unresolved).
     fn wrap_file_scope_test_fns(&mut self, file: &mut syn::File) {
@@ -268,7 +292,7 @@ impl Rewriter<'_, '_> {
         // want it to be visually distinct as generated) leaks into
         // that function ident and triggers `non_snake_case` in the
         // caller crate. The alternative — naming the mod
-        // `__rudzio_migrated_tests` lowercase — would collide with
+        // `tests` lowercase — would collide with
         // any user module already called that; the allow is safer.
         let mut synth: ItemMod = syn::parse_quote! {
             #[cfg(test)]
@@ -280,7 +304,7 @@ impl Rewriter<'_, '_> {
                     test = #test_path,
                 ),
             ])]
-            mod __rudzio_migrated_tests {}
+            mod tests {}
         };
         synth.content = Some((token::Brace::default(), synth_items));
         file.items.insert(first_idx, Item::Mod(synth));
@@ -743,6 +767,26 @@ fn rewrite_ctx_param_to_bridge(f: &mut ItemFn, ctx_ident: &str, bridge_ident: &s
     };
     if last.ident == ctx_ident {
         last.ident = syn::Ident::new(bridge_ident, last.ident.span());
+    }
+}
+
+fn is_under_tests_dir(path: &std::path::Path) -> bool {
+    // True if any component of the path equals `tests` — covers both
+    // `<crate>/tests/foo.rs` and nested patterns like
+    // `<crate>/tests/common/mod.rs`. We don't care whether it's an
+    // integration-test dir specifically or some user dir literally
+    // named `tests`; worst case is a spurious `fn main` on a file
+    // that wasn't a test binary, and that's only reachable if the
+    // file actually had test fns we converted.
+    path.components()
+        .any(|c| c.as_os_str() == std::ffi::OsStr::new("tests"))
+}
+
+fn item_is_fn_main(item: &Item) -> bool {
+    if let Item::Fn(f) = item {
+        f.sig.ident == "main"
+    } else {
+        false
     }
 }
 
