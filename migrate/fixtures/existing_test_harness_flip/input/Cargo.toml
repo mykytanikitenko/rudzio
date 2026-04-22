@@ -1,0 +1,14 @@
+[package]
+name = "existing_test_harness_flip"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+# Pre-existing custom [[test]] entry with harness = true (the
+# default). Post-migration the tool should flip harness = false on
+# THIS entry in place rather than appending a duplicate.
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+harness = true

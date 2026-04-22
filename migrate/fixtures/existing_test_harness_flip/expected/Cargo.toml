@@ -1,0 +1,17 @@
+[package]
+name = "existing_test_harness_flip"
+version = "0.1.0"
+edition = "2024"
+autotests = false
+
+[dependencies]
+rudzio = { version = "0.1", features = ["common", "runtime-tokio"] }
+anyhow = "1.0"
+
+# Pre-existing custom [[test]] entry with harness = true (the
+# default). Post-migration the tool should flip harness = false on
+# THIS entry in place rather than appending a duplicate.
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+harness = false

@@ -1,0 +1,16 @@
+[package]
+name = "tests_subdir_layout"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+# Custom [[test]] pointing at a suite root under tests/<suite>/mod.rs.
+# The submodule files below (tests/integration/models.rs etc.) are
+# `mod`-included from there, and must NOT each get their own
+# [[test]] entry — tests/models.rs doesn't exist, the path would
+# break cargo.
+[[test]]
+name = "integration"
+path = "tests/integration/mod.rs"
+harness = false

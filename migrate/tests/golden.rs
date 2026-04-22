@@ -198,6 +198,36 @@ mod tests {
         run_fixture("workspace_crate");
         ::core::result::Result::Ok(())
     }
+    #[::rudzio::test]
+    async fn golden_result_returning_block_body(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("result_returning_block_body");
+        ::core::result::Result::Ok(())
+    }
+    #[::rudzio::test]
+    async fn golden_tests_only_flag(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("tests_only_flag");
+        ::core::result::Result::Ok(())
+    }
+    #[::rudzio::test]
+    async fn golden_existing_test_harness_flip(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("existing_test_harness_flip");
+        ::core::result::Result::Ok(())
+    }
+    #[::rudzio::test]
+    async fn golden_tests_subdir_layout(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("tests_subdir_layout");
+        ::core::result::Result::Ok(())
+    }
+    #[::rudzio::test]
+    async fn golden_test_context_nested_impl(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("test_context_nested_impl");
+        ::core::result::Result::Ok(())
+    }
+    #[::rudzio::test]
+    async fn golden_ambassador_verbatim(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("ambassador_verbatim");
+        ::core::result::Result::Ok(())
+    }
     /* pre-migration (rudzio-migrate):
     #[test]
     fn golden_dirty_tree_refusal() {
