@@ -69,6 +69,34 @@ pub enum RunIgnoredMode {
     Include,
 }
 
+/// How `#[rudzio::test(benchmark = ...)]`-annotated tests should be run.
+///
+/// The annotation is deliberately additive: a bench-annotated test is a
+/// regular test whose body the macro knows how to run repeatedly under a
+/// [`crate::bench::Strategy`]. Whether the macro actually dispatches to the
+/// strategy is decided at runtime from this mode, so the same binary can
+/// serve both `cargo test` (smoke-mode iteration count = 1) and
+/// `cargo test -- --bench` (full strategy execution).
+///
+/// [`BenchMode::Smoke`] is the default — `cargo test` on a bench-annotated
+/// test runs its body once as a regular test.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BenchMode {
+    /// Default: run the body once as a regular test, ignore the
+    /// `benchmark = ...` argument. Keeps `cargo test` fast on CI while
+    /// still exercising the bench body for correctness.
+    #[default]
+    Smoke,
+    /// `--bench`: dispatch each bench-annotated test through its
+    /// strategy and render the resulting [`crate::bench::BenchReport`].
+    /// Regular (non-benched) tests still run normally in this mode.
+    Full,
+    /// `--no-bench`: skip bench-annotated tests entirely (they're
+    /// reported as ignored so the count still makes sense). Useful on
+    /// slow CI where even the smoke run is too much.
+    Skip,
+}
+
 /// Resolved configuration for a test run, aggregating every CLI flag the
 /// runner understands plus the process environment. Handed to every runtime
 /// constructor, every suite `setup`, and accessible from any running test
@@ -99,6 +127,8 @@ pub struct Config {
     pub color: ColorMode,
     /// How `#[ignore]`d tests are treated.
     pub run_ignored: RunIgnoredMode,
+    /// How `#[rudzio::test(benchmark = ...)]`-annotated tests are treated.
+    pub bench_mode: BenchMode,
     /// `--list`: print test names and exit without running.
     pub list: bool,
     /// `--test-timeout=<secs>`. `None` = unbounded.
@@ -147,6 +177,7 @@ impl Config {
         let mut format = Format::Pretty;
         let mut color = ColorMode::Auto;
         let mut run_ignored = RunIgnoredMode::Normal;
+        let mut bench_mode = BenchMode::Smoke;
         let mut list = false;
         let mut test_timeout: Option<Duration> = None;
         let mut run_timeout: Option<Duration> = None;
@@ -214,6 +245,10 @@ impl Config {
                 run_ignored = RunIgnoredMode::Only;
             } else if arg == "--include-ignored" {
                 run_ignored = RunIgnoredMode::Include;
+            } else if arg == "--bench" {
+                bench_mode = BenchMode::Full;
+            } else if arg == "--no-bench" {
+                bench_mode = BenchMode::Skip;
             } else if arg == "--list" {
                 list = true;
             } else if let Some(rest) = arg.strip_prefix("--test-timeout=") {
@@ -275,6 +310,7 @@ impl Config {
             format,
             color,
             run_ignored,
+            bench_mode,
             list,
             test_timeout,
             run_timeout,

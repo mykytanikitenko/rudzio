@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
+use crate::bench::BenchReport;
 use crate::config::Config;
 use crate::test_case::BoxError;
 use crate::token::TestToken;
@@ -63,11 +64,24 @@ pub struct SuiteId(pub TypeId);
 /// Per-test outcome reported back to the runner.
 #[derive(Debug)]
 pub enum TestOutcome {
-    Passed { elapsed: Duration },
-    Failed { elapsed: Duration, message: String },
-    Panicked { elapsed: Duration },
+    Passed {
+        elapsed: Duration,
+    },
+    Failed {
+        elapsed: Duration,
+        message: String,
+    },
+    Panicked {
+        elapsed: Duration,
+    },
     TimedOut,
     Cancelled,
+    /// The test ran under a [`crate::bench::Strategy`]. `report.is_success()`
+    /// decides whether the overall outcome counts as passed or failed.
+    Benched {
+        elapsed: Duration,
+        report: BenchReport,
+    },
 }
 
 /// Aggregated per-group counts.
@@ -257,6 +271,64 @@ pub fn fill_elapsed(outcome: TestOutcome, elapsed: Duration) -> TestOutcome {
         TestOutcome::Passed { .. } => TestOutcome::Passed { elapsed },
         TestOutcome::Failed { message, .. } => TestOutcome::Failed { elapsed, message },
         TestOutcome::Panicked { .. } => TestOutcome::Panicked { elapsed },
+        TestOutcome::Benched { report, .. } => TestOutcome::Benched { elapsed, report },
         other => other,
+    }
+}
+
+/// Drive a benchmark future under the per-test cancellation token and the
+/// optional per-test timeout, wrapping the resulting [`BenchReport`] into
+/// a [`TestOutcome::Benched`] (or one of the terminal variants if the
+/// bench timed out, was cancelled, or panicked).
+///
+/// Mirrors [`run_test_with_timeout_and_cancel`] but for the bench path —
+/// the inner future yields a `BenchReport` rather than a
+/// `Result<(), BoxError>`, so the classification logic is subtly
+/// different (there's no "failed" variant here: per-iteration failures
+/// are already captured inside the report).
+#[doc(hidden)]
+pub async fn run_bench_with_timeout_and_cancel<F, S>(
+    bench_fut: F,
+    test_timeout: Option<Duration>,
+    per_test_token: CancellationToken,
+    sleep: impl FnOnce(Duration) -> S,
+) -> TestOutcome
+where
+    F: Future<Output = BenchReport>,
+    S: Future<Output = ()>,
+{
+    use futures_util::FutureExt as _;
+    use futures_util::future::{Either, select};
+
+    let catch_fut = std::panic::AssertUnwindSafe(bench_fut).catch_unwind();
+    let cancellable = std::pin::pin!(per_test_token.run_until_cancelled(catch_fut));
+
+    if let Some(dur) = test_timeout {
+        let sleep_fut = std::pin::pin!(sleep(dur));
+        match select(cancellable, sleep_fut).await {
+            Either::Left((Some(Ok(report)), _)) => TestOutcome::Benched {
+                elapsed: Duration::ZERO,
+                report,
+            },
+            Either::Left((Some(Err(_payload)), _)) => TestOutcome::Panicked {
+                elapsed: Duration::ZERO,
+            },
+            Either::Left((None, _)) => TestOutcome::Cancelled,
+            Either::Right(_) => {
+                per_test_token.cancel();
+                TestOutcome::TimedOut
+            }
+        }
+    } else {
+        match cancellable.await {
+            Some(Ok(report)) => TestOutcome::Benched {
+                elapsed: Duration::ZERO,
+                report,
+            },
+            Some(Err(_payload)) => TestOutcome::Panicked {
+                elapsed: Duration::ZERO,
+            },
+            None => TestOutcome::Cancelled,
+        }
     }
 }

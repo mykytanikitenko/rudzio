@@ -192,6 +192,13 @@ impl SuiteReporter for DefaultReporter {
                     | TestOutcome::Panicked { .. }
                     | TestOutcome::TimedOut => red("F", self.colored),
                     TestOutcome::Cancelled => yellow("c", self.colored),
+                    TestOutcome::Benched { report, .. } => {
+                        if report.is_success() {
+                            "b".to_owned()
+                        } else {
+                            red("B", self.colored)
+                        }
+                    }
                 };
                 print!("{ch}");
                 let _flush = io::stdout().flush();
@@ -209,17 +216,77 @@ impl SuiteReporter for DefaultReporter {
                     }
                     TestOutcome::TimedOut => red("FAILED (timed out)", self.colored),
                     TestOutcome::Cancelled => yellow("cancelled", self.colored),
+                    TestOutcome::Benched { elapsed, report } => {
+                        let label = if report.is_success() {
+                            green("benched", self.colored)
+                        } else {
+                            red("benched (with errors)", self.colored)
+                        };
+                        format!("{label} ({elapsed:.2?})")
+                    }
                 };
-                println!("test {} [{}] ... {}", token.name, runtime_name, status);
+                // For bench outcomes every line must be emitted as a
+                // single `println!` so concurrent runtime threads don't
+                // interleave each other's histograms mid-run. `println!`
+                // takes the stdout lock once per call, so a single
+                // buffer with embedded newlines prints atomically.
+                let header = format!("test {} [{}] ... {}", token.name, runtime_name, status);
+                if let TestOutcome::Benched { report, .. } = &outcome {
+                    let mut buf = header;
+                    buf.push_str(&format!(
+                        "\n    strategy: {}  {}",
+                        report.strategy,
+                        report.summary_line(),
+                    ));
+                    if report.failures.is_empty() && report.panics == 0 {
+                        let histogram = report.ascii_histogram(8, 30);
+                        if !histogram.is_empty() {
+                            buf.push('\n');
+                            buf.push_str(histogram.trim_end_matches('\n'));
+                        }
+                    } else {
+                        buf.push_str(&format!(
+                            "\n    {} iterations failed, {} panicked",
+                            report.failures.len(),
+                            report.panics,
+                        ));
+                    }
+                    println!("{buf}");
+                } else {
+                    println!("{header}");
+                }
             }
         }
 
-        if let TestOutcome::Failed { message, .. } = outcome {
-            let mut guard = self.failures.lock().expect("failures mutex poisoned");
-            guard.push(FailureInfo {
-                name: token.name,
-                message,
-            });
+        match outcome {
+            TestOutcome::Failed { message, .. } => {
+                let mut guard = self
+                    .failures
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                guard.push(FailureInfo {
+                    name: token.name,
+                    message,
+                });
+            }
+            TestOutcome::Benched { report, .. } if !report.is_success() => {
+                let mut guard = self
+                    .failures
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let message = format!(
+                    "benchmark {} reported {} failed iterations and {} panics:\n{}",
+                    report.strategy,
+                    report.failures.len(),
+                    report.panics,
+                    report.failures.join("\n"),
+                );
+                guard.push(FailureInfo {
+                    name: token.name,
+                    message,
+                });
+            }
+            _ => {}
         }
     }
 
@@ -380,7 +447,10 @@ pub fn run(cargo: crate::config::CargoMeta) -> ! {
         println!();
     }
 
-    let guard = reporter.failures.lock().expect("failures mutex poisoned");
+    let guard = reporter
+        .failures
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if !guard.is_empty() {
         println!("\nfailures:\n");
         for f in guard.iter() {

@@ -22,6 +22,12 @@ pub struct TestToken {
     pub name: &'static str,
     pub ignored: bool,
     pub ignore_reason: &'static str,
+    /// `true` when the test was declared with
+    /// `#[rudzio::test(benchmark = ...)]`. Runner-level filter: in
+    /// [`crate::config::BenchMode::Skip`] mode the runner ignores these
+    /// tests before dispatch; in [`crate::config::BenchMode::Full`] mode
+    /// the dispatch fn runs them through their strategy.
+    pub has_benchmark: bool,
     /// Source file path, used to sort tests into stable source order.
     pub file: &'static str,
     /// Source line number, used to sort tests into stable source order.
@@ -46,6 +52,7 @@ impl fmt::Debug for TestToken {
             .field("name", &self.name)
             .field("ignored", &self.ignored)
             .field("ignore_reason", &self.ignore_reason)
+            .field("has_benchmark", &self.has_benchmark)
             .field("file", &self.file)
             .field("line", &self.line)
             .field("runtime_group_key", &self.runtime_group_key)

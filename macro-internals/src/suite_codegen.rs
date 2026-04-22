@@ -3,7 +3,7 @@ use quote::{format_ident, quote};
 use syn::{Ident, Item, ItemFn, ItemMod, Path};
 
 use crate::args::{MainArgs, RuntimeConfig};
-use crate::codegen::extract_ignore_reason;
+use crate::codegen::{extract_benchmark_expr, extract_ignore_reason};
 use crate::transform::{
     CtxKind, classify_ctx_param, has_test_attr, is_async_fn, is_test_attr, transform_test_signature,
 };
@@ -171,18 +171,25 @@ fn generate_per_config(
                 let runtime_name: &'static str =
                     ::rudzio::runtime::Runtime::name(&rt);
 
-                // Step 2: classify ignored vs active.
+                // Step 2: classify ignored vs active. Bench-annotated tests
+                // are reported as ignored (with a short reason) when
+                // `--no-bench` is set, so the final summary still accounts
+                // for every declared test.
                 let mut summary = ::rudzio::suite::SuiteSummary::zero();
                 summary.total = req.tokens.len();
                 let mut active: ::std::vec::Vec<&'static ::rudzio::token::TestToken> =
                     ::std::vec::Vec::with_capacity(req.tokens.len());
                 for tok in req.tokens {
-                    let skip = match req.config.run_ignored {
+                    let ignore_skip = match req.config.run_ignored {
                         ::rudzio::config::RunIgnoredMode::Normal => tok.ignored,
                         ::rudzio::config::RunIgnoredMode::Only
                         | ::rudzio::config::RunIgnoredMode::Include => false,
                     };
-                    if skip {
+                    let bench_skip = matches!(
+                        req.config.bench_mode,
+                        ::rudzio::config::BenchMode::Skip,
+                    ) && tok.has_benchmark;
+                    if ignore_skip || bench_skip {
                         reporter.report_ignored(*tok, runtime_name);
                         summary.ignored += 1;
                     } else {
@@ -276,6 +283,13 @@ fn generate_per_config(
                                 ::rudzio::suite::TestOutcome::Panicked { .. } => summary.panicked += 1,
                                 ::rudzio::suite::TestOutcome::TimedOut => summary.timed_out += 1,
                                 ::rudzio::suite::TestOutcome::Cancelled => summary.cancelled += 1,
+                                ::rudzio::suite::TestOutcome::Benched { report, .. } => {
+                                    if report.is_success() {
+                                        summary.passed += 1;
+                                    } else {
+                                        summary.failed += 1;
+                                    }
+                                }
                             }
                             reporter.report_outcome(tok, runtime_name, outcome);
                             if !req.root_token.is_cancelled()
@@ -339,6 +353,8 @@ fn generate_per_config(
         let test_name = &test.sig.ident;
         let test_name_str = test_name.to_string();
         let (ignored, ignore_reason) = extract_ignore_reason(test);
+        let benchmark = extract_benchmark_expr(test)?;
+        let has_benchmark = benchmark.is_some();
         // `proc_macro2::Span::start().line` is available on stable and returns
         // line tracking from the compiler in proc-macro context and from
         // proc-macro2's own tracking (e.g. `syn::parse_str`) in regular
@@ -348,6 +364,23 @@ fn generate_per_config(
         let source_line = test.sig.ident.span().start().line as u32;
         let is_async = is_async_fn(test);
         let ctx_kind = classify_ctx_param(test);
+
+        // `benchmark = ...` calls the body many times concurrently (for
+        // the stock `Concurrent` strategy) and/or requires an `Fn`-style
+        // closure that can produce the future repeatedly. A `&mut ctx`
+        // signature would force exclusive access on every call, which
+        // the borrow checker rejects and the user can't fix without
+        // abandoning `&mut`. Reject at macro time with a clear message
+        // instead of a cryptic borrow-checker diagnostic on generated
+        // code.
+        if has_benchmark && matches!(ctx_kind, CtxKind::Mutable) {
+            return Err(syn::Error::new_spanned(
+                test,
+                "`#[rudzio::test(benchmark = ...)]` requires a `&Ctx` or no-ctx \
+                 signature; benchmarks call the body repeatedly and `&mut Ctx` \
+                 would force exclusive access across iterations",
+            ));
+        }
 
         let token_static = format_ident!(
             "__RUDZIO_TOKEN_{}_{}_{}",
@@ -388,6 +421,75 @@ fn generate_per_config(
             quote! {
                 #mod_name::#test_name(#dispatch_call_args)
                     .map_err(|e| ::rudzio::test_case::box_error(e))
+            }
+        };
+
+        // The strategy's `run` wants a closure producing a fresh future
+        // per call. For async test bodies that's `|| async { ... }`; for
+        // sync bodies the closure still returns an async block (wrapping
+        // the sync call) so the strategy's type bounds line up
+        // uniformly.
+        let bench_body_closure = if is_async {
+            quote! {
+                || async {
+                    #mod_name::#test_name(#dispatch_call_args).await
+                        .map_err(|e| ::rudzio::test_case::box_error(e))
+                }
+            }
+        } else {
+            quote! {
+                || async {
+                    #mod_name::#test_name(#dispatch_call_args)
+                        .map_err(|e| ::rudzio::test_case::box_error(e))
+                }
+            }
+        };
+
+        // Build the inner `test_outcome = {...}` expression. Tests
+        // without a benchmark take the single regular path; tests with
+        // one gate on `config.bench_mode` at runtime so the same binary
+        // serves both `cargo test` and `cargo test -- --bench`.
+        let test_outcome_expr = if let Some(bench_expr) = benchmark {
+            quote! {
+                match config.bench_mode {
+                    ::rudzio::config::BenchMode::Full => {
+                        use ::rudzio::bench::Strategy as _;
+                        let __rudzio_strategy = #bench_expr;
+                        let bench_fut = __rudzio_strategy.run(#bench_body_closure);
+                        ::rudzio::suite::run_bench_with_timeout_and_cancel(
+                            bench_fut,
+                            test_timeout,
+                            per_test_token.clone(),
+                            |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
+                        ).await
+                    }
+                    ::rudzio::config::BenchMode::Smoke
+                    | ::rudzio::config::BenchMode::Skip => {
+                        // `Skip` is handled at the runner filter level;
+                        // we should never be dispatched here in Skip
+                        // mode, but falling through to Smoke is the
+                        // safe degradation.
+                        let test_fut = async { #dispatch_call };
+                        ::rudzio::suite::run_test_with_timeout_and_cancel(
+                            test_fut,
+                            test_timeout,
+                            per_test_token.clone(),
+                            |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
+                        ).await
+                    }
+                }
+            }
+        } else {
+            quote! {
+                {
+                    let test_fut = async { #dispatch_call };
+                    ::rudzio::suite::run_test_with_timeout_and_cancel(
+                        test_fut,
+                        test_timeout,
+                        per_test_token.clone(),
+                        |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
+                    ).await
+                }
             }
         };
 
@@ -439,18 +541,7 @@ fn generate_per_config(
                         }
                     };
 
-                    let test_outcome = {
-                        let test_fut = async {
-                            #dispatch_call
-                        };
-
-                        ::rudzio::suite::run_test_with_timeout_and_cancel(
-                            test_fut,
-                            test_timeout,
-                            per_test_token.clone(),
-                            |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
-                        ).await
-                    };
+                    let test_outcome = #test_outcome_expr;
 
                     let outcome = ::rudzio::suite::fill_elapsed(test_outcome, start.elapsed());
 
@@ -487,6 +578,7 @@ fn generate_per_config(
                 name: #test_name_str,
                 ignored: #ignored,
                 ignore_reason: #ignore_reason,
+                has_benchmark: #has_benchmark,
                 file: ::std::file!(),
                 line: #source_line,
                 runtime_group_key: ::rudzio::suite::RuntimeGroupKey(

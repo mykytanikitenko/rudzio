@@ -251,4 +251,174 @@ mod config_parser {
         anyhow::ensure!(c.env.get("RUST_TEST_THREADS").map(String::as_str) == Some("4"));
         Ok(())
     }
+
+    #[rudzio::test]
+    fn bench_mode_defaults_to_smoke(_ctx: &Test) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(argv(&[]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(c.bench_mode == rudzio::BenchMode::Smoke);
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn bench_flag_sets_full_mode(_ctx: &Test) -> anyhow::Result<()> {
+        let c =
+            Config::from_argv_and_env(argv(&["--bench"]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(c.bench_mode == rudzio::BenchMode::Full);
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn no_bench_flag_sets_skip_mode(_ctx: &Test) -> anyhow::Result<()> {
+        let c =
+            Config::from_argv_and_env(argv(&["--no-bench"]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(c.bench_mode == rudzio::BenchMode::Skip);
+        Ok(())
+    }
+}
+
+/// Strategy-level smoke tests dogfooded across every runtime rudzio
+/// ships. The stock strategies only need "poll this future" and
+/// `futures::join_all`, so they're independent of the runtime's
+/// concurrency model — proving that on every backend is a cheap POC.
+#[rudzio::suite([
+    (
+        runtime = rudzio::runtime::tokio::Multithread::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::tokio::CurrentThread::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::tokio::Local::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::compio::Runtime::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::embassy::Runtime::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::futures::ThreadPool::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+])]
+mod bench_strategies {
+    use rudzio::bench::{
+        BenchReport, Strategy,
+        strategy::{Concurrent, Sequential},
+    };
+    use rudzio::common::context::Test;
+
+    #[rudzio::test]
+    async fn sequential_runs_body_n_times(_ctx: &Test) -> anyhow::Result<()> {
+        let count = std::sync::atomic::AtomicUsize::new(0);
+        let report: BenchReport = Sequential(7)
+            .run(|| async {
+                let _prev = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
+        anyhow::ensure!(count.load(std::sync::atomic::Ordering::SeqCst) == 7);
+        anyhow::ensure!(report.iterations == 7, "iterations = {}", report.iterations);
+        anyhow::ensure!(report.samples.len() == 7);
+        anyhow::ensure!(report.failures.is_empty());
+        anyhow::ensure!(report.panics == 0);
+        anyhow::ensure!(report.is_success());
+        anyhow::ensure!(report.strategy == "Sequential(7)");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn concurrent_runs_body_n_times(_ctx: &Test) -> anyhow::Result<()> {
+        let count = std::sync::atomic::AtomicUsize::new(0);
+        let report: BenchReport = Concurrent(5)
+            .run(|| async {
+                let _prev = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
+        anyhow::ensure!(count.load(std::sync::atomic::Ordering::SeqCst) == 5);
+        anyhow::ensure!(report.iterations == 5);
+        anyhow::ensure!(report.samples.len() == 5);
+        anyhow::ensure!(report.is_success());
+        anyhow::ensure!(report.strategy == "Concurrent(5)");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn sequential_captures_failures(_ctx: &Test) -> anyhow::Result<()> {
+        let counter = std::sync::atomic::AtomicUsize::new(0);
+        let report = Sequential(4)
+            .run(|| async {
+                let i = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if i % 2 == 0 {
+                    Ok(())
+                } else {
+                    Err(rudzio::test_case::box_error("even iteration required"))
+                }
+            })
+            .await;
+        anyhow::ensure!(report.samples.len() == 2);
+        anyhow::ensure!(report.failures.len() == 2);
+        anyhow::ensure!(!report.is_success());
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn empty_samples_return_none_for_stats(_ctx: &Test) -> anyhow::Result<()> {
+        let report = Sequential(0)
+            .run(|| async { Ok::<(), rudzio::test_case::BoxError>(()) })
+            .await;
+        anyhow::ensure!(report.min().is_none());
+        anyhow::ensure!(report.max().is_none());
+        anyhow::ensure!(report.mean().is_none());
+        anyhow::ensure!(report.median().is_none());
+        anyhow::ensure!(report.percentile(0.5).is_none());
+        anyhow::ensure!(report.ascii_histogram(8, 20).is_empty());
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn percentile_rejects_out_of_range(_ctx: &Test) -> anyhow::Result<()> {
+        let report = Sequential(3)
+            .run(|| async { Ok::<(), rudzio::test_case::BoxError>(()) })
+            .await;
+        anyhow::ensure!(report.percentile(-0.1).is_none());
+        anyhow::ensure!(report.percentile(1.01).is_none());
+        anyhow::ensure!(report.percentile(0.0).is_some());
+        anyhow::ensure!(report.percentile(1.0).is_some());
+        Ok(())
+    }
+
+    // End-to-end: a bench-annotated test. Under `cargo test` this runs
+    // once as a smoke test (body invoked exactly once, no stats
+    // collection). Under `cargo test -- --bench` it runs with the
+    // strategy. The iteration count stays tiny so the smoke path
+    // doesn't dominate the runtime sweep.
+    #[rudzio::test(benchmark = rudzio::bench::strategy::Sequential(3))]
+    async fn sample_sequential_bench(_ctx: &Test) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    #[rudzio::test(benchmark = rudzio::bench::strategy::Concurrent(3))]
+    async fn sample_concurrent_bench(_ctx: &Test) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // Bench tests without a context parameter also work — setup and
+    // teardown still run around the strategy invocation.
+    #[rudzio::test(benchmark = rudzio::bench::strategy::Sequential(2))]
+    async fn sample_bench_without_ctx() -> anyhow::Result<()> {
+        Ok(())
+    }
 }

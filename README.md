@@ -81,7 +81,7 @@ reproducibility.
 
 ## Examples
 
-Three runnable examples in `examples/` cover the common shapes:
+Four runnable examples in `examples/` cover the common shapes:
 
 - `cargo run --example basic` — one runtime, the `common` context, a
   trivial suite (pass / yield / `#[ignore]`).
@@ -90,6 +90,9 @@ Three runnable examples in `examples/` cover the common shapes:
   `#[rudzio::suite]` block.
 - `cargo run --example custom_context` — hand-rolled `Suite` / `Test`
   impls with shared suite-level state.
+- `cargo run --example benchmark` (and `-- --bench`) — bench-annotated
+  tests that run once as smoke tests by default and switch into full
+  strategy execution under `--bench`.
 
 ## Concepts
 
@@ -277,6 +280,55 @@ Rudzio's own workspace demonstrates every mode side-by-side:
   `rudzio::build::expose_bins("rudzio-fixtures")` to make the 30+ fixture
   binaries reachable via `env!`.
 
+## Benchmarks
+
+Any `#[rudzio::test]` can also run as a benchmark by adding a
+`benchmark = <strategy>` argument to the attribute. Without `--bench`,
+the body runs exactly once as a regular test (smoke mode is the default
+— the `benchmark = ...` expression isn't even evaluated). With
+`--bench`, the runner dispatches through the strategy, collects
+per-iteration timings, and prints a distribution.
+
+```rust
+#[rudzio::test(benchmark = rudzio::bench::strategy::Sequential(1000))]
+async fn query_latency(ctx: &Test) -> anyhow::Result<()> {
+    ctx.yield_now().await;
+    Ok(())
+}
+
+#[rudzio::test(benchmark = rudzio::bench::strategy::Concurrent(100))]
+async fn under_load(_ctx: &Test) -> anyhow::Result<()> {
+    Ok(())
+}
+```
+
+Stock strategies (`rudzio::bench::strategy`):
+
+- `Sequential(N)` — run the body `N` times one after another.
+- `Concurrent(N)` — drive `N` copies of the body concurrently on the
+  same task via `futures::join_all` (no spawn, works under `!Send`
+  runtimes like compio / embassy / tokio `Local`).
+
+The `Strategy` trait is one method; add your own (warm-up then measure,
+repeat-K-rounds, rate-limit-to-X-rps — whatever) by writing a new impl.
+The attribute's argument is just a Rust expression, so the macro
+evaluates whatever value you give it at the call site — no registry, no
+magic.
+
+`--bench`-mode output includes a per-strategy summary line plus an
+ASCII histogram. Bench-annotated tests with `&mut Ctx` are rejected at
+macro time because the strategy calls the body repeatedly (Concurrent
+would clash on the exclusive borrow).
+
+CLI flags:
+
+- *(default)* — smoke mode: body runs once, regardless of
+  `benchmark = ...`.
+- `--bench` — full mode: run every bench-annotated test through its
+  strategy. Non-bench tests still run.
+- `--no-bench` — skip mode: bench-annotated tests are reported as
+  ignored (handy on slow CI).
+
 ## Cancellation, timeouts, panics
 
 - **`--test-timeout=N`** (seconds): per-test budget. On expiry the per-test
@@ -301,6 +353,8 @@ that cancels its stored token only fans out within its own group.
 --skip <s> / --skip=<s>     exclude tests whose name contains <s>
 --ignored                   only run #[ignore]d tests
 --include-ignored           run every test, ignored or not
+--bench                     dispatch #[rudzio::test(benchmark=...)] tests through their strategy
+--no-bench                  skip #[rudzio::test(benchmark=...)] tests entirely
 --list                      list test names and exit
 --test-threads=N            OS worker-thread count runtimes size their pool to
 --concurrency-limit=N       max in-flight tests per group (defaults to --test-threads)
