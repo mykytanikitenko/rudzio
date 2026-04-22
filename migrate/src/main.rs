@@ -119,7 +119,16 @@ fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
     // the clean-tree check enforces the whole git repo is tidy, but
     // cargo metadata runs at the specific package / workspace the user
     // is migrating, which may be a subdirectory.
-    let packages = discovery::discover(&args.path)?;
+    let mut packages = discovery::discover(&args.path)?;
+    if let Some(filter) = args.only_package.as_deref() {
+        let before = packages.len();
+        packages.retain(|p| p.name == filter);
+        if packages.is_empty() {
+            anyhow::bail!(
+                "--only-package {filter:?} did not match any workspace member (checked {before} packages)"
+            );
+        }
+    }
     let test_contexts = test_context::resolve(&packages)?;
 
     let mut report = report::Report::new();

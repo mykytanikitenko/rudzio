@@ -77,6 +77,71 @@ fn golden_rstest_skipped() {
     run_fixture("rstest_skipped");
 }
 
+#[test]
+fn golden_dirty_tree_refusal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path();
+    setup_minimal_lib_crate(path, "dirty_tree").expect("setup");
+    git_init_commit(path).expect("git commit");
+    // Make the tree dirty *after* the commit so the tool sees
+    // uncommitted changes.
+    fs::write(path.join("src/lib.rs"), b"// uncommitted edit\n")
+        .expect("dirty write");
+
+    let output = run_migrate(path, &["--dry-run"], "").expect("spawn");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit 1 for dirty tree; got {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("refusing to run because the working tree has uncommitted changes"),
+        "expected dirty-tree disclaimer; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("This tool is not going to do any magic"),
+        "expected best-effort disclaimer; got:\n{stdout}"
+    );
+    // Nothing must have been written — the whole point of the gate.
+    assert!(
+        !path.join("src/lib.rs.backup_before_migration_to_rudzio").exists(),
+        "backup should not have been created for a dirty tree refusal",
+    );
+}
+
+#[test]
+fn golden_wrong_acknowledgement() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path();
+    setup_minimal_lib_crate(path, "wrong_ack").expect("setup");
+    git_init_commit(path).expect("git commit");
+
+    // A subtly-different phrase: corrected typo + "an" instead of "and".
+    let wrong = "I am not an idiot and understand what I am doing in most cases at least\n";
+    let output = run_migrate(path, &[], wrong).expect("spawn");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit 1 for wrong ack; got {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("acknowledgement did not match"),
+        "expected ack-mismatch abort message; got:\n{stdout}"
+    );
+    assert!(
+        !path.join("src/lib.rs.backup_before_migration_to_rudzio").exists(),
+        "backup should not have been created for a wrong ack",
+    );
+}
+
 fn run_fixture(name: &str) {
     let fixtures_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
     let input_dir = fixtures_root.join(name).join("input");
@@ -202,6 +267,51 @@ fn run_git(dir: &Path, args: &[&str]) -> std::io::Result<()> {
         return Err(std::io::Error::other(format!("git {args:?} failed")));
     }
     Ok(())
+}
+
+/// Build a throwaway single-crate layout with a trivial `src/lib.rs`
+/// and a `rust-toolchain.toml` pinning the workspace's toolchain. Used
+/// by the negative-path tests (`dirty_tree_refusal`,
+/// `wrong_acknowledgement`) where the crate contents don't matter —
+/// only the preflight flow does.
+fn setup_minimal_lib_crate(path: &Path, package_name: &str) -> std::io::Result<()> {
+    fs::create_dir_all(path.join("src"))?;
+    fs::write(
+        path.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\n"
+        ),
+    )?;
+    fs::write(path.join("rust-toolchain.toml"), "[toolchain]\nchannel = \"1.95.0\"\n")?;
+    fs::write(path.join("src/lib.rs"), "pub fn noop() {}\n")
+}
+
+/// Run the `rudzio-migrate` binary against `path` with the given extra
+/// args and stdin input, and return the captured `Output`. Does not
+/// panic on non-zero exit — callers inspect `output.status` and
+/// stdout/stderr to assert the expected failure mode.
+fn run_migrate(
+    path: &Path,
+    extra_args: &[&str],
+    stdin_input: &str,
+) -> std::io::Result<std::process::Output> {
+    let bin = env!("CARGO_BIN_EXE_rudzio-migrate");
+    let mut cmd = Command::new(bin);
+    #[allow(clippy::shadow_unrelated)]
+    {
+        let _c = cmd.arg("--path").arg(path);
+        for a in extra_args {
+            let _c = cmd.arg(a);
+        }
+        let _c = cmd.stdin(Stdio::piped());
+        let _c = cmd.stdout(Stdio::piped());
+        let _c = cmd.stderr(Stdio::piped());
+    }
+    let mut child = cmd.spawn()?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin.write_all(stdin_input.as_bytes())?;
+    }
+    child.wait_with_output()
 }
 
 fn compare_trees(expected: &Path, actual: &Path) {

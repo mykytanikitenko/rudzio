@@ -10,6 +10,10 @@ pub struct Cli {
     pub dry_run: bool,
     pub no_shared_runner: bool,
     pub no_preserve_originals: bool,
+    /// When `Some`, restrict migration to the named workspace member
+    /// (matched against `cargo_metadata`'s `Package::name`). Useful
+    /// for incremental rollouts across large workspaces.
+    pub only_package: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -84,6 +88,9 @@ OPTIONS:
                             scaffolding prompt.
     --no-preserve-originals Do not emit a pre-migration block comment
                             above each converted fn.
+    --only-package <NAME>   Restrict the run to a single workspace member
+                            (matched against the `cargo metadata` package
+                            name). Other packages are left alone.
     --help, -h              Print this message.
 
 NOTE: The tool refuses to run on a dirty git tree and requires the user
@@ -97,6 +104,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError>
     let mut dry_run = false;
     let mut no_shared_runner = false;
     let mut no_preserve_originals = false;
+    let mut only_package: Option<String> = None;
 
     let mut it = args.into_iter();
     let _program = it.next();
@@ -118,11 +126,20 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError>
                     .ok_or_else(|| ParseError::MissingValue("--runtime".to_owned()))?;
                 runtime = parse_runtime(&value)?;
             }
+            "--only-package" => {
+                let value = it
+                    .next()
+                    .ok_or_else(|| ParseError::MissingValue("--only-package".to_owned()))?;
+                only_package = Some(value);
+            }
             s if s.starts_with("--path=") => {
                 path = Some(PathBuf::from(&s["--path=".len()..]));
             }
             s if s.starts_with("--runtime=") => {
                 runtime = parse_runtime(&s["--runtime=".len()..])?;
+            }
+            s if s.starts_with("--only-package=") => {
+                only_package = Some(s["--only-package=".len()..].to_owned());
             }
             other => return Err(ParseError::UnknownFlag(other.to_owned())),
         }
@@ -139,6 +156,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError>
         dry_run,
         no_shared_runner,
         no_preserve_originals,
+        only_package,
     })
 }
 
