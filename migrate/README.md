@@ -204,22 +204,44 @@ supported.
   preserves the original text either way.
 - **Attribute order and whitespace may shift** per prettyplease's
   canonical output.
-- **Lib-internal `#[cfg(test)] mod tests` gets converted, but then
-  doesn't run** from the generated `tests/main.rs` — the lib is
-  built without `cfg(test)` when linked from an integration test, so
-  its `linkme` entries never materialise. Fixing needs `#[path]`
-  aggregation and module re-exports in `tests/main.rs`; v1 doesn't
-  emit them. Integration tests under `tests/*.rs` work.
 - **Multi-runtime `#[rudzio::suite([A, B, C])]` tuples** are never
   generated; the tool emits exactly one runtime per suite. Add more
   tuples by hand if you want per-test matrix coverage.
 - **`rstest`** is a known blind spot. v1 detects it and refuses to
   convert; follow-up: a dedicated shape.
+- **Lib `src/lib.rs` with inline-body modules** (`mod X { ... }`
+  instead of `mod X;`) can't be targeted by `#[path]`, so their
+  `#[cfg(test)]` suite blocks don't reach the generated
+  `tests/main.rs`. Move the module body to a separate file and
+  declare it as `mod X;` to make the aggregation pick it up.
+- **Lib crate-root `pub use` re-exports** (e.g. `pub use
+  some::helper;` in `src/lib.rs`) aren't mirrored in
+  `tests/main.rs`. If a test body references `crate::helper`
+  directly, the integration test binary's compilation won't find
+  it — add the matching `pub use` to `tests/main.rs` by hand. Most
+  test bodies use fully-qualified `crate::<mod>::...` paths and
+  aren't affected.
 - **Comments inside `toml_edit`-modified `Cargo.toml`** are
   preserved by `toml_edit`, but key-level indentation isn't
   necessarily matched. The rudzio dep line goes wherever
   `toml_edit` puts it.
 - **`cargo fmt` is not run** on the output. Run it before committing.
+
+### Lib-internal `#[cfg(test)]` tests
+
+The generated `tests/main.rs` aggregates the lib into the
+integration test binary via `#[path]` includes — one per top-level
+`mod X;` in `src/lib.rs`. Each included file is compiled with
+`cfg(test)` active, so `#[rudzio::suite]` blocks inside the
+migrated `#[cfg(test)] mod tests { ... }` register their `linkme`
+entries into the runner's slice and execute alongside the
+integration tests.
+
+If the tool can't find a `src/lib.rs` (bin-only crate, or a layout
+where all modules are declared inline in `lib.rs`), it falls back
+to the older `use <crate> as _;` scaffold — the lib's external
+surface gets linked, but `#[cfg(test)]`-gated tests inside it
+won't run. Documented in the generated file's header.
 
 ## Recipe
 
