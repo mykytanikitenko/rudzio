@@ -87,10 +87,7 @@ pub fn process_file(
         output = splice_preserved_originals(&output, &rewrite.original_snippets);
     }
     if !bridge_suffix.is_empty() {
-        if !output.ends_with('\n') {
-            output.push('\n');
-        }
-        output.push_str(&bridge_suffix);
+        output = splice_bridge_before_first_suite_or_main(&output, &bridge_suffix);
     }
 
     if !opts.dry_run {
@@ -104,6 +101,57 @@ pub fn process_file(
     }
 
     Ok(Some(rewrite))
+}
+
+/// Place the generated bridge / suite types right before the first
+/// `#[::rudzio::suite(`, `#[rudzio::suite(`, `#[::rudzio::main]`,
+/// or `#[rudzio::main]` line in the file — whichever comes first.
+/// Falls back to appending at the end if none of those are present
+/// (unlikely for a file we touched, but a safe default). Putting
+/// the types BEFORE the suite block + fn main keeps the generated
+/// diff readable: the user reads the new declarations first, then
+/// sees them referenced.
+fn splice_bridge_before_first_suite_or_main(output: &str, bridge: &str) -> String {
+    const ANCHORS: &[&str] = &[
+        "#[::rudzio::suite(",
+        "#[rudzio::suite(",
+        "#[::rudzio::main]",
+        "#[rudzio::main]",
+    ];
+    let earliest_anchor = output
+        .lines()
+        .scan(0_usize, |offset, line| {
+            let here = *offset;
+            *offset = here.saturating_add(line.len()).saturating_add(1);
+            Some((here, line))
+        })
+        .find_map(|(offset, line)| {
+            let trimmed = line.trim_start();
+            ANCHORS
+                .iter()
+                .any(|a| trimmed.starts_with(a))
+                .then_some(offset)
+        });
+    match earliest_anchor {
+        Some(idx) => {
+            let mut out = String::with_capacity(output.len() + bridge.len() + 1);
+            out.push_str(&output[..idx]);
+            out.push_str(bridge);
+            if !bridge.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&output[idx..]);
+            out
+        }
+        None => {
+            let mut out = output.to_owned();
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(bridge);
+            out
+        }
+    }
 }
 
 fn render_bridge_for_file(path: &Path, resolver: &TestContextResolver) -> String {

@@ -110,6 +110,7 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
         }
     }
     let test_contexts = test_context::resolve(&packages)?;
+    let workspace_dep_names = collect_workspace_dep_names(&args.path);
 
     let mut report = report::Report::new();
     let emit_opts = emit::EmitOptions {
@@ -120,7 +121,10 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
     };
 
     for pkg in &packages {
-        let mut pkg_edits = manifest::ManifestEdits::default();
+        let mut pkg_edits = manifest::ManifestEdits {
+            workspace_dep_names: workspace_dep_names.clone(),
+            ..manifest::ManifestEdits::default()
+        };
         let mut pkg_had_conversions = false;
         // Suite roots (`tests/<suite>/mod.rs`) whose subtree had
         // files modified. The rewriter only appends `fn main` to a
@@ -140,6 +144,9 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
                     pkg_had_conversions = true;
                     pkg_edits.runtimes.extend(rewrite.runtimes_used.iter().copied());
                     pkg_edits.needs_anyhow |= rewrite.needs_anyhow;
+                    if file.starts_with(pkg.root.join("src")) {
+                        pkg_edits.had_src_conversion = true;
+                    }
                     if let Some(entry) = integration_test_entry_for(file, &pkg.root) {
                         pkg_edits.tests_integration.push(entry);
                     }
@@ -153,6 +160,27 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
                         file.clone(),
                         None,
                         format!("error processing file: {err:#}"),
+                    );
+                }
+            }
+        }
+        // `#[rudzio::suite]` expansion emits `#[allow(unsafe_code)]`
+        // (linkme registers via `#[link_section]`, which rustc
+        // classifies as unsafe_code). On crates whose `src/lib.rs`
+        // carries `#![forbid(unsafe_code)]` the inner allow conflicts
+        // — `forbid` doesn't accept downstream `allow` overrides.
+        // Demote `forbid` to `deny` when this package had any src
+        // conversion, so the user's intent (no unsafe in their code)
+        // is preserved while leaving room for the macro expansion.
+        if pkg_edits.had_src_conversion && !args.dry_run {
+            match demote_forbid_unsafe_in_lib(&pkg.root) {
+                Ok(Some(path)) => report.touched(path),
+                Ok(None) => {}
+                Err(err) => {
+                    report.warn(
+                        pkg.root.join("src/lib.rs"),
+                        None,
+                        format!("failed to demote forbid(unsafe_code): {err:#}"),
                     );
                 }
             }
@@ -181,6 +209,7 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
                 &tests_main,
                 Some(&crate_lib_name),
                 &pkg.lib_modules,
+                pkg.uses_lib_aggregation,
             ) {
                 Ok(runner_scaffold::ScaffoldOutcome::Created) => {
                     report.touched(tests_main);
@@ -192,10 +221,17 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
                         });
                 }
                 Ok(runner_scaffold::ScaffoldOutcome::AlreadyExists) => {
+                    // Leave the file alone AND skip the synthesized
+                    // `[[test]] main` Cargo entry — adding one on top
+                    // of a manifest that may already describe the
+                    // same target breaks the manifest. If the user
+                    // already has rudzio wired up here they don't
+                    // need another [[test]] block; if not, the
+                    // warning points them at the right next step.
                     report.warn(
                         tests_main,
                         None,
-                        "tests/main.rs already exists; leaving it alone — add `#[rudzio::main] fn main() {}` yourself if needed",
+                        "tests/main.rs already exists; leaving it and its [[test]] entry alone — add `#[rudzio::main] fn main() {}` yourself if the file doesn't already host one",
                     );
                 }
                 Err(err) => {
@@ -226,6 +262,36 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Walk upward from `start` looking for a Cargo.toml whose
+/// `[workspace.dependencies]` table is non-empty, and return the
+/// set of dep names declared there. When found we use
+/// `{ workspace = true, ... }` for dep edits instead of pinning a
+/// fresh version per crate.
+fn collect_workspace_dep_names(start: &Path) -> std::collections::BTreeSet<String> {
+    let mut current = start.to_path_buf();
+    loop {
+        let candidate = current.join("Cargo.toml");
+        if candidate.is_file() {
+            if let Ok(source) = std::fs::read_to_string(&candidate) {
+                if let Ok(doc) = source.parse::<toml_edit::DocumentMut>() {
+                    if let Some(ws_deps) = doc
+                        .as_table()
+                        .get("workspace")
+                        .and_then(|i| i.as_table())
+                        .and_then(|t| t.get("dependencies"))
+                        .and_then(|i| i.as_table())
+                    {
+                        return ws_deps.iter().map(|(k, _)| k.to_owned()).collect();
+                    }
+                }
+            }
+        }
+        if !current.pop() {
+            return std::collections::BTreeSet::new();
+        }
+    }
+}
+
 /// When `file` is a deeper descendant of `tests/<suite>/` (anything
 /// below the suite's `mod.rs`), return the path to that
 /// `tests/<suite>/mod.rs` root — otherwise `None`. Used to detect
@@ -251,6 +317,31 @@ fn suite_root_mod_rs_for(file: &Path, pkg_root: &Path) -> Option<PathBuf> {
 /// exists and doesn't already contain a `fn main`. Returns `Ok(true)`
 /// if the file was rewritten, `Ok(false)` if a `fn main` was already
 /// there (or the file didn't exist). Makes a backup before writing.
+/// Rewrite `#![forbid(unsafe_code)]` → `#![deny(unsafe_code)]` in
+/// the package's `src/lib.rs` when the lib hosts migrated suite
+/// blocks. Returns `Ok(Some(path))` when the file was rewritten,
+/// `Ok(None)` if there was nothing to do. String-level replace —
+/// fast, safe, and the common shape is exact-match.
+fn demote_forbid_unsafe_in_lib(pkg_root: &Path) -> anyhow::Result<Option<PathBuf>> {
+    use anyhow::Context as _;
+    let lib_rs = pkg_root.join("src/lib.rs");
+    if !lib_rs.is_file() {
+        return Ok(None);
+    }
+    let source = std::fs::read_to_string(&lib_rs)
+        .with_context(|| format!("reading {}", lib_rs.display()))?;
+    let target = "#![forbid(unsafe_code)]";
+    if !source.contains(target) {
+        return Ok(None);
+    }
+    let new = source.replace(target, "#![deny(unsafe_code)]");
+    let _bak = crate::backup::copy_before_write(&lib_rs)
+        .with_context(|| format!("backing up {}", lib_rs.display()))?;
+    std::fs::write(&lib_rs, &new)
+        .with_context(|| format!("writing {}", lib_rs.display()))?;
+    Ok(Some(lib_rs))
+}
+
 fn ensure_suite_root_has_main(mod_rs: &Path) -> anyhow::Result<bool> {
     use anyhow::Context as _;
     if !mod_rs.is_file() {

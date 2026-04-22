@@ -14,6 +14,15 @@ pub struct ManifestEdits {
     pub needs_anyhow: bool,
     pub runtimes: std::collections::BTreeSet<RuntimeChoice>,
     pub tests_integration: Vec<IntegrationTestEntry>,
+    /// Names found in the workspace's `[workspace.dependencies]`.
+    /// When `rudzio` / `anyhow` is in here we emit
+    /// `{ workspace = true, ... }` instead of hard-coding a version.
+    pub workspace_dep_names: std::collections::BTreeSet<String>,
+    /// Whether ANY src/**/*.rs file in this package was rewritten —
+    /// drives the `autotests = false` decision. A tests-only
+    /// migration doesn't need it; the user's lib unit tests aren't
+    /// affected.
+    pub had_src_conversion: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -31,10 +40,16 @@ pub fn apply(manifest_path: &Path, edits: &ManifestEdits) -> Result<bool> {
 
     let before = doc.to_string();
 
-    set_autotests_false(&mut doc);
-    set_rudzio_dependency(&mut doc, &edits.runtimes);
+    if edits.had_src_conversion {
+        set_autotests_false(&mut doc);
+    }
+    set_rudzio_dependency(
+        &mut doc,
+        &edits.runtimes,
+        edits.workspace_dep_names.contains("rudzio"),
+    );
     if edits.needs_anyhow {
-        set_anyhow_dependency(&mut doc);
+        set_anyhow_dependency(&mut doc, edits.workspace_dep_names.contains("anyhow"));
     }
     for entry in &edits.tests_integration {
         ensure_test_entry(&mut doc, entry);
@@ -65,7 +80,11 @@ fn set_autotests_false(doc: &mut DocumentMut) {
 fn set_rudzio_dependency(
     doc: &mut DocumentMut,
     runtimes: &std::collections::BTreeSet<RuntimeChoice>,
+    workspace_pins_rudzio: bool,
 ) {
+    if dep_already_present(doc, "rudzio") {
+        return;
+    }
     let features = {
         let mut arr = Array::new();
         arr.push("common");
@@ -83,31 +102,67 @@ fn set_rudzio_dependency(
         arr
     };
 
-    let deps = doc
+    let mut table = InlineTable::new();
+    if workspace_pins_rudzio {
+        let _w = table.insert("workspace", true.into());
+    } else {
+        let _v = table.insert("version", "0.1".into());
+    }
+    let _f = table.insert("features", toml_edit::Value::from(features));
+
+    // Library crates use rudzio at test-time only; the right home
+    // is `[dev-dependencies]`. Falls back to `[dependencies]` only
+    // for crates that don't have a [dev-dependencies] section
+    // already (very rare — most do once any test fixture or
+    // tempfile is involved).
+    let dev_deps = doc
         .as_table_mut()
-        .entry("dependencies")
+        .entry("dev-dependencies")
         .or_insert(Item::Table(Table::new()));
-    let Some(deps_tbl) = deps.as_table_mut() else {
+    let Some(dev_tbl) = dev_deps.as_table_mut() else {
         return;
     };
-
-    let mut table = InlineTable::new();
-    let _prev_ver = table.insert("version", "0.1".into());
-    let _prev_feat = table.insert("features", toml_edit::Value::from(features));
-    let _prev = deps_tbl.insert("rudzio", Item::Value(table.into()));
+    let _prev = dev_tbl.insert("rudzio", Item::Value(table.into()));
 }
 
-fn set_anyhow_dependency(doc: &mut DocumentMut) {
-    let deps = doc
+fn set_anyhow_dependency(doc: &mut DocumentMut, workspace_pins_anyhow: bool) {
+    if dep_already_present(doc, "anyhow") {
+        return;
+    }
+    let entry = if workspace_pins_anyhow {
+        let mut tbl = InlineTable::new();
+        let _w = tbl.insert("workspace", true.into());
+        Item::Value(tbl.into())
+    } else {
+        value("1.0")
+    };
+    let dev_deps = doc
         .as_table_mut()
-        .entry("dependencies")
+        .entry("dev-dependencies")
         .or_insert(Item::Table(Table::new()));
-    let Some(deps_tbl) = deps.as_table_mut() else {
+    let Some(dev_tbl) = dev_deps.as_table_mut() else {
         return;
     };
-    if !deps_tbl.contains_key("anyhow") {
-        let _prev = deps_tbl.insert("anyhow", value("1.0"));
+    let _prev = dev_tbl.insert("anyhow", entry);
+}
+
+/// True if either `[dependencies]` or `[dev-dependencies]` already
+/// declares the named crate. Used to keep the tool from clobbering
+/// a manually-curated entry — features may be tuned, paths may
+/// point at a workspace fork, etc.
+fn dep_already_present(doc: &DocumentMut, name: &str) -> bool {
+    for section in ["dependencies", "dev-dependencies"] {
+        if let Some(tbl) = doc
+            .as_table()
+            .get(section)
+            .and_then(|i| i.as_table())
+        {
+            if tbl.contains_key(name) {
+                return true;
+            }
+        }
     }
+    false
 }
 
 fn ensure_test_entry(doc: &mut DocumentMut, entry: &IntegrationTestEntry) {
