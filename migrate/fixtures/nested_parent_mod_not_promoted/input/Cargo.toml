@@ -1,0 +1,6 @@
+[package]
+name = "nested_parent_mod_not_promoted"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]

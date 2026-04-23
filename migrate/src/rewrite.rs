@@ -310,13 +310,14 @@ impl Rewriter<'_, '_> {
         if has_rudzio_suite(&m.attrs) {
             return;
         }
-        // Nested modules without their own `#[cfg(test)]` inherit
-        // test-gating from their ancestor. If we're already deeper
-        // than the file's root, an ancestor is about to get the
-        // suite attr and will collect this module's inner tests via
-        // rudzio's linkme mechanism — wrapping here too would
-        // double-register each test.
-        if self.mod_depth > 0 && !m.attrs.iter().any(is_cfg_test_attr) {
+        // Only promote modules whose OWN attrs include `#[cfg(test)]`.
+        // A plain `pub mod outer { #[cfg(test)] mod tests { ... } }`
+        // would otherwise trigger: `module_has_any_test_fn(outer)` is
+        // true (recursive), so `outer` would get the suite attr even
+        // though it isn't test-gated and its non-test items live in
+        // the normal lib build. The recursive visit descends into
+        // `outer` and catches the inner cfg(test) mod there.
+        if !m.attrs.iter().any(is_cfg_test_attr) {
             return;
         }
         // IMPORTANT: keep the `#[cfg(test)]` attr in place. Stripping
