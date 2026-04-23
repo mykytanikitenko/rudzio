@@ -159,11 +159,6 @@ must_use_candidate = "allow"
 too_long_first_doc_paragraph = "allow"
 
 [[test]]
-name = "golden"
-path = "tests/golden.rs"
-harness = false
-
-[[test]]
 name = "main"
 path = "tests/main.rs"
 harness = false
