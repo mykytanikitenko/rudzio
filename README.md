@@ -309,12 +309,16 @@ integration` adds integration. `cargo test --lib
 same `#[rudzio::main]` binary and the same scheduler pass.
 
 If the same crate also has `[[bin]]` targets that integration/e2e
-tests spawn via `env!("CARGO_BIN_EXE_<name>")`, call
-`rudzio::build::expose_bins("<self-crate-name>")` from the crate's
-own `build.rs` (details in the `Aggregating tests that spawn
-[[bin]] targets` section below). The sandboxed
-`$OUT_DIR/rudzio-bin-cache` target directory keeps the nested build
-from deadlocking against the outer cargo invocation.
+tests spawn via `env!("CARGO_BIN_EXE_<name>")`, nothing extra is
+needed: cargo sets `CARGO_BIN_EXE_<name>` automatically for the
+integration tests of the crate that declares the `[[bin]]`, and the
+`tests/main.rs` runner above is an integration test of that same
+crate. `rudzio::build::expose_bins` is only for the *other* case —
+when the aggregator lives in a separate crate from the bins it
+spawns; see the `Aggregating tests that spawn [[bin]] targets`
+section below. Calling `expose_bins` for the current crate is
+rejected at build time because the nested `cargo build -p <self>`
+would re-run the same build script indefinitely.
 
 ## Borrowing from the `Suite` (HRTB asymmetry)
 

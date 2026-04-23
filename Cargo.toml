@@ -52,7 +52,7 @@ libc = { workspace = true }
 # cause a duplicate build.
 [dev-dependencies]
 # Dogfood under every runtime rudzio ships.
-rudzio = { path = ".", features = ["common", "runtime-tokio", "runtime-compio", "runtime-embassy", "runtime-futures"] }
+rudzio = { path = ".", features = ["build", "common", "runtime-tokio", "runtime-compio", "runtime-embassy", "runtime-futures"] }
 anyhow = "=1.0.102"
 
 [[test]]
