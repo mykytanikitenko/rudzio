@@ -8,6 +8,7 @@ autotests = false
 
 [lib]
 harness = false
+test = false
 
 [dev-dependencies]
 rudzio = { version = "0.1", features = ["common", "runtime-tokio-multi-thread"] }

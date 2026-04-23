@@ -422,3 +422,163 @@ mod bench_strategies {
         Ok(())
     }
 }
+
+#[rudzio::suite([
+    (
+        runtime = rudzio::runtime::tokio::Multithread::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::tokio::CurrentThread::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::tokio::Local::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::compio::Runtime::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::embassy::Runtime::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::futures::ThreadPool::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+])]
+mod build_sentinel {
+    use std::ffi::OsStr;
+
+    use rudzio::build::{SentinelAction, decide_sentinel_action, sentinel_indicates_nested_call};
+
+    #[rudzio::test]
+    fn no_sentinel_means_proceed() -> anyhow::Result<()> {
+        anyhow::ensure!(
+            decide_sentinel_action(None, "anything", "this-crate") == SentinelAction::Proceed
+        );
+        anyhow::ensure!(
+            decide_sentinel_action(None, "this-crate", "this-crate") == SentinelAction::Proceed
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn empty_sentinel_means_proceed() -> anyhow::Result<()> {
+        anyhow::ensure!(
+            decide_sentinel_action(Some(OsStr::new("")), "x", "x") == SentinelAction::Proceed
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn sentinel_set_same_crate_silent_ok() -> anyhow::Result<()> {
+        anyhow::ensure!(
+            decide_sentinel_action(Some(OsStr::new("1")), "file-v3", "file-v3")
+                == SentinelAction::SilentOk
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn sentinel_set_different_crate_warn_and_ok() -> anyhow::Result<()> {
+        anyhow::ensure!(
+            decide_sentinel_action(Some(OsStr::new("1")), "A", "B") == SentinelAction::WarnAndOk
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn sentinel_detector_recognises_any_non_empty_value() -> anyhow::Result<()> {
+        anyhow::ensure!(sentinel_indicates_nested_call(Some(OsStr::new("1"))));
+        anyhow::ensure!(sentinel_indicates_nested_call(Some(OsStr::new("yes"))));
+        anyhow::ensure!(sentinel_indicates_nested_call(Some(OsStr::new("0"))));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn sentinel_detector_ignores_absent_or_empty() -> anyhow::Result<()> {
+        anyhow::ensure!(!sentinel_indicates_nested_call(None));
+        anyhow::ensure!(!sentinel_indicates_nested_call(Some(OsStr::new(""))));
+        Ok(())
+    }
+}
+
+#[rudzio::suite([
+    (
+        runtime = rudzio::runtime::tokio::Multithread::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::tokio::CurrentThread::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::tokio::Local::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::compio::Runtime::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::embassy::Runtime::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::futures::ThreadPool::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+])]
+mod bin_resolver {
+    use rudzio::bin::__resolve_at_runtime;
+
+    #[rudzio::test]
+    fn runtime_walk_reaches_a_directory_that_exists() -> anyhow::Result<()> {
+        let current = std::env::current_exe()?;
+        let profile_dir = current
+            .parent()
+            .and_then(std::path::Path::parent)
+            .ok_or_else(|| anyhow::anyhow!("test binary has no grandparent dir"))?;
+        anyhow::ensure!(
+            profile_dir.is_dir(),
+            "expected `{}` to be a real directory (usually `.../target/<profile>/`)",
+            profile_dir.display(),
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn missing_bin_error_names_the_bin_and_suggests_fixes() -> anyhow::Result<()> {
+        let err = __resolve_at_runtime("this-bin-definitely-does-not-exist-xyz-123")
+            .expect_err("bogus bin name must not resolve");
+        let msg = err.to_string();
+        anyhow::ensure!(
+            msg.contains("this-bin-definitely-does-not-exist-xyz-123"),
+            "error must name the bin so the user sees what was looked up; got: {msg}",
+        );
+        anyhow::ensure!(
+            msg.contains("cargo build --bins"),
+            "error should point at `cargo build --bins` as a fix; got: {msg}",
+        );
+        anyhow::ensure!(
+            msg.contains("expose_self_bins"),
+            "error should point at `expose_self_bins` as a fix; got: {msg}",
+        );
+        Ok(())
+    }
+}

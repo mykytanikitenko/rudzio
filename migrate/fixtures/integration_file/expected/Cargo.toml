@@ -10,6 +10,9 @@ tokio = { version = "1", features = ["full"] }
 rudzio = { version = "0.1", features = ["common", "runtime-tokio-multi-thread"] }
 anyhow = "1.0"
 
+[lib]
+test = false
+
 [[test]]
 name = "api"
 path = "tests/api.rs"

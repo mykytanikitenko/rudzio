@@ -60,6 +60,9 @@ name = "main"
 path = "tests/main.rs"
 harness = false
 
+[lib]
+test = false
+
 [features]
 # Build-script helper. Enable in `[build-dependencies]` to access
 # `rudzio::build::expose_bins(...)` for cross-crate aggregator test

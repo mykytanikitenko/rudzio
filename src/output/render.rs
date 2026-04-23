@@ -24,7 +24,7 @@ use crossbeam_channel::{Receiver, Sender, select};
 use super::color::ColorPolicy;
 use super::events::{LifecycleEvent, PipeChunk, StdStream, TestId, TestState, TestStateKind};
 use crate::config::{Format, OutputMode};
-use crate::suite::TestOutcome;
+use crate::suite::{TeardownResult, TestOutcome};
 
 const REDRAW_INTERVAL: Duration = Duration::from_millis(50);
 const HINT_MAX_WIDTH: usize = 120;
@@ -52,6 +52,27 @@ pub struct Drawer {
 struct RuntimeSlot {
     runtime_name: &'static str,
     current: Option<TestId>,
+    /// Suite-lifecycle activity occupying this slot. While a suite's
+    /// setup or teardown is in flight, no test runs on the slot's
+    /// thread, so the live region renders this in place of the
+    /// usual running-test row.
+    lifecycle: Option<SlotLifecycle>,
+}
+
+/// A suite-level operation currently occupying a runtime slot. The
+/// drawer paints this in the live region with an elapsed counter
+/// just like a running test.
+#[derive(Debug, Clone, Copy)]
+struct SlotLifecycle {
+    kind: LifecyclePhase,
+    suite: &'static str,
+    started_at: Instant,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LifecyclePhase {
+    Setup,
+    Teardown,
 }
 
 #[derive(Debug, Default)]
@@ -63,6 +84,7 @@ struct Summary {
     panicked: usize,
     cancelled: usize,
     benched: usize,
+    teardown_failures: usize,
     failures: Vec<FailureRecord>,
     started_at: Option<Instant>,
 }
@@ -163,6 +185,7 @@ impl Drawer {
                 let entry = self.slots.entry(thread).or_insert(RuntimeSlot {
                     runtime_name,
                     current: None,
+                    lifecycle: None,
                 });
                 entry.runtime_name = runtime_name;
                 entry.current = Some(test_id);
@@ -203,6 +226,106 @@ impl Drawer {
                 let _unused = self.terminal.write_all(b"\n");
                 self.last_live_rows = 0;
             }
+            LifecycleEvent::SuiteSetupStarted {
+                runtime_name,
+                suite,
+                thread,
+                at,
+            } => {
+                self.handle_suite_lifecycle_start(LifecyclePhase::Setup, runtime_name, suite, thread, at);
+            }
+            LifecycleEvent::SuiteSetupFinished {
+                runtime_name,
+                suite,
+                thread,
+                elapsed,
+                error,
+            } => {
+                self.handle_suite_lifecycle_finish(
+                    LifecyclePhase::Setup,
+                    runtime_name,
+                    suite,
+                    thread,
+                    elapsed,
+                    error.map(LifecycleFailure::Error),
+                );
+            }
+            LifecycleEvent::SuiteTeardownStarted {
+                runtime_name,
+                suite,
+                thread,
+                at,
+            } => {
+                self.handle_suite_lifecycle_start(
+                    LifecyclePhase::Teardown,
+                    runtime_name,
+                    suite,
+                    thread,
+                    at,
+                );
+            }
+            LifecycleEvent::SuiteTeardownFinished {
+                runtime_name,
+                suite,
+                thread,
+                elapsed,
+                result,
+            } => {
+                let failure = match result {
+                    TeardownResult::Ok => None,
+                    TeardownResult::Err(msg) => Some(LifecycleFailure::Error(msg)),
+                    TeardownResult::Panicked(msg) => Some(LifecycleFailure::Panicked(msg)),
+                };
+                if failure.is_some() {
+                    self.summary.teardown_failures =
+                        self.summary.teardown_failures.saturating_add(1);
+                }
+                self.handle_suite_lifecycle_finish(
+                    LifecyclePhase::Teardown,
+                    runtime_name,
+                    suite,
+                    thread,
+                    elapsed,
+                    failure,
+                );
+            }
+            LifecycleEvent::TestTeardownFailed {
+                module_path,
+                test_name,
+                runtime_name,
+                result,
+            } => {
+                if matches!(self.output_mode, OutputMode::Live) {
+                    self.clear_live_region();
+                }
+                let display = format!("{module_path}::{test_name}");
+                let (label, label_text, message) = match result {
+                    TeardownResult::Ok => return,
+                    TeardownResult::Err(msg) => (StatusLabel::Fail, "error", msg),
+                    TeardownResult::Panicked(msg) => (StatusLabel::Panic, "panic", msg),
+                };
+                let tag_rendered = render_status_tag(label, self.color);
+                let lhs_display = format!("teardown {display}");
+                let trailing = format!("<{runtime_name}>");
+                let lhs_naked = format!("{:width$} {lhs_display}", "", width = STATUS_TAG_WIDTH);
+                let lhs_rendered = format!("{tag_rendered} {lhs_display}");
+                let header = render_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
+                let _unused = self.terminal.write_all(header.as_bytes());
+                let _unused = self.terminal.write_all(b"\n");
+                let body = format!("  {label_text}: {message}\n");
+                let painted = self.color.red(&body);
+                let _unused = self.terminal.write_all(painted.as_bytes());
+                self.summary.teardown_failures =
+                    self.summary.teardown_failures.saturating_add(1);
+                self.summary.failures.push(FailureRecord {
+                    display_name: format!("teardown {display}"),
+                    outcome_label: "TEST TEARDOWN FAILED",
+                    message: format!("{label_text}: {message}"),
+                    captured_stderr: String::new(),
+                    captured_stdout: String::new(),
+                });
+                self.last_live_rows = 0;
+            }
             LifecycleEvent::TestCompleted { test_id, outcome } => {
                 // Drain the pipe aggressively so any bytes the test
                 // wrote just before the runtime thread flushed land
@@ -236,6 +359,100 @@ impl Drawer {
                 }
             }
         }
+    }
+
+    fn handle_suite_lifecycle_start(
+        &mut self,
+        kind: LifecyclePhase,
+        runtime_name: &'static str,
+        suite: &'static str,
+        thread: ThreadId,
+        at: Instant,
+    ) {
+        if !self.slots.contains_key(&thread) {
+            self.slot_order.push(thread);
+        }
+        let entry = self.slots.entry(thread).or_insert(RuntimeSlot {
+            runtime_name,
+            current: None,
+            lifecycle: None,
+        });
+        entry.runtime_name = runtime_name;
+        entry.lifecycle = Some(SlotLifecycle {
+            kind,
+            suite,
+            started_at: at,
+        });
+        if matches!(self.output_mode, OutputMode::Plain) {
+            let phase_word = match kind {
+                LifecyclePhase::Setup => "setup",
+                LifecyclePhase::Teardown => "teardown",
+            };
+            let line = format!(
+                "{phase_word:<8} {suite} ... started <{runtime_name}>\n",
+            );
+            let _unused = self.terminal.write_all(line.as_bytes());
+        }
+    }
+
+    fn handle_suite_lifecycle_finish(
+        &mut self,
+        kind: LifecyclePhase,
+        runtime_name: &'static str,
+        suite: &'static str,
+        thread: ThreadId,
+        elapsed: Duration,
+        failure: Option<LifecycleFailure>,
+    ) {
+        if let Some(slot) = self.slots.get_mut(&thread) {
+            slot.lifecycle = None;
+        }
+        if matches!(self.output_mode, OutputMode::Live) {
+            self.clear_live_region();
+        }
+        let phase_word = match kind {
+            LifecyclePhase::Setup => "setup",
+            LifecyclePhase::Teardown => "teardown",
+        };
+        let label = match (kind, &failure) {
+            (LifecyclePhase::Setup, None) => StatusLabel::SetupOk,
+            // Suite-level setup failure renders as [FAIL]; the
+            // [SETUP] tag is reserved for per-test SetupFailed.
+            (LifecyclePhase::Setup, Some(LifecycleFailure::Error(_))) => StatusLabel::Fail,
+            (LifecyclePhase::Setup, Some(LifecycleFailure::Panicked(_))) => StatusLabel::Panic,
+            (LifecyclePhase::Teardown, None) => StatusLabel::Ok,
+            (LifecyclePhase::Teardown, Some(LifecycleFailure::Error(_))) => StatusLabel::Fail,
+            (LifecyclePhase::Teardown, Some(LifecycleFailure::Panicked(_))) => StatusLabel::Panic,
+        };
+        let tag_rendered = render_status_tag(label, self.color);
+        let display = format!("{phase_word} {suite}");
+        let trailing = format!("<{runtime_name}, {elapsed:.2?}>");
+        let lhs_naked = format!("{:width$} {display}", "", width = STATUS_TAG_WIDTH);
+        let lhs_rendered = format!("{tag_rendered} {display}");
+        let header = render_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
+        let _unused = self.terminal.write_all(header.as_bytes());
+        let _unused = self.terminal.write_all(b"\n");
+
+        if let Some(failure) = failure {
+            let (label_text, message) = match failure {
+                LifecycleFailure::Error(msg) => ("error", msg),
+                LifecycleFailure::Panicked(msg) => ("panic", msg),
+            };
+            let body = format!("  {label_text}: {message}\n");
+            let painted = self.color.red(&body);
+            let _unused = self.terminal.write_all(painted.as_bytes());
+            self.summary.failures.push(FailureRecord {
+                display_name: format!("{phase_word} {suite}"),
+                outcome_label: match kind {
+                    LifecyclePhase::Setup => "SUITE SETUP FAILED",
+                    LifecyclePhase::Teardown => "SUITE TEARDOWN FAILED",
+                },
+                message: format!("{label_text}: {message}"),
+                captured_stderr: String::new(),
+                captured_stdout: String::new(),
+            });
+        }
+        self.last_live_rows = 0;
     }
 
     fn handle_pipe(&mut self, chunk: PipeChunk) {
@@ -344,18 +561,24 @@ impl Drawer {
         let mut rows = 1_usize;
         for thread in &self.slot_order {
             let slot = self.slots.get(thread);
-            let (status_line, hint_line) = match slot.and_then(|s| {
+            let (status_line, hint_line) = if let Some(s) = slot
+                && let Some(lifecycle) = s.lifecycle
+            {
+                (
+                    lifecycle_line(s.runtime_name, &lifecycle, self.color),
+                    lifecycle_hint(self.color),
+                )
+            } else if let Some((s, state)) = slot.and_then(|s| {
                 s.current
                     .and_then(|id| self.tests.get(&id).map(|st| (s, st)))
             }) {
-                Some((slot, state)) => (
-                    running_line(slot.runtime_name, state, self.color),
+                (
+                    running_line(s.runtime_name, state, self.color),
                     running_hint(state, self.color),
-                ),
-                None => {
-                    let name = slot.map_or("unknown", |s| s.runtime_name);
-                    (idle_line(name, self.color), idle_hint(self.color))
-                }
+                )
+            } else {
+                let name = slot.map_or("unknown", |s| s.runtime_name);
+                (idle_line(name, self.color), idle_hint(self.color))
             };
             buf.push_str(&status_line);
             buf.push('\n');
@@ -423,7 +646,8 @@ impl Drawer {
         let failed_total = self.summary.failed
             + self.summary.panicked
             + self.summary.timed_out
-            + self.summary.cancelled;
+            + self.summary.cancelled
+            + self.summary.teardown_failures;
         let overall = if failed_total == 0 {
             self.color.green("ok")
         } else {
@@ -431,10 +655,11 @@ impl Drawer {
         };
         let summary_line = format!(
             "\ntest result: {overall}. {} passed; {failed_total} failed; \
-             {} benched; {} ignored; finished in {:.2}s\n",
+             {} benched; {} ignored; {} teardown failed; finished in {:.2}s\n",
             self.summary.passed,
             self.summary.benched,
             self.summary.ignored,
+            self.summary.teardown_failures,
             total_elapsed.as_secs_f64(),
         );
         let _unused = self.terminal.write_all(summary_line.as_bytes());
@@ -446,7 +671,9 @@ impl Summary {
     fn record_outcome(&mut self, outcome: &TestOutcome) {
         match outcome {
             TestOutcome::Passed { .. } => self.passed = self.passed.saturating_add(1),
-            TestOutcome::Failed { .. } => self.failed = self.failed.saturating_add(1),
+            TestOutcome::Failed { .. } | TestOutcome::SetupFailed { .. } => {
+                self.failed = self.failed.saturating_add(1);
+            }
             TestOutcome::Panicked { .. } => self.panicked = self.panicked.saturating_add(1),
             TestOutcome::TimedOut => self.timed_out = self.timed_out.saturating_add(1),
             TestOutcome::Cancelled => self.cancelled = self.cancelled.saturating_add(1),
@@ -464,6 +691,7 @@ fn is_failure(outcome: &TestOutcome) -> bool {
     match outcome {
         TestOutcome::Failed { .. }
         | TestOutcome::Panicked { .. }
+        | TestOutcome::SetupFailed { .. }
         | TestOutcome::TimedOut
         | TestOutcome::Cancelled => true,
         TestOutcome::Benched { report, .. } => !report.is_success(),
@@ -492,6 +720,21 @@ enum StatusLabel {
     BenchErr,
     Run,
     Idle,
+    /// Failed test outcome where the per-test context (`Suite::context`)
+    /// returned `Err` before the body could run. Distinct from `Fail`
+    /// so the user sees that the test never executed.
+    Setup,
+    /// Suite-level setup completed successfully — bright variant of
+    /// `Ok` reserved for lifecycle lines so they stand apart from the
+    /// per-test stream.
+    SetupOk,
+}
+
+/// What went wrong in a suite-lifecycle finish event.
+#[derive(Debug)]
+enum LifecycleFailure {
+    Error(String),
+    Panicked(String),
 }
 
 fn status_label_from_outcome(outcome: &TestOutcome) -> StatusLabel {
@@ -499,6 +742,7 @@ fn status_label_from_outcome(outcome: &TestOutcome) -> StatusLabel {
         TestOutcome::Passed { .. } => StatusLabel::Ok,
         TestOutcome::Failed { .. } => StatusLabel::Fail,
         TestOutcome::Panicked { .. } => StatusLabel::Panic,
+        TestOutcome::SetupFailed { .. } => StatusLabel::Setup,
         TestOutcome::TimedOut => StatusLabel::Timeout,
         TestOutcome::Cancelled => StatusLabel::Cancel,
         TestOutcome::Benched { report, .. } => {
@@ -516,7 +760,7 @@ fn status_label_from_outcome(outcome: &TestOutcome) -> StatusLabel {
 /// columns line up across every status kind.
 fn render_status_tag(label: StatusLabel, color: ColorPolicy) -> String {
     let word = match label {
-        StatusLabel::Ok => "OK",
+        StatusLabel::Ok | StatusLabel::SetupOk => "OK",
         StatusLabel::Fail => "FAIL",
         StatusLabel::Panic => "PANIC",
         StatusLabel::Timeout => "TIMEOUT",
@@ -525,12 +769,16 @@ fn render_status_tag(label: StatusLabel, color: ColorPolicy) -> String {
         StatusLabel::Bench | StatusLabel::BenchErr => "BENCH",
         StatusLabel::Run => "RUN",
         StatusLabel::Idle => "IDLE",
+        StatusLabel::Setup => "SETUP",
     };
     let naked = format!("[{word}]");
     let visible = naked.chars().count();
     let painted = match label {
-        StatusLabel::Ok | StatusLabel::Bench => color.green(&naked),
-        StatusLabel::Fail | StatusLabel::Panic | StatusLabel::BenchErr => color.red(&naked),
+        StatusLabel::Ok | StatusLabel::Bench | StatusLabel::SetupOk => color.green(&naked),
+        StatusLabel::Fail
+        | StatusLabel::Panic
+        | StatusLabel::BenchErr
+        | StatusLabel::Setup => color.red(&naked),
         StatusLabel::Timeout | StatusLabel::Cancel | StatusLabel::Run => color.yellow(&naked),
         StatusLabel::Ignore | StatusLabel::Idle => color.dim(&naked),
     };
@@ -548,7 +796,8 @@ fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
     match outcome {
         TestOutcome::Passed { elapsed }
         | TestOutcome::Failed { elapsed, .. }
-        | TestOutcome::Panicked { elapsed } => {
+        | TestOutcome::Panicked { elapsed }
+        | TestOutcome::SetupFailed { elapsed, .. } => {
             format!("<{runtime_name}, {elapsed:.2?}>")
         }
         TestOutcome::TimedOut | TestOutcome::Cancelled => format!("<{runtime_name}>"),
@@ -617,6 +866,7 @@ fn outcome_label(outcome: &TestOutcome) -> &'static str {
     match outcome {
         TestOutcome::Failed { .. } => "FAILED",
         TestOutcome::Panicked { .. } => "PANICKED",
+        TestOutcome::SetupFailed { .. } => "SETUP FAILED",
         TestOutcome::TimedOut => "TIMED OUT",
         TestOutcome::Cancelled => "CANCELLED",
         TestOutcome::Benched { .. } => "bench had errors",
@@ -627,6 +877,9 @@ fn outcome_label(outcome: &TestOutcome) -> &'static str {
 fn outcome_message(outcome: &TestOutcome) -> String {
     match outcome {
         TestOutcome::Failed { message, .. } => message.clone(),
+        TestOutcome::SetupFailed { message, .. } => {
+            format!("test setup failed: {message}")
+        }
         TestOutcome::TimedOut => "test exceeded its timeout".to_owned(),
         TestOutcome::Cancelled => "test was cancelled before completion".to_owned(),
         TestOutcome::Panicked { .. } | TestOutcome::Passed { .. } | TestOutcome::Benched { .. } => {
@@ -727,6 +980,28 @@ fn running_hint(state: &TestState, color: ColorPolicy) -> String {
         &state.last_output_line
     };
     color.dim(&format!("              ↳ {hint}"))
+}
+
+fn lifecycle_line(runtime: &str, lifecycle: &SlotLifecycle, color: ColorPolicy) -> String {
+    let prefix = format!("{runtime:<RUNTIME_PREFIX_WIDTH$}");
+    let tag = render_status_tag(StatusLabel::Run, color);
+    let phase_word = match lifecycle.kind {
+        LifecyclePhase::Setup => "setup",
+        LifecyclePhase::Teardown => "teardown",
+    };
+    let display = format!("{phase_word} {}", lifecycle.suite);
+    let elapsed = lifecycle.started_at.elapsed();
+    let trailing = format!("<{elapsed:.2?}>");
+    let lhs_naked = format!(
+        "{prefix}{pad} {display}",
+        pad = " ".repeat(STATUS_TAG_WIDTH),
+    );
+    let lhs_rendered = format!("{prefix}{tag} {display}");
+    render_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width())
+}
+
+fn lifecycle_hint(color: ColorPolicy) -> String {
+    color.dim("              ↳ (suite lifecycle in progress)")
 }
 
 /// Spawn the drawer thread. Returns the join handle; the caller

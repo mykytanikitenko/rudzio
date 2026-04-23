@@ -5,10 +5,14 @@ edition = { workspace = true }
 publish = false
 description = "Workspace-wide test runner: one #[rudzio::main] binary that aggregates `linkme`-collected tokens from rudzio's own dogfood suite, macro-internals' parser tests, and rudzio-fixtures's integration tests (via `#[path]` + `rudzio::build::expose_bins` so `env!(CARGO_BIN_EXE_...)` resolves)."
 
+[[bin]]
+name = "rudzio-test-runner"
+test = false
+
 [dependencies]
 anyhow = { workspace = true }
 libc = { workspace = true }
-rudzio = { workspace = true, features = ["common", "runtime-tokio-multi-thread", "runtime-tokio-current-thread", "runtime-tokio-local", "runtime-compio", "runtime-embassy", "runtime-futures"] }
+rudzio = { workspace = true, features = ["build", "common", "runtime-tokio-multi-thread", "runtime-tokio-current-thread", "runtime-tokio-local", "runtime-compio", "runtime-embassy", "runtime-futures"] }
 # Needed so the `#[path]`-included macro-internals test files can
 # `use rudzio_macro_internals::*`.
 rudzio-macro-internals = { workspace = true }

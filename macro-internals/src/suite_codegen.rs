@@ -171,6 +171,16 @@ fn generate_per_config(
                 let runtime_name: &'static str =
                     ::rudzio::runtime::Runtime::name(&rt);
 
+                // Stable label for this suite — `module_path!()` at the
+                // suite-macro expansion site, joined with the wrapped
+                // module's identifier. Used by reporter lifecycle events
+                // so the user can see which suite is in setup/teardown.
+                let suite_label: &'static str = ::core::concat!(
+                    ::core::module_path!(),
+                    "::",
+                    ::core::stringify!(#mod_name),
+                );
+
                 // Step 2: classify ignored vs active. Bench-annotated tests
                 // are reported as ignored (with a short reason) when
                 // `--no-bench` is set, so the final summary still accounts
@@ -204,25 +214,68 @@ fn generate_per_config(
                     ::rudzio::runtime::Runtime::block_on(&rt, async {
                         let mut summary = summary;
 
-                        let suite = match <
-                            #suite_base::<'_, #runtime_type> as ::rudzio::context::Suite<'_, #runtime_type>
-                        >::setup(&rt, req.root_token.clone(), req.config).await {
-                            Ok(s) => s,
-                            Err(e) => {
-                                let msg = ::std::format!(
-                                    "FATAL: failed to create suite context [{}]: {}",
-                                    runtime_name, e,
+                        reporter.report_suite_setup_started(runtime_name, suite_label);
+                        let __rudzio_setup_start = ::std::time::Instant::now();
+                        // catch_unwind around the user's `Suite::setup` so a
+                        // panic doesn't unwind through the runtime thread —
+                        // the runner's join handler would catch it as a
+                        // generic "runtime thread panicked" with no link to
+                        // the actual suite. Catching here surfaces the
+                        // panic message in the same lifecycle line that an
+                        // Err produces.
+                        let __rudzio_setup_outcome =
+                            ::std::panic::AssertUnwindSafe(<
+                                #suite_base::<'_, #runtime_type> as ::rudzio::context::Suite<'_, #runtime_type>
+                            >::setup(&rt, req.root_token.clone(), req.config))
+                                .catch_unwind()
+                                .await;
+                        let __rudzio_setup_elapsed = __rudzio_setup_start.elapsed();
+                        let suite = match __rudzio_setup_outcome {
+                            ::std::result::Result::Ok(::std::result::Result::Ok(s)) => {
+                                reporter.report_suite_setup_finished(
+                                    runtime_name,
+                                    suite_label,
+                                    __rudzio_setup_elapsed,
+                                    ::core::option::Option::None,
                                 );
-                                reporter.report_warning(&msg);
+                                s
+                            }
+                            ::std::result::Result::Ok(::std::result::Result::Err(e)) => {
+                                let __rudzio_err_msg = ::std::format!("{}", e);
+                                reporter.report_suite_setup_finished(
+                                    runtime_name,
+                                    suite_label,
+                                    __rudzio_setup_elapsed,
+                                    ::core::option::Option::Some(&__rudzio_err_msg),
+                                );
                                 for tok in active.iter() {
                                     reporter.report_outcome(
                                         *tok,
                                         runtime_name,
-                                        ::rudzio::suite::TestOutcome::Panicked {
-                                            elapsed: ::std::time::Duration::ZERO,
-                                        },
+                                        ::rudzio::suite::TestOutcome::Cancelled,
                                     );
-                                    summary.panicked += 1;
+                                    summary.cancelled += 1;
+                                }
+                                return summary;
+                            }
+                            ::std::result::Result::Err(payload) => {
+                                let __rudzio_panic_msg = ::std::format!(
+                                    "panic: {}",
+                                    ::rudzio::suite::panic_payload_message(&*payload),
+                                );
+                                reporter.report_suite_setup_finished(
+                                    runtime_name,
+                                    suite_label,
+                                    __rudzio_setup_elapsed,
+                                    ::core::option::Option::Some(&__rudzio_panic_msg),
+                                );
+                                for tok in active.iter() {
+                                    reporter.report_outcome(
+                                        *tok,
+                                        runtime_name,
+                                        ::rudzio::suite::TestOutcome::Cancelled,
+                                    );
+                                    summary.cancelled += 1;
                                 }
                                 return summary;
                             }
@@ -279,7 +332,10 @@ fn generate_per_config(
                         while let ::std::option::Option::Some((tok, outcome)) = in_flight.next().await {
                             match &outcome {
                                 ::rudzio::suite::TestOutcome::Passed { .. } => summary.passed += 1,
-                                ::rudzio::suite::TestOutcome::Failed { .. } => summary.failed += 1,
+                                ::rudzio::suite::TestOutcome::Failed { .. }
+                                | ::rudzio::suite::TestOutcome::SetupFailed { .. } => {
+                                    summary.failed += 1;
+                                }
                                 ::rudzio::suite::TestOutcome::Panicked { .. } => summary.panicked += 1,
                                 ::rudzio::suite::TestOutcome::TimedOut => summary.timed_out += 1,
                                 ::rudzio::suite::TestOutcome::Cancelled => summary.cancelled += 1,
@@ -320,24 +376,34 @@ fn generate_per_config(
                         // a live borrow.
                         ::std::mem::drop(in_flight);
 
-                        match ::std::panic::AssertUnwindSafe(suite.teardown())
-                            .catch_unwind()
-                            .await
-                        {
-                            ::std::result::Result::Ok(::std::result::Result::Ok(())) => {}
+                        reporter.report_suite_teardown_started(runtime_name, suite_label);
+                        let __rudzio_teardown_start = ::std::time::Instant::now();
+                        let __rudzio_teardown_outcome =
+                            ::std::panic::AssertUnwindSafe(suite.teardown())
+                                .catch_unwind()
+                                .await;
+                        let __rudzio_teardown_elapsed = __rudzio_teardown_start.elapsed();
+                        let __rudzio_teardown_result = match __rudzio_teardown_outcome {
+                            ::std::result::Result::Ok(::std::result::Result::Ok(())) => {
+                                ::rudzio::suite::TeardownResult::Ok
+                            }
                             ::std::result::Result::Ok(::std::result::Result::Err(e)) => {
-                                reporter.report_warning(&::std::format!(
-                                    "suite teardown failed [{}]: {}",
-                                    runtime_name, e,
-                                ));
+                                summary.teardown_failures += 1;
+                                ::rudzio::suite::TeardownResult::Err(::std::format!("{}", e))
                             }
-                            ::std::result::Result::Err(_) => {
-                                reporter.report_warning(&::std::format!(
-                                    "suite teardown panicked [{}]",
-                                    runtime_name,
-                                ));
+                            ::std::result::Result::Err(payload) => {
+                                summary.teardown_failures += 1;
+                                ::rudzio::suite::TeardownResult::Panicked(
+                                    ::rudzio::suite::panic_payload_message(&*payload),
+                                )
                             }
-                        }
+                        };
+                        reporter.report_suite_teardown_finished(
+                            runtime_name,
+                            suite_label,
+                            __rudzio_teardown_elapsed,
+                            __rudzio_teardown_result,
+                        );
 
                         summary
                     });
@@ -552,13 +618,31 @@ fn generate_per_config(
                     );
 
                     let outcome = 'run: {
-                        #ctx_binding = match suite.context(per_test_token.clone(), config).await {
-                            ::std::result::Result::Ok(c) => c,
-                            ::std::result::Result::Err(e) => {
-                                break 'run ::rudzio::suite::TestOutcome::Failed {
+                        // catch_unwind around `Suite::context` so a
+                        // panic in per-test setup becomes a clean
+                        // SetupFailed outcome with the panic message,
+                        // instead of unwinding through the runtime
+                        // thread and producing a generic "thread
+                        // panicked" diagnostic.
+                        let __rudzio_ctx_outcome = ::std::panic::AssertUnwindSafe(
+                            suite.context(per_test_token.clone(), config),
+                        )
+                            .catch_unwind()
+                            .await;
+                        #ctx_binding = match __rudzio_ctx_outcome {
+                            ::std::result::Result::Ok(::std::result::Result::Ok(c)) => c,
+                            ::std::result::Result::Ok(::std::result::Result::Err(e)) => {
+                                break 'run ::rudzio::suite::TestOutcome::SetupFailed {
+                                    elapsed: start.elapsed(),
+                                    message: ::std::format!("{}", e),
+                                };
+                            }
+                            ::std::result::Result::Err(payload) => {
+                                break 'run ::rudzio::suite::TestOutcome::SetupFailed {
                                     elapsed: start.elapsed(),
                                     message: ::std::format!(
-                                        "failed to create test context: {}", e,
+                                        "panic: {}",
+                                        ::rudzio::suite::panic_payload_message(&*payload),
                                     ),
                                 };
                             }
@@ -571,24 +655,38 @@ fn generate_per_config(
                             start.elapsed(),
                         );
 
-                        let name = token.name;
-                        match ::std::panic::AssertUnwindSafe(ctx.teardown())
-                            .catch_unwind()
-                            .await
+                        // Per-test teardown — already wrapped in
+                        // catch_unwind. Failures route through the
+                        // structured reporter method (no
+                        // `report_warning` escape hatch) so they show
+                        // up as a [FAIL] line attributed to the test
+                        // and contribute to teardown_failures.
+                        let __rudzio_test_teardown_result = match
+                            ::std::panic::AssertUnwindSafe(ctx.teardown())
+                                .catch_unwind()
+                                .await
                         {
-                            ::std::result::Result::Ok(::std::result::Result::Ok(())) => {}
+                            ::std::result::Result::Ok(::std::result::Result::Ok(())) => {
+                                ::rudzio::suite::TeardownResult::Ok
+                            }
                             ::std::result::Result::Ok(::std::result::Result::Err(e)) => {
-                                reporter.report_warning(&::std::format!(
-                                    "test teardown failed [{}]: {}",
-                                    name, e,
-                                ));
+                                ::rudzio::suite::TeardownResult::Err(::std::format!("{}", e))
                             }
-                            ::std::result::Result::Err(_) => {
-                                reporter.report_warning(&::std::format!(
-                                    "test teardown panicked [{}]",
-                                    name,
-                                ));
+                            ::std::result::Result::Err(payload) => {
+                                ::rudzio::suite::TeardownResult::Panicked(
+                                    ::rudzio::suite::panic_payload_message(&*payload),
+                                )
                             }
+                        };
+                        if !matches!(
+                            __rudzio_test_teardown_result,
+                            ::rudzio::suite::TeardownResult::Ok,
+                        ) {
+                            reporter.report_test_teardown_failure(
+                                token,
+                                <#runtime_type as ::rudzio::runtime::Runtime<'_>>::name(rt),
+                                __rudzio_test_teardown_result,
+                            );
                         }
 
                         outcome

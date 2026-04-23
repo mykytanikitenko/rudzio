@@ -9,6 +9,10 @@ license = "MIT OR Apache-2.0"
 # `#[rudzio::test]` across the submodules under `tests/`.
 autotests = false
 
+[lib]
+test = false
+doctest = false
+
 [dependencies]
 # `span-locations` exposes `Span::start()` / `Span::end()` even when this
 # crate is compiled as a regular library (for tests or other consumers).
