@@ -8,7 +8,7 @@ description = "Workspace-wide test runner: one #[rudzio::main] binary that aggre
 [dependencies]
 anyhow = { workspace = true }
 libc = { workspace = true }
-rudzio = { workspace = true, features = ["common", "runtime-tokio", "runtime-compio", "runtime-embassy", "runtime-futures"] }
+rudzio = { workspace = true, features = ["common", "runtime-tokio-multi-thread", "runtime-tokio-current-thread", "runtime-tokio-local", "runtime-compio", "runtime-embassy", "runtime-futures"] }
 # Needed so the `#[path]`-included macro-internals test files can
 # `use rudzio_macro_internals::*`.
 rudzio-macro-internals = { workspace = true }

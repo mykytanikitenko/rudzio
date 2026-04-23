@@ -11,7 +11,11 @@ pub mod compio;
 pub mod embassy;
 #[cfg(feature = "runtime-futures")]
 pub mod futures;
-#[cfg(feature = "runtime-tokio")]
+#[cfg(any(
+    feature = "runtime-tokio-multi-thread",
+    feature = "runtime-tokio-current-thread",
+    feature = "runtime-tokio-local",
+))]
 pub mod tokio;
 
 pub use join_error::JoinError;

@@ -23,7 +23,7 @@ syn = { workspace = true, features = ["full", "extra-traits"] }
 # rudzio-macro -> internals) is fine because dev-deps are not part of the
 # normal dependency graph.
 [dev-dependencies]
-rudzio = { workspace = true, features = ["runtime-tokio", "common"] }
+rudzio = { workspace = true, features = ["runtime-tokio-multi-thread", "common"] }
 anyhow = "=1.0.102"
 
 [[test]]

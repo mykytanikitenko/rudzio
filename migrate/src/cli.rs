@@ -45,7 +45,8 @@ impl RuntimeChoice {
 
     pub const fn cargo_feature(self) -> &'static str {
         match self {
-            Self::TokioMt | Self::TokioCt => "runtime-tokio",
+            Self::TokioMt => "runtime-tokio-multi-thread",
+            Self::TokioCt => "runtime-tokio-current-thread",
             Self::Compio => "runtime-compio",
             Self::FuturesMt | Self::FuturesCt => "runtime-futures",
         }
