@@ -76,6 +76,10 @@ pub fn rewrite_file(
         stripped_any_test_context_attr: false,
     };
     walker.visit_file_mut(file);
+    let cfg_attr_rewrites = rewrite_cfg_attr_test_in_file(file);
+    if cfg_attr_rewrites > 0 {
+        walker.rewrite.changed = true;
+    }
     collect_suite_crate_idents(file, &mut walker.rewrite.used_crate_idents);
     walker.rewrite
 }
@@ -1051,6 +1055,72 @@ fn rewrite_cfg_test_to_cfg_any(attrs: &mut Vec<Attribute>) {
             *attr = syn::parse_quote!(#[cfg(any(test, rudzio_test))]);
         }
     }
+}
+
+/// File-wide pass that rewrites every bare `#[cfg_attr(test, ...)]`
+/// to `#[cfg_attr(any(test, rudzio_test), ...)]`. Motivation: a struct
+/// in `src/**` carrying `#[cfg_attr(test, derive(fake::Dummy))]` is
+/// used by `#[cfg(any(test, rudzio_test))] mod tests` in the same or
+/// another file of the same crate. Under `cargo rudzio test` the
+/// aggregator compiles the crate as a plain lib with `--cfg
+/// rudzio_test` (no `cfg(test)`), so the derive doesn't fire and the
+/// test fails to typecheck. Broadening the predicate makes the
+/// conditional attr active under both `cargo test` and
+/// `cargo rudzio test`.
+///
+/// Only the bare `cfg_attr(test, ...)` shape is rewritten. Compound
+/// predicates (`all(test, ...)`, `any(test, ...)`, feature gates) are
+/// left alone — same v1-scope policy as `rewrite_cfg_test_to_cfg_any`.
+/// Returns the number of attributes rewritten so the caller can mark
+/// the file as changed.
+fn rewrite_cfg_attr_test_in_file(file: &mut syn::File) -> usize {
+    let mut rw = CfgAttrTestRewriter { rewrites: 0 };
+    rw.visit_file_mut(file);
+    rw.rewrites
+}
+
+struct CfgAttrTestRewriter {
+    rewrites: usize,
+}
+
+impl VisitMut for CfgAttrTestRewriter {
+    fn visit_attribute_mut(&mut self, attr: &mut Attribute) {
+        if rewrite_cfg_attr_test_attr(attr) {
+            self.rewrites += 1;
+        }
+        visit_mut::visit_attribute_mut(self, attr);
+    }
+}
+
+fn rewrite_cfg_attr_test_attr(attr: &mut Attribute) -> bool {
+    if !attr.path().is_ident("cfg_attr") {
+        return false;
+    }
+    let Meta::List(list) = &attr.meta else {
+        return false;
+    };
+    let metas: Punctuated<Meta, syn::Token![,]> = match list
+        .parse_args_with(Punctuated::<Meta, syn::Token![,]>::parse_terminated)
+    {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    let first_is_bare_test = matches!(
+        metas.first(),
+        Some(Meta::Path(p)) if p.is_ident("test")
+    );
+    if !first_is_bare_test {
+        return false;
+    }
+    let rest: Vec<&Meta> = metas.iter().skip(1).collect();
+    let rebuilt: Attribute = if rest.is_empty() {
+        // `#[cfg_attr(test)]` — degenerate; still rewrite predicate.
+        syn::parse_quote!(#[cfg_attr(any(test, rudzio_test))])
+    } else {
+        syn::parse_quote!(#[cfg_attr(any(test, rudzio_test), #(#rest),*)])
+    };
+    *attr = rebuilt;
+    true
 }
 
 fn has_rudzio_suite(attrs: &[Attribute]) -> bool {
