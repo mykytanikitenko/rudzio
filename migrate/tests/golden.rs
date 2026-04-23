@@ -228,6 +228,11 @@ mod tests {
         run_fixture("ambassador_verbatim");
         ::core::result::Result::Ok(())
     }
+    #[::rudzio::test]
+    async fn golden_ambassador_verbatim_with_tests(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("ambassador_verbatim_with_tests");
+        ::core::result::Result::Ok(())
+    }
     /* pre-migration (rudzio-migrate):
     #[test]
     fn golden_dirty_tree_refusal() {

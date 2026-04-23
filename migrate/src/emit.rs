@@ -62,15 +62,29 @@ pub fn process_file(
     }
 
     let mut output = if rewrite.changed {
-        // prettyplease panics on items syn parses as `Verbatim`
-        // (bodyless `fn X(&self) -> Y;` inside an impl block, as
-        // emitted by `#[ambassador::delegate_to_remote_methods]` and
-        // similar macros). Catch it so one unparseable file doesn't
-        // abort the whole run — warn and skip writing instead.
+        // Pre-pass: prettyplease panics on both `ImplItem::Verbatim`
+        // AND `Item::Verbatim` (bodyless `fn X(&self);` items from
+        // delegation macros like `#[ambassador::delegate_to_remote_methods]`).
+        // Replace each offending `Item::Impl` with a
+        // single-line placeholder constant whose name encodes the
+        // index, capturing the impl's original source text
+        // separately. After `prettyplease::unparse` succeeds, the
+        // placeholder line gets spliced out and the original impl
+        // text is stitched in. The rest of the file (the tests
+        // the user actually cares about) unparses normally.
+        let salvaged = salvage_verbatim_impls(&mut tree, &source);
+        // Last-resort safety net: if prettyplease still panics on
+        // some shape we didn't normalise, skip the whole rewrite
+        // with a warning rather than aborting the run.
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             prettyplease::unparse(&tree)
         })) {
-            Ok(s) => s,
+            Ok(mut s) => {
+                if !salvaged.is_empty() {
+                    s = splice_salvaged_verbatim_impls(&s, &salvaged);
+                }
+                s
+            }
             Err(_) => {
                 report.warn(
                     path.to_path_buf(),
@@ -152,6 +166,193 @@ fn splice_bridge_before_first_suite_or_main(output: &str, bridge: &str) -> Strin
             out
         }
     }
+}
+
+/// An `Item::Impl` that prettyplease can't render (because it
+/// carries an `ImplItem::Verbatim`) replaced in-tree by a
+/// single-line placeholder const. The `original_source` is the
+/// exact bytes from the input file; after prettyplease succeeds
+/// on the rest of the tree, the placeholder line gets spliced
+/// back out and the original source gets stitched in — so the
+/// impl survives the round-trip with formatting intact.
+struct SalvagedImpl {
+    /// Index embedded in the placeholder's ident, used to find
+    /// the placeholder line in prettyplease's output.
+    index: usize,
+    /// Exact byte-range text of the original impl from the input
+    /// source, including its outer attributes.
+    original_source: String,
+}
+
+/// Walk `file.items` and nested module bodies. For every
+/// `Item::Impl` that contains any `ImplItem::Verbatim`, capture
+/// the impl's original source text via span byte-range and
+/// replace the item with a placeholder const that prettyplease
+/// can render. Returns one `SalvagedImpl` per replacement.
+fn salvage_verbatim_impls(file: &mut syn::File, source: &str) -> Vec<SalvagedImpl> {
+    let mut out = Vec::new();
+    salvage_verbatim_impls_in_items(&mut file.items, source, &mut out);
+    out
+}
+
+fn salvage_verbatim_impls_in_items(
+    items: &mut Vec<syn::Item>,
+    source: &str,
+    out: &mut Vec<SalvagedImpl>,
+) {
+    for item in items.iter_mut() {
+        let impl_has_verbatim = match item {
+            syn::Item::Impl(i) => i
+                .items
+                .iter()
+                .any(|ii| matches!(ii, syn::ImplItem::Verbatim(_))),
+            _ => false,
+        };
+        if impl_has_verbatim {
+            let original_source = capture_item_source(item, source)
+                .unwrap_or_else(|| quote::ToTokens::to_token_stream(item).to_string());
+            let index = out.len();
+            out.push(SalvagedImpl {
+                index,
+                original_source,
+            });
+            let ident_str = format!("__RUDZIO_MIGRATE_VERBATIM_IMPL_PLACEHOLDER_{index}");
+            let ident = syn::Ident::new(&ident_str, proc_macro2::Span::call_site());
+            let placeholder: syn::Item = syn::parse_quote! {
+                #[allow(dead_code, non_camel_case_types)]
+                const #ident: () = ();
+            };
+            *item = placeholder;
+            continue;
+        }
+        if let syn::Item::Mod(m) = item {
+            if let Some((_, inner)) = &mut m.content {
+                salvage_verbatim_impls_in_items(inner, source, out);
+            }
+        }
+    }
+}
+
+/// Compute the byte range of an item from the source by walking
+/// its span. Uses `proc_macro2`'s `span-locations` feature; the
+/// range covers the outermost attribute through the closing brace.
+fn capture_item_source(item: &syn::Item, source: &str) -> Option<String> {
+    use syn::spanned::Spanned as _;
+    let start = match item {
+        syn::Item::Impl(i) => i
+            .attrs
+            .iter()
+            .map(|a| a.span().byte_range().start)
+            .min()
+            .unwrap_or_else(|| i.impl_token.span.byte_range().start),
+        _ => item.span().byte_range().start,
+    };
+    let end = item.span().byte_range().end;
+    if start < end && end <= source.len() {
+        Some(source[start..end].to_owned())
+    } else {
+        None
+    }
+}
+
+/// After `prettyplease::unparse` renders the tree, each salvaged
+/// impl is visible as a line like `const
+/// __RUDZIO_MIGRATE_VERBATIM_IMPL_PLACEHOLDER_N: () = ();` (with
+/// its `#[allow(...)]` on the line above). This finds the
+/// placeholder block and swaps it back for the original impl
+/// source text captured earlier.
+fn splice_salvaged_verbatim_impls(output: &str, salvaged: &[SalvagedImpl]) -> String {
+    let mut result = output.to_owned();
+    for s in salvaged {
+        let const_line = format!(
+            "const __RUDZIO_MIGRATE_VERBATIM_IMPL_PLACEHOLDER_{}: () = ();",
+            s.index
+        );
+        let Some(const_pos) = result.find(&const_line) else {
+            continue;
+        };
+        // Walk backward to grab the leading `#[allow(...)]` attr
+        // line that prettyplease emits with the placeholder.
+        let block_start = backward_scan_to_attrs(&result, const_pos);
+        let block_end = const_pos + const_line.len();
+        // Indentation of the first replaced byte — carry into each
+        // line of the spliced-in original so nesting stays intact.
+        let indent = indent_at(&result, block_start);
+        let indented = reindent_block(&s.original_source, indent);
+        result.replace_range(block_start..block_end, &indented);
+    }
+    result
+}
+
+/// Walk backward from `const_pos` skipping blank lines and `#[...]`
+/// attribute lines until we hit something else; return the
+/// earliest-attribute byte offset (start of the line the first
+/// encountered attribute lives on).
+fn backward_scan_to_attrs(text: &str, const_pos: usize) -> usize {
+    // `const_pos` points at `c` of the placeholder const; the
+    // newline immediately before it (at const_pos-1) terminates
+    // the attribute line we want to grab. Start earliest at the
+    // beginning of the const line itself, then walk further back
+    // over each preceding `#[...]` line.
+    let mut earliest = const_pos;
+    loop {
+        // Exclude the newline right before `earliest`, otherwise
+        // `rfind('\n')` returns the same newline forever.
+        let search_end = earliest.saturating_sub(1);
+        let Some(prev_newline) = text[..search_end].rfind('\n') else {
+            // Reached start of file — nothing left to consume.
+            if search_end == 0 {
+                break;
+            }
+            let line = text[..search_end].trim_start();
+            if line.starts_with("#[") {
+                earliest = 0;
+            }
+            break;
+        };
+        let line_start = prev_newline + 1;
+        let line = &text[line_start..search_end];
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("#[") {
+            earliest = line_start;
+        } else {
+            break;
+        }
+    }
+    earliest
+}
+
+fn indent_at(text: &str, pos: usize) -> String {
+    let prefix = &text[..pos];
+    let line_start = prefix.rfind('\n').map_or(0, |i| i + 1);
+    let line = &text[line_start..pos];
+    line.chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect()
+}
+
+fn reindent_block(original: &str, indent: String) -> String {
+    // The impl's source already carries its own leading indent
+    // relative to its position in the input file; the placeholder's
+    // `indent` from the post-prettyplease output is typically "".
+    // When `indent` is empty, just return the original as-is so we
+    // don't mangle interior whitespace. Otherwise prepend `indent`
+    // on each line — rare case, mostly defensive.
+    if indent.is_empty() {
+        return original.to_owned();
+    }
+    let mut out = String::with_capacity(original.len() + indent.len() * 8);
+    for (i, line) in original.lines().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&indent);
+        out.push_str(line);
+    }
+    if original.ends_with('\n') {
+        out.push('\n');
+    }
+    out
 }
 
 fn render_bridge_for_file(path: &Path, resolver: &TestContextResolver) -> String {
