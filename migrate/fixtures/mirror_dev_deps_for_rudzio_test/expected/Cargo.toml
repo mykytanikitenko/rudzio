@@ -1,20 +1,22 @@
 [package]
-name = "crate-b"
+name = "mirror_dev_deps_for_rudzio_test"
 version = "0.1.0"
 edition = "2024"
 autotests = false
 
 [dependencies]
 
+[dev-dependencies]
+tempfile = "3"
+rudzio = { version = "0.1", features = ["common", "runtime-tokio-multi-thread"] }
+anyhow = "1.0"
+
 [lib]
 harness = false
 test = false
 
-[dev-dependencies]
-rudzio = { version = "0.1", features = ["common", "runtime-tokio-multi-thread"] }
-anyhow = "1.0"
-
 [target."cfg(rudzio_test)".dependencies]
+tempfile = "3"
 rudzio = { version = "0.1", features = ["common", "runtime-tokio-multi-thread"] }
 anyhow = "1.0"
 
