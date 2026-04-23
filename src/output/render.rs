@@ -524,6 +524,27 @@ impl Drawer {
         let _unused = self.terminal.write_all(header.as_bytes());
         let _unused = self.terminal.write_all(b"\n");
 
+        // Surface the failure message right under the header so the
+        // user sees WHY a test failed/setup-failed/etc. without
+        // scrolling to the end-of-run failures section. One line per
+        // newline in the message; each indented to line up under the
+        // test display, painted in the tag's color.
+        let msg = outcome_message(outcome);
+        if !msg.is_empty() {
+            for line in msg.lines() {
+                let body = format!("  {line}\n");
+                let painted = match label {
+                    StatusLabel::Fail
+                    | StatusLabel::Panic
+                    | StatusLabel::Setup
+                    | StatusLabel::Timeout
+                    | StatusLabel::Cancel => self.color.red(&body),
+                    _ => body,
+                };
+                let _unused = self.terminal.write_all(painted.as_bytes());
+            }
+        }
+
         // In plain mode we already printed bytes live; in live mode
         // this is the first time captured output hits the terminal.
         if matches!(self.output_mode, OutputMode::Live) {
