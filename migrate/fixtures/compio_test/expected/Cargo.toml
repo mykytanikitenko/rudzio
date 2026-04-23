@@ -16,7 +16,6 @@ harness = false
 test = false
 
 [target."cfg(rudzio_test)".dependencies]
-compio = "0.15"
 rudzio = { version = "0.1", features = ["common", "runtime-compio"] }
 anyhow = "1.0"
 

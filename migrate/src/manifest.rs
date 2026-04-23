@@ -42,15 +42,16 @@ pub struct ManifestEdits {
     /// `[lints.rust] unexpected_cfgs = { check-cfg = ['cfg(rudzio_test)'] }`
     /// entry so Rust 1.80+'s unknown-cfg warning doesn't fire.
     pub needs_rudzio_test_cfg: bool,
-    /// Whether a `src/**` file was rewritten into a rudzio suite — in
-    /// which case the aggregator compiles this package as a plain lib
-    /// under `--cfg rudzio_test`, and `[dev-dependencies]` are NOT
-    /// active (they only activate for `cargo test`'s integrated test
-    /// target). We mirror `[dev-dependencies]` into
-    /// `[target.'cfg(rudzio_test)'.dependencies]` so `use ::rudzio::…`
-    /// and friends inside the src-embedded suite resolve during the
-    /// aggregator-driven build, without polluting non-test dep graphs.
-    pub mirror_dev_deps_for_rudzio_test: bool,
+    /// Rust idents referenced from inside src-embedded rudzio suites
+    /// (collected by the rewriter's suite-module walker, filtered
+    /// against `[dev-dependencies]` keys at apply time). When
+    /// non-empty, the named dev-deps are copied into
+    /// `[target."cfg(rudzio_test)".dependencies]` so the aggregator's
+    /// plain-lib build (no dev-deps) can still resolve them under
+    /// `--cfg rudzio_test`. Empty for tests-only migrations —
+    /// `tests/*.rs` gets `#[path]`-included into the aggregator crate,
+    /// which lists the deps itself, so mirroring would be pointless.
+    pub mirror_crate_idents: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,8 +100,8 @@ pub fn apply(manifest_path: &Path, edits: &ManifestEdits) -> Result<bool> {
     for entry in &edits.tests_integration {
         ensure_test_entry(&mut doc, entry);
     }
-    if edits.mirror_dev_deps_for_rudzio_test {
-        mirror_dev_deps_for_rudzio_test_cfg(&mut doc);
+    if !edits.mirror_crate_idents.is_empty() {
+        mirror_dev_deps_for_rudzio_test_cfg(&mut doc, &edits.mirror_crate_idents);
     }
     if edits.needs_rudzio_test_cfg {
         ensure_check_cfg_rudzio_test(&mut doc);
@@ -377,7 +378,23 @@ fn ensure_check_cfg_rudzio_test(doc: &mut DocumentMut) {
 ///
 /// Idempotent: existing `[target.'cfg(rudzio_test)'.dependencies]`
 /// entries are preserved and only missing names are inserted.
-fn mirror_dev_deps_for_rudzio_test_cfg(doc: &mut DocumentMut) {
+/// The Rust ident a dep is referenced by in source: the Cargo.toml
+/// key with hyphens normalised to underscores, unless the user
+/// renamed the package via `package = "…"` (in which case the key
+/// itself IS the source ident — hyphens and all, with the same
+/// `-` → `_` normalisation). Cargo does the same normalisation.
+fn dep_rust_ident(cargo_key: &str, item: &Item) -> String {
+    // `package = "…"` means the key is the user's chosen ident; the
+    // original crate name (in `package`) is only for cargo's registry
+    // lookup. Either way the ident comes from the KEY with `-` → `_`.
+    let _ = item; // retained for future expansion; package-rename already lives on key
+    cargo_key.replace('-', "_")
+}
+
+fn mirror_dev_deps_for_rudzio_test_cfg(
+    doc: &mut DocumentMut,
+    wanted_idents: &std::collections::BTreeSet<String>,
+) {
     const CFG_KEY: &str = "cfg(rudzio_test)";
 
     let snapshot: Vec<(String, Item)> = doc
@@ -386,6 +403,9 @@ fn mirror_dev_deps_for_rudzio_test_cfg(doc: &mut DocumentMut) {
         .and_then(Item::as_table)
         .map(|tbl| {
             tbl.iter()
+                .filter(|(name, item)| {
+                    wanted_idents.contains(&dep_rust_ident(name, item))
+                })
                 .map(|(name, item)| (name.to_owned(), item.clone()))
                 .collect()
         })

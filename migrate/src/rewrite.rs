@@ -35,6 +35,16 @@ pub struct FileRewrite {
     /// Captured originals of converted fns, keyed by the sentinel
     /// index `N` in `__RUDZIO_MIGRATE_ORIGINAL_PLACEHOLDER_N__`.
     pub original_snippets: Vec<String>,
+    /// First-segment path idents referenced from inside every
+    /// `#[rudzio::suite(...)]`-attributed module in this file (user
+    /// `use` / type / expression / macro paths, plus the
+    /// unconditionally-synthesized `rudzio` ident). Drives the
+    /// migrator's `[target."cfg(rudzio_test)".dependencies]` mirror
+    /// — only the dev-deps whose rust ident intersects this set get
+    /// copied, so the emitted block is the minimal subset the src
+    /// test module actually needs. `std`/`core`/`alloc`/`crate`/
+    /// `super`/`self`/`Self` are filtered out.
+    pub used_crate_idents: BTreeSet<String>,
 }
 
 pub fn rewrite_file(
@@ -58,6 +68,7 @@ pub fn rewrite_file(
             runtimes_used: BTreeSet::new(),
             needs_anyhow: false,
             original_snippets: Vec::new(),
+            used_crate_idents: BTreeSet::new(),
         },
         mod_depth: 0,
         file_scope_runtimes: BTreeSet::new(),
@@ -65,7 +76,94 @@ pub fn rewrite_file(
         stripped_any_test_context_attr: false,
     };
     walker.visit_file_mut(file);
+    collect_suite_crate_idents(file, &mut walker.rewrite.used_crate_idents);
     walker.rewrite
+}
+
+/// Walk every `#[rudzio::suite(...)]`-attributed module (recursively, so
+/// nested suites like the per-ctx children emitted by
+/// `split_module_by_ctx_groups` are included) and collect the first
+/// path segment of every `use` / type / expression / macro reference.
+/// Filters out intra-crate (`crate`/`super`/`self`/`Self`) and stdlib
+/// (`std`/`core`/`alloc`) idents. Always inserts `rudzio` when at
+/// least one suite mod is present — the codegen inside `#[rudzio::suite]`
+/// always references `::rudzio::...`.
+fn collect_suite_crate_idents(file: &syn::File, out: &mut BTreeSet<String>) {
+    let mut walker = SuiteModWalker {
+        out,
+        saw_any_suite: false,
+    };
+    syn::visit::Visit::visit_file(&mut walker, file);
+    if walker.saw_any_suite {
+        let _ = walker.out.insert("rudzio".to_owned());
+    }
+}
+
+struct SuiteModWalker<'o> {
+    out: &'o mut BTreeSet<String>,
+    saw_any_suite: bool,
+}
+
+impl<'ast, 'o> syn::visit::Visit<'ast> for SuiteModWalker<'o> {
+    fn visit_item_mod(&mut self, m: &'ast ItemMod) {
+        if has_rudzio_suite(&m.attrs) {
+            self.saw_any_suite = true;
+            let mut collector = CrateIdentCollector { out: self.out };
+            syn::visit::Visit::visit_item_mod(&mut collector, m);
+        }
+        syn::visit::visit_item_mod(self, m);
+    }
+}
+
+struct CrateIdentCollector<'o> {
+    out: &'o mut BTreeSet<String>,
+}
+
+impl<'ast, 'o> syn::visit::Visit<'ast> for CrateIdentCollector<'o> {
+    fn visit_path(&mut self, p: &'ast syn::Path) {
+        if let Some(first) = p.segments.first() {
+            let name = first.ident.to_string();
+            if !is_intra_or_stdlib_ident(&name) {
+                let _ = self.out.insert(name);
+            }
+        }
+        syn::visit::visit_path(self, p);
+    }
+
+    fn visit_item_use(&mut self, u: &'ast syn::ItemUse) {
+        // `use` items carry a `UseTree`, not a `Path`, so
+        // `visit_path` doesn't fire. Walk the tree root-only so
+        // inner segments (`bar`/`qux` in `use foo::{bar, baz::qux};`)
+        // don't get mistaken for crate names.
+        collect_first_use_tree_segment(&u.tree, self.out);
+    }
+}
+
+fn collect_first_use_tree_segment(tree: &syn::UseTree, out: &mut BTreeSet<String>) {
+    match tree {
+        syn::UseTree::Path(p) => insert_ident(&p.ident.to_string(), out),
+        syn::UseTree::Name(n) => insert_ident(&n.ident.to_string(), out),
+        syn::UseTree::Rename(r) => insert_ident(&r.ident.to_string(), out),
+        syn::UseTree::Group(g) => {
+            for t in &g.items {
+                collect_first_use_tree_segment(t, out);
+            }
+        }
+        syn::UseTree::Glob(_) => {}
+    }
+}
+
+fn insert_ident(name: &str, out: &mut BTreeSet<String>) {
+    if !is_intra_or_stdlib_ident(name) {
+        let _ = out.insert(name.to_owned());
+    }
+}
+
+fn is_intra_or_stdlib_ident(name: &str) -> bool {
+    matches!(
+        name,
+        "crate" | "super" | "self" | "Self" | "std" | "core" | "alloc"
+    )
 }
 
 struct Rewriter<'a, 'r> {

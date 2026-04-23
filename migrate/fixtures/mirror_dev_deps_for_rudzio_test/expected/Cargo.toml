@@ -16,7 +16,6 @@ harness = false
 test = false
 
 [target."cfg(rudzio_test)".dependencies]
-tempfile = "3"
 rudzio = { version = "0.1", features = ["common", "runtime-tokio-multi-thread"] }
 anyhow = "1.0"
 
