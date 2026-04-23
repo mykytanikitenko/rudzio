@@ -11,7 +11,6 @@ pub fn answer() -> i32 {
     ]
 )]
 mod tests {
-    use ::rudzio::common::context::Test;
     use super::*;
     /* pre-migration (rudzio-migrate):
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -20,7 +19,7 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn runs_on_multi_thread(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn runs_on_multi_thread() -> ::anyhow::Result<()> {
         assert_eq!(answer(), 42);
         ::core::result::Result::Ok(())
     }

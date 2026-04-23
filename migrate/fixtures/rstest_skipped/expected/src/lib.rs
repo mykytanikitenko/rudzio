@@ -11,7 +11,6 @@ pub fn prefix_matches(haystack: &str, needle: &str) -> bool {
     ]
 )]
 mod tests {
-    use ::rudzio::common::context::Test;
     use super::*;
     use rstest::rstest;
     /* pre-migration (rudzio-migrate):
@@ -21,7 +20,7 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn baseline_works(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn baseline_works() -> ::anyhow::Result<()> {
         assert!(prefix_matches("hello", "he"));
         ::core::result::Result::Ok(())
     }

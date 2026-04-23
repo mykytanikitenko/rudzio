@@ -8,7 +8,6 @@
     ]
 )]
 mod tests {
-    use ::rudzio::common::context::Test;
     /* pre-migration (rudzio-migrate):
     #[test]
     #[ignore]
@@ -16,7 +15,7 @@ mod tests {
     */
     #[::rudzio::test]
     #[ignore]
-    async fn bare_ignore(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn bare_ignore() -> ::anyhow::Result<()> {
         ::core::result::Result::Ok(())
     }
     /* pre-migration (rudzio-migrate):
@@ -26,7 +25,7 @@ mod tests {
     */
     #[::rudzio::test]
     #[ignore = "reason as name-value"]
-    async fn named_ignore(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn named_ignore() -> ::anyhow::Result<()> {
         ::core::result::Result::Ok(())
     }
     /* pre-migration (rudzio-migrate):
@@ -36,7 +35,7 @@ mod tests {
     */
     #[::rudzio::test]
     #[ignore("reason as list-literal")]
-    async fn list_literal_ignore(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn list_literal_ignore() -> ::anyhow::Result<()> {
         ::core::result::Result::Ok(())
     }
     /* pre-migration (rudzio-migrate):
@@ -44,7 +43,7 @@ mod tests {
     fn not_ignored() {}
     */
     #[::rudzio::test]
-    async fn not_ignored(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn not_ignored() -> ::anyhow::Result<()> {
         ::core::result::Result::Ok(())
     }
 }

@@ -11,7 +11,6 @@ use tests_subdir_layout::shout;
 )]
 mod tests {
     use super::*;
-    use ::rudzio::common::context::Test;
     /* pre-migration (rudzio-migrate):
     #[test]
     fn shouts_loud() {
@@ -19,7 +18,7 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn shouts_loud(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn shouts_loud() -> ::anyhow::Result<()> {
         assert_eq!(shout("hi"), "HI");
         ::core::result::Result::Ok(())
     }
@@ -30,7 +29,7 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn shouts_empty(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn shouts_empty() -> ::anyhow::Result<()> {
         assert_eq!(shout(""), "");
         ::core::result::Result::Ok(())
     }

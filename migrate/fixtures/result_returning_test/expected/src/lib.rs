@@ -11,7 +11,6 @@ pub fn parse_u8(s: &str) -> Result<u8, std::num::ParseIntError> {
     ]
 )]
 mod tests {
-    use ::rudzio::common::context::Test;
     use super::*;
     /* pre-migration (rudzio-migrate):
     #[test]
@@ -22,7 +21,7 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn parses_cleanly(_ctx: &Test) -> Result<(), std::num::ParseIntError> {
+    async fn parses_cleanly() -> Result<(), std::num::ParseIntError> {
         let n = parse_u8("42")?;
         assert_eq!(n, 42);
         Ok(())

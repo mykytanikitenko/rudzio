@@ -11,7 +11,6 @@ use tests_only_flag::ident;
 )]
 mod tests {
     use super::*;
-    use ::rudzio::common::context::Test;
     /* pre-migration (rudzio-migrate):
     #[test]
     fn integration_passes() {
@@ -19,7 +18,7 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn integration_passes(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn integration_passes() -> ::anyhow::Result<()> {
         assert_eq!(ident("hi"), "hi");
         ::core::result::Result::Ok(())
     }

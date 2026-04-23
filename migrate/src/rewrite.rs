@@ -411,11 +411,12 @@ impl Rewriter<'_, '_> {
         let _inserted = self.rewrite.runtimes_used.insert(runtime);
         self.rewrite.changed = true;
 
-        if !uses_generated_ctx {
-            // For the default common::context path, inject a Test
-            // import so test fn signatures can use the bare name.
-            ensure_test_import(m);
-        }
+        // The previous implementation injected
+        // `use ::rudzio::common::context::Test;` here so synthesized
+        // `_ctx: &Test` parameters resolved. We no longer synthesize
+        // that parameter — zero-arg tests are a first-class shape in
+        // rudzio, handled by the macro — so the import has no caller.
+        let _ = uses_generated_ctx;
     }
 
     /// Post-pass: a file that's a TEST BINARY ROOT under `tests/`
@@ -532,11 +533,12 @@ impl Rewriter<'_, '_> {
             synth_items.push(syn::parse_quote! {
                 use #path;
             });
-        } else {
-            synth_items.push(syn::parse_quote! {
-                use ::rudzio::common::context::Test;
-            });
         }
+        // Previously we also injected
+        // `use ::rudzio::common::context::Test;` here to match the
+        // synthesized `_ctx: &Test` parameter. Zero-arg tests are
+        // a first-class shape in rudzio now, so the parameter is
+        // no longer synthesized and the import has no caller.
         synth_items.extend(fns);
         let _uses_bridge = uses_bridge;
 
@@ -747,12 +749,12 @@ impl Rewriter<'_, '_> {
             f.sig.asyncness = Some(token::Async(f.sig.fn_token.span));
         }
         if f.sig.inputs.is_empty() {
-            // The rudzio::suite macro resolves a bare `Test` at expansion
-            // time using the `test = ...` path in the suite tuple. We
-            // emit `&Test` here and rely on a module-scope `use` that
-            // the module-promotion step injects.
-            let arg: FnArg = syn::parse_quote! { _ctx: &Test };
-            f.sig.inputs.push(arg);
+            // Zero-param tests are a first-class shape in rudzio —
+            // the `#[rudzio::test]` macro accepts them as-is and
+            // fills in the missing context at expansion time. Don't
+            // synthesize `_ctx: &Test`, which would drag a
+            // `use ::rudzio::common::context::Test;` into the mod
+            // for no user-visible benefit.
         } else if !had_resolved_test_context {
             // Leave user's params alone — custom context path. Warn
             // only when the tool has *no* independent knowledge of
@@ -1255,38 +1257,6 @@ fn hoist_inner_attrs_on_mod(m: &mut ItemMod) {
         if matches!(attr.style, syn::AttrStyle::Inner(_)) {
             attr.style = syn::AttrStyle::Outer;
         }
-    }
-}
-
-fn ensure_test_import(m: &mut ItemMod) {
-    let Some((_brace, items)) = &mut m.content else {
-        return;
-    };
-    let already_imported = items.iter().any(|it| {
-        let Item::Use(u) = it else { return false };
-        brings_bare_test_name_into_scope(&u.tree)
-    });
-    if already_imported {
-        return;
-    }
-    let use_item: Item = syn::parse_quote! {
-        use ::rudzio::common::context::Test;
-    };
-    items.insert(0, use_item);
-}
-
-/// True iff the `use` tree binds the bare name `Test` (as a terminal
-/// name or aliased as `Test`) — e.g. `use foo::Test;`,
-/// `use foo::X as Test;`, or `use foo::{A, Test, B};`. Glob imports
-/// and unrelated names containing "Test" as a substring do not count.
-fn brings_bare_test_name_into_scope(tree: &syn::UseTree) -> bool {
-    use syn::UseTree;
-    match tree {
-        UseTree::Name(n) => n.ident == "Test",
-        UseTree::Rename(r) => r.rename == "Test",
-        UseTree::Path(p) => brings_bare_test_name_into_scope(&p.tree),
-        UseTree::Group(g) => g.items.iter().any(brings_bare_test_name_into_scope),
-        UseTree::Glob(_) => false,
     }
 }
 

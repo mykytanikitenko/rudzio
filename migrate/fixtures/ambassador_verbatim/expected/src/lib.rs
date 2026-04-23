@@ -21,7 +21,6 @@ impl std::sync::Arc<MockGenerator> {
     ]
 )]
 mod tests {
-    use ::rudzio::common::context::Test;
     /* pre-migration (rudzio-migrate):
     #[test]
     fn trivial() {
@@ -29,7 +28,7 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn trivial(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn trivial() -> ::anyhow::Result<()> {
         assert!(true);
         ::core::result::Result::Ok(())
     }

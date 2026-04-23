@@ -9,7 +9,6 @@ pub struct ExternalCtx;
     ]
 )]
 mod tests {
-    use ::rudzio::common::context::Test;
     use super::*;
     /* pre-migration (rudzio-migrate):
     #[test_context(ExternalCtx)]

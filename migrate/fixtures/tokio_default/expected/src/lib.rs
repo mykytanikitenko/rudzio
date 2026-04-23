@@ -11,7 +11,6 @@ pub async fn delay() {
     ]
 )]
 mod tests {
-    use ::rudzio::common::context::Test;
     use super::*;
     /* pre-migration (rudzio-migrate):
     #[tokio::test]
@@ -20,7 +19,7 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn delays_cleanly(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn delays_cleanly() -> ::anyhow::Result<()> {
         delay().await;
         ::core::result::Result::Ok(())
     }
