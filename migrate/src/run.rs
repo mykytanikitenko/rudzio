@@ -9,7 +9,13 @@ use std::process::ExitCode;
 use crate::{cli, discovery, emit, manifest, preflight, report, runner_scaffold, test_context};
 
 pub fn entry() -> ExitCode {
-    let args: Vec<String> = std::env::args().collect();
+    entry_with_args(std::env::args().collect())
+}
+
+/// Same as [`entry`] but takes argv explicitly so embedders (e.g.
+/// the `cargo-rudzio migrate` subcommand) can drive the migrator
+/// without relying on the ambient process argv.
+pub fn entry_with_args(args: Vec<String>) -> ExitCode {
     let parsed = match cli::parse(args) {
         Ok(c) => c,
         Err(cli::ParseError::HelpRequested) => {
