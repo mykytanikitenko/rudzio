@@ -29,7 +29,9 @@ rudzio-migrate = { path = "../migrate" }
 toml_edit = { workspace = true }
 
 [dev-dependencies]
+anyhow = { workspace = true }
 rudzio = { path = "..", features = ["common", "runtime-tokio-multi-thread"] }
+tempfile = "=3.10.1"
 
 # Duplicate of the workspace lint set with CLI-appropriate relaxations.
 # Cargo disallows combining `lints.workspace = true` with per-crate

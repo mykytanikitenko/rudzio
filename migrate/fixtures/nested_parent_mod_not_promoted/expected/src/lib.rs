@@ -11,7 +11,7 @@ pub mod outer {
     pub fn inner() -> i32 {
         super::root() + 1
     }
-    #[cfg(test)]
+    #[cfg(any(test, rudzio_test))]
     #[::rudzio::suite(
         [(
             runtime = ::rudzio::runtime::tokio::Multithread::new,

@@ -2,7 +2,7 @@ pub mod ctx;
 pub fn zero() -> u32 {
     0
 }
-#[cfg(test)]
+#[cfg(any(test, rudzio_test))]
 #[::rudzio::suite(
     [(
         runtime = ::rudzio::runtime::tokio::Multithread::new,

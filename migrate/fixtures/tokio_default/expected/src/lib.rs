@@ -1,7 +1,7 @@
 pub async fn delay() {
     tokio::task::yield_now().await;
 }
-#[cfg(test)]
+#[cfg(any(test, rudzio_test))]
 #[::rudzio::suite(
     [(
         runtime = ::rudzio::runtime::tokio::Multithread::new,

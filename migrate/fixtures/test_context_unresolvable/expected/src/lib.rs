@@ -1,5 +1,5 @@
 pub struct ExternalCtx;
-#[cfg(test)]
+#[cfg(any(test, rudzio_test))]
 #[::rudzio::suite(
     [(
         runtime = ::rudzio::runtime::tokio::Multithread::new,

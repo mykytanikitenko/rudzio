@@ -441,31 +441,92 @@ in. `rudzio-migrate` rewrites `#![forbid(unsafe_code)]` →
 `#![deny(unsafe_code)]` in `src/lib.rs` automatically when it detects
 suite-carrying modules.
 
-## Workspace-wide single-binary test runner
+## Running tests
 
-Tests live in `tests/*.rs` (per-crate integration tests), so
-`cargo test -p <crate>` works the way you'd expect. If you also want a single
-binary that runs every crate's tests in one process — one runtime per
-`(runtime, suite)` tuple, one scheduler, one pass of output, tests grouped
-and deduped by the `RuntimeGroupKey` hash — the supported path is:
+There are three ways to run rudzio tests. They coexist — pick whichever
+fits the invocation.
 
+| Command | What runs | Binaries | Use when |
+|---|---|---|---|
+| `cargo test -p <crate>` | One crate's `tests/main.rs` | One per crate `[[test]]` entry | Focused dev loop, single-crate CI matrix jobs. Stock cargo idiom; no rudzio-specific tooling needed. |
+| `cargo rudzio test [ARGS...]` | Every rudzio test in the workspace, in ONE process | One auto-generated `#[rudzio::main]` | Day-to-day workspace-wide runs. `(runtime, suite)` groups dedupe across crates; one setup/teardown per group; one summary; shared resources survive across sibling crates' tests. |
+| `cargo run -p <my-runner>` | Whatever your hand-rolled aggregator includes | One binary you own | You need customization the auto-generator doesn't do — per-runtime feature switches, preprocessing of included files, committed aggregator for offline environments. |
+
+### `cargo test` — per-crate, stock
+
+Each crate's `Cargo.toml` declares:
+
+```toml
+[[test]]
+name = "main"
+path = "tests/main.rs"
+harness = false
 ```
-cargo rudzio test [ARGS...]
+
+with `tests/main.rs` containing `#[rudzio::main] fn main() {}`. `cargo test -p <crate>`
+builds that one binary, runs every `#[rudzio::test]` registered into it via
+`linkme`, exits 0/1 based on the rudzio-level summary. `cargo test --workspace`
+runs each crate's binary in sequence — five crates means five test binaries.
+
+### `cargo rudzio test` — auto-generated single binary
+
+```sh
+cargo install cargo-rudzio
+cargo rudzio test               # build + run the aggregator
+cargo rudzio test some_filter   # forward args to the runner
+cargo rudzio test --skip slow --threads 1 --bench
 ```
 
-`cargo-rudzio` (install with `cargo install cargo-rudzio`, or use
-`cargo run -p cargo-rudzio --` inside this repo) inspects the workspace,
-generates an aggregator crate in `<target-dir>/rudzio-auto-runner/` on every
-invocation, builds it, and runs it. The aggregator depends on every rudzio-
-using member, `#[path]`-includes each member's `tests/*.rs`, and drives
-everything under one `#[rudzio::main]`. ARGS are forwarded to the aggregator
-binary — filter patterns, `--skip`, `--bench`, all the rudzio config flags.
+`cargo-rudzio` inspects the workspace, generates an aggregator crate
+under `<target-dir>/rudzio-auto-runner/` on every invocation, builds it,
+and runs it. The aggregator:
 
-A bin-owning member's `[[bin]]` targets are re-built and exposed via
-`CARGO_BIN_EXE_<name>` automatically (the generated aggregator's `build.rs`
-handles this, per member), so tests that spawn sibling binaries keep
-working. The fallback `rudzio::bin!` / runtime-walk is what makes test
-code portable across per-crate and aggregated modes.
+- Depends on every rudzio-using member (path / git / version — whatever
+  shape your workspace uses).
+- `#[path]`-includes each member's `tests/*.rs` under
+  `mod tests { mod <crate> { mod <file>; … } }` — per-crate namespaces
+  mean sibling test files can share helpers via `use super::helper::*`
+  and the same path works under both per-crate `cargo test` and the
+  aggregator.
+- Auto-exposes every bin-owning member's `[[bin]]` via
+  `CARGO_BIN_EXE_<name>` in its `build.rs`, so tests that spawn sibling
+  binaries keep working.
+- Unions rudzio features across all members so each member's required
+  runtime (`runtime-tokio-multi-thread`, `runtime-compio`, …) is
+  available.
+
+Every `#[rudzio::test]` across every member lands in one `linkme` slice;
+the runner groups tokens by `RuntimeGroupKey` (FNV of `runtime_path ::
+suite_path`), spawns one OS thread per group, constructs the `Suite`
+once, runs every test in that group against that `Suite`, tears down
+once — across crate boundaries, not per file.
+
+Also exposed:
+- `cargo rudzio migrate [ARGS...]` — drives `rudzio-migrate` (same
+  flags as the standalone binary).
+- `cargo rudzio generate-runner [--output DIR]` — regenerates the
+  aggregator without running it; useful for inspection or for committing
+  as the starting point of a hand-rolled runner.
+
+ARGS after the subcommand name are forwarded to the aggregator binary.
+It accepts rudzio's full config flag set — filter patterns, `--skip`,
+`--bench`, `--format`, `--threads`, `--test-timeout`, everything.
+
+### Hand-rolled aggregator
+
+If you need customization the auto-generator doesn't do — different
+feature selections per `(runtime, suite)` group, source-level
+preprocessing of included test files, a committed aggregator so CI can
+build it without `cargo-rudzio` on the PATH — start by generating the
+shape once:
+
+```sh
+cargo rudzio generate-runner --output my-runner
+```
+
+Commit the result, add to your `[workspace] members`, then edit freely.
+The generated output is plain Rust + TOML with no template-language
+fluff — see the next section for the shape.
 
 ### Inspecting the generated aggregator
 

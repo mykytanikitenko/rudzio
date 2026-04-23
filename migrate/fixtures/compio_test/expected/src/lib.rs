@@ -1,7 +1,7 @@
 pub fn answer() -> i32 {
     42
 }
-#[cfg(test)]
+#[cfg(any(test, rudzio_test))]
 #[::rudzio::suite(
     [(
         runtime = ::rudzio::runtime::compio::Compio::new,

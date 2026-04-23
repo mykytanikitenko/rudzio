@@ -270,6 +270,9 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
                 }
             }
         }
+        if pkg_had_conversions {
+            pkg_edits.needs_rudzio_test_cfg = true;
+        }
         if !args.dry_run && pkg_had_conversions {
             match manifest::apply(&pkg.manifest_path, &pkg_edits) {
                 Ok(true) => report.cargo_edit(pkg.manifest_path.clone()),

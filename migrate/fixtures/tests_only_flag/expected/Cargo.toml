@@ -16,3 +16,6 @@ anyhow = "1.0"
 name = "integration"
 path = "tests/integration.rs"
 harness = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rudzio_test)"] }

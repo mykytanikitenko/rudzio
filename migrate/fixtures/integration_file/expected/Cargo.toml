@@ -17,3 +17,6 @@ test = false
 name = "api"
 path = "tests/api.rs"
 harness = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rudzio_test)"] }

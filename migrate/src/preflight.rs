@@ -134,7 +134,7 @@ fn strip_one_newline(s: &str) -> &str {
     ),
     ]
 )]
-#[cfg(test)]
+#[cfg(any(test, rudzio_test))]
 mod tests {
     use super::*;
     use ::rudzio::common::context::Test;
