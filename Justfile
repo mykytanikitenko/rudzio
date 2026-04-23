@@ -44,10 +44,24 @@ check-udeps:
 
 # --- Testing ---
 
-# Run all tests (loads .config/.env so integration tests can reach real APIs)
+# Run the full aggregated rudzio suite via the auto-generated runner.
+# Uses `cargo run -p cargo-rudzio -- test` so the recipe works on a fresh
+# clone without requiring `cargo install cargo-rudzio`.
 test:
     #!/usr/bin/env bash
-    set -a && source .config/.env && set +a
+    if [ -f .config/.env ]; then
+        set -a && source .config/.env && set +a
+    fi
+    cargo run -p cargo-rudzio -- test
+
+# Per-crate stock path: `cargo test --workspace`. Useful when debugging a
+# single crate's integration tests or reproducing what a user who doesn't
+# have cargo-rudzio installed would see.
+test-stock:
+    #!/usr/bin/env bash
+    if [ -f .config/.env ]; then
+        set -a && source .config/.env && set +a
+    fi
     cargo test --workspace
 
 # --- Aggregate ---

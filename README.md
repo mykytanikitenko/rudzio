@@ -467,16 +467,19 @@ handles this, per member), so tests that spawn sibling binaries keep
 working. The fallback `rudzio::bin!` / runtime-walk is what makes test
 code portable across per-crate and aggregated modes.
 
-### Hand-rolling an aggregator
+### Inspecting the generated aggregator
 
-If you need to customize the aggregator (e.g. carry different feature
-selections per runtime, or preprocess test files) you can still hand-roll
-the `test-runner` crate. The auto-generator just produces the same shape:
+The auto-generator writes the aggregator crate to
+`<target-dir>/rudzio-auto-runner/` and leaves it there after the run. If
+you're debugging why a test doesn't show up, open that directory and read
+the generated `Cargo.toml`, `src/main.rs`, `src/tests.rs`, and `build.rs`
+— they're plain, readable Rust + TOML with no template-language fluff.
+The shape is:
 
-`test-runner/Cargo.toml`:
+`rudzio-auto-runner/Cargo.toml`:
 ```toml
 [package]
-name = "test-runner"
+name = "rudzio-auto-runner"
 edition = "2024"
 
 # Own (single-crate) workspace so this crate's feature selections do NOT
@@ -489,7 +492,7 @@ my-crate = { path = "../my-crate" }
 anyhow = "1"
 ```
 
-`test-runner/src/main.rs`:
+`rudzio-auto-runner/src/main.rs`:
 ```rust
 mod tests;
 
@@ -497,32 +500,45 @@ mod tests;
 fn main() {}
 ```
 
-`test-runner/src/tests/mod.rs`:
+`rudzio-auto-runner/src/tests.rs`:
 ```rust
-mod my_crate;
+#[path = "../../my-crate/tests/it.rs"]
+mod my_crate_it;
 ```
 
-`test-runner/src/tests/my_crate.rs`:
-```rust
-#[path = "../../../my-crate/tests/it.rs"]
-mod it;
+Every `#[rudzio::test]` from every included file registers through
+`linkme` into the binary's single `TEST_TOKENS` slice; the runner filters /
+dispatches / reports them all together.
+
+### Excluding specific test files from aggregation
+
+Some `tests/*.rs` files have manifest-dir-relative paths that only resolve
+when compiled as part of their owning crate — the classic case is a
+`trybuild::TestCases` harness pointing at `tests/fixtures/<name>.rs`. Those
+files still want to run under stock `cargo test -p <crate>`, but should be
+skipped by the aggregator.
+
+Add `[package.metadata.rudzio].exclude` to the member's `Cargo.toml`:
+
+```toml
+[package.metadata.rudzio]
+exclude = ["tests/compile.rs"]
 ```
 
-Compile + run: `(cd test-runner && cargo run)`. Every `#[rudzio::test]` from
-every included file registers through `linkme` into the binary's single
-`TEST_TOKENS` slice; the runner filters / dispatches / reports them all
-together.
+Paths are resolved relative to the member's manifest directory. The
+aggregator filters out any `tests/*.rs` whose absolute path matches an
+entry here; stock `cargo test` is unaffected.
 
-One thing to watch:
+### Feature unification
 
-- **Feature unification.** Cargo unifies features across every workspace
-  member's deps. If your aggregator requests features on `rudzio` that
-  the sibling crates don't already have on, those features activate
-  everywhere. Keep the aggregator's feature list the same as the
-  sibling crates', or exclude the aggregator from the parent workspace
-  (`[workspace] exclude = ["test-runner"]`) if you need it to carry a
-  wholly different set. In this repo the feature lists line up, so
-  `test-runner/` lives inside the parent workspace without issues.
+Cargo unifies features across every workspace member's deps. The
+generator's aggregator sits in `<target-dir>/rudzio-auto-runner/` with
+its own empty `[workspace]` stanza, so its feature selection does not
+leak back into the parent workspace. If you hand-roll an aggregator
+(copying the generated shape and committing it to a `my-runner/`
+directory), use the same empty-`[workspace]` trick — or exclude the
+runner from the parent workspace
+(`[workspace] exclude = ["my-runner"]`).
 
 ### Resolving `[[bin]]` paths from tests: `rudzio::bin!`
 
@@ -560,10 +576,12 @@ tests of the crate that declares the `[[bin]]`. Dropping
 aggregator's build has nothing to walk up to either.
 
 Rudzio ships `rudzio::build::expose_bins` (behind the `build` feature)
-for exactly this. Call it once in your aggregator's `build.rs`:
+for exactly this. The auto-generated aggregator's `build.rs` already
+calls the equivalent for you; if you hand-roll an aggregator, call it
+once from your aggregator's `build.rs`:
 
 ```toml
-# test-runner/Cargo.toml
+# my-runner/Cargo.toml
 [dependencies]
 my-bin-crate = { path = "../my-bin-crate" }
 
@@ -571,7 +589,7 @@ my-bin-crate = { path = "../my-bin-crate" }
 rudzio = { version = "0.1", default-features = false, features = ["build"] }
 ```
 ```rust
-// test-runner/build.rs
+// my-runner/build.rs
 fn main() -> Result<(), rudzio::build::Error> {
     rudzio::build::expose_bins("my-bin-crate")
 }
@@ -607,13 +625,14 @@ nested build failure → build script errors with an explicit message.
 Rudzio's own workspace demonstrates every mode side-by-side:
 - `cargo test --workspace` runs each crate's per-crate tests (143 tests
   across rudzio / macro-internals / e2e).
-- `cargo run -p rudzio-test-runner` aggregates **all** of them into one
-  binary — 96 rudzio dogfood tests (exercised under all 6 runtimes) + 17
+- `cargo rudzio test` aggregates **all** of them into one binary — 96
+  rudzio dogfood tests (exercised under all 6 runtimes) + 17
   macro-internals parser tests + 29 e2e integration tests, all scheduled
-  by one `#[rudzio::main]`. `test-runner/build.rs` uses
-  `rudzio::build::expose_bins("rudzio-fixtures")` to make the 30+ fixture
-  binaries reachable from the `rudzio::bin!("<name>")` call sites in
-  those tests.
+  by one `#[rudzio::main]`. The generated
+  `<target-dir>/rudzio-auto-runner/build.rs` wires
+  `rudzio::build::expose_bins(...)` for every bin-owning member so the
+  30+ fixture binaries are reachable from the `rudzio::bin!("<name>")`
+  call sites in those tests.
 
 ## Benchmarks
 

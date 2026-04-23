@@ -90,7 +90,6 @@ members = [
   "macro",
   "macro-internals",
   "migrate",
-  "test-runner",
 ]
 
 [workspace.package]

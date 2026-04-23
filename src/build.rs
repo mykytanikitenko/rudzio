@@ -16,13 +16,16 @@
 //!
 //! Cargo only sets `CARGO_BIN_EXE_<name>` for integration tests of the
 //! crate that declares the `[[bin]]`. If you're running a
-//! workspace-wide test-runner binary that needs to invoke bins from a
+//! workspace-wide aggregator binary that needs to invoke bins from a
 //! *different* crate, either (a) re-declare them as `[[bin]]`s in your
 //! aggregator (tedious, and duplicated when the source crate
 //! adds/removes bins) or (b) call [`expose_bins`] from a `build.rs`.
+//! `cargo rudzio test` already does (b) automatically in the generated
+//! aggregator's `build.rs`; this helper is the manual equivalent for
+//! hand-rolled aggregators.
 //!
 //! ```rust,no_run
-//! // test-runner/build.rs
+//! // my-runner/build.rs
 //! fn main() -> Result<(), rudzio::build::Error> {
 //!     rudzio::build::expose_bins("my-bin-crate")
 //! }
