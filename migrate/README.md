@@ -56,11 +56,25 @@ open about that.
 cargo install --path migrate
 ```
 
+Or via the unified `cargo-rudzio` CLI (installs both the migrator and
+the single-binary test runner):
+
+```sh
+cargo install --path cargo-rudzio
+cargo rudzio migrate --path /path/to/your/crate
+```
+
 Or run from a clone without installing:
 
 ```sh
 cargo run -p rudzio-migrate --release -- --help
+# or
+cargo run -p cargo-rudzio -- migrate --help
 ```
+
+Both entry points drive the same `rudzio_migrate::run::entry` function,
+so behaviour and flags are identical. Use whichever fits your
+install policy.
 
 ## Invocation
 
