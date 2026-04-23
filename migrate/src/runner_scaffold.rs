@@ -90,7 +90,8 @@ fn render_lib_aggregation_template() -> String {
 #![allow(
     unreachable_pub,
     dead_code,
-    reason = \"test binary is a recompile of the lib; visibility and usage lints don't apply here\"
+    unused_crate_dependencies,
+    reason = \"test binary is a recompile of the lib; visibility, usage, and dep-reach lints don't apply here\"
 )]
 
 #[path = \"../src/lib.rs\"]
@@ -150,7 +151,8 @@ fn render_path_include_template(lib_modules: &[LibModuleDecl]) -> String {
 #![allow(
     unreachable_pub,
     dead_code,
-    reason = \"test binary is a recompile of the lib; visibility and usage lints don't apply here\"
+    unused_crate_dependencies,
+    reason = \"test binary is a recompile of the lib; visibility, usage, and dep-reach lints don't apply here\"
 )]
 
 {includes}#[rudzio::main]
@@ -181,6 +183,11 @@ fn render_crate_use_template(crate_lib_name: Option<&str>) -> String {
 //! `#[path]` aggregation here with the lib's `crate::<mod>::...`
 //! paths mirrored, which the tool emits automatically only when a
 //! discoverable `src/lib.rs` is present.
+
+#![allow(
+    unused_crate_dependencies,
+    reason = \"test binary has a different dep set than the lib; unused-crate warnings don't apply here\"
+)]
 
 {crate_use}#[rudzio::main]
 fn main() {{}}
