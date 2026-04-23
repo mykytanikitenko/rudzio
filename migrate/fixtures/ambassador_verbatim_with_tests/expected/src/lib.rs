@@ -11,6 +11,7 @@ impl std::sync::Arc<MockGenerator> {
 pub fn add(a: i32, b: i32) -> i32 {
     a + b
 }
+#[cfg(test)]
 #[::rudzio::suite(
     [(
         runtime = ::rudzio::runtime::tokio::Multithread::new,
@@ -19,7 +20,6 @@ pub fn add(a: i32, b: i32) -> i32 {
     ),
     ]
 )]
-#[cfg(test)]
 mod tests {
     use ::rudzio::common::context::Test;
     use super::*;

@@ -1,6 +1,7 @@
 pub fn parse_u8(s: &str) -> Result<u8, std::num::ParseIntError> {
     s.parse()
 }
+#[cfg(test)]
 #[::rudzio::suite(
     [(
         runtime = ::rudzio::runtime::tokio::Multithread::new,
@@ -9,7 +10,6 @@ pub fn parse_u8(s: &str) -> Result<u8, std::num::ParseIntError> {
     ),
     ]
 )]
-#[cfg(test)]
 mod tests {
     use ::rudzio::common::context::Test;
     use super::*;

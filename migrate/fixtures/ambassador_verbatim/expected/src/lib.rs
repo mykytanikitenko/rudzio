@@ -11,6 +11,7 @@ pub struct MockGenerator;
 impl std::sync::Arc<MockGenerator> {
     fn as_ref(&self) -> &MockGenerator;
 }
+#[cfg(test)]
 #[::rudzio::suite(
     [(
         runtime = ::rudzio::runtime::tokio::Multithread::new,
@@ -19,7 +20,6 @@ impl std::sync::Arc<MockGenerator> {
     ),
     ]
 )]
-#[cfg(test)]
 mod tests {
     use ::rudzio::common::context::Test;
     /* pre-migration (rudzio-migrate):

@@ -390,11 +390,24 @@ impl Rewriter<'_, '_> {
         // body with "an inner attribute is not permitted in this
         // context". Hoist each inner attr to an outer attr on the
         // `mod` item itself — for the common cases
-        // (`#![allow(clippy::…)]`, `#![deny(…)]`, etc.) this is
-        // semantically equivalent: the lints propagate into the
-        // body either way.
+        // (`#![allow(clippy::…)]`, `#![deny(…)]`, `#![expect(…)]`,
+        // etc.) this is semantically equivalent: the lints propagate
+        // into the body either way.
         hoist_inner_attrs_on_mod(m);
-        m.attrs.insert(0, suite_attr);
+        // Place the suite attribute as the LAST outer attribute on
+        // the `mod` item (i.e. immediately before the `mod` keyword)
+        // rather than at position 0. Two reasons:
+        //   • `#[cfg(test)]` must evaluate before the macro runs.
+        //     In a non-test build, cfg(test) prunes the item so the
+        //     attribute macro never expands — avoiding references to
+        //     rudzio (a dev-dep) from non-test compilations.
+        //   • Hoisted `#[expect(...)]` / `#[allow(...)]` attrs need
+        //     to sit outside the macro so the lints apply to the
+        //     expanded code just like they did in the original body.
+        // `push` ends up after any pre-existing outer attrs (cfg,
+        // expect, user-written lints) and after the hoisted inner
+        // attrs — exactly the ordering the user expects.
+        m.attrs.push(suite_attr);
         let _inserted = self.rewrite.runtimes_used.insert(runtime);
         self.rewrite.changed = true;
 
