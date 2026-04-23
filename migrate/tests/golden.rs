@@ -233,6 +233,16 @@ mod tests {
         run_fixture("ambassador_verbatim_with_tests");
         ::core::result::Result::Ok(())
     }
+    #[::rudzio::test]
+    async fn golden_cfg_test_with_expect_attr(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("cfg_test_with_expect_attr");
+        ::core::result::Result::Ok(())
+    }
+    #[::rudzio::test]
+    async fn golden_lib_unit_tests_harness_false(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("lib_unit_tests_harness_false");
+        ::core::result::Result::Ok(())
+    }
     /* pre-migration (rudzio-migrate):
     #[test]
     fn golden_dirty_tree_refusal() {

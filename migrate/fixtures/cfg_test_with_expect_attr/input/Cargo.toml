@@ -1,0 +1,6 @@
+[package]
+name = "cfg_test_with_expect_attr"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
