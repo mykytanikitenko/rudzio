@@ -2,10 +2,13 @@
 
 Best-effort converter of stock cargo-style Rust tests into [rudzio]-shaped
 tests. Takes a git repo whose working tree is clean, rewrites every
-recognised test attribute in place, edits `Cargo.toml` for the shared
-`[[test]] harness = false` runner, and leaves a per-file backup plus an
-inline block-comment copy of every converted function so you can diff at
-the fn level without leaving the editor.
+recognised test attribute in place, edits `Cargo.toml` for both the lib's
+own `[lib] harness = false` test target and the integration `[[test]]
+harness = false` binaries, appends `#[cfg(test)] #[rudzio::main] fn
+main() {}` to `src/lib.rs` when there are src-resident unit tests, and
+leaves a per-file backup plus an inline block-comment copy of every
+converted function so you can diff at the fn level without leaving the
+editor.
 
 **It is not magic**, and the tool is openly honest about that: it does
 not guarantee that the generated code compiles, that your tests still
@@ -20,6 +23,32 @@ The tool eats its own dog food — `migrate/` is itself migrated and its
 integration tests run through rudzio's runner.
 
 [rudzio]: https://github.com/mykytanikitenko/rudzio
+
+## Why this exists (and the honest caveat)
+
+The author wrote rudzio for a personal real-world rollout: adopting
+it on an existing multi-crate platform meant converting hundreds of
+`#[test]` / `#[tokio::test]` / `#[test_context(T)]` fns, plus
+`Cargo.toml` surgery and `#[rudzio::main]` placement, across a
+workspace that was already in flight. Doing that by hand across
+100+ crates was not going to happen at the speed the rollout
+needed. Hence this tool: partial automation, enough to take the
+drudgery off while leaving the judgement calls visible in a `git
+diff`.
+
+That also means `rudzio-migrate` is *heavily* AI-assisted — hand-wavy
+prototype first, tightened against fixtures second. Every
+transformation has a golden test, warnings point at file:line with
+miette, and the clean-tree + acknowledgement gates exist specifically
+because the tool was written under time pressure by a combination of
+author + LLM and neither half of that team is infallible. The dog food
+(rudzio itself migrated through it) is a useful floor on quality, not
+a ceiling on correctness.
+
+If that caveat makes you pause: good. Read the warnings, review the
+diff, keep the backups around until `cargo check --tests` is green.
+The tool is a stepping stone, not a finished product — and it is
+open about that.
 
 ## Install
 
@@ -106,7 +135,7 @@ Then the rewriting begins.
 
 | Input | What the tool emits | Notes |
 |---|---|---|
-| `#[test] fn foo()` inside `#[cfg(test)] mod ... { }` | `#[::rudzio::test] async fn foo(_ctx: &Test) -> ::anyhow::Result<()> { <body>; Ok(()) }`; enclosing mod grows a `#[::rudzio::suite([...])]` attribute and a `use ::rudzio::common::context::Test;` | `#[cfg(test)]` is kept so dev-dependencies still resolve |
+| `#[test] fn foo()` inside `#[cfg(test)] mod ... { }` | `#[::rudzio::test] async fn foo() -> ::anyhow::Result<()> { <body>; Ok(()) }`; enclosing mod grows a `#[::rudzio::suite([...])]` attribute placed immediately before the `mod` keyword (after `#[cfg(test)]` and any user-written outer attrs) | `#[cfg(test)]` is kept so dev-dependencies still resolve. Zero-arg tests stay parameterless — the `#[rudzio::test]` macro fills in the context at expansion time, so no `_ctx: &Test` is synthesized and no `use ::rudzio::common::context::Test;` is injected |
 | `#[tokio::test]` | as above, tokio-mt runtime | |
 | `#[tokio::test(flavor = "multi_thread", worker_threads = N)]` | as above, tokio-mt runtime; `worker_threads` is dropped with a warning | |
 | `#[tokio::test(flavor = "current_thread", start_paused = true)]` | as above, tokio-ct runtime; `start_paused` is dropped with a warning | |
@@ -125,10 +154,26 @@ Then the rewriting begins.
 `Cargo.toml` gets:
 
 - `[package] autotests = false`
-- A `rudzio = { version = "0.1", features = ["common", "<runtime-feature>"] }` entry (union of runtimes across the package's converted suites)
-- `anyhow = "1.0"` if anything ended up returning `::anyhow::Result<()>`
+- `[lib] harness = false` when any `src/**/*.rs` got migrated (so the
+  lib's own test target runs through `#[rudzio::main]` instead of
+  libtest). Skipped on bin-only crates that have no `src/lib.rs`.
+- A `rudzio = { version = "0.1", features = ["common", "<runtime-feature>"] }` entry (union of runtimes across the package's converted suites). Lands in `[dev-dependencies]`.
+- `anyhow = "1.0"` (also in `[dev-dependencies]`) if anything ended up returning `::anyhow::Result<()>`
 - One `[[test]] name = "..." path = "tests/<stem>.rs" harness = false` per `tests/*.rs` that had conversions
 - If you answered `y` to the shared-runner prompt, a `[[test]] name = "main" path = "tests/main.rs" harness = false` plus a freshly-generated `tests/main.rs` with `use <crate> as _;` + `#[rudzio::main] fn main() {}`
+
+And when any `src/**/*.rs` got migrated, the tool appends one block
+at the bottom of `src/lib.rs`:
+
+```rust
+#[cfg(test)]
+#[::rudzio::main]
+fn main() {}
+```
+
+That's what makes `[lib] harness = false` link — the test binary
+needs its own entry point. Idempotent on re-runs (parses with syn
+and skips if a `fn main` already exists).
 
 ## What the tool leaves behind
 
@@ -226,22 +271,51 @@ supported.
   necessarily matched. The rudzio dep line goes wherever
   `toml_edit` puts it.
 - **`cargo fmt` is not run** on the output. Run it before committing.
+- **The generated `CtxRudzioBridge` / `CtxRudzioSuite` pair is a
+  starting point, not idiomatic rudzio.** When the migrator sees
+  `#[test_context(Ctx)]` with an `impl AsyncTestContext for Ctx` it
+  generates a `Deref<Target = Ctx>` bridge wrapper plus a ZST
+  `CtxRudzioSuite` whose `setup` is a no-op and whose `context(...)`
+  calls `<Ctx as AsyncTestContext>::setup()` once per test. That
+  preserves semantics — every test runs a fresh setup, same as
+  `test-context` did — but it also means none of the suite-level
+  machinery rudzio offers (shared pool, shared server, one-time
+  migration) actually gets used. The *intended* next refactor is
+  to hoist the expensive parts of `AsyncTestContext::setup()` into
+  a real `Suite::setup` (runs once per group) and leave the
+  per-test bits in `Suite::context`. See the rudzio README's
+  "Borrowing from the Suite" section for the shape. The migrator
+  gets you to the point where the tests compile and run; going
+  from there to "tests share a Postgres pool" is a manual step
+  you'll want to do anyway.
 
 ### Lib-internal `#[cfg(test)]` tests
 
-The generated `tests/main.rs` aggregates the lib into the
-integration test binary via `#[path]` includes — one per top-level
-`mod X;` in `src/lib.rs`. Each included file is compiled with
-`cfg(test)` active, so `#[rudzio::suite]` blocks inside the
-migrated `#[cfg(test)] mod tests { ... }` register their `linkme`
-entries into the runner's slice and execute alongside the
-integration tests.
+Two paths coexist, picked per package:
+
+1. **Default (and simpler).** When any `src/**/*.rs` in the package
+   got migrated, the tool sets `[lib] harness = false` in the
+   package's `Cargo.toml` and appends `#[cfg(test)] #[rudzio::main]
+   fn main() {}` to `src/lib.rs`. The lib's own test target becomes
+   the rudzio runner, and `cargo test --lib` runs unit tests
+   through rudzio without any extra binary. Bin-only crates (no
+   `src/lib.rs`) skip both edits.
+
+2. **Shared-runner aggregation (opt-in via the `y` prompt).** If you
+   asked for the shared runner, the tool also creates
+   `tests/main.rs` that `#[path]`-includes each top-level `mod X;`
+   from `src/lib.rs`. Each included file is recompiled with
+   `cfg(test)` active there too, so the same suite blocks register
+   in both the `[lib]` test target AND the `tests/main.rs` binary.
+   Good for "I want one binary that runs every flavour of test"; a
+   bit wasteful otherwise.
 
 If the tool can't find a `src/lib.rs` (bin-only crate, or a layout
-where all modules are declared inline in `lib.rs`), it falls back
-to the older `use <crate> as _;` scaffold — the lib's external
-surface gets linked, but `#[cfg(test)]`-gated tests inside it
-won't run. Documented in the generated file's header.
+where all modules are declared inline in `lib.rs`), the
+shared-runner scaffold falls back to the older `use <crate> as _;`
+pattern — the lib's external surface gets linked, but
+`#[cfg(test)]`-gated tests inside it won't reach the aggregator.
+Documented in the generated file's header.
 
 ## Recipe
 

@@ -79,6 +79,95 @@ runner that walks every `#[rudzio::test]` registered via `linkme`. Not yet on
 crates.io; pin to a commit in your `Cargo.toml` if you care about
 reproducibility.
 
+### Lib unit tests (no `tests/` directory)
+
+If your tests live inside `src/` under `#[cfg(test)] mod tests { ... }`
+blocks — the classic rust-lang unit-test shape — you can run them
+through rudzio without adding a `tests/` directory at all. Two edits:
+
+```toml
+# Cargo.toml
+[lib]
+harness = false            # opt out of libtest for the lib's own test target
+
+[dev-dependencies]
+rudzio = { version = "0.1", features = ["runtime-tokio", "common"] }
+```
+
+```rust
+// src/lib.rs
+pub fn add(a: i32, b: i32) -> i32 { a + b }
+
+#[cfg(test)]
+#[rudzio::suite([
+    (
+        runtime = rudzio::runtime::tokio::Multithread::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+])]
+mod tests {
+    use super::*;
+
+    #[rudzio::test]
+    async fn sums_correctly() -> anyhow::Result<()> {
+        assert_eq!(add(1, 2), 3);
+        Ok(())
+    }
+}
+
+// Entry point for the lib's test target (harness = false). The
+// cfg(test) gate keeps it out of downstream binaries that depend on
+// this lib.
+#[cfg(test)]
+#[rudzio::main]
+fn main() {}
+```
+
+`cargo test --lib` now runs through `#[rudzio::main]` — no separate
+aggregator, no `#[path]` trickery. `rudzio-migrate` (below) wires both
+edits automatically when it converts a crate with `src/` unit tests.
+
+### Return type: any `Result<T, E: Display>`
+
+`#[rudzio::test]` test bodies must return a `Result`. The error type is
+anything that implements `Display + Debug + Send + Sync` — the runner
+calls `.map_err(|e| format!("{e}"))` on whatever you hand back. So all
+of these work:
+
+```rust
+#[rudzio::test]
+async fn uses_anyhow() -> anyhow::Result<()> { Ok(()) }
+
+#[rudzio::test]
+async fn uses_n0_snafu() -> n0_snafu::Result { Ok(()) }
+
+#[rudzio::test]
+async fn uses_std_io() -> Result<(), std::io::Error> { Ok(()) }
+
+#[rudzio::test]
+async fn uses_custom_enum() -> Result<(), MyError> { Ok(()) }
+```
+
+Bare `fn foo() {}` does not compile — the macro can't add an error tail
+when there's no `Result` to map over. If you've got hundreds of
+`()`-returning tests to migrate, `rudzio-migrate` rewrites the
+signatures automatically.
+
+### The context parameter is optional
+
+Zero-argument test bodies are a first-class shape; the macro fills in
+the per-test context at expansion time. Suite setup and per-test
+teardown still run.
+
+```rust
+#[rudzio::test]
+async fn doesnt_need_the_context() -> anyhow::Result<()> {
+    // ...no `ctx: &Test` parameter — still a real test.
+    Ok(())
+}
+```
+
 ## Examples
 
 Four runnable examples in `examples/` cover the common shapes:
@@ -93,28 +182,6 @@ Four runnable examples in `examples/` cover the common shapes:
 - `cargo run --example benchmark` (and `-- --bench`) — bench-annotated
   tests that run once as smoke tests by default and switch into full
   strategy execution under `--bench`.
-
-## Migrating an existing suite
-
-The workspace ships [`rudzio-migrate`](migrate/README.md), a CLI that
-converts cargo-style `#[test]` / `#[tokio::test]` / `#[test_context(T)]`
-suites into rudzio shape. It runs on a clean git tree, rewrites
-sources in place, keeps a per-file backup plus a `/* pre-migration
-*/` block comment above every converted fn, and wires `Cargo.toml`
-for the `[[test]] harness = false` runner.
-
-```sh
-cargo install --path migrate
-rudzio-migrate --path /path/to/your/crate
-```
-
-It refuses to run on a dirty working tree and asks you to type an
-acknowledgement phrase — both gates are load-bearing, there is no
-`--force`. The tool does **not** guarantee the output compiles; the
-realistic outcome is "mostly compiles, a short warning list, review
-via `git diff` and address what's left". Full scope table, known
-limits, and the recipe are in
-[`migrate/README.md`](migrate/README.md).
 
 ## Concepts
 
@@ -190,6 +257,133 @@ the `common` feature). If you need your own (a `sqlx::PgPool`, an HTTP server
 handle, a mock clock), define structs that implement `rudzio::context::Suite`
 and `rudzio::context::Test`. See `fixtures/src/bin/custom_context_tokio_mt.rs` for a
 minimal hand-rolled example.
+
+## Same-crate single-binary test runner (unit + integration + e2e)
+
+If you want every flavour of test in *one* crate — unit tests inside
+`src/`, integration tests in `tests/integration/`, e2e tests behind a
+feature flag — scheduled by one `#[rudzio::main]`, you can do it
+without a separate aggregator crate:
+
+```toml
+# Cargo.toml
+[lib]
+harness = false
+
+[features]
+integration = []
+e2e         = []
+
+[dev-dependencies]
+rudzio = { version = "0.1", features = ["runtime-tokio", "common"] }
+```
+
+```rust
+// src/lib.rs
+#[cfg(test)]
+extern crate self as my_crate;         // crate:: paths in the includes resolve to this binary
+
+// Unit tests inside `src/` register normally via their own
+// `#[cfg(test)] #[rudzio::suite(...)] mod tests { ... }` blocks —
+// nothing to do here.
+
+// Integration tests: pull `tests/integration/mod.rs` into the lib's
+// test target so their `linkme` entries register in the same slice.
+#[cfg(all(test, feature = "integration"))]
+#[path = "../tests/integration/mod.rs"]
+mod integration;
+
+// Same for e2e behind another feature flag.
+#[cfg(all(test, feature = "e2e"))]
+#[path = "../tests/e2e/mod.rs"]
+mod e2e;
+
+#[cfg(test)]
+#[rudzio::main]
+fn main() {}
+```
+
+`cargo test --lib` runs unit tests. `cargo test --lib --features
+integration` adds integration. `cargo test --lib
+--features integration,e2e` adds e2e. All three flavours share the
+same `#[rudzio::main]` binary and the same scheduler pass.
+
+If the same crate also has `[[bin]]` targets that integration/e2e
+tests spawn via `env!("CARGO_BIN_EXE_<name>")`, call
+`rudzio::build::expose_bins("<self-crate-name>")` from the crate's
+own `build.rs` (details in the `Aggregating tests that spawn
+[[bin]] targets` section below). The sandboxed
+`$OUT_DIR/rudzio-bin-cache` target directory keeps the nested build
+from deadlocking against the outer cargo invocation.
+
+## Borrowing from the `Suite` (HRTB asymmetry)
+
+`Suite<'suite_context, R>` requires `R: for<'r> Runtime<'r>` (the
+runtime is reused across every per-test borrow), while `Test<'test_context, R>`
+requires only `R: Runtime<'test_context>` (one specific lifetime).
+The asymmetry is deliberate — it's what lets a test hold a borrow of
+the suite without dragging the HRTB bound onto the test type — but it
+has a sharp edge:
+
+```rust
+// Hold `&Suite` in Test → HRTB requirement bubbles up onto Test's R,
+// and the `#[rudzio::test]` macro's call site resolves R under the
+// *non*-HRTB bound → `trait bound for<'__r> R: rudzio::Runtime<'__r>
+// is not satisfied` at the test fn.
+pub struct MyTest<'test_context, R> {
+    pub suite: &'test_context MySuite<'test_context, R>,   // ✗ propagates HRTB
+}
+```
+
+The workaround: have the `Test` borrow *specific fields* of the suite,
+not `&Suite` itself. Nothing in the rudzio API asks for `&Suite` —
+`Suite::context` decides what the per-test value contains:
+
+```rust
+pub struct MyTest<'test_context> {
+    pub pool: &'test_context sqlx::PgPool,   // ✓ bare borrow, no R propagation
+}
+```
+
+When the test only needs a couple of suite-owned handles, threading
+those through avoids the HRTB mismatch entirely and keeps the
+generated macro call site simple.
+
+## Recommended lint configuration
+
+If your crate runs with strict lints, a few defaults need relaxing for
+rudzio's macros and test binaries. Suggested starting point:
+
+```rust
+// src/lib.rs (your crate)
+#![deny(unsafe_code)]                   // not `forbid` — macros emit scoped #[allow]
+#![deny(unreachable_pub)]               // keep normal, but…
+#![deny(clippy::all, clippy::pedantic)] // whatever your baseline is
+```
+
+```rust
+// tests/main.rs (the scaffolded runner, or your own)
+#![allow(
+    unreachable_pub,
+    reason = "Suite/Test types must be pub so `#[rudzio::suite]` callsites can name them"
+)]
+#![allow(
+    unused_crate_dependencies,
+    reason = "test binary has a different dep set than the lib"
+)]
+#![allow(
+    clippy::tests_outside_test_module,
+    reason = "rudzio tests aren't inside the conventional #[cfg(test)] mod tests"
+)]
+```
+
+The pitfall worth naming: `unsafe_code = "forbid"` at the lib level
+silently rejects rudzio's scoped `#[allow(unsafe_code)]` for the
+`linkme` distributed-slice registration — forbid doesn't accept
+downstream `allow` overrides. Demote to `deny` if you want rudzio
+in. `rudzio-migrate` rewrites `#![forbid(unsafe_code)]` →
+`#![deny(unsafe_code)]` in `src/lib.rs` automatically when it detects
+suite-carrying modules.
 
 ## Workspace-wide single-binary test runner
 
@@ -531,6 +725,65 @@ Outside these three places — user-visible test bodies, `Suite`
 impls, `Runtime` impls, custom `Strategy` implementations — the
 workspace's deny-unsafe lint applies unchanged. Nothing a user
 writes to drive rudzio requires unsafe.
+
+## Sharp edges
+
+A handful of things worth knowing before they bite:
+
+- **Tokio version pin.** Rudzio currently pins `tokio = "=1.52.1"` exactly.
+  Downstream crates with a different locked version will fail resolution.
+  Workaround: `cargo update -p tokio --precise 1.52.1` in the downstream
+  crate. The exact pin will relax once we're confident the `tokio` APIs
+  rudzio uses are stable across a broader range.
+
+- **`#[dtor]`-using crates can eat rudzio's output.** If any dep uses
+  the `dtor` crate to run cleanup at process exit (e.g. container
+  reapers in test utilities) and that destructor panics, the process
+  aborts with `SIGABRT` *after* rudzio has printed its summary — but
+  before the terminal has flushed the full output. Not a rudzio bug;
+  the summary lines are issued, the shell just loses them. Wrap the
+  `#[dtor]` body in a panic guard if you own the destructor.
+
+- **Parallel suite startup fan-out.** The runner spawns one OS thread
+  per `(runtime, suite)` group and calls `Suite::setup` on each in
+  parallel. If those setups start Docker/podman containers, 4–5
+  simultaneous container starts can tickle hyper connection issues on
+  podman specifically (`IncompleteMessage`,
+  `WaitContainer(StartupTimeout)`). Workaround: wrap the container
+  start in a global `tokio::sync::Mutex<()>` inside your own
+  `Suite::setup`. A future release may expose a
+  `--max-concurrent-suites N` knob.
+
+## Migrating an existing suite
+
+The workspace ships [`rudzio-migrate`](migrate/README.md), a CLI that
+converts cargo-style `#[test]` / `#[tokio::test]` / `#[test_context(T)]`
+suites into rudzio shape. It runs on a clean git tree, rewrites sources
+in place, keeps a per-file backup plus a `/* pre-migration */` block
+comment above every converted fn, wires `Cargo.toml` for both the
+`[lib] harness = false` unit-test path and the `[[test]] harness =
+false` integration-test path, and appends `#[cfg(test)] #[rudzio::main]
+fn main() {}` to `src/lib.rs` when src-resident unit tests are involved.
+
+```sh
+cargo install --path migrate
+rudzio-migrate --path /path/to/your/crate
+```
+
+Two hard gates — clean git tree, acknowledgement phrase — then it runs.
+No `--force`, no `--yes`. Explicit honesty up front: the output is not
+guaranteed to compile. On the author's own real-world migration
+targets the realistic outcome is "most tests compile on the first try,
+a short warning list, a handful of manual fix-ups spotted via `git
+diff`". The friction is the point; the tool is a mechanical stepping
+stone, not a replacement for reading the diff.
+
+Full scope table, known limits, and the recipe are in
+[`migrate/README.md`](migrate/README.md). The full note on how
+`rudzio-migrate` came to exist — including the fact that it's itself
+heavily AI-assisted, written because the author needed at least
+partial automation for the rudzio rollout on a real codebase and
+needed results fast — lives in that README.
 
 ## Status
 
