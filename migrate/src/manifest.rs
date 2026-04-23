@@ -23,6 +23,13 @@ pub struct ManifestEdits {
     /// migration doesn't need it; the user's lib unit tests aren't
     /// affected.
     pub had_src_conversion: bool,
+    /// Whether this package has a `src/lib.rs` that could host the
+    /// `#[cfg(test)] #[rudzio::main] fn main() {}` entry point.
+    /// When false (bin-only crates, or libs whose root isn't at
+    /// the canonical path), `[lib] harness = false` isn't safe to
+    /// emit — Cargo would complain about `[lib]` with no actual
+    /// lib target — and we skip that edit.
+    pub has_lib_rs: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -42,12 +49,17 @@ pub fn apply(manifest_path: &Path, edits: &ManifestEdits) -> Result<bool> {
 
     if edits.had_src_conversion {
         set_autotests_false(&mut doc);
-        // Unit tests live in the lib's own test target; libtest
-        // doesn't understand `#[rudzio::test]`, so we have to swap
-        // it out for a custom main. The matching `#[cfg(test)]
-        // #[rudzio::main] fn main()` in src/lib.rs is handled by
-        // `run.rs::ensure_lib_has_rudzio_main`.
-        set_lib_harness_false(&mut doc);
+        if edits.has_lib_rs {
+            // Unit tests live in the lib's own test target; libtest
+            // doesn't understand `#[rudzio::test]`, so we have to
+            // swap it out for a custom main. The matching
+            // `#[cfg(test)] #[rudzio::main] fn main()` in src/lib.rs
+            // is handled by `run.rs::ensure_lib_has_rudzio_main`.
+            // Bin-only crates have no `[lib]` target, so setting
+            // `[lib] harness = false` there would tell Cargo we
+            // have a library that doesn't exist.
+            set_lib_harness_false(&mut doc);
+        }
     }
     set_rudzio_dependency(
         &mut doc,
