@@ -26,10 +26,8 @@ pub fn process_file(
     opts: &EmitOptions<'_>,
     report: &mut Report,
 ) -> Result<Option<FileRewrite>> {
-    let source: Arc<String> = Arc::new(
-        fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?,
-    );
+    let source: Arc<String> =
+        Arc::new(fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?);
     let mut tree: syn::File = match syn::parse_file(&source) {
         Ok(t) => t,
         Err(err) => {
@@ -369,7 +367,9 @@ fn splice_preserved_originals(output: &str, originals: &[String]) -> String {
     if originals.is_empty() {
         return output.to_owned();
     }
-    let mut out = String::with_capacity(output.len() + originals.iter().map(String::len).sum::<usize>() + 256);
+    let mut out = String::with_capacity(
+        output.len() + originals.iter().map(String::len).sum::<usize>() + 256,
+    );
     for line in output.split_inclusive('\n') {
         if let Some((indent, idx)) = parse_sentinel_line(line) {
             if let Some(snippet) = originals.get(idx) {

@@ -197,11 +197,7 @@ fn set_anyhow_dependency(doc: &mut DocumentMut, workspace_pins_anyhow: bool) {
 /// point at a workspace fork, etc.
 fn dep_already_present(doc: &DocumentMut, name: &str) -> bool {
     for section in ["dependencies", "dev-dependencies"] {
-        if let Some(tbl) = doc
-            .as_table()
-            .get(section)
-            .and_then(|i| i.as_table())
-        {
+        if let Some(tbl) = doc.as_table().get(section).and_then(|i| i.as_table()) {
             if tbl.contains_key(name) {
                 return true;
             }

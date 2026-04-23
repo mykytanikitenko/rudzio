@@ -47,8 +47,8 @@ impl BackupOutcome {
 )]
 #[cfg(test)]
 mod tests {
-    use ::rudzio::common::context::Test;
     use super::*;
+    use ::rudzio::common::context::Test;
     /* pre-migration (rudzio-migrate):
     #[test]
     fn backup_suffix_appends_to_path() {

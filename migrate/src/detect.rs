@@ -43,14 +43,12 @@ impl TestKind {
     pub const fn needs_compat_warning(self) -> Option<&'static str> {
         match self {
             Self::AsyncStd => Some(
-                "async-std runtime replaced with the --runtime default; async-std-specific APIs may not behave identically"
+                "async-std runtime replaced with the --runtime default; async-std-specific APIs may not behave identically",
             ),
             Self::Actix => Some(
-                "actix runtime replaced with the --runtime default; actix-rt actor setup must be added manually if tests depend on it"
+                "actix runtime replaced with the --runtime default; actix-rt actor setup must be added manually if tests depend on it",
             ),
-            Self::FuturesTest => Some(
-                "futures-test runtime replaced with the --runtime default"
-            ),
+            Self::FuturesTest => Some("futures-test runtime replaced with the --runtime default"),
             _ => None,
         }
     }

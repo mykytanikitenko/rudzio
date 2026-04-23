@@ -4,10 +4,10 @@
 //!   3. The user has typed the acknowledgement phrase verbatim.
 //!
 //! All three are hard blocks with no bypass flag.
+use crate::phrase::ACK_PHRASE;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use crate::phrase::ACK_PHRASE;
 #[derive(Debug)]
 pub enum PreflightError {
     NotAGitRepo(PathBuf),
@@ -98,16 +98,14 @@ pub fn require_clean_tree(repo_root: &Path) -> Result<(), PreflightError> {
 }
 /// Blocks reading stdin until the user types (or pipes) a line matching
 /// `ACK_PHRASE` verbatim.
-pub fn require_acknowledgement<R, W>(
-    mut reader: R,
-    mut writer: W,
-) -> Result<(), PreflightError>
+pub fn require_acknowledgement<R, W>(mut reader: R, mut writer: W) -> Result<(), PreflightError>
 where
     R: BufRead,
     W: Write,
 {
     writeln!(
-        writer, "\nType the following sentence exactly, then press Enter, to continue:"
+        writer,
+        "\nType the following sentence exactly, then press Enter, to continue:"
     )?;
     writeln!(writer, "\n  {ACK_PHRASE}\n")?;
     writer.flush()?;
@@ -124,7 +122,9 @@ where
     }
 }
 fn strip_one_newline(s: &str) -> &str {
-    s.strip_suffix("\r\n").or_else(|| s.strip_suffix('\n')).unwrap_or(s)
+    s.strip_suffix("\r\n")
+        .or_else(|| s.strip_suffix('\n'))
+        .unwrap_or(s)
 }
 #[::rudzio::suite(
     [(
@@ -136,9 +136,9 @@ fn strip_one_newline(s: &str) -> &str {
 )]
 #[cfg(test)]
 mod tests {
+    use super::*;
     use ::rudzio::common::context::Test;
     use std::io::Cursor;
-    use super::*;
     /* pre-migration (rudzio-migrate):
     #[test]
     fn ack_phrase_round_trip_exact() {
@@ -170,14 +170,13 @@ mod tests {
     #[::rudzio::test]
     async fn ack_phrase_reject_when_corrected(_ctx: &Test) -> ::anyhow::Result<()> {
         let mut input = Cursor::new(
-            b"I am not an idiot and understand what I am doing in most cases at least\n"
-                .to_vec(),
+            b"I am not an idiot and understand what I am doing in most cases at least\n".to_vec(),
         );
         let mut output = Vec::<u8>::new();
-        assert!(
-            matches!(require_acknowledgement(& mut input, & mut output),
-            Err(PreflightError::WrongAcknowledgement))
-        );
+        assert!(matches!(
+            require_acknowledgement(&mut input, &mut output),
+            Err(PreflightError::WrongAcknowledgement)
+        ));
         ::core::result::Result::Ok(())
     }
     /* pre-migration (rudzio-migrate):
@@ -195,10 +194,10 @@ mod tests {
     async fn ack_phrase_reject_on_empty_stdin(_ctx: &Test) -> ::anyhow::Result<()> {
         let mut input = Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
-        assert!(
-            matches!(require_acknowledgement(& mut input, & mut output),
-            Err(PreflightError::WrongAcknowledgement))
-        );
+        assert!(matches!(
+            require_acknowledgement(&mut input, &mut output),
+            Err(PreflightError::WrongAcknowledgement)
+        ));
         ::core::result::Result::Ok(())
     }
     /* pre-migration (rudzio-migrate):
