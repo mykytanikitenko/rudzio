@@ -28,3 +28,6 @@ mod tests {
         Ok(())
     }
 }
+#[cfg(test)]
+#[::rudzio::main]
+fn main() {}

@@ -10,3 +10,6 @@ autotests = false
 rstest = "0.22"
 rudzio = { version = "0.1", features = ["common", "runtime-tokio"] }
 anyhow = "1.0"
+
+[lib]
+harness = false

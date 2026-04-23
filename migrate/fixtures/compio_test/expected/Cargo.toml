@@ -10,3 +10,6 @@ autotests = false
 compio = "0.15"
 rudzio = { version = "0.1", features = ["common", "runtime-compio"] }
 anyhow = "1.0"
+
+[lib]
+harness = false

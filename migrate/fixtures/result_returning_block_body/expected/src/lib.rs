@@ -32,3 +32,6 @@ mod tests {
         }
     }
 }
+#[cfg(test)]
+#[::rudzio::main]
+fn main() {}

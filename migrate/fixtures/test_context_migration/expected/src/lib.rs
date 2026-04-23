@@ -160,3 +160,6 @@ mod tests {
         ::core::result::Result::Ok(())
     }
 }
+#[cfg(test)]
+#[::rudzio::main]
+fn main() {}

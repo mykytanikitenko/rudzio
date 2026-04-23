@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2024"
 autotests = false
 
+[dependencies]
+
 [lib]
 harness = false
-
-[dependencies]
 
 [dev-dependencies]
 rudzio = { version = "0.1", features = ["common", "runtime-tokio"] }

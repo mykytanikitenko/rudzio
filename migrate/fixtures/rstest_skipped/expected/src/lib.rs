@@ -33,3 +33,6 @@ mod tests {
         assert!(prefix_matches(haystack, needle) || haystack.contains(needle));
     }
 }
+#[cfg(test)]
+#[::rudzio::main]
+fn main() {}
