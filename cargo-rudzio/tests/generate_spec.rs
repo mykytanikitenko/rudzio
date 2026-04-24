@@ -20,6 +20,7 @@ fn member(name: &str, dev_deps: Vec<DevDepSpec>) -> MemberPlan {
         edition: "2024".to_owned(),
         src_lib_path: Some(PathBuf::from("/nonexistent/src/lib.rs")),
         build_rs: None,
+        build_deps: Vec::new(),
         has_src_rudzio_suite: false,
     }
 }
@@ -553,6 +554,107 @@ mod tests {
         anyhow::ensure!(
             !rendered.contains("build = "),
             "build must be absent when member has no build.rs:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn bridge_cargo_toml_emits_build_dependencies_when_member_has_them() -> anyhow::Result<()> {
+        // Regression: the bridge forwards `build = "<abs>/build.rs"`, so
+        // the bridge's compilation of that build script needs matching
+        // `[build-dependencies]`. Without this, a member's build.rs that
+        // imports e.g. `rudzio::build::expose_self_bins()` fails to resolve
+        // under `cargo rudzio test` even though the member itself builds
+        // fine under regime 2.
+        let rudzio_build_dep = DevDepSpec {
+            name: "rudzio".to_owned(),
+            rename: None,
+            version_req: "0.1".to_owned(),
+            path: None,
+            git: None,
+            git_ref: None,
+            features: Vec::new(),
+            uses_default_features: true,
+            workspace_inherited: false,
+        };
+        let mut m = member("alpha", Vec::new());
+        m.manifest_dir = PathBuf::from("/abs/alpha");
+        m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
+        m.has_src_rudzio_suite = true;
+        m.build_rs = Some(PathBuf::from("/abs/alpha/build.rs"));
+        m.build_deps = vec![rudzio_build_dep];
+
+        let plan = plan_with_members(vec![m.clone()], "/abs");
+        let rendered = build_bridge_cargo_toml(&plan, &m)?;
+
+        anyhow::ensure!(
+            rendered.contains("[build-dependencies]"),
+            "bridge must emit [build-dependencies] when member has build-deps:\n{rendered}"
+        );
+        // The rudzio entry must appear AFTER the [build-dependencies]
+        // header — a naive substring check would also match the main
+        // [dependencies] table, so split on the header and inspect the
+        // tail.
+        let (_, after) = rendered
+            .split_once("[build-dependencies]")
+            .expect("[build-dependencies] header present");
+        anyhow::ensure!(
+            after.contains("rudzio"),
+            "rudzio must be inside the [build-dependencies] table:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn bridge_cargo_toml_omits_build_dependencies_when_member_has_none() -> anyhow::Result<()> {
+        // Negative: a member with build.rs but no [build-dependencies] must
+        // NOT get a synthesised `[build-dependencies]` section.
+        let mut m = member("alpha", Vec::new());
+        m.manifest_dir = PathBuf::from("/abs/alpha");
+        m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
+        m.has_src_rudzio_suite = true;
+        m.build_rs = Some(PathBuf::from("/abs/alpha/build.rs"));
+        m.build_deps = Vec::new();
+
+        let plan = plan_with_members(vec![m.clone()], "/abs");
+        let rendered = build_bridge_cargo_toml(&plan, &m)?;
+
+        anyhow::ensure!(
+            !rendered.contains("[build-dependencies]"),
+            "no [build-dependencies] when member has none:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn bridge_cargo_toml_omits_build_dependencies_when_no_build_rs() -> anyhow::Result<()> {
+        // Negative: even if build_deps accidentally contains entries (e.g.
+        // a stale plan), without build_rs there's nothing to compile; skip
+        // the section.
+        let stray = DevDepSpec {
+            name: "stray".to_owned(),
+            rename: None,
+            version_req: "1".to_owned(),
+            path: None,
+            git: None,
+            git_ref: None,
+            features: Vec::new(),
+            uses_default_features: true,
+            workspace_inherited: false,
+        };
+        let mut m = member("alpha", Vec::new());
+        m.manifest_dir = PathBuf::from("/abs/alpha");
+        m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
+        m.has_src_rudzio_suite = true;
+        m.build_rs = None;
+        m.build_deps = vec![stray];
+
+        let plan = plan_with_members(vec![m.clone()], "/abs");
+        let rendered = build_bridge_cargo_toml(&plan, &m)?;
+
+        anyhow::ensure!(
+            !rendered.contains("[build-dependencies]"),
+            "no [build-dependencies] when member has no build.rs:\n{rendered}"
         );
         Ok(())
     }

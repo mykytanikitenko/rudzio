@@ -61,6 +61,12 @@ pub struct MemberPlan {
     /// effects (rustc-env vars, rerun-if-changed) still fire when cargo
     /// compiles the bridge.
     pub build_rs: Option<PathBuf>,
+    /// Member's `[build-dependencies]` + target-cfg variants. The bridge
+    /// re-emits these under its own `[build-dependencies]` so that the
+    /// forwarded `build.rs` resolves the crates it imports (e.g. a
+    /// member calling `rudzio::build::expose_self_bins()` needs rudzio
+    /// in the bridge's build-deps too).
+    pub build_deps: Vec<DevDepSpec>,
     /// `true` iff the member has at least one file under `src/**` that
     /// syntactically declares a rudzio suite or gates a module on the
     /// `rudzio_test` cfg. Drives bridge-crate generation: the bridge
@@ -217,6 +223,17 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
                 )
             })?;
 
+        let build_deps = if build_rs.is_some() {
+            read_build_deps(pkg.manifest_path.as_std_path()).with_context(|| {
+                format!(
+                    "reading build-deps from {}",
+                    pkg.manifest_path.as_std_path().display()
+                )
+            })?
+        } else {
+            Vec::new()
+        };
+
         let has_src_rudzio_suite = has_lib
             && src_lib_path
                 .as_deref()
@@ -233,6 +250,7 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
             edition,
             src_lib_path,
             build_rs,
+            build_deps,
             has_src_rudzio_suite,
         });
     }
@@ -862,6 +880,25 @@ fn apply_ws_dep_field(spec: &mut WorkspaceDepSpec, key: &str, val: &Value, base:
 /// `workspace = true` flag is preserved so the aggregator defers to the
 /// workspace root's pinned version.
 fn read_dev_deps(manifest_path: &Path) -> Result<Vec<DevDepSpec>> {
+    read_deps_in_sections(
+        manifest_path,
+        &["dependencies", "dev-dependencies"],
+    )
+}
+
+/// Read `[build-dependencies]` + `[target.*.build-dependencies]` from the
+/// member's manifest. Parallels `read_dev_deps` but for build scripts:
+/// when the bridge forwards `build = "<abs>/build.rs"`, cargo compiles
+/// that script as part of the bridge crate and needs the bridge's own
+/// `[build-dependencies]` to resolve its imports.
+fn read_build_deps(manifest_path: &Path) -> Result<Vec<DevDepSpec>> {
+    read_deps_in_sections(manifest_path, &["build-dependencies"])
+}
+
+fn read_deps_in_sections(
+    manifest_path: &Path,
+    sections: &[&str],
+) -> Result<Vec<DevDepSpec>> {
     let text = fs::read_to_string(manifest_path)
         .with_context(|| format!("reading {}", manifest_path.display()))?;
     let doc: DocumentMut = text
@@ -872,7 +909,7 @@ fn read_dev_deps(manifest_path: &Path) -> Result<Vec<DevDepSpec>> {
         .ok_or_else(|| anyhow!("manifest path has no parent"))?;
 
     let mut out: Vec<DevDepSpec> = Vec::new();
-    for section in ["dependencies", "dev-dependencies"] {
+    for section in sections {
         collect_dev_deps(&doc, &[section], manifest_dir, &mut out);
     }
 
@@ -881,8 +918,8 @@ fn read_dev_deps(manifest_path: &Path) -> Result<Vec<DevDepSpec>> {
             let Some(cfg_tbl) = cfg_item.as_table() else {
                 continue;
             };
-            for section in ["dependencies", "dev-dependencies"] {
-                if let Some(Item::Table(deps_tbl)) = cfg_tbl.get(section) {
+            for section in sections {
+                if let Some(Item::Table(deps_tbl)) = cfg_tbl.get(*section) {
                     for (name, item) in deps_tbl.iter() {
                         if let Some(spec) = parse_dev_dep_entry(name, item, manifest_dir) {
                             out.push(spec);
@@ -1165,7 +1202,43 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
     let deps_tbl = build_bridge_dependencies(plan, member)?;
     doc.insert("dependencies", Item::Table(deps_tbl));
 
+    if member.build_rs.is_some() && !member.build_deps.is_empty() {
+        let build_deps_tbl = build_bridge_build_dependencies(plan, member)?;
+        doc.insert("build-dependencies", Item::Table(build_deps_tbl));
+    }
+
     Ok(doc.to_string())
+}
+
+/// Mirror the member's `[build-dependencies]` into the bridge. The
+/// bridge forwards `build = "<abs>/build.rs"`; cargo compiles that
+/// script as the bridge's build target and needs matching build-deps to
+/// resolve its imports.
+fn build_bridge_build_dependencies(plan: &Plan, member: &MemberPlan) -> Result<Table> {
+    let mut deps = Table::new();
+
+    let mut merged: BTreeMap<String, DevDepSpec> = BTreeMap::new();
+    for dd in &member.build_deps {
+        let entry_name = dd.rename.as_deref().unwrap_or(&dd.name).to_owned();
+        merged
+            .entry(entry_name)
+            .and_modify(|existing| {
+                for f in &dd.features {
+                    if !existing.features.contains(f) {
+                        existing.features.push(f.clone());
+                    }
+                }
+                existing.uses_default_features &= dd.uses_default_features;
+            })
+            .or_insert_with(|| dd.clone());
+    }
+
+    for (entry_name, dd) in &merged {
+        let item = render_dev_dep(dd, plan)?;
+        deps.insert(entry_name, item);
+    }
+
+    Ok(deps)
 }
 
 /// Merge the member's `[dependencies]` + `[dev-dependencies]` + both
