@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{self, IsTerminal as _, Write as _};
 use std::process;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -902,47 +902,53 @@ pub fn run(cargo: crate::config::CargoMeta) -> ! {
             .push(token);
     }
 
-    let reporter = Arc::new(ModeReporter::new(&config));
+    let reporter = ModeReporter::new(&config);
     let start = Instant::now();
-    let config = Arc::new(config);
 
-    let handles: Vec<_> = groups
-        .into_values()
-        .map(|mut group_tokens| {
-            group_tokens.sort_by_key(|t| (t.file, t.line));
-            let owner: &'static dyn RuntimeGroupOwner = group_tokens[0].runtime_group_owner;
-            let req_root = root_token.child_token();
-            let reporter = Arc::clone(&reporter);
-            let config = Arc::clone(&config);
-            thread::spawn(move || {
-                let req = SuiteRunRequest {
-                    tokens: &group_tokens,
-                    config: &config,
-                    root_token: req_root,
-                };
-                owner.run_group(req, &*reporter)
-            })
-        })
-        .collect();
-
-    let total = handles
-        .into_iter()
-        .fold(TestSummary::zero(), |acc, handle| match handle.join() {
-            Ok(suite_summary) => acc.merge(TestSummary::from(suite_summary)),
-            Err(payload) => {
-                let msg = payload
-                    .downcast_ref::<&str>()
-                    .copied()
-                    .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-                    .unwrap_or("unknown panic");
-                eprintln!("error: runtime thread panicked: {msg}");
-                acc.merge(TestSummary {
-                    panicked: 1,
-                    total: 1,
-                    ..TestSummary::zero()
+    // Scoped group-dispatch: one OS thread per (runtime, suite) group,
+    // all joined at scope exit. Lets each thread borrow `&config` and
+    // `&reporter` directly instead of each one cloning an `Arc` — aligned
+    // with the codebase rule against `'static` substitution where stack
+    // borrows suffice.
+    let total = thread::scope(|scope| {
+        let handles: Vec<_> = groups
+            .into_values()
+            .map(|mut group_tokens| {
+                group_tokens.sort_by_key(|t| (t.file, t.line));
+                let owner: &'static dyn RuntimeGroupOwner = group_tokens[0].runtime_group_owner;
+                let req_root = root_token.child_token();
+                let config_ref = &config;
+                let reporter_ref = &reporter;
+                scope.spawn(move || {
+                    let req = SuiteRunRequest {
+                        tokens: &group_tokens,
+                        config: config_ref,
+                        root_token: req_root,
+                    };
+                    owner.run_group(req, reporter_ref)
                 })
-            }
-        });
+            })
+            .collect();
+
+        handles
+            .into_iter()
+            .fold(TestSummary::zero(), |acc, handle| match handle.join() {
+                Ok(suite_summary) => acc.merge(TestSummary::from(suite_summary)),
+                Err(payload) => {
+                    let msg = payload
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                        .unwrap_or("unknown panic");
+                    eprintln!("error: runtime thread panicked: {msg}");
+                    acc.merge(TestSummary {
+                        panicked: 1,
+                        total: 1,
+                        ..TestSummary::zero()
+                    })
+                }
+            })
+    });
 
     // Per-test teardown failures aren't visible to the per-thread
     // SuiteSummary (the per-test fn doesn't have it in scope), so fold

@@ -12,8 +12,11 @@ use std::io;
 use std::io::IsTerminal as _;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+
+use crate::parallelism::{HardLimit, HardLimitGuard};
 
 /// Compile-time cargo metadata captured from `env!(...)` at the user's
 /// `#[rudzio::main]` expansion site. Lets test bodies resolve fixture
@@ -163,6 +166,67 @@ pub struct Config {
     /// [`Self::threads`] so single-flag invocations behave the same as
     /// libtest.
     pub concurrency_limit: usize,
+    /// Hard cap on the total number of rudzio-dispatched test bodies actively
+    /// polling at once, **across every runtime group**. This is rudzio's
+    /// third — and outermost — concurrency knob and it **composes** with the
+    /// other two:
+    ///
+    /// 1. The limit counts every thread that is actively polling a rudzio
+    ///    test body, including the runner's own `(runtime, suite)`
+    ///    group-dispatch threads and each runtime's internal worker-pool
+    ///    threads (tokio multithread workers, compio reactors,
+    ///    futures-executor pool, …). It is the **total** cap across all of
+    ///    them, not per-runtime.
+    /// 2. [`Self::threads`] sizes each runtime's internal worker pool;
+    ///    [`Self::concurrency_limit`] caps in-flight futures per group.
+    ///    `parallel_hardlimit` caps the product across the whole run — if
+    ///    the first two would otherwise allow `groups × concurrency_limit`
+    ///    test bodies to run simultaneously, this one holds that back to
+    ///    the value here.
+    /// 3. When the gate is hit, the polling OS thread **really parks** on
+    ///    a `std::sync::Condvar` (not a cooperative async semaphore). This
+    ///    is deliberate: it's the same backpressure mechanism the OS would
+    ///    apply at the thread level and is what the user-facing name "hard
+    ///    limit" is meant to convey.
+    ///
+    /// Resolution from `--threads-parallel-hardlimit=<value>`:
+    ///
+    /// | Form | Effective value |
+    /// |---|---|
+    /// | *(flag absent)* | `Some(threads)` (default gate) |
+    /// | `=<N>` with N>0 | `Some(N)` |
+    /// | `=threads` | `Some(threads)` (explicit spelling of default) |
+    /// | `=none` | `None` (gate disabled) |
+    /// | `=0` / garbage | falls back to default |
+    ///
+    /// When `--bench` is passed without an explicit hardlimit flag, the
+    /// gate auto-disables (`None`) so benchmark timing isn't perturbed by
+    /// `Condvar` wake-ups. An explicit `--threads-parallel-hardlimit=<N>`
+    /// (or `=none`) wins over the auto-disable in either direction.
+    ///
+    /// # Caveat — current-thread runtimes
+    ///
+    /// On a single-thread runtime (`tokio::CurrentThread`,
+    /// `futures::LocalPool`, …) the gate can deadlock if you set
+    /// `parallel_hardlimit < concurrency_limit`: with N permits held, the
+    /// sole thread parks on the Condvar trying to acquire the (N+1)th
+    /// permit, and no other future on that thread can make progress to
+    /// release one. The honest implementation exposes the mis-config
+    /// rather than papering over it — set the hardlimit at least as high
+    /// as the largest current-thread `concurrency_limit` in your run.
+    pub parallel_hardlimit: Option<NonZeroUsize>,
+    /// Shared [`HardLimit`] permit pool, constructed from
+    /// [`Self::parallel_hardlimit`]. Held behind an [`Arc`] so every
+    /// generated per-test fn (which only ever sees `&Config`) can acquire
+    /// against the same gate without threading an extra parameter through
+    /// the runner → owner → test-fn chain.
+    ///
+    /// `pub(crate)` rather than `pub` on purpose: the public knob is
+    /// [`Self::parallel_hardlimit`]; the Arc is an implementation detail
+    /// and may be replaced by a non-Arc construction if we later move to
+    /// scoped threads for test dispatch.
+    #[doc(hidden)]
+    pub hardlimit: Arc<HardLimit>,
     /// Output format.
     pub format: Format,
     /// Colour policy.
@@ -219,10 +283,32 @@ impl Config {
         env: BTreeMap<String, String>,
         cargo: CargoMeta,
     ) -> Self {
+        #[derive(Clone, Copy, Default)]
+        enum HardlimitArg {
+            #[default]
+            Unset,
+            Disabled,
+            Threads,
+            Explicit(NonZeroUsize),
+        }
+
+        fn classify_hardlimit(s: &str) -> Option<HardlimitArg> {
+            match s {
+                "none" => Some(HardlimitArg::Disabled),
+                "threads" => Some(HardlimitArg::Threads),
+                _ => s
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(NonZeroUsize::new)
+                    .map(HardlimitArg::Explicit),
+            }
+        }
+
         let mut filter: Option<String> = None;
         let mut skip_filters: Vec<String> = Vec::new();
         let mut threads: Option<usize> = None;
         let mut concurrency_limit: Option<usize> = None;
+        let mut hardlimit_arg = HardlimitArg::Unset;
         let mut format = Format::Pretty;
         let mut color = ColorMode::Auto;
         let mut run_ignored = RunIgnoredMode::Normal;
@@ -265,6 +351,15 @@ impl Config {
                     && n > 0
                 {
                     concurrency_limit = Some(n);
+                }
+            } else if let Some(rest) = arg.strip_prefix("--threads-parallel-hardlimit=") {
+                if let Some(h) = classify_hardlimit(rest) {
+                    hardlimit_arg = h;
+                }
+            } else if arg == "--threads-parallel-hardlimit" {
+                i += 1;
+                if let Some(h) = argv.get(i).and_then(|next| classify_hardlimit(next)) {
+                    hardlimit_arg = h;
                 }
             } else if let Some(rest) = arg.strip_prefix("--color=") {
                 color = match rest {
@@ -372,13 +467,34 @@ impl Config {
         // expect: N worker threads, N tests in-flight.
         let concurrency_limit = concurrency_limit.unwrap_or(threads);
 
+        // `threads` is guaranteed >= 1 by the resolution chain above
+        // (available_parallelism returns NonZeroUsize); the fallback is
+        // unreachable in practice but keeps us off unwrap/expect.
+        let threads_nz = NonZeroUsize::new(threads).unwrap_or(NonZeroUsize::MIN);
+        let parallel_hardlimit: Option<NonZeroUsize> = match hardlimit_arg {
+            HardlimitArg::Unset => {
+                if bench_mode == BenchMode::Full {
+                    None
+                } else {
+                    Some(threads_nz)
+                }
+            }
+            HardlimitArg::Disabled => None,
+            HardlimitArg::Threads => Some(threads_nz),
+            HardlimitArg::Explicit(n) => Some(n),
+        };
+
         let output_mode = OutputMode::resolve(output_mode_explicit, &env);
+
+        let hardlimit = Arc::new(HardLimit::new(parallel_hardlimit));
 
         Self {
             filter,
             skip_filters,
             threads,
             concurrency_limit,
+            parallel_hardlimit,
+            hardlimit,
             format,
             color,
             run_ignored,
@@ -392,6 +508,16 @@ impl Config {
             env,
             cargo,
         }
+    }
+
+    /// Acquire one permit from the process-wide parallel-execution gate.
+    /// Intended for macro-generated per-test code — users shouldn't need
+    /// to call this directly. Returns a no-op guard when the gate is
+    /// disabled ([`Self::parallel_hardlimit`] is `None`).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn acquire_hardlimit_permit(&self) -> HardLimitGuard<'_> {
+        self.hardlimit.acquire()
     }
 }
 

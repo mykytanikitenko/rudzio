@@ -629,6 +629,15 @@ fn generate_per_config(
                         },
                     );
 
+                    // Acquire one permit from the process-wide
+                    // `--threads-parallel-hardlimit` gate. The guard is
+                    // held across setup + body + teardown and dropped
+                    // just before the `TestCompleted` lifecycle emit, so
+                    // any parking notice the primitive writes lands in
+                    // this test's stdout-capture block and gets
+                    // attributed to the right TestId.
+                    let __rudzio_hardlimit_guard = config.acquire_hardlimit_permit();
+
                     let outcome = 'run: {
                         // catch_unwind around `Suite::context` so a
                         // panic in per-test setup becomes a clean
@@ -703,6 +712,12 @@ fn generate_per_config(
 
                         outcome
                     };
+
+                    // Release the parallel-hardlimit permit before the
+                    // TestCompleted emit so another parked test can wake
+                    // and start reporting without waiting on this test's
+                    // drawer bookkeeping.
+                    ::std::mem::drop(__rudzio_hardlimit_guard);
 
                     // Flush producer-side stdio so all captured bytes are
                     // in the drawer's pipe before announcing completion.

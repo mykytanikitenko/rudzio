@@ -247,6 +247,139 @@ mod config_parser {
     }
 
     #[rudzio::test]
+    fn parallel_hardlimit_defaults_to_threads(_ctx: &Test) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(
+            argv(&["--test-threads=8"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            c.parallel_hardlimit.map(std::num::NonZeroUsize::get) == Some(8),
+            "expected Some(8), got {:?}",
+            c.parallel_hardlimit
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn parallel_hardlimit_equals_form(_ctx: &Test) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(
+            argv(&["--test-threads=8", "--threads-parallel-hardlimit=3"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(c.parallel_hardlimit.map(std::num::NonZeroUsize::get) == Some(3));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn parallel_hardlimit_split_form(_ctx: &Test) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(
+            argv(&["--test-threads=8", "--threads-parallel-hardlimit", "3"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(c.parallel_hardlimit.map(std::num::NonZeroUsize::get) == Some(3));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn parallel_hardlimit_none_disables_equals_form(_ctx: &Test) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(
+            argv(&["--test-threads=8", "--threads-parallel-hardlimit=none"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(c.parallel_hardlimit.is_none());
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn parallel_hardlimit_none_disables_split_form(_ctx: &Test) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(
+            argv(&["--test-threads=8", "--threads-parallel-hardlimit", "none"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(c.parallel_hardlimit.is_none());
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn parallel_hardlimit_threads_keyword(_ctx: &Test) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(
+            argv(&["--test-threads=8", "--threads-parallel-hardlimit=threads"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(c.parallel_hardlimit.map(std::num::NonZeroUsize::get) == Some(8));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn parallel_hardlimit_zero_falls_back_to_default(_ctx: &Test) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(
+            argv(&["--test-threads=8", "--threads-parallel-hardlimit=0"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(c.parallel_hardlimit.map(std::num::NonZeroUsize::get) == Some(8));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn parallel_hardlimit_invalid_falls_back_to_default(_ctx: &Test) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(
+            argv(&["--test-threads=8", "--threads-parallel-hardlimit=foo"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(c.parallel_hardlimit.map(std::num::NonZeroUsize::get) == Some(8));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn parallel_hardlimit_bench_auto_disables_when_unset(_ctx: &Test) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(
+            argv(&["--test-threads=8", "--bench"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            c.parallel_hardlimit.is_none(),
+            "expected None under --bench with no explicit flag, got {:?}",
+            c.parallel_hardlimit
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn parallel_hardlimit_explicit_survives_bench(_ctx: &Test) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(
+            argv(&[
+                "--test-threads=8",
+                "--bench",
+                "--threads-parallel-hardlimit=4",
+            ]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(c.parallel_hardlimit.map(std::num::NonZeroUsize::get) == Some(4));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn parallel_hardlimit_explicit_none_survives_non_bench(_ctx: &Test) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(
+            argv(&["--test-threads=8", "--threads-parallel-hardlimit=none"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(c.parallel_hardlimit.is_none());
+        Ok(())
+    }
+
+    #[rudzio::test]
     fn env_is_propagated_into_config(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(argv(&[]), env_with(Some("4")), rudzio::cargo_meta!());
         anyhow::ensure!(c.env.get("RUST_TEST_THREADS").map(String::as_str) == Some("4"));

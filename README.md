@@ -683,6 +683,72 @@ When the test only needs a couple of suite-owned handles, threading those
 through avoids the HRTB mismatch and keeps the generated macro call site
 simple.
 
+## Concurrency knobs
+
+Rudzio has **three** knobs that control how many things happen at once.
+They compose — each one caps a different layer of the pipeline — and
+understanding all three is worth a minute of reading.
+
+| Flag | Layer it caps | Default |
+|---|---|---|
+| `--test-threads=<N>` | Each runtime's internal worker pool (tokio multi-thread workers, compio reactors, …) | [`std::thread::available_parallelism`] |
+| `--concurrency-limit=<N>` | In-flight futures per `(runtime, suite)` group — the scheduler's `FuturesUnordered` ceiling | `--test-threads` |
+| `--threads-parallel-hardlimit=<value>` | Total test bodies actively polling across the **whole run**, summed over every group and every runtime | `--test-threads` |
+
+**Why three?** Because the workspace aggregator (`cargo rudzio test`)
+runs every `(runtime, suite)` group as a separate OS thread, each with
+its own runtime worker pool. If you have 4 groups and
+`--concurrency-limit=4` per group, you can have up to 16 test bodies
+polling in parallel. On an 8-core CI runner that thrashes badly.
+`--threads-parallel-hardlimit` is the outermost cap that enforces "no
+more than `<N>` tests executing across the whole process, full stop".
+
+```
+--test-threads=4  --concurrency-limit=4  --threads-parallel-hardlimit=4
+             ^ per-runtime worker pool     ^ total across the run
+                            ^ per-group in-flight ceiling
+```
+
+### `--threads-parallel-hardlimit` values
+
+- *(flag omitted)* — gate is on at the current `--test-threads` value.
+- `=<N>` — explicit numeric cap.
+- `=threads` — explicit spelling of the default (`--test-threads` value).
+- `=none` — gate disabled (previous unbounded behaviour).
+
+When a test future tries to start but the gate is saturated, the OS
+thread polling it **really parks** on a `std::sync::Condvar` (not a
+cooperative async semaphore). This is intentional: it's what "hard
+limit" means and it's what keeps the aggregator from overcommitting
+cores. When a thread unparks, a single line is written to the test's
+stdout (so the runner attributes it to the right test block):
+
+```
+rudzio: parked 1.3ms on parallel-hardlimit (8 max); disable with --threads-parallel-hardlimit=none
+```
+
+If you see these lines regularly and don't want the cap, pass
+`--threads-parallel-hardlimit=none`. If you see them occasionally and
+the wall-clock is fine, ignore them — the gate did its job.
+
+### Interaction with `--bench`
+
+Benchmark timing is sensitive to Condvar wake-ups, so `--bench` **auto-
+disables the gate** as long as you didn't pass `--threads-parallel-
+hardlimit` yourself. An explicit value (including `=none`) always wins.
+
+### Current-thread runtime caveat
+
+On single-threaded runtimes (`tokio::CurrentThread`,
+`futures::LocalPool`, `embassy`), setting `--threads-parallel-hardlimit`
+lower than that runtime's `--concurrency-limit` can deadlock: with `N`
+permits held on the single thread, the (N+1)th future on the same
+thread parks on the Condvar and blocks every other future from making
+progress, including the ones that would release the permits. The
+honest implementation exposes this rather than working around it — set
+the hardlimit at least as high as the largest current-thread
+`--concurrency-limit` in your run.
+
 ## Benchmarks
 
 Any `#[rudzio::test]` can also run as a benchmark by adding a
@@ -733,6 +799,10 @@ CLI flags:
   strategy. Non-bench tests still run.
 - `--no-bench` — skip mode: bench-annotated tests are reported as
   ignored (useful on slow CI).
+
+`--bench` also auto-disables `--threads-parallel-hardlimit` (unless you
+set it explicitly) so Condvar wake-ups don't muddy the timing — see the
+Concurrency knobs section above.
 
 ### Precision expectations
 
