@@ -593,7 +593,8 @@ mod build_sentinel {
     use std::ffi::OsStr;
 
     use rudzio::build::{
-        NESTED_SENTINEL_ENV, SentinelAction, decide_sentinel_action, sentinel_indicates_nested_call,
+        NESTED_SENTINEL_ENV, SentinelAction, decide_sentinel_action,
+        sentinel_indicates_nested_call, strip_rudzio_test_cfg,
     };
 
     #[rudzio::test]
@@ -644,6 +645,22 @@ mod build_sentinel {
     fn sentinel_detector_ignores_absent_or_empty() -> anyhow::Result<()> {
         anyhow::ensure!(!sentinel_indicates_nested_call(None));
         anyhow::ensure!(!sentinel_indicates_nested_call(Some(OsStr::new(""))));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn strip_rudzio_test_cfg_removes_pair_and_preserves_other_flags() -> anyhow::Result<()> {
+        anyhow::ensure!(strip_rudzio_test_cfg("--cfg rudzio_test") == "");
+        anyhow::ensure!(
+            strip_rudzio_test_cfg("-C opt-level=1 --cfg rudzio_test --cfg foo")
+                == "-C opt-level=1 --cfg foo",
+        );
+        anyhow::ensure!(strip_rudzio_test_cfg("-C debuginfo=2") == "-C debuginfo=2");
+        anyhow::ensure!(strip_rudzio_test_cfg("") == "");
+        anyhow::ensure!(
+            strip_rudzio_test_cfg("--cfg rudzio_test_helper --cfg rudzio_test")
+                == "--cfg rudzio_test_helper",
+        );
         Ok(())
     }
 

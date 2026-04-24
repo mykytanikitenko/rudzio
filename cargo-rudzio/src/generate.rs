@@ -1756,6 +1756,28 @@ fn env_var(name: &str) -> Result<String, String> {
     std::env::var(name).map_err(|_| format!("env var `{name}` not set by cargo"))
 }
 
+// Inverse of cargo-rudzio's resolve_rustflags: remove every
+// `--cfg rudzio_test` pair. cargo rudzio test sets this flag on the
+// ambient RUSTFLAGS so the aggregator + member libs compile with
+// `cfg(rudzio_test)` active. But the nested `cargo build --bins` spawned
+// below must NOT inherit it: bin crates don't have rudzio tests, and
+// `#[cfg(any(test, rudzio_test))]`-gated modules in their libs would
+// pull in dev-deps the bin targets don't declare, blowing up the build.
+fn strip_rudzio_test_cfg(rustflags: &str) -> String {
+    let tokens: Vec<&str> = rustflags.split_whitespace().collect();
+    let mut out: Vec<&str> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        if tokens[i] == "--cfg" && tokens.get(i + 1).copied() == Some("rudzio_test") {
+            i += 2;
+            continue;
+        }
+        out.push(tokens[i]);
+        i += 1;
+    }
+    out.join(" ")
+}
+
 fn expose_member_bins(pkg: &str, manifest_dir: &str, bins: &[&str]) -> Result<(), String> {
     let out_dir = PathBuf::from(env_var("OUT_DIR")?);
     let profile = env_var("PROFILE")?;
@@ -1769,6 +1791,12 @@ fn expose_member_bins(pkg: &str, manifest_dir: &str, bins: &[&str]) -> Result<()
         .arg("--manifest-path")
         .arg(&manifest)
         .env("CARGO_TARGET_DIR", &target_dir);
+    let stripped = strip_rudzio_test_cfg(&std::env::var("RUSTFLAGS").unwrap_or_default());
+    if stripped.is_empty() {
+        cmd.env_remove("RUSTFLAGS");
+    } else {
+        cmd.env("RUSTFLAGS", stripped);
+    }
     if profile == "release" {
         cmd.arg("--release");
     }

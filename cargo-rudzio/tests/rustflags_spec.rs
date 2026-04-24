@@ -1,4 +1,6 @@
-use cargo_rudzio::{EXPOSE_BINS_SENTINEL_ENV, resolve_rustflags, spawn_env};
+use cargo_rudzio::{
+    EXPOSE_BINS_SENTINEL_ENV, resolve_rustflags, spawn_env, strip_rudzio_test_cfg,
+};
 
 #[rudzio::suite([
     (
@@ -8,7 +10,9 @@ use cargo_rudzio::{EXPOSE_BINS_SENTINEL_ENV, resolve_rustflags, spawn_env};
     ),
 ])]
 mod tests {
-    use super::{EXPOSE_BINS_SENTINEL_ENV, resolve_rustflags, spawn_env};
+    use super::{
+        EXPOSE_BINS_SENTINEL_ENV, resolve_rustflags, spawn_env, strip_rudzio_test_cfg,
+    };
 
     #[rudzio::test]
     fn injects_rudzio_test_cfg_when_rustflags_unset() -> anyhow::Result<()> {
@@ -84,6 +88,56 @@ mod tests {
         anyhow::ensure!(
             rustflags == Some("-C opt-level=2 --cfg rudzio_test"),
             "spawn_env must delegate to resolve_rustflags, got {rustflags:?}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn strip_rudzio_test_cfg_removes_the_pair() -> anyhow::Result<()> {
+        anyhow::ensure!(strip_rudzio_test_cfg("--cfg rudzio_test") == "");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn strip_rudzio_test_cfg_preserves_other_flags() -> anyhow::Result<()> {
+        anyhow::ensure!(
+            strip_rudzio_test_cfg("-C opt-level=1 --cfg rudzio_test --cfg foo")
+                == "-C opt-level=1 --cfg foo",
+            "got {:?}",
+            strip_rudzio_test_cfg("-C opt-level=1 --cfg rudzio_test --cfg foo")
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn strip_rudzio_test_cfg_idempotent_without_flag() -> anyhow::Result<()> {
+        anyhow::ensure!(strip_rudzio_test_cfg("-C debuginfo=2") == "-C debuginfo=2");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn strip_rudzio_test_cfg_on_blank() -> anyhow::Result<()> {
+        anyhow::ensure!(strip_rudzio_test_cfg("") == "");
+        anyhow::ensure!(strip_rudzio_test_cfg("   \t") == "");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn strip_rudzio_test_cfg_removes_multiple_occurrences() -> anyhow::Result<()> {
+        anyhow::ensure!(
+            strip_rudzio_test_cfg("--cfg rudzio_test --cfg foo --cfg rudzio_test")
+                == "--cfg foo",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn strip_rudzio_test_cfg_leaves_unrelated_cfg_with_similar_name() -> anyhow::Result<()> {
+        // `rudzio_test_helper` must NOT be stripped — only the exact
+        // `rudzio_test` value pairs go.
+        anyhow::ensure!(
+            strip_rudzio_test_cfg("--cfg rudzio_test_helper --cfg rudzio_test")
+                == "--cfg rudzio_test_helper",
         );
         Ok(())
     }
