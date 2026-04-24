@@ -23,9 +23,8 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn sums_correctly() -> ::anyhow::Result<()> {
+    async fn sums_correctly() {
         assert_eq!(add(1, 2), 3);
-        ::core::result::Result::Ok(())
     }
 }
 #[cfg(test)]

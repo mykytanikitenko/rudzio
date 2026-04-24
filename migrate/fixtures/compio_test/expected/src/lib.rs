@@ -19,9 +19,8 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn runs_under_compio() -> ::anyhow::Result<()> {
+    async fn runs_under_compio() {
         assert_eq!(answer(), 42);
-        ::core::result::Result::Ok(())
     }
 }
 #[cfg(test)]

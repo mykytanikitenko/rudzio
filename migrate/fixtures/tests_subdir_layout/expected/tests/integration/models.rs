@@ -18,9 +18,8 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn shouts_loud() -> ::anyhow::Result<()> {
+    async fn shouts_loud() {
         assert_eq!(shout("hi"), "HI");
-        ::core::result::Result::Ok(())
     }
     /* pre-migration (rudzio-migrate):
     #[test]
@@ -29,8 +28,7 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn shouts_empty() -> ::anyhow::Result<()> {
+    async fn shouts_empty() {
         assert_eq!(shout(""), "");
-        ::core::result::Result::Ok(())
     }
 }

@@ -16,9 +16,8 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn panics_as_expected() -> ::anyhow::Result<()> {
+    async fn panics_as_expected() {
         panic!("expected");
-        ::core::result::Result::Ok(())
     }
     /* pre-migration (rudzio-migrate):
     #[test]
@@ -27,9 +26,8 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn ordinary_ok() -> ::anyhow::Result<()> {
+    async fn ordinary_ok() {
         assert!(true);
-        ::core::result::Result::Ok(())
     }
 }
 #[cfg(test)]

@@ -28,9 +28,8 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn trivial() -> ::anyhow::Result<()> {
+    async fn trivial() {
         assert!(true);
-        ::core::result::Result::Ok(())
     }
 }
 #[cfg(test)]

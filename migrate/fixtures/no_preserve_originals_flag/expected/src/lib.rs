@@ -13,9 +13,8 @@ pub fn add(a: i32, b: i32) -> i32 {
 mod tests {
     use super::*;
     #[::rudzio::test]
-    async fn sums_correctly() -> ::anyhow::Result<()> {
+    async fn sums_correctly() {
         assert_eq!(add(1, 2), 3);
-        ::core::result::Result::Ok(())
     }
 }
 #[cfg(test)]

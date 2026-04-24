@@ -155,9 +155,8 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn uses_db(ctx: &mut DbCtxRudzioBridge) -> ::anyhow::Result<()> {
+    async fn uses_db(ctx: &mut DbCtxRudzioBridge) {
         assert_eq!(ctx.conn_id, 42);
-        ::core::result::Result::Ok(())
     }
 }
 #[cfg(test)]

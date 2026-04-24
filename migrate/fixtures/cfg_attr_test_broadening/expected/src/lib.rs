@@ -30,10 +30,9 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn widget_has_size() -> ::anyhow::Result<()> {
+    async fn widget_has_size() {
         let w = Widget { size: 42 };
         assert_eq!(w.size, 42);
-        ::core::result::Result::Ok(())
     }
 }
 #[cfg(test)]

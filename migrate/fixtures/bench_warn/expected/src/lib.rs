@@ -15,9 +15,8 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn addition_works() -> ::anyhow::Result<()> {
+    async fn addition_works() {
         assert_eq!(1 + 1, 2);
-        ::core::result::Result::Ok(())
     }
     #[bench]
     fn addition_bench(b: &mut test::Bencher) {

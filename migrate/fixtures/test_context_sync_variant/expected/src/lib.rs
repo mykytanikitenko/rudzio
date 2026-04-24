@@ -157,9 +157,8 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn reads_path(ctx: &mut FileCtxRudzioBridge) -> ::anyhow::Result<()> {
+    async fn reads_path(ctx: &mut FileCtxRudzioBridge) {
         assert!(! ctx.path.is_empty());
-        ::core::result::Result::Ok(())
     }
 }
 #[cfg(test)]

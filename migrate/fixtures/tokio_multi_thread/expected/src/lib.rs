@@ -19,9 +19,8 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn runs_on_multi_thread() -> ::anyhow::Result<()> {
+    async fn runs_on_multi_thread() {
         assert_eq!(answer(), 42);
-        ::core::result::Result::Ok(())
     }
 }
 #[cfg(test)]

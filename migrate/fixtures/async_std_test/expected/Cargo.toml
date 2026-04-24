@@ -9,7 +9,6 @@ autotests = false
 [dev-dependencies]
 async-std = { version = "1", features = ["attributes"] }
 rudzio = { version = "0.1", features = ["common", "runtime-tokio-multi-thread"] }
-anyhow = "1.0"
 
 [lib]
 harness = false

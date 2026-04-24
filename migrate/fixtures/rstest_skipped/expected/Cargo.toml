@@ -9,7 +9,6 @@ autotests = false
 [dev-dependencies]
 rstest = "0.22"
 rudzio = { version = "0.1", features = ["common", "runtime-tokio-multi-thread"] }
-anyhow = "1.0"
 
 [lib]
 harness = false
