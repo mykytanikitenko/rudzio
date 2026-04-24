@@ -42,16 +42,6 @@ pub struct ManifestEdits {
     /// `[lints.rust] unexpected_cfgs = { check-cfg = ['cfg(rudzio_test)'] }`
     /// entry so Rust 1.80+'s unknown-cfg warning doesn't fire.
     pub needs_rudzio_test_cfg: bool,
-    /// Rust idents referenced from inside src-embedded rudzio suites
-    /// (collected by the rewriter's suite-module walker, filtered
-    /// against `[dev-dependencies]` keys at apply time). When
-    /// non-empty, the named dev-deps are copied into
-    /// `[target."cfg(rudzio_test)".dependencies]` so the aggregator's
-    /// plain-lib build (no dev-deps) can still resolve them under
-    /// `--cfg rudzio_test`. Empty for tests-only migrations —
-    /// `tests/*.rs` gets `#[path]`-included into the aggregator crate,
-    /// which lists the deps itself, so mirroring would be pointless.
-    pub mirror_crate_idents: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -106,9 +96,6 @@ pub fn apply(manifest_path: &Path, edits: &ManifestEdits) -> Result<bool> {
     }
     for entry in &edits.tests_integration {
         ensure_test_entry(&mut doc, entry);
-    }
-    if !edits.mirror_crate_idents.is_empty() {
-        mirror_dev_deps_for_rudzio_test_cfg(&mut doc, &edits.mirror_crate_idents);
     }
     if edits.needs_rudzio_test_cfg {
         ensure_check_cfg_rudzio_test(&mut doc);
@@ -365,97 +352,6 @@ fn ensure_check_cfg_rudzio_test(doc: &mut DocumentMut) {
             .any(|v| v.as_str().is_some_and(|s| s == CFG_ENTRY));
         if !already {
             arr.push(CFG_ENTRY);
-        }
-    }
-}
-
-/// Copy `[dev-dependencies]` into `[target.'cfg(rudzio_test)'.dependencies]`
-/// so `cargo rudzio test` can compile a member crate's in-src suites.
-///
-/// **Why:** `[dev-dependencies]` only activate when cargo builds a test
-/// target (integrated `cargo test` on that crate). `cargo rudzio test`
-/// builds the aggregator binary, which depends on each member as a plain
-/// lib — no `--test` flag, no dev-deps — so `use ::rudzio::…` inside a
-/// `#[cfg(any(test, rudzio_test))] mod tests` in `src/**` fails to
-/// resolve. Mirroring into `[target.'cfg(rudzio_test)'.dependencies]`
-/// makes cargo activate those deps ONLY when the `rudzio_test` cfg is
-/// set (which the aggregator passes via `RUSTFLAGS=--cfg rudzio_test`),
-/// so regular `cargo build` / `cargo test` / published-crate consumers
-/// see no extra deps.
-///
-/// Idempotent: existing `[target.'cfg(rudzio_test)'.dependencies]`
-/// entries are preserved and only missing names are inserted.
-/// The Rust ident a dep is referenced by in source: the Cargo.toml
-/// key with hyphens normalised to underscores, unless the user
-/// renamed the package via `package = "…"` (in which case the key
-/// itself IS the source ident — hyphens and all, with the same
-/// `-` → `_` normalisation). Cargo does the same normalisation.
-fn dep_rust_ident(cargo_key: &str, item: &Item) -> String {
-    // `package = "…"` means the key is the user's chosen ident; the
-    // original crate name (in `package`) is only for cargo's registry
-    // lookup. Either way the ident comes from the KEY with `-` → `_`.
-    let _ = item; // retained for future expansion; package-rename already lives on key
-    cargo_key.replace('-', "_")
-}
-
-fn mirror_dev_deps_for_rudzio_test_cfg(
-    doc: &mut DocumentMut,
-    wanted_idents: &std::collections::BTreeSet<String>,
-) {
-    const CFG_KEY: &str = "cfg(rudzio_test)";
-
-    let snapshot: Vec<(String, Item)> = doc
-        .as_table()
-        .get("dev-dependencies")
-        .and_then(Item::as_table)
-        .map(|tbl| {
-            tbl.iter()
-                .filter(|(name, item)| {
-                    wanted_idents.contains(&dep_rust_ident(name, item))
-                })
-                .map(|(name, item)| (name.to_owned(), item.clone()))
-                .collect()
-        })
-        .unwrap_or_default();
-    if snapshot.is_empty() {
-        return;
-    }
-
-    let target_absent = !doc.as_table().contains_key("target");
-    let target = doc
-        .as_table_mut()
-        .entry("target")
-        .or_insert(Item::Table(Table::new()));
-    let Some(target_tbl) = target.as_table_mut() else {
-        return;
-    };
-    if target_absent {
-        // `[target]` itself is never rendered; the actual header is
-        // `[target.'cfg(rudzio_test)'.dependencies]`.
-        target_tbl.set_implicit(true);
-    }
-
-    let cfg_absent = !target_tbl.contains_key(CFG_KEY);
-    let cfg_entry = target_tbl
-        .entry(CFG_KEY)
-        .or_insert(Item::Table(Table::new()));
-    let Some(cfg_tbl) = cfg_entry.as_table_mut() else {
-        return;
-    };
-    if cfg_absent {
-        cfg_tbl.set_implicit(true);
-    }
-
-    let deps_item = cfg_tbl
-        .entry("dependencies")
-        .or_insert(Item::Table(Table::new()));
-    let Some(deps_tbl) = deps_item.as_table_mut() else {
-        return;
-    };
-
-    for (name, item) in snapshot {
-        if !deps_tbl.contains_key(&name) {
-            let _prev = deps_tbl.insert(&name, item);
         }
     }
 }

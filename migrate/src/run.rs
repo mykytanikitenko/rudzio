@@ -159,20 +159,11 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
                     // rudzio_test), ...)`) contributes nothing here,
                     // so we skip `had_src_conversion` and the
                     // downstream `[lib] harness = false` /
-                    // `#[rudzio::main]` / dev-dep mirror edits that
-                    // only make sense when the crate hosts at least
-                    // one rudzio suite.
+                    // `#[rudzio::main]` edits that only make sense
+                    // when the crate hosts at least one rudzio suite.
                     let promoted_suite = !rewrite.runtimes_used.is_empty();
                     if promoted_suite && file.starts_with(pkg.root.join("src")) {
                         pkg_edits.had_src_conversion = true;
-                        pkg_edits
-                            .mirror_crate_idents
-                            .extend(rewrite.used_crate_idents.iter().cloned());
-                        if rewrite.needs_anyhow {
-                            let _ = pkg_edits
-                                .mirror_crate_idents
-                                .insert("anyhow".to_owned());
-                        }
                     }
                     if let Some(entry) = integration_test_entry_for(file, &pkg.root) {
                         pkg_edits.tests_integration.push(entry);
