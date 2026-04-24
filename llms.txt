@@ -27,9 +27,10 @@ Three execution regimes coexist on the same source tree:
    `harness = false`. Stock cargo invocation, rudzio execution.
 3. **`cargo rudzio test`** — workspace aggregator: one binary, one
    `#[rudzio::main]`, every rudzio test in the workspace. Dedupes
-   `(runtime, suite)` groups across crates. Optional `--via-bridge`
-   routes member deps through generated bridge crates to keep member
-   `Cargo.toml` pristine.
+   `(runtime, suite)` groups across crates. Generates per-member
+   bridge crates under `<target>/rudzio-auto-runner/members/` so
+   `[dev-dependencies]` are visible without polluting members'
+   Cargo.toml files.
 
 The companion tool `rudzio-migrate` converts cargo-style
 `#[test]` / `#[tokio::test]` / `#[test_context(T)]` suites into rudzio
@@ -43,9 +44,9 @@ short warning list; review via `git diff`.
 - [README.md](README.md): user-facing overview — installation, when to
   use rudzio, quick example, the three execution regimes, concept
   walkthrough of `Runtime` / `Suite` / `Test`, multi-runtime suites,
-  custom contexts, workspace aggregator (`cargo rudzio test` and
-  `--via-bridge`), benchmarks and precision expectations, cancellation
-  and panic model, CLI flags, `Config` surface, output capture,
+  custom contexts, workspace aggregator (`cargo rudzio test`),
+  benchmarks and precision expectations, cancellation and panic
+  model, CLI flags, `Config` surface, output capture,
   `cfg(any(test, rudzio_test))` gate, thread-safety requirements, CI
   recipes, what rudzio does not do, sharp edges, migration pointer.
 - [migrate/README.md](migrate/README.md): `rudzio-migrate` usage —
@@ -131,26 +132,27 @@ short warning list; review via `git diff`.
   lib crates, the `use <crate> as _;` fallback for bin-only.
 - [migrate/src/manifest.rs](migrate/src/manifest.rs): `Cargo.toml`
   edits via `toml_edit` — `autotests = false`, rudzio dep with the
-  right runtime feature, `[[test]] harness = false` entries, the
-  smart `[target."cfg(rudzio_test)".dependencies]` mirror keyed off
-  the set of crate idents referenced inside src suite modules.
+  right runtime feature, `[[test]] harness = false` entries,
+  `[lib] harness = false` + `[[bin]] test = false` hygiene,
+  `[lints.rust] check-cfg = ["cfg(rudzio_test)"]`.
 
 ## Workspace aggregator (cargo-rudzio)
 
 - [cargo-rudzio/src/main.rs](cargo-rudzio/src/main.rs): CLI argv
-  dispatcher. `test`, `migrate`, `generate-runner` subcommands;
-  `--via-bridge` and `RUDZIO_BRIDGE=1` toggles.
+  dispatcher. `test`, `migrate`, `generate-runner` subcommands.
 - [cargo-rudzio/src/lib.rs](cargo-rudzio/src/lib.rs): library surface
   so integration tests can drive the generator against synthetic
   inputs. Exports `resolve_rustflags` (adds `--cfg rudzio_test` to
   the child cargo invocation).
 - [cargo-rudzio/src/generate.rs](cargo-rudzio/src/generate.rs): the
   aggregator generator. `Plan` / `MemberPlan` / `DevDepSpec` /
-  `RudzioSpec`; `plan_from_cwd` + `write_runner`. Under
-  `--via-bridge` generates per-member bridge crates at
-  `<target>/rudzio-auto-runner/members/<name>/Cargo.toml` that
-  re-point `[lib] path` at the real source tree but carry the
-  aggregated deps themselves.
+  `RudzioSpec`; `plan_from_cwd` + `write_runner`. Unconditionally
+  generates per-member bridge crates at
+  `<target>/rudzio-auto-runner/members/<name>/Cargo.toml` for every
+  member with src-embedded rudzio suites. Also exposes
+  `scan_unbroadened_cfg_test_mods` for the diagnostic warning pass
+  that spots bare `#[cfg(test)] mod` in src that would be invisible
+  under `cargo rudzio test`.
 
 ## Optional
 

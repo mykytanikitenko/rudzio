@@ -161,18 +161,28 @@ rudzio = { git = "https://github.com/mykytanikitenko/rudzio", features = ["commo
 `harness = false` is required — the `#[rudzio::main]` attribute installs
 the runner that walks every `#[rudzio::test]` registered via `linkme`.
 
-### Return type: any `Result<T, E: Display>`
+### Return types
 
-`#[rudzio::test]` test bodies must return a `Result`. The error type is
-anything that implements `Display + Debug + Send + Sync` — the runner
-calls `.map_err(|e| format!("{e}"))` on whatever you hand back:
+`#[rudzio::test]` bodies accept every libtest-compatible return shape
+via the `rudzio::IntoRudzioResult` trait: bare `()`, explicit `-> ()`,
+and `Result<T, E>` where `E: Display`. The runner converts each into
+`Result<(), BoxError>` internally — `Ok` variants pass, `Err` is
+recorded as the failure message.
 
 ```rust
+// bare void: same shape as stock #[test]
+#[rudzio::test]
+fn assertion_only() {
+    assert_eq!(1 + 1, 2);
+}
+
+// explicit unit: identical semantics
+#[rudzio::test]
+fn explicit_unit() -> () {}
+
+// Result<(), E: Display>: failure path uses E's Display impl
 #[rudzio::test]
 async fn uses_anyhow() -> anyhow::Result<()> { Ok(()) }
-
-#[rudzio::test]
-async fn uses_n0_snafu() -> n0_snafu::Result { Ok(()) }
 
 #[rudzio::test]
 async fn uses_std_io() -> Result<(), std::io::Error> { Ok(()) }
@@ -181,8 +191,8 @@ async fn uses_std_io() -> Result<(), std::io::Error> { Ok(()) }
 async fn uses_custom_enum() -> Result<(), MyError> { Ok(()) }
 ```
 
-Bare `fn foo() {}` does not compile — the macro has no `Result` to map
-over. `rudzio-migrate` rewrites signatures automatically.
+`rudzio-migrate` preserves whichever shape you had — no rewriting of
+user signatures, no forced dependency on `anyhow`.
 
 ### The context parameter is optional
 
@@ -296,12 +306,13 @@ Consequences, all derived from "one process":
   under this regime too (`cargo-rudzio` sets `--cfg rudzio_test` in
   `RUSTFLAGS`). Under regime 2, the `cfg(test)` arm fires instead.
 
-Under `--via-bridge` (or `RUDZIO_BRIDGE=1`), member crate manifests stay
-pristine: the aggregator generates per-member bridge crates under
-`<target>/rudzio-auto-runner/members/<name>/Cargo.toml` that re-point
-`[lib] path` at the real source tree but carry the aggregated deps
-themselves. Member `Cargo.toml` needs no
-`[target."cfg(rudzio_test)".dependencies]` mirror.
+To make dev-deps visible when the aggregator compiles a member as a
+plain lib, `cargo-rudzio` generates per-member "bridge" crates at
+`<target>/rudzio-auto-runner/members/<name>/Cargo.toml`. Each bridge
+re-points `[lib] path` at the real `src/lib.rs` but owns its own
+`[dependencies]` table (the merged member `[dependencies]` +
+`[dev-dependencies]`). Member `Cargo.toml` stays pristine — no
+machinery leaks into user manifests.
 
 ### Choosing
 
@@ -320,7 +331,6 @@ Regimes 2 and 3 produce the same pass/fail set on the same test bodies
 cargo rudzio test                         # build + run the aggregator
 cargo rudzio test some_filter             # forward args to the runner
 cargo rudzio test --skip slow --threads 1 --bench
-cargo rudzio test --via-bridge            # route member deps through bridge crates
 ```
 
 On every invocation, cargo-rudzio:
@@ -360,24 +370,33 @@ ARGS after the subcommand name are forwarded to the aggregator binary.
 It accepts rudzio's full config flag set (filter patterns, `--skip`,
 `--bench`, `--format`, `--threads`, `--test-timeout`, `--run-timeout`).
 
-### `--via-bridge`
+### How bridges expose dev-deps (default)
 
-By default, `cargo-rudzio` expects each member that carries `src/**`
-rudzio suites to declare its test-only deps under
-`[target."cfg(rudzio_test)".dependencies]` in its own `Cargo.toml`
-(`rudzio-migrate` writes this block automatically, as a subset mirror of
-`[dev-dependencies]`). Under `--via-bridge`, the aggregator generates a
-per-member "bridge" crate at `<target>/rudzio-auto-runner/members/<name>/`
-whose `[lib] path` re-points at the real `src/lib.rs` but whose
-`[dependencies]` carries the dev-dep union directly. Member `Cargo.toml`
-stays pristine — no `cfg(rudzio_test)` block required.
+When the aggregator pulls a member in as a plain lib `[dependencies]`
+entry, cargo does NOT activate the member's `[dev-dependencies]`.
+`use ::rudzio::...` inside a `src/**` test module would therefore fail
+to resolve.
 
-Caveat: neither approach handles dev-dep cycles. If crate A has B in
-`[dev-dependencies]` and B has A in `[dependencies]`, neither the mirror
-nor the bridge can expose B to A's src tests — cargo tolerates cycles only
-in `[dev-dependencies]`, not in `[dependencies]` or `[target.cfg]` blocks.
-Rearrange your dev-deps or move the affected test to `tests/*.rs`
-(integration tests compile into the aggregator's own unit and bypass this).
+`cargo-rudzio` handles this transparently: for every member with
+`src/**` rudzio suites, it generates a per-member bridge crate at
+`<target>/rudzio-auto-runner/members/<name>/Cargo.toml`. The bridge
+declares `[lib] path = "<real>/src/lib.rs"` (so cargo compiles the
+member's source tree under the bridge's identity) plus a
+`[dependencies]` table that merges the member's `[dependencies]` +
+`[dev-dependencies]`. The aggregator's own Cargo.toml then references
+the bridge via `<member> = { path = "./members/<name>", package =
+"<name>_rudzio_bridge" }`, so `extern crate <member>;` in the
+aggregator resolves to the bridge's rlib.
+
+Consequence: the member's own `Cargo.toml` stays pristine — no
+`[target."cfg(rudzio_test)"...]` block, no rudzio-specific keys.
+
+Caveat: bridges can't paper over dev-dep cycles. If crate A has B in
+`[dev-dependencies]` and B has A in `[dependencies]`, cargo rejects the
+cycle (it tolerates cycles only in `[dev-dependencies]`, not in
+`[dependencies]`). Rearrange your deps or move the affected test into
+`tests/*.rs` (integration tests compile into the aggregator's own unit
+and bypass the bridge).
 
 ### Inspecting the generated aggregator
 
@@ -1176,12 +1195,14 @@ requires unsafe.
   `tokio::sync::Mutex<()>` inside your own `Suite::setup`. A future
   release may expose a `--max-concurrent-suites N` knob.
 
-- **Dev-dep cycles break regime 3.** See
-  `cargo rudzio test --via-bridge` caveat above. `cargo tolerates cycles
-  only in `[dev-dependencies]`; mirroring them into either the member's
-  `[target.cfg(rudzio_test)].dependencies]` block (default) or a bridge
-  crate's `[dependencies]` (under `--via-bridge`) trips cargo's cycle
-  rejection. Rearrange dev-deps or move affected tests into `tests/*.rs`.
+- **Dev-dep cycles break regime 3.** If member A has B in
+  `[dev-dependencies]` and B has A in `[dependencies]`, the generated
+  bridge for A carries B in its own `[dependencies]` — and cargo
+  rejects the resulting cycle. Cargo tolerates cycles only across
+  `[dev-dependencies]` edges; bridges put those edges into
+  `[dependencies]`. Rearrange dev-deps or move the affected test into
+  `tests/*.rs` (integration tests compile into the aggregator's own
+  unit and bypass the bridge).
 
 ## Migrating an existing suite
 
