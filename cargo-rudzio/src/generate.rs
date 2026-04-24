@@ -11,6 +11,13 @@ use toml_edit::{Array, DocumentMut, Formatted, InlineTable, Item, Table, Value, 
 const RUDZIO_DEP: &str = "rudzio";
 const AGGREGATOR_NAME: &str = "rudzio-auto-runner";
 
+/// Top-level member entries that must NOT be symlinked into the bridge
+/// dir: either they'd collide with bridge-synthesised files
+/// (`Cargo.toml`, `build.rs`), they're noise cargo regenerates anyway
+/// (`Cargo.lock`), or they'd be actively harmful (`target/` creates
+/// parallel-build recursion, `.git/` confuses tooling that walks up).
+const BRIDGE_SKIPLIST: &[&str] = &["Cargo.toml", "Cargo.lock", "build.rs", "target", ".git"];
+
 /// Everything extracted from `cargo metadata` plus the workspace root's
 /// Cargo.toml that the generator needs to emit the aggregator.
 #[derive(Debug)]
@@ -63,6 +70,17 @@ pub struct MemberPlan {
     /// member's src tree under `--cfg rudzio_test`, so members whose
     /// src has no rudzio surface don't need one.
     pub has_src_rudzio_suite: bool,
+    /// The member's own `[features]` table, mirrored verbatim into the
+    /// bridge's `[features]` so `cfg(feature = "...")` gates in member
+    /// source resolve against the same universe of feature names they
+    /// would under the member's own `cargo test`.
+    pub features: BTreeMap<String, Vec<String>>,
+    /// Features listed in `[package.metadata.rudzio] features = [...]`
+    /// — the member's explicit opt-in for features that should be
+    /// active under `cargo rudzio test` but aren't in `default`. These
+    /// get unioned with the member's `default` to form the bridge's
+    /// own `default` feature list.
+    pub rudzio_activated_features: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,6 +103,11 @@ pub struct DevDepSpec {
     /// Raw spec from the member's Cargo.toml, used when it says
     /// `workspace = true` and we need to defer to the workspace entry.
     pub workspace_inherited: bool,
+    /// `optional = true` in the member's `[dependencies]` entry.
+    /// Mirrored into the bridge so `dep:X` references in the bridge's
+    /// `[features]` table resolve (cargo requires the dep to be
+    /// optional for `dep:` syntax to be valid).
+    pub optional: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -212,6 +235,21 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
                 .and_then(|lib| lib.parent())
                 .is_some_and(detect_src_rudzio_suite);
 
+        let features: BTreeMap<String, Vec<String>> = pkg
+            .features
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        let rudzio_activated_features =
+            load_rudzio_activated_features(pkg.manifest_path.as_std_path())
+                .with_context(|| {
+                    format!(
+                        "loading `[package.metadata.rudzio].features` from {}",
+                        pkg.manifest_path.as_std_path().display()
+                    )
+                })?;
+
         members.push(MemberPlan {
             package_name: pkg.name.clone(),
             manifest_dir: manifest_dir_std,
@@ -222,6 +260,8 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
             edition,
             src_lib_path,
             has_src_rudzio_suite,
+            features,
+            rudzio_activated_features,
         });
     }
 
@@ -738,6 +778,51 @@ fn load_rudzio_exclude_list(manifest_path: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
+/// Read the `[package.metadata.rudzio] features = [...]` array from a
+/// member manifest. These names are features the member opts in to
+/// under `cargo rudzio test` — they become part of the bridge's own
+/// `default` feature list so cargo activates them when compiling the
+/// bridge. Missing → empty vec (no opt-in). Non-array value → hard
+/// error so misconfigurations surface at aggregator-generation time.
+pub fn load_rudzio_activated_features(manifest_path: &Path) -> Result<Vec<String>> {
+    let text = fs::read_to_string(manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?;
+    let doc: DocumentMut = text
+        .parse()
+        .with_context(|| format!("parsing {}", manifest_path.display()))?;
+
+    let Some(package) = doc.get("package").and_then(Item::as_table) else {
+        return Ok(Vec::new());
+    };
+    let Some(metadata) = package.get("metadata").and_then(Item::as_table) else {
+        return Ok(Vec::new());
+    };
+    let Some(rudzio_meta) = metadata.get("rudzio").and_then(Item::as_table) else {
+        return Ok(Vec::new());
+    };
+    let Some(features_item) = rudzio_meta.get("features") else {
+        return Ok(Vec::new());
+    };
+    let array = features_item.as_array().ok_or_else(|| {
+        anyhow!(
+            "`[package.metadata.rudzio].features` in {} must be an array of strings",
+            manifest_path.display()
+        )
+    })?;
+
+    let mut out: Vec<String> = Vec::with_capacity(array.len());
+    for entry in array {
+        let s = entry.as_str().ok_or_else(|| {
+            anyhow!(
+                "`[package.metadata.rudzio].features` in {} must contain only strings",
+                manifest_path.display()
+            )
+        })?;
+        out.push(s.to_owned());
+    }
+    Ok(out)
+}
+
 fn read_workspace_deps(workspace_root: &Path) -> Result<BTreeMap<String, WorkspaceDepSpec>> {
     let manifest_path = workspace_root.join("Cargo.toml");
     let text = fs::read_to_string(&manifest_path)
@@ -916,6 +1001,7 @@ fn parse_dev_dep_entry(name: &str, item: &Item, manifest_dir: &Path) -> Option<D
         features: Vec::new(),
         uses_default_features: true,
         workspace_inherited: false,
+        optional: false,
     };
     match item {
         Item::Value(Value::String(s)) => {
@@ -1000,6 +1086,11 @@ fn apply_dev_dep_field(spec: &mut DevDepSpec, key: &str, val: &Value, manifest_d
         "default-features" => {
             if let Some(b) = val.as_bool() {
                 spec.uses_default_features = b;
+            }
+        }
+        "optional" => {
+            if let Some(b) = val.as_bool() {
+                spec.optional = b;
             }
         }
         "package" => {
@@ -1103,6 +1194,13 @@ pub fn bridge_applies_to(member: &MemberPlan) -> bool {
 /// so an empty dir with just a `Cargo.toml` is enough.
 pub fn write_bridge_crate(plan: &Plan, member: &MemberPlan, out: &Path) -> Result<()> {
     let bridge_dir = out.join(bridge_dir_name(member));
+    // Wipe any pre-existing bridge directory so stale symlinks from a
+    // prior run (member entry renamed or removed) don't survive.
+    if bridge_dir.exists() {
+        fs::remove_dir_all(&bridge_dir).with_context(|| {
+            format!("wiping stale bridge dir {}", bridge_dir.display())
+        })?;
+    }
     fs::create_dir_all(&bridge_dir)
         .with_context(|| format!("creating bridge dir {}", bridge_dir.display()))?;
     let manifest = build_bridge_cargo_toml(plan, member)?;
@@ -1112,7 +1210,58 @@ pub fn write_bridge_crate(plan: &Plan, member: &MemberPlan, out: &Path) -> Resul
     fs::write(bridge_dir.join("build.rs"), build_bridge_build_rs(member)).with_context(|| {
         format!("writing bridge build.rs at {}", bridge_dir.display())
     })?;
+    symlink_member_tree_into_bridge(&member.manifest_dir, &bridge_dir)?;
     Ok(())
+}
+
+/// Symlink every non-skiplist top-level entry of the member's manifest
+/// dir into the bridge dir. This makes `CARGO_MANIFEST_DIR`-relative
+/// path lookups (e.g. `include_str!("data.json")`,
+/// `sqlx::migrate!("migrations")`) resolve transparently under bridge
+/// compile — the bridge dir becomes a structural twin of the member's
+/// root, minus the Cargo.toml / build.rs that the bridge overrides.
+///
+/// If the member's manifest_dir is unreadable (e.g. synthetic test
+/// fixtures using a fake path), the symlink pass is a no-op. Bridge
+/// compile would fail anyway in that case — the no-op keeps synthetic
+/// unit tests of Cargo.toml emission unaffected.
+fn symlink_member_tree_into_bridge(member_dir: &Path, bridge_dir: &Path) -> Result<()> {
+    let Ok(entries) = fs::read_dir(member_dir) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = match name.to_str() {
+            Some(s) => s,
+            None => continue,
+        };
+        if BRIDGE_SKIPLIST.iter().any(|s| *s == name_str) {
+            continue;
+        }
+        let src = entry.path();
+        let dst = bridge_dir.join(&name);
+        create_symlink(&src, &dst).with_context(|| {
+            format!(
+                "symlinking bridge entry {} -> {}",
+                dst.display(),
+                src.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn create_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+
+#[cfg(windows)]
+fn create_symlink(_src: &Path, _dst: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "cargo-rudzio bridge symlinking is not yet implemented on Windows",
+    ))
 }
 
 /// Synthesize the bridge's `build.rs`. Every bridge gets one — it is
@@ -1134,12 +1283,14 @@ pub fn build_bridge_build_rs(member: &MemberPlan) -> String {
     if member.bin_names.is_empty() {
         out.push_str("fn main() {\n");
         out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
+    out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
         out.push_str("}\n");
         return out;
     }
     out.push_str(BUILD_RS_HELPERS);
     out.push_str("\nfn main() -> Result<(), String> {\n");
     out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
+    out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
     out.push_str(&format!(
         "    expose_member_bins({:?}, {:?}, &[",
         member.package_name,
@@ -1195,7 +1346,18 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
 
     let mut lib = Table::new();
     lib.insert("name", value(crate_name_to_ident(&member.package_name)));
-    lib.insert("path", value(lib_path.to_string_lossy().into_owned()));
+    // Relative path; the bridge dir symlinks the member's top-level
+    // entries, so resolving `<rel>/lib.rs` inside the bridge dir lands
+    // on the member's real source. Path-based macros like
+    // `include_str!` / `sqlx::migrate!` resolve against
+    // `CARGO_MANIFEST_DIR` (= the bridge dir) and likewise reach the
+    // member tree through the symlinks.
+    let rel_lib = lib_path
+        .strip_prefix(&member.manifest_dir)
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|_| PathBuf::from("src").join("lib.rs"));
+    let rel_lib_str = rel_lib.to_string_lossy().replace('\\', "/");
+    lib.insert("path", value(rel_lib_str));
     doc.insert("lib", Item::Table(lib));
 
     let deps_tbl = build_bridge_dependencies(plan, member)?;
@@ -1206,7 +1368,52 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
     // own build.rs may have needed are not relevant here because
     // we don't forward that build.rs.
 
+    if let Some(features_tbl) = build_bridge_features(member) {
+        doc.insert("features", Item::Table(features_tbl));
+    }
+
     Ok(doc.to_string())
+}
+
+/// Build the bridge's `[features]` table. Mirrors the member's own
+/// `[features]` 1:1, then overwrites the `default` entry with the
+/// sorted, deduped union of (member's own `default`) ∪
+/// (`rudzio_activated_features`). Returns `None` when both sources are
+/// empty — no `[features]` section is emitted in that case.
+fn build_bridge_features(member: &MemberPlan) -> Option<Table> {
+    if member.features.is_empty() && member.rudzio_activated_features.is_empty() {
+        return None;
+    }
+
+    let mut tbl = Table::new();
+    for (key, values) in &member.features {
+        if key == "default" {
+            continue;
+        }
+        let mut arr = Array::new();
+        for v in values {
+            arr.push(v.as_str());
+        }
+        tbl.insert(key, value(arr));
+    }
+
+    let mut default: BTreeSet<String> = BTreeSet::new();
+    if let Some(member_default) = member.features.get("default") {
+        for f in member_default {
+            let _ = default.insert(f.clone());
+        }
+    }
+    for f in &member.rudzio_activated_features {
+        let _ = default.insert(f.clone());
+    }
+
+    let mut default_arr = Array::new();
+    for f in &default {
+        default_arr.push(f.as_str());
+    }
+    tbl.insert("default", value(default_arr));
+
+    Some(tbl)
 }
 
 /// Merge the member's `[dependencies]` + `[dev-dependencies]` + both
@@ -1542,7 +1749,11 @@ fn render_dev_dep(dd: &DevDepSpec, plan: &Plan) -> Result<Item> {
         if !dd.uses_default_features {
             tbl.insert("default-features", Value::Boolean(Formatted::new(false)));
         }
-    } else if dd.features.is_empty() && dd.uses_default_features && dd.rename.is_none() {
+    } else if dd.features.is_empty()
+        && dd.uses_default_features
+        && dd.rename.is_none()
+        && !dd.optional
+    {
         return Ok(Item::Value(Value::String(Formatted::new(
             dd.version_req.clone(),
         ))));
@@ -1564,6 +1775,9 @@ fn render_dev_dep(dd: &DevDepSpec, plan: &Plan) -> Result<Item> {
     }
     if dd.rename.is_some() {
         tbl.insert("package", Value::String(Formatted::new(dd.name.clone())));
+    }
+    if dd.optional {
+        tbl.insert("optional", Value::Boolean(Formatted::new(true)));
     }
     Ok(Item::Value(Value::InlineTable(tbl)))
 }
@@ -1643,12 +1857,14 @@ fn build_build_rs(plan: &Plan) -> String {
     if bin_members.is_empty() {
         out.push_str("fn main() {\n");
         out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
+    out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
         out.push_str("}\n");
         return out;
     }
     out.push_str(BUILD_RS_HELPERS);
     out.push_str("\nfn main() -> Result<(), String> {\n");
     out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
+    out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
     for member in bin_members {
         out.push_str(&format!(
             "    expose_member_bins({:?}, {:?}, &[",

@@ -6,7 +6,7 @@ use cargo_rudzio::generate::{
     DevDepSpec, GitRef, MemberPlan, Plan, RudzioLocation, RudzioSpec, WorkspaceDepSpec,
     bridge_applies_to, bridge_dir_name, bridge_package_name, build_bridge_build_rs,
     build_bridge_cargo_toml, build_main_rs, build_rudzio_inline_table, collect_rudzio_spec,
-    detect_src_rudzio_suite, scan_unbroadened_cfg_test_mods,
+    detect_src_rudzio_suite, load_rudzio_activated_features, scan_unbroadened_cfg_test_mods,
     scan_unbroadened_cfg_test_mods_in_plan, write_bridge_crate, write_runner,
 };
 
@@ -21,6 +21,8 @@ fn member(name: &str, dev_deps: Vec<DevDepSpec>) -> MemberPlan {
         edition: "2024".to_owned(),
         src_lib_path: Some(PathBuf::from("/nonexistent/src/lib.rs")),
         has_src_rudzio_suite: false,
+        features: BTreeMap::new(),
+        rudzio_activated_features: Vec::new(),
     }
 }
 
@@ -49,6 +51,7 @@ fn rudzio_dep() -> DevDepSpec {
         features: Vec::new(),
         uses_default_features: true,
         workspace_inherited: false,
+        optional: false,
     }
 }
 
@@ -68,8 +71,8 @@ mod tests {
         BTreeMap, DevDepSpec, GitRef, Path, RudzioLocation, RudzioSpec, WorkspaceDepSpec,
         bridge_applies_to, bridge_dir_name, bridge_package_name, build_bridge_build_rs,
         build_bridge_cargo_toml, build_main_rs, build_rudzio_inline_table, collect_rudzio_spec,
-        detect_src_rudzio_suite, member, plan_with_members, rudzio_dep,
-        scan_unbroadened_cfg_test_mods, scan_unbroadened_cfg_test_mods_in_plan,
+        detect_src_rudzio_suite, load_rudzio_activated_features, member, plan_with_members,
+        rudzio_dep, scan_unbroadened_cfg_test_mods, scan_unbroadened_cfg_test_mods_in_plan,
         write_bridge_crate, write_runner, ws_root,
     };
     use std::fs;
@@ -504,8 +507,8 @@ mod tests {
         );
         anyhow::ensure!(
             rendered.contains("name = \"alpha\"")
-                && rendered.contains("path = \"/abs/alpha/src/lib.rs\""),
-            "missing [lib] name/path pointing at real src/lib.rs:\n{rendered}"
+                && rendered.contains("path = \"src/lib.rs\""),
+            "missing [lib] name/path (should be relative, resolved via symlink):\n{rendered}"
         );
         anyhow::ensure!(
             !rendered.contains("[workspace]"),
@@ -756,6 +759,7 @@ mod tests {
             features: Vec::new(),
             uses_default_features: true,
             workspace_inherited: false,
+            optional: false,
         };
         custom.version_req = "1.0".to_owned();
 
@@ -1119,6 +1123,437 @@ mod tests {
         anyhow::ensure!(
             matches!((idx_alpha, idx_beta), (Some(a), Some(b)) if a < b),
             "alpha's warning must precede beta's: {all:?}"
+        );
+        Ok(())
+    }
+
+    // ── C. Bridge feature mirroring (Issue 7) ──────────────────────────
+
+    #[rudzio::test]
+    fn bridge_cargo_toml_omits_features_when_member_has_none() -> anyhow::Result<()> {
+        // Empty features map → bridge Cargo.toml stays as before, no
+        // [features] section. Back-compat for members without features.
+        let mut m = member("alpha", vec![rudzio_dep()]);
+        m.manifest_dir = PathBuf::from("/abs/alpha");
+        m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
+        m.has_src_rudzio_suite = true;
+
+        let plan = plan_with_members(vec![m.clone()], "/abs");
+        let rendered = build_bridge_cargo_toml(&plan, &m)?;
+
+        anyhow::ensure!(
+            !rendered.contains("[features]"),
+            "no [features] section expected when member has no features:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn bridge_cargo_toml_mirrors_member_features_one_to_one() -> anyhow::Result<()> {
+        // Member's [features] table is mirrored verbatim into the
+        // bridge's [features] table so cfg(feature = "...") gates in
+        // member src/lib.rs can evaluate against the same universe of
+        // feature names they would under `cargo test` in the member
+        // itself.
+        let mut m = member("alpha", vec![rudzio_dep()]);
+        m.manifest_dir = PathBuf::from("/abs/alpha");
+        m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
+        m.has_src_rudzio_suite = true;
+        m.features = BTreeMap::from([
+            ("unit".to_owned(), Vec::new()),
+            ("test".to_owned(), vec!["dep:mockall".to_owned()]),
+            ("integration".to_owned(), vec!["unit".to_owned()]),
+        ]);
+
+        let plan = plan_with_members(vec![m.clone()], "/abs");
+        let rendered = build_bridge_cargo_toml(&plan, &m)?;
+
+        anyhow::ensure!(
+            rendered.contains("[features]"),
+            "[features] section expected when member has features:\n{rendered}"
+        );
+        anyhow::ensure!(
+            rendered.contains("unit = []"),
+            "empty-value feature must mirror as `unit = []`:\n{rendered}"
+        );
+        anyhow::ensure!(
+            rendered.contains("\"dep:mockall\""),
+            "dep:mockall value must appear:\n{rendered}"
+        );
+        anyhow::ensure!(
+            rendered.contains("integration"),
+            "integration feature key must appear:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn bridge_cargo_toml_sets_default_to_member_default() -> anyhow::Result<()> {
+        // Member's own `default = ["foo"]` survives into the bridge,
+        // simulating what `cargo test` would activate by default.
+        let mut m = member("alpha", vec![rudzio_dep()]);
+        m.manifest_dir = PathBuf::from("/abs/alpha");
+        m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
+        m.has_src_rudzio_suite = true;
+        m.features = BTreeMap::from([
+            ("default".to_owned(), vec!["foo".to_owned()]),
+            ("foo".to_owned(), Vec::new()),
+        ]);
+
+        let plan = plan_with_members(vec![m.clone()], "/abs");
+        let rendered = build_bridge_cargo_toml(&plan, &m)?;
+
+        anyhow::ensure!(
+            rendered.contains("default = [\"foo\"]"),
+            "bridge default must carry member's default:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn bridge_cargo_toml_sets_default_to_rudzio_activated_features() -> anyhow::Result<()> {
+        // rudzio_activated_features lists features (e.g. "unit", "test")
+        // that the member opts in to under `cargo rudzio test`. These
+        // become the bridge's `default` so they fire without the
+        // aggregator pipeline needing per-member --features flags.
+        let mut m = member("alpha", vec![rudzio_dep()]);
+        m.manifest_dir = PathBuf::from("/abs/alpha");
+        m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
+        m.has_src_rudzio_suite = true;
+        m.features = BTreeMap::from([
+            ("unit".to_owned(), Vec::new()),
+            ("test".to_owned(), Vec::new()),
+        ]);
+        m.rudzio_activated_features = vec!["unit".to_owned(), "test".to_owned()];
+
+        let plan = plan_with_members(vec![m.clone()], "/abs");
+        let rendered = build_bridge_cargo_toml(&plan, &m)?;
+
+        anyhow::ensure!(
+            rendered.contains("default = [\"test\", \"unit\"]")
+                || rendered.contains("default = [\"unit\", \"test\"]"),
+            "bridge default must contain opt-in features (order-insensitive):\n{rendered}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn bridge_cargo_toml_unions_member_default_and_rudzio_activated() -> anyhow::Result<()> {
+        // Member's `default = ["foo"]` + rudzio opt-in `["unit"]` →
+        // bridge default is the union `["foo", "unit"]`, deduped and
+        // sorted for determinism.
+        let mut m = member("alpha", vec![rudzio_dep()]);
+        m.manifest_dir = PathBuf::from("/abs/alpha");
+        m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
+        m.has_src_rudzio_suite = true;
+        m.features = BTreeMap::from([
+            ("default".to_owned(), vec!["foo".to_owned()]),
+            ("foo".to_owned(), Vec::new()),
+            ("unit".to_owned(), Vec::new()),
+        ]);
+        m.rudzio_activated_features = vec!["unit".to_owned()];
+
+        let plan = plan_with_members(vec![m.clone()], "/abs");
+        let rendered = build_bridge_cargo_toml(&plan, &m)?;
+
+        anyhow::ensure!(
+            rendered.contains("default = [\"foo\", \"unit\"]"),
+            "bridge default must be the deduped sorted union:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    // ── D. Bridge co-location via symlinks (Issue 8) ───────────────────
+
+    #[rudzio::test]
+    fn write_bridge_crate_symlinks_member_src_dir() -> anyhow::Result<()> {
+        // Path-based macros like include_str!("data.json") resolve via
+        // CARGO_MANIFEST_DIR at compile time. Under bridge compile the
+        // manifest dir is target/.../members/<name>/, not the member's
+        // real dir — so unless the member's top-level entries are
+        // reachable from the bridge dir, every such macro fails.
+        // write_bridge_crate symlinks every non-skiplist entry so
+        // bridge_dir/src → member/src resolves transparently.
+        let tmp = tempdir()?;
+        let member_root = tmp.path().join("member");
+        let member_src = member_root.join("src");
+        fs::create_dir_all(&member_src)?;
+        fs::write(member_src.join("lib.rs"), "// member lib\n")?;
+        fs::write(member_root.join("Cargo.toml"), "[package]\nname = \"alpha\"\n")?;
+
+        let mut m = member("alpha", Vec::new());
+        m.manifest_dir = member_root.clone();
+        m.src_lib_path = Some(member_src.join("lib.rs"));
+        m.has_src_rudzio_suite = true;
+
+        let plan = plan_with_members(vec![m.clone()], tmp.path().to_string_lossy().as_ref());
+        let out_dir = tmp.path().join("bridges");
+        fs::create_dir_all(&out_dir)?;
+        write_bridge_crate(&plan, &m, &out_dir)?;
+
+        let bridge_src = out_dir.join(bridge_dir_name(&m)).join("src");
+        let meta = fs::symlink_metadata(&bridge_src)?;
+        anyhow::ensure!(
+            meta.file_type().is_symlink(),
+            "bridge_dir/src must be a symlink, was: {:?}",
+            meta.file_type()
+        );
+        let target = fs::read_link(&bridge_src)?;
+        anyhow::ensure!(
+            target == member_src,
+            "bridge_dir/src symlink must target member/src; target={}",
+            target.display()
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn write_bridge_crate_symlinks_migrations_dir() -> anyhow::Result<()> {
+        // Any member top-level entry (not in the skiplist) gets
+        // symlinked — including sidecar dirs like `migrations/` that
+        // sqlx::migrate! resolves via CARGO_MANIFEST_DIR.
+        let tmp = tempdir()?;
+        let member_root = tmp.path().join("member");
+        fs::create_dir_all(member_root.join("src"))?;
+        fs::write(member_root.join("src").join("lib.rs"), "// lib\n")?;
+        fs::create_dir_all(member_root.join("migrations"))?;
+        fs::write(member_root.join("migrations").join("0001_init.sql"), "-- sql\n")?;
+        fs::write(member_root.join("Cargo.toml"), "[package]\nname = \"alpha\"\n")?;
+
+        let mut m = member("alpha", Vec::new());
+        m.manifest_dir = member_root.clone();
+        m.src_lib_path = Some(member_root.join("src/lib.rs"));
+        m.has_src_rudzio_suite = true;
+
+        let plan = plan_with_members(vec![m.clone()], tmp.path().to_string_lossy().as_ref());
+        let out_dir = tmp.path().join("bridges");
+        fs::create_dir_all(&out_dir)?;
+        write_bridge_crate(&plan, &m, &out_dir)?;
+
+        let bridge_migrations = out_dir.join(bridge_dir_name(&m)).join("migrations");
+        anyhow::ensure!(
+            fs::symlink_metadata(&bridge_migrations)?.file_type().is_symlink(),
+            "bridge_dir/migrations must be a symlink"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn write_bridge_crate_skips_cargo_toml_build_rs_target_git() -> anyhow::Result<()> {
+        // Skiplist: entries that either conflict with the bridge's own
+        // synthesised files (Cargo.toml, build.rs) or would be actively
+        // harmful (target/ recursion, .git/ confusing tooling). These
+        // must NOT be symlinked.
+        let tmp = tempdir()?;
+        let member_root = tmp.path().join("member");
+        fs::create_dir_all(member_root.join("src"))?;
+        fs::write(member_root.join("src").join("lib.rs"), "// lib\n")?;
+        fs::write(member_root.join("Cargo.toml"), "[package]\nname = \"alpha\"\n")?;
+        fs::write(member_root.join("Cargo.lock"), "# lockfile\n")?;
+        fs::write(member_root.join("build.rs"), "fn main() {}\n")?;
+        fs::create_dir_all(member_root.join("target"))?;
+        fs::create_dir_all(member_root.join(".git"))?;
+
+        let mut m = member("alpha", Vec::new());
+        m.manifest_dir = member_root.clone();
+        m.src_lib_path = Some(member_root.join("src/lib.rs"));
+        m.has_src_rudzio_suite = true;
+
+        let plan = plan_with_members(vec![m.clone()], tmp.path().to_string_lossy().as_ref());
+        let out_dir = tmp.path().join("bridges");
+        fs::create_dir_all(&out_dir)?;
+        write_bridge_crate(&plan, &m, &out_dir)?;
+
+        let bridge_root = out_dir.join(bridge_dir_name(&m));
+
+        // Cargo.toml and build.rs are written as real files, not symlinks.
+        let cargo_toml_meta = fs::symlink_metadata(bridge_root.join("Cargo.toml"))?;
+        anyhow::ensure!(
+            !cargo_toml_meta.file_type().is_symlink(),
+            "bridge Cargo.toml must be a real file (synthesised), not a symlink to member's"
+        );
+        let build_rs_meta = fs::symlink_metadata(bridge_root.join("build.rs"))?;
+        anyhow::ensure!(
+            !build_rs_meta.file_type().is_symlink(),
+            "bridge build.rs must be a real file (synthesised), not a symlink to member's"
+        );
+
+        // Cargo.lock, target/, .git/ must not appear at all in the bridge.
+        for skipped in &["Cargo.lock", "target", ".git"] {
+            anyhow::ensure!(
+                !bridge_root.join(skipped).exists(),
+                "`{skipped}` must not appear in bridge dir (neither real nor symlinked)"
+            );
+        }
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn write_bridge_crate_bridge_cargo_toml_uses_relative_lib_path() -> anyhow::Result<()> {
+        // With bridge_dir/src symlinked to member/src, the bridge's
+        // [lib] path can be the relative `src/lib.rs` — cargo resolves
+        // it through the symlink, and CARGO_MANIFEST_DIR semantics
+        // stay consistent.
+        let tmp = tempdir()?;
+        let member_root = tmp.path().join("member");
+        fs::create_dir_all(member_root.join("src"))?;
+        fs::write(member_root.join("src/lib.rs"), "// lib\n")?;
+        fs::write(member_root.join("Cargo.toml"), "[package]\nname = \"alpha\"\n")?;
+
+        let mut m = member("alpha", Vec::new());
+        m.manifest_dir = member_root.clone();
+        m.src_lib_path = Some(member_root.join("src/lib.rs"));
+        m.has_src_rudzio_suite = true;
+
+        let plan = plan_with_members(vec![m.clone()], tmp.path().to_string_lossy().as_ref());
+        let out_dir = tmp.path().join("bridges");
+        fs::create_dir_all(&out_dir)?;
+        write_bridge_crate(&plan, &m, &out_dir)?;
+
+        let rendered =
+            fs::read_to_string(out_dir.join(bridge_dir_name(&m)).join("Cargo.toml"))?;
+        anyhow::ensure!(
+            rendered.contains("path = \"src/lib.rs\""),
+            "bridge [lib] path must be relative `src/lib.rs` (resolves through symlink):\n{rendered}"
+        );
+        anyhow::ensure!(
+            !rendered.contains(&format!(
+                "path = \"{}\"",
+                member_root.join("src/lib.rs").to_string_lossy()
+            )),
+            "bridge [lib] path must NOT be the absolute member path anymore:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn write_bridge_crate_wipes_stale_bridge_entries() -> anyhow::Result<()> {
+        // If the member's tree changed between runs (entry renamed or
+        // removed), stale symlinks in the bridge dir would misbehave.
+        // write_bridge_crate must clear pre-existing entries before
+        // repopulating.
+        let tmp = tempdir()?;
+        let member_root = tmp.path().join("member");
+        fs::create_dir_all(member_root.join("src"))?;
+        fs::write(member_root.join("src/lib.rs"), "// lib\n")?;
+        fs::write(member_root.join("Cargo.toml"), "[package]\nname = \"alpha\"\n")?;
+
+        let mut m = member("alpha", Vec::new());
+        m.manifest_dir = member_root.clone();
+        m.src_lib_path = Some(member_root.join("src/lib.rs"));
+        m.has_src_rudzio_suite = true;
+
+        let plan = plan_with_members(vec![m.clone()], tmp.path().to_string_lossy().as_ref());
+        let out_dir = tmp.path().join("bridges");
+        let bridge_root = out_dir.join(bridge_dir_name(&m));
+        fs::create_dir_all(&bridge_root)?;
+        // Pre-populate with a stale entry that should be cleaned up.
+        fs::write(bridge_root.join("old_stale.txt"), "stale\n")?;
+
+        write_bridge_crate(&plan, &m, &out_dir)?;
+
+        anyhow::ensure!(
+            !bridge_root.join("old_stale.txt").exists(),
+            "stale file from previous run must be wiped before repopulating the bridge dir"
+        );
+        Ok(())
+    }
+
+    // ── E. check-cfg declarations ──────────────────────────────────────
+
+    #[rudzio::test]
+    fn bridge_build_rs_emits_check_cfg_for_rudzio_test() -> anyhow::Result<()> {
+        // Silences `unexpected cfg` warnings for every `cfg(rudzio_test)`
+        // reference in the member's source. Must appear alongside the
+        // existing `cargo:rustc-cfg=rudzio_test` emit, in both binless
+        // and bin-member variants.
+        for bins in [Vec::new(), vec!["alpha-server".to_owned()]] {
+            let mut m = member("alpha", Vec::new());
+            m.manifest_dir = PathBuf::from("/abs/alpha");
+            m.bin_names = bins.clone();
+            let content = build_bridge_build_rs(&m);
+            anyhow::ensure!(
+                content.contains("cargo::rustc-check-cfg=cfg(rudzio_test)"),
+                "bridge build.rs must emit check-cfg for rudzio_test (bins={bins:?}):\n{content}"
+            );
+        }
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn aggregator_build_rs_emits_check_cfg_for_rudzio_test() -> anyhow::Result<()> {
+        // Same check-cfg declaration on the aggregator's own build.rs,
+        // since the aggregator's lib + tests also reference
+        // `cfg(rudzio_test)`.
+        for bins in [Vec::new(), vec!["alpha-server".to_owned()]] {
+            let mut m = member("alpha", vec![rudzio_dep()]);
+            m.manifest_dir = PathBuf::from("/abs/alpha");
+            m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
+            m.has_src_rudzio_suite = true;
+            m.bin_names = bins.clone();
+
+            let plan = plan_with_members(vec![m], "/abs");
+            let out = tempdir()?;
+            write_runner(&plan, out.path())?;
+            let content = fs::read_to_string(out.path().join("build.rs"))?;
+            anyhow::ensure!(
+                content.contains("cargo::rustc-check-cfg=cfg(rudzio_test)"),
+                "aggregator build.rs must emit check-cfg for rudzio_test (bins={bins:?}):\n{content}"
+            );
+        }
+        Ok(())
+    }
+
+    // ── F. Reading rudzio feature opt-in from manifest ─────────────────
+
+    #[rudzio::test]
+    fn load_rudzio_activated_features_reads_array_from_metadata() -> anyhow::Result<()> {
+        // `[package.metadata.rudzio] features = ["unit", "test"]` is the
+        // opt-in vehicle for activating test-only features under bridge
+        // compile. Mirrors the pattern of `[package.metadata.rudzio]
+        // exclude = [...]` already used for test-file exclusion.
+        let tmp = tempdir()?;
+        let manifest = tmp.path().join("Cargo.toml");
+        fs::write(
+            &manifest,
+            "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\n\
+             \n[package.metadata.rudzio]\nfeatures = [\"unit\", \"test\"]\n",
+        )?;
+        let got = load_rudzio_activated_features(&manifest)?;
+        anyhow::ensure!(
+            got == vec!["unit".to_owned(), "test".to_owned()],
+            "expected [unit, test], got {got:?}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn load_rudzio_activated_features_missing_key_is_empty() -> anyhow::Result<()> {
+        // A manifest without `[package.metadata.rudzio.features]` yields
+        // an empty vec (no opt-in).
+        let tmp = tempdir()?;
+        let manifest = tmp.path().join("Cargo.toml");
+        fs::write(&manifest, "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\n")?;
+        let got = load_rudzio_activated_features(&manifest)?;
+        anyhow::ensure!(got.is_empty(), "expected empty vec, got {got:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn load_rudzio_activated_features_non_array_is_error() -> anyhow::Result<()> {
+        // Misconfiguration (string instead of array) is a hard error so
+        // the user learns at aggregator-generation time, not silently.
+        let tmp = tempdir()?;
+        let manifest = tmp.path().join("Cargo.toml");
+        fs::write(
+            &manifest,
+            "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\n\
+             \n[package.metadata.rudzio]\nfeatures = \"unit\"\n",
+        )?;
+        let err = load_rudzio_activated_features(&manifest).unwrap_err();
+        anyhow::ensure!(
+            err.to_string().contains("features") && err.to_string().contains("array"),
+            "error must mention `features` and `array`, got: {err}"
         );
         Ok(())
     }
