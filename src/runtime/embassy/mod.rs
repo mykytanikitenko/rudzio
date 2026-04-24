@@ -15,6 +15,6 @@ pub use runtime::Runtime;
 ///
 /// Returns an error if the background executor thread cannot be started.
 #[inline]
-pub fn new() -> std::io::Result<Runtime> {
-    Runtime::new()
+pub fn new(config: &crate::config::Config) -> std::io::Result<Runtime> {
+    Runtime::new(config)
 }

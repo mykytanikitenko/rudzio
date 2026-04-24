@@ -14,7 +14,6 @@ use std::time::Duration;
 
 use rudzio::context;
 use rudzio::runtime::Runtime;
-use rudzio::runtime::tokio::Multithread;
 use tokio::sync::{Barrier, BarrierWaitResult};
 use tokio::time::timeout;
 
@@ -35,27 +34,27 @@ impl fmt::Display for NeverFails {
 
 impl Error for NeverFails {}
 
-/// Global context that owns the shared barrier.
-struct ParallelGlobal<'cg, R>
+/// Suite context that owns the shared barrier.
+struct ParallelSuite<'suite_context, R>
 where
-    R: Runtime<'cg> + Sync,
+    R: Runtime<'suite_context> + Sync,
 {
     /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'cg R>,
+    _marker: PhantomData<&'suite_context R>,
     /// Barrier shared across every per-test context in this group.
     barrier: Arc<Barrier>,
 }
 
-impl<'cg, R> fmt::Debug for ParallelGlobal<'cg, R>
+impl<'suite_context, R> fmt::Debug for ParallelSuite<'suite_context, R>
 where
-    R: Runtime<'cg> + Sync,
+    R: Runtime<'suite_context> + Sync,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ParallelGlobal").finish_non_exhaustive()
+        f.debug_struct("ParallelSuite").finish_non_exhaustive()
     }
 }
 
-impl<'cg, R> context::Global<'cg, R> for ParallelGlobal<'cg, R>
+impl<'suite_context, R> context::Suite<'suite_context, R> for ParallelSuite<'suite_context, R>
 where
     R: for<'r> Runtime<'r> + Sync,
 {
@@ -77,7 +76,7 @@ where
         })
     }
 
-    async fn setup(_rt: &'cg R, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<Self, Self::SetupError> {
+    async fn setup(_rt: &'suite_context R, _cancel: ::rudzio::tokio_util::sync::CancellationToken, _config: &'suite_context ::rudzio::Config) -> Result<Self, Self::SetupError> {
         Ok(Self {
             _marker: PhantomData,
             barrier: Arc::new(Barrier::new(PARTIES)),
@@ -90,28 +89,28 @@ where
 }
 
 /// Per-test context handing out a clone of the shared barrier.
-struct ParallelTest<'tc, R>
+struct ParallelTest<'test_context, R>
 where
-    R: Runtime<'tc> + Sync,
+    R: Runtime<'test_context> + Sync,
 {
     /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'tc R>,
-    /// Shared barrier from the global context.
+    _marker: PhantomData<&'test_context R>,
+    /// Shared barrier from the suite context.
     barrier: Arc<Barrier>,
 }
 
-impl<'tc, R> fmt::Debug for ParallelTest<'tc, R>
+impl<'test_context, R> fmt::Debug for ParallelTest<'test_context, R>
 where
-    R: Runtime<'tc> + Sync,
+    R: Runtime<'test_context> + Sync,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ParallelTest").finish_non_exhaustive()
     }
 }
 
-impl<'tc, R> ParallelTest<'tc, R>
+impl<'test_context, R> ParallelTest<'test_context, R>
 where
-    R: Runtime<'tc> + Sync,
+    R: Runtime<'test_context> + Sync,
 {
     /// Hand out a clone of the shared barrier.
     fn barrier(&self) -> Arc<Barrier> {
@@ -119,9 +118,9 @@ where
     }
 }
 
-impl<'tc, R> context::Test<'tc, R> for ParallelTest<'tc, R>
+impl<'test_context, R> context::Test<'test_context, R> for ParallelTest<'test_context, R>
 where
-    R: Runtime<'tc> + Sync,
+    R: Runtime<'test_context> + Sync,
 {
     type TeardownError = NeverFails;
 
@@ -132,9 +131,9 @@ where
 
 #[rudzio::suite([
     (
-        runtime = Multithread::new,
-        global_context = ParallelGlobal,
-        test_context = ParallelTest,
+        runtime = rudzio::runtime::tokio::Multithread::new,
+        suite = ParallelSuite,
+        test = ParallelTest,
     ),
 ])]
 mod tests {

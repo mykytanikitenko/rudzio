@@ -4,14 +4,13 @@
 //! here register into `rudzio::TEST_TOKENS` alongside tokens from sibling
 //! modules. A single `rudzio::run()` call in the binary drives them all.
 
-use common_context::Test;
-use rudzio::runtime::tokio::Multithread;
+use rudzio::common::context::Test;
 
 #[rudzio::suite([
     (
-        runtime = Multithread::new,
-        global_context = common_context::Global,
-        test_context = Test,
+        runtime = rudzio::runtime::tokio::Multithread::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
     ),
 ])]
 pub mod tests_a {

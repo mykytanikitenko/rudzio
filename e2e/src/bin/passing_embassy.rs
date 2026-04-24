@@ -1,11 +1,10 @@
-use common_context::Test;
-use rudzio::runtime::embassy::Runtime as EmbassyRuntime;
+use rudzio::common::context::Test;
 
 #[rudzio::suite([
     (
-        runtime = EmbassyRuntime::new,
-        global_context = common_context::Global,
-        test_context = Test,
+        runtime = rudzio::runtime::embassy::Runtime::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
     ),
 ])]
 mod tests {

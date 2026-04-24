@@ -4,19 +4,19 @@ use std::fmt;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-use rudzio::context;
-use rudzio::runtime::{JoinError, Runtime};
+use crate::context;
+use crate::runtime::{JoinError, Runtime};
 
 pub struct Test<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
 {
     /// Child cancellation token scoped to this test.
-    pub(crate) cancel: CancellationToken,
+    pub(super) cancel: CancellationToken,
     /// Borrow of the async runtime driving the test.
-    pub(crate) rt: &'test_context R,
-    /// Shared task tracker inherited from the global context.
-    pub(crate) tracker: TaskTracker,
+    pub(super) rt: &'test_context R,
+    /// Shared task tracker inherited from the suite context.
+    pub(super) tracker: TaskTracker,
 }
 
 impl<'test_context, R> fmt::Debug for Test<'test_context, R>

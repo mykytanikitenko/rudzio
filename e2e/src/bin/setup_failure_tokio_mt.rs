@@ -1,6 +1,6 @@
-//! Exercises the FATAL branch where `Global::setup` returns `Err`.
+//! Exercises the FATAL branch where `Suite::setup` returns `Err`.
 //!
-//! Per the macro: the runtime thread logs "FATAL: failed to create global
+//! Per the macro: the runtime thread logs "FATAL: failed to create suite
 //! context", every test in that group is counted as panicked, and the
 //! process exits with code 1.
 
@@ -10,9 +10,8 @@ use std::marker::PhantomData;
 
 use rudzio::context;
 use rudzio::runtime::Runtime;
-use rudzio::runtime::tokio::Multithread;
 
-/// Error type used to fail global setup on purpose.
+/// Error type used to fail suite setup on purpose.
 #[derive(Debug)]
 struct SetupFailed;
 
@@ -24,25 +23,25 @@ impl fmt::Display for SetupFailed {
 
 impl Error for SetupFailed {}
 
-/// Global context whose [`context::Global::setup`] always errors.
-struct FailingGlobal<'cg, R>
+/// Suite context whose [`context::Suite::setup`] always errors.
+struct FailingSuite<'suite_context, R>
 where
-    R: Runtime<'cg> + Sync,
+    R: Runtime<'suite_context> + Sync,
 {
     /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'cg R>,
+    _marker: PhantomData<&'suite_context R>,
 }
 
-impl<'cg, R> fmt::Debug for FailingGlobal<'cg, R>
+impl<'suite_context, R> fmt::Debug for FailingSuite<'suite_context, R>
 where
-    R: Runtime<'cg> + Sync,
+    R: Runtime<'suite_context> + Sync,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FailingGlobal").finish_non_exhaustive()
+        f.debug_struct("FailingSuite").finish_non_exhaustive()
     }
 }
 
-impl<'cg, R> context::Global<'cg, R> for FailingGlobal<'cg, R>
+impl<'suite_context, R> context::Suite<'suite_context, R> for FailingSuite<'suite_context, R>
 where
     R: for<'r> Runtime<'r> + Sync,
 {
@@ -61,7 +60,7 @@ where
         Err(SetupFailed)
     }
 
-    async fn setup(_rt: &'cg R, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<Self, Self::SetupError> {
+    async fn setup(_rt: &'suite_context R, _cancel: ::rudzio::tokio_util::sync::CancellationToken, _config: &'suite_context ::rudzio::Config) -> Result<Self, Self::SetupError> {
         Err(SetupFailed)
     }
 
@@ -71,27 +70,27 @@ where
 }
 
 /// Test context placeholder; never actually constructed because
-/// [`FailingGlobal::setup`] always errors.
-struct NeverBuilt<'tc, R>
+/// [`FailingSuite::setup`] always errors.
+struct NeverBuilt<'test_context, R>
 where
-    R: Runtime<'tc> + Sync,
+    R: Runtime<'test_context> + Sync,
 {
     /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'tc R>,
+    _marker: PhantomData<&'test_context R>,
 }
 
-impl<'tc, R> fmt::Debug for NeverBuilt<'tc, R>
+impl<'test_context, R> fmt::Debug for NeverBuilt<'test_context, R>
 where
-    R: Runtime<'tc> + Sync,
+    R: Runtime<'test_context> + Sync,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NeverBuilt").finish_non_exhaustive()
     }
 }
 
-impl<'tc, R> context::Test<'tc, R> for NeverBuilt<'tc, R>
+impl<'test_context, R> context::Test<'test_context, R> for NeverBuilt<'test_context, R>
 where
-    R: Runtime<'tc> + Sync,
+    R: Runtime<'test_context> + Sync,
 {
     type TeardownError = SetupFailed;
 
@@ -102,9 +101,9 @@ where
 
 #[rudzio::suite([
     (
-        runtime = Multithread::new,
-        global_context = FailingGlobal,
-        test_context = NeverBuilt,
+        runtime = rudzio::runtime::tokio::Multithread::new,
+        suite = FailingSuite,
+        test = NeverBuilt,
     ),
 ])]
 mod tests {

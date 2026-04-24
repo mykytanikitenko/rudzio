@@ -14,27 +14,26 @@ use std::fmt;
 use std::marker::PhantomData;
 
 use rudzio::context;
-use rudzio::runtime::tokio::Multithread;
 use rudzio::runtime::Runtime;
 use rudzio::tokio_util::sync::CancellationToken;
 
-pub struct MutableGlobal<'cg, R>
+pub struct MutableSuite<'suite_context, R>
 where
-    R: Runtime<'cg> + Sync,
+    R: Runtime<'suite_context> + Sync,
 {
-    _marker: PhantomData<&'cg R>,
+    _marker: PhantomData<&'suite_context R>,
 }
 
-impl<'cg, R> fmt::Debug for MutableGlobal<'cg, R>
+impl<'suite_context, R> fmt::Debug for MutableSuite<'suite_context, R>
 where
-    R: Runtime<'cg> + Sync,
+    R: Runtime<'suite_context> + Sync,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MutableGlobal").finish_non_exhaustive()
+        f.debug_struct("MutableSuite").finish_non_exhaustive()
     }
 }
 
-impl<'cg, R> context::Global<'cg, R> for MutableGlobal<'cg, R>
+impl<'suite_context, R> context::Suite<'suite_context, R> for MutableSuite<'suite_context, R>
 where
     R: for<'r> Runtime<'r> + Sync,
 {
@@ -56,7 +55,7 @@ where
         })
     }
 
-    async fn setup(_rt: &'cg R, _cancel: CancellationToken) -> Result<Self, Self::SetupError> {
+    async fn setup(_rt: &'suite_context R, _cancel: CancellationToken, _config: &'suite_context ::rudzio::Config) -> Result<Self, Self::SetupError> {
         Ok(Self { _marker: PhantomData })
     }
 
@@ -65,17 +64,17 @@ where
     }
 }
 
-pub struct MutableTest<'tc, R>
+pub struct MutableTest<'test_context, R>
 where
-    R: Runtime<'tc> + Sync,
+    R: Runtime<'test_context> + Sync,
 {
-    _marker: PhantomData<&'tc R>,
+    _marker: PhantomData<&'test_context R>,
     pub counter: u32,
 }
 
-impl<'tc, R> fmt::Debug for MutableTest<'tc, R>
+impl<'test_context, R> fmt::Debug for MutableTest<'test_context, R>
 where
-    R: Runtime<'tc> + Sync,
+    R: Runtime<'test_context> + Sync,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MutableTest")
@@ -84,9 +83,9 @@ where
     }
 }
 
-impl<'tc, R> context::Test<'tc, R> for MutableTest<'tc, R>
+impl<'test_context, R> context::Test<'test_context, R> for MutableTest<'test_context, R>
 where
-    R: Runtime<'tc> + Sync,
+    R: Runtime<'test_context> + Sync,
 {
     type TeardownError = Infallible;
 
@@ -97,9 +96,9 @@ where
 
 #[rudzio::suite([
     (
-        runtime = Multithread::new,
-        global_context = MutableGlobal,
-        test_context = MutableTest,
+        runtime = rudzio::runtime::tokio::Multithread::new,
+        suite = MutableSuite,
+        test = MutableTest,
     ),
 ])]
 mod tests {

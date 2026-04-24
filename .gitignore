@@ -4,3 +4,10 @@ target
 *.iml
 .vscode
 .claude
+.DS_Store
+8.md
+# Shell env state created by the nix dev-shell ends up in the project
+# dir; keep it out of the repo.
+.cache
+.config
+.local

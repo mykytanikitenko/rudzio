@@ -1,36 +1,17 @@
 use std::collections::HashMap;
 use std::env;
 use std::io::{self, IsTerminal as _, Write as _};
-use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use tokio_util::sync::CancellationToken;
 
+use crate::config::{ColorMode, Config, Format, RunIgnoredMode};
 use crate::suite::{
-    RunIgnoredMode, RuntimeGroupKey, RuntimeGroupOwner, SuiteReporter, SuiteRunRequest,
-    SuiteSummary, TestOutcome,
+    RuntimeGroupKey, RuntimeGroupOwner, SuiteReporter, SuiteRunRequest, SuiteSummary, TestOutcome,
 };
 use crate::token::{TestToken, TEST_TOKENS};
-
-// ---------------------------------------------------------------------------
-// RunConfig (public API, kept for advanced use)
-// ---------------------------------------------------------------------------
-
-/// Configuration for a test run.
-#[non_exhaustive]
-#[derive(Debug)]
-pub struct RunConfig {
-    /// Cancellation token to abort the run.
-    pub cancel: CancellationToken,
-    /// Optional substring filter for test names.
-    pub filter: Option<String>,
-    /// Maximum number of concurrently running tests per runtime group.
-    pub threads: usize,
-    /// Per-test timeout.
-    pub timeout: Duration,
-}
 
 // ---------------------------------------------------------------------------
 // TestSummary
@@ -107,145 +88,6 @@ impl From<SuiteSummary> for TestSummary {
 }
 
 // ---------------------------------------------------------------------------
-// CLI args
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Format {
-    Pretty,
-    Terse,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ColorMode {
-    Auto,
-    Always,
-    Never,
-}
-
-#[derive(Debug)]
-struct CliArgs {
-    filter: Option<String>,
-    skip_filters: Vec<String>,
-    threads: usize,
-    format: Format,
-    color: ColorMode,
-    run_ignored: RunIgnoredMode,
-    list: bool,
-    /// Per-test timeout. `None` = no limit.
-    test_timeout: Option<Duration>,
-    /// Total-run timeout. `None` = no limit.
-    run_timeout: Option<Duration>,
-}
-
-fn parse_cli_args() -> CliArgs {
-    let mut filter: Option<String> = None;
-    let mut skip_filters: Vec<String> = Vec::new();
-    let mut threads: Option<usize> = None;
-    let mut format = Format::Pretty;
-    let mut color = ColorMode::Auto;
-    let mut run_ignored = RunIgnoredMode::Normal;
-    let mut list = false;
-    let mut test_timeout: Option<Duration> = None;
-    let mut run_timeout: Option<Duration> = None;
-
-    let argv: Vec<String> = env::args().skip(1).collect();
-    let mut i = 0_usize;
-    while i < argv.len() {
-        let arg = &argv[i];
-
-        if let Some(rest) = arg.strip_prefix("--test-threads=") {
-            if let Ok(n) = rest.parse::<usize>() && n > 0 {
-                threads = Some(n);
-            }
-        } else if arg == "--test-threads" {
-            i += 1;
-            if let Some(next) = argv.get(i)
-                && let Ok(n) = next.parse::<usize>()
-                && n > 0
-            {
-                threads = Some(n);
-            }
-        } else if let Some(rest) = arg.strip_prefix("--color=") {
-            color = match rest {
-                "always" => ColorMode::Always,
-                "never" => ColorMode::Never,
-                _ => ColorMode::Auto,
-            };
-        } else if arg == "--color" {
-            i += 1;
-            if let Some(next) = argv.get(i) {
-                color = match next.as_str() {
-                    "always" => ColorMode::Always,
-                    "never" => ColorMode::Never,
-                    _ => ColorMode::Auto,
-                };
-            }
-        } else if let Some(rest) = arg.strip_prefix("--format=") {
-            format = if rest == "terse" { Format::Terse } else { Format::Pretty };
-        } else if arg == "--format" {
-            i += 1;
-            if argv.get(i).map_or(false, |s| s == "terse") {
-                format = Format::Terse;
-            }
-        } else if arg == "--ignored" {
-            run_ignored = RunIgnoredMode::Only;
-        } else if arg == "--include-ignored" {
-            run_ignored = RunIgnoredMode::Include;
-        } else if arg == "--list" {
-            list = true;
-        } else if let Some(rest) = arg.strip_prefix("--test-timeout=") {
-            if let Ok(secs) = rest.parse::<u64>() {
-                test_timeout = Some(Duration::from_secs(secs));
-            }
-        } else if arg == "--test-timeout" {
-            i += 1;
-            if let Some(next) = argv.get(i)
-                && let Ok(secs) = next.parse::<u64>()
-            {
-                test_timeout = Some(Duration::from_secs(secs));
-            }
-        } else if let Some(rest) = arg.strip_prefix("--run-timeout=") {
-            if let Ok(secs) = rest.parse::<u64>() {
-                run_timeout = Some(Duration::from_secs(secs));
-            }
-        } else if arg == "--run-timeout" {
-            i += 1;
-            if let Some(next) = argv.get(i)
-                && let Ok(secs) = next.parse::<u64>()
-            {
-                run_timeout = Some(Duration::from_secs(secs));
-            }
-        } else if let Some(rest) = arg.strip_prefix("--skip=") {
-            skip_filters.push(rest.to_owned());
-        } else if arg == "--skip" {
-            i += 1;
-            if let Some(next) = argv.get(i) {
-                skip_filters.push(next.clone());
-            }
-        }
-        // positional: name filter (not a flag)
-        else if !arg.starts_with('-') {
-            filter = Some(arg.clone());
-        }
-        // all other --flags (--nocapture, --show-output, --quiet, etc.) are silently ignored
-
-        i += 1;
-    }
-
-    let threads = threads
-        .or_else(|| {
-            env::var("RUST_TEST_THREADS")
-                .ok()
-                .and_then(|v| v.parse::<usize>().ok())
-                .filter(|n| *n > 0)
-        })
-        .unwrap_or_else(|| thread::available_parallelism().map_or(1, NonZeroUsize::get));
-
-    CliArgs { filter, skip_filters, threads, format, color, run_ignored, list, test_timeout, run_timeout }
-}
-
-// ---------------------------------------------------------------------------
 // Color helpers
 // ---------------------------------------------------------------------------
 
@@ -274,47 +116,6 @@ fn bold(s: &str, c: bool) -> String { paint(s, "1", c) }
 struct FailureInfo {
     name: &'static str,
     message: String,
-}
-
-// ---------------------------------------------------------------------------
-// resolve_test_threads (kept for callers)
-// ---------------------------------------------------------------------------
-
-fn resolve_from<I>(argv: I, env_var: Option<&str>) -> Option<usize>
-where
-    I: IntoIterator<Item = String>,
-{
-    let mut iter = argv.into_iter();
-    while let Some(arg) = iter.next() {
-        if let Some(rest) = arg.strip_prefix("--test-threads=") {
-            if let Ok(parsed) = rest.parse::<usize>() && parsed > 0 {
-                return Some(parsed);
-            }
-        } else if arg == "--test-threads"
-            && let Some(next) = iter.next()
-            && let Ok(parsed) = next.parse::<usize>()
-            && parsed > 0
-        {
-            return Some(parsed);
-        }
-    }
-    if let Some(value) = env_var
-        && let Ok(parsed) = value.parse::<usize>()
-        && parsed > 0
-    {
-        return Some(parsed);
-    }
-    None
-}
-
-/// Resolve the maximum number of tests to run concurrently, matching
-/// libtest's `--test-threads` semantics.
-#[inline]
-#[must_use]
-pub fn resolve_test_threads() -> usize {
-    let env_var = env::var("RUST_TEST_THREADS").ok();
-    resolve_from(env::args().skip(1), env_var.as_deref())
-        .unwrap_or_else(|| thread::available_parallelism().map_or(1, NonZeroUsize::get))
 }
 
 // ---------------------------------------------------------------------------
@@ -416,12 +217,13 @@ impl SuiteReporter for DefaultReporter {
 // run()
 // ---------------------------------------------------------------------------
 
-/// Collect all registered [`TestToken`]s, group them by `suite_id`, run each
-/// suite in its own OS thread via its [`SuiteRunner`], print results in
+/// Collect all registered [`TestToken`]s, group them by `runtime_group_key`,
+/// run each group in its own OS thread via its
+/// [`RuntimeGroupOwner`](crate::suite::RuntimeGroupOwner), print results in
 /// cargo-test format, then exit the process.
 pub fn run() -> ! {
-    let args = parse_cli_args();
-    let colored = use_color(args.color);
+    let config = Config::parse();
+    let colored = use_color(config.color);
 
     let all_tokens: Vec<&'static TestToken> = TEST_TOKENS.iter().collect();
 
@@ -429,17 +231,17 @@ pub fn run() -> ! {
         .iter()
         .copied()
         .filter(|t| {
-            if let Some(ref f) = args.filter {
+            if let Some(ref f) = config.filter {
                 if !t.name.contains(f.as_str()) {
                     return false;
                 }
             }
-            for skip in &args.skip_filters {
+            for skip in &config.skip_filters {
                 if t.name.contains(skip.as_str()) {
                     return false;
                 }
             }
-            match args.run_ignored {
+            match config.run_ignored {
                 RunIgnoredMode::Normal | RunIgnoredMode::Include => true,
                 RunIgnoredMode::Only => t.ignored,
             }
@@ -449,9 +251,11 @@ pub fn run() -> ! {
     let filtered_out = all_tokens.len().saturating_sub(filtered_tokens.len());
 
     // --list: print test names and exit.
-    if args.list {
+    if config.list {
         for token in &filtered_tokens {
-            println!("{} [{}]: test", token.name, token.runtime_name);
+            // --list runs before any group thread starts, so no runtime
+            // exists yet to query its `name()`. Print just the test name.
+            println!("{}: test", token.name);
         }
         std::process::exit(0);
     }
@@ -467,7 +271,7 @@ pub fn run() -> ! {
     let root_token = CancellationToken::new();
     install_signal_handler(root_token.clone());
 
-    if let Some(dur) = args.run_timeout {
+    if let Some(dur) = config.run_timeout {
         let watchdog_token = root_token.clone();
         let _watchdog = thread::spawn(move || {
             thread::sleep(dur);
@@ -479,8 +283,8 @@ pub fn run() -> ! {
     }
 
     // Group tokens by runtime_group_key (compile-time hash of the
-    // (runtime, global) path strings). Tokens that share a key share an OS
-    // thread, a runtime instance, and a global context — even when emitted
+    // (runtime, suite) path strings). Tokens that share a key share an OS
+    // thread, a runtime instance, and a suite context — even when emitted
     // by different `#[rudzio::suite]` blocks.
     let mut groups: HashMap<RuntimeGroupKey, Vec<&'static TestToken>> = HashMap::new();
     for token in &filtered_tokens {
@@ -492,11 +296,15 @@ pub fn run() -> ! {
 
     let reporter = Arc::new(DefaultReporter {
         failures: Mutex::new(Vec::new()),
-        fmt: args.format,
+        fmt: config.format,
         colored,
     });
 
     let start = Instant::now();
+
+    // Share the resolved Config across every per-group thread. `Arc` keeps
+    // it cheap; we hand out `&Config` to each runtime constructor.
+    let config = Arc::new(config);
 
     let handles: Vec<_> = groups
         .into_values()
@@ -505,26 +313,22 @@ pub fn run() -> ! {
             group_tokens.sort_by_key(|t| (t.file, t.line));
             // All tokens in this group share `runtime_group_key`; their
             // `runtime_group_owner` pointers are functionally equivalent
-            // (same R, same G constructors emitted by separate suite
+            // (same R, same S constructors emitted by separate suite
             // blocks). Pick the first one to drive the group.
             let owner: &'static dyn RuntimeGroupOwner = group_tokens[0].runtime_group_owner;
-            let req_threads = args.threads;
-            let req_timeout = args.test_timeout;
-            let req_run_ignored = args.run_ignored;
             // Each group gets a CHILD of the run-wide root so that the
-            // global's teardown (which a user impl can validly cancel
+            // suite's teardown (which a user impl can validly cancel
             // wholesale) only fans out within this group, not across to
             // sibling groups still in-flight on other threads. SIGINT /
             // SIGTERM / --run-timeout still propagate because they cancel
             // the parent.
             let req_root = root_token.child_token();
             let reporter = Arc::clone(&reporter);
+            let config = Arc::clone(&config);
             thread::spawn(move || {
                 let req = SuiteRunRequest {
                     tokens: &group_tokens,
-                    threads: req_threads,
-                    test_timeout: req_timeout,
-                    run_ignored: req_run_ignored,
+                    config: &config,
                     root_token: req_root,
                 };
                 owner.run_group(req, &*reporter)
@@ -549,7 +353,7 @@ pub fn run() -> ! {
 
     let elapsed = start.elapsed();
 
-    if args.format == Format::Terse && total_count > 0 {
+    if config.format == Format::Terse && total_count > 0 {
         println!();
     }
 
@@ -625,77 +429,3 @@ fn install_signal_handler(token: CancellationToken) {
 
 #[cfg(not(unix))]
 fn install_signal_handler(_token: CancellationToken) {}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::{resolve_from, resolve_test_threads};
-
-    fn argv(items: &[&str]) -> Vec<String> {
-        items.iter().map(|item| (*item).to_owned()).collect()
-    }
-
-    #[test]
-    fn joined_argv_form_is_parsed() {
-        assert_eq!(resolve_from(argv(&["--test-threads=4"]), None), Some(4));
-    }
-
-    #[test]
-    fn split_argv_form_is_parsed() {
-        assert_eq!(resolve_from(argv(&["--test-threads", "8"]), None), Some(8));
-    }
-
-    #[test]
-    fn env_var_alone_is_used() {
-        assert_eq!(resolve_from(argv(&[]), Some("3")), Some(3));
-    }
-
-    #[test]
-    fn argv_takes_precedence_over_env() {
-        assert_eq!(resolve_from(argv(&["--test-threads=2"]), Some("7")), Some(2));
-    }
-
-    #[test]
-    fn zero_falls_through_to_next_source() {
-        assert_eq!(resolve_from(argv(&["--test-threads=0"]), Some("0")), None);
-    }
-
-    #[test]
-    fn garbage_falls_through_to_next_source() {
-        assert_eq!(resolve_from(argv(&["--test-threads=abc"]), Some("xyz")), None);
-    }
-
-    #[test]
-    fn zero_in_env_is_ignored_when_argv_is_valid() {
-        assert_eq!(resolve_from(argv(&["--test-threads=5"]), Some("0")), Some(5));
-    }
-
-    #[test]
-    fn unknown_flags_are_ignored() {
-        assert_eq!(
-            resolve_from(
-                argv(&["--nocapture", "--color=always", "--test-threads=3", "--format=json"]),
-                None,
-            ),
-            Some(3),
-        );
-    }
-
-    #[test]
-    fn split_form_without_value_falls_through() {
-        assert_eq!(resolve_from(argv(&["--test-threads"]), None), None);
-    }
-
-    #[test]
-    fn both_unset_returns_none() {
-        assert_eq!(resolve_from(argv(&[]), None), None);
-    }
-
-    #[test]
-    fn public_wrapper_always_returns_positive() {
-        assert!(resolve_test_threads() >= 1);
-    }
-}

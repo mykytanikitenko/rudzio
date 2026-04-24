@@ -1,11 +1,10 @@
-use common_context::Test;
-use rudzio::runtime::tokio::Local;
+use rudzio::common::context::Test;
 
 #[rudzio::suite([
     (
-        runtime = Local::new,
-        global_context = common_context::Global,
-        test_context = Test,
+        runtime = rudzio::runtime::tokio::Local::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
     ),
 ])]
 mod tests {

@@ -1,4 +1,4 @@
-//! Verifies that `common_context::Test::teardown` cancels the per-test
+//! Verifies that `rudzio::common::context::Test::teardown` cancels the per-test
 //! cancellation token, waking any task that was waiting on it.
 //!
 //! Structure:
@@ -7,16 +7,15 @@
 //!   - The test body returns without cancelling the token itself.
 //!   - When per-test teardown fires, the token is cancelled; the spawned
 //!     future wakes up and logs the marker.
-//!   - The global tracker drain guarantees we see the marker before exit.
+//!   - The suite tracker drain guarantees we see the marker before exit.
 
-use common_context::Test;
-use rudzio::runtime::tokio::Multithread;
+use rudzio::common::context::Test;
 
 #[rudzio::suite([
     (
-        runtime = Multithread::new,
-        global_context = common_context::Global,
-        test_context = Test,
+        runtime = rudzio::runtime::tokio::Multithread::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
     ),
 ])]
 mod tests {

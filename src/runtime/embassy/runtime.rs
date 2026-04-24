@@ -23,11 +23,12 @@ use embassy_executor::Spawner;
 use embassy_executor::raw::{Executor, TaskStorage};
 use send_wrapper::SendWrapper;
 
+use crate::config::Config;
 use crate::runtime::{JoinError, Runtime as RuntimeTrait};
 
 /// The pender callback embassy-executor invokes when a task becomes ready.
 ///
-/// Required by `embassy_executor::raw::Executor`; must be a global symbol
+/// Required by `embassy_executor::raw::Executor`; must be an exported symbol
 /// named `__pender`. We route the signal to the `Signaler` associated with
 /// the executor via the `context` pointer that `Executor::new` stored.
 #[unsafe(export_name = "__pender")]
@@ -87,6 +88,8 @@ pub struct Runtime {
     signaler: &'static Signaler,
     /// Cached spawner. Also `!Send` via a `*mut ()` PhantomData.
     spawner: SendWrapper<Spawner>,
+    /// Resolved [`Config`] this runtime was constructed from.
+    config: Config,
 }
 
 impl fmt::Debug for Runtime {
@@ -97,12 +100,18 @@ impl fmt::Debug for Runtime {
 }
 
 impl Runtime {
+    /// Build an embassy runtime.
+    ///
+    /// Fields consulted from [`Config`]: **none** — embassy's executor is
+    /// single-threaded. The full config is still stored and exposed via
+    /// [`RuntimeTrait::config`](crate::runtime::Runtime::config).
+    ///
     /// # Errors
     ///
     /// Always succeeds; the `io::Result` mirrors the sibling constructors
     /// for a uniform `MakeRuntimeFn` signature.
     #[inline]
-    pub fn new() -> io::Result<Self> {
+    pub fn new(config: &Config) -> io::Result<Self> {
         let signaler: &'static Signaler = Box::leak(Box::new(Signaler::new()));
         let signaler_ctx: *mut () = ptr::from_ref(signaler).cast_mut().cast::<()>();
         let executor: &'static Executor = Box::leak(Box::new(Executor::new(signaler_ctx)));
@@ -111,6 +120,7 @@ impl Runtime {
             executor: SendWrapper::new(executor),
             signaler,
             spawner: SendWrapper::new(spawner),
+            config: config.clone(),
         })
     }
 
@@ -142,6 +152,16 @@ impl Runtime {
 }
 
 impl<'rt> RuntimeTrait<'rt> for Runtime {
+    #[inline]
+    fn config(&self) -> &Config {
+        &self.config
+    }
+
+    #[inline]
+    fn name(&self) -> &'static str {
+        "embassy::Runtime"
+    }
+
     #[inline]
     fn block_on<F>(&self, fut: F) -> F::Output
     where

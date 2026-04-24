@@ -16,31 +16,29 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use rudzio::context;
-use rudzio::runtime::compio::Runtime as CompioRuntime;
-use rudzio::runtime::tokio::Multithread;
 use rudzio::runtime::{JoinError, Runtime};
 
 /// Maximum time the watchdog thread waits before aborting the process.
 const WATCHDOG_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Shared global context starting the watchdog once per process.
-struct CrossGlobal<'cg, R>
+/// Shared suite context starting the watchdog once per process.
+struct CrossSuite<'suite_context, R>
 where
-    R: Runtime<'cg> + Sync,
+    R: Runtime<'suite_context> + Sync,
 {
-    /// Borrow of the async runtime driving the global context.
-    rt: &'cg R,
+    /// Borrow of the async runtime driving the suite context.
+    rt: &'suite_context R,
 }
 
 /// Per-test context exposing `spawn_blocking` on the group's runtime.
-struct CrossTest<'tc, R>
+struct CrossTest<'test_context, R>
 where
-    R: Runtime<'tc> + Sync,
+    R: Runtime<'test_context> + Sync,
 {
     /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'tc R>,
+    _marker: PhantomData<&'test_context R>,
     /// Borrow of the async runtime driving this test.
-    rt: &'tc R,
+    rt: &'test_context R,
 }
 
 /// Sentinel error type that never occurs in practice.
@@ -55,24 +53,24 @@ impl fmt::Display for NeverFails {
 
 impl Error for NeverFails {}
 
-impl<'cg, R> fmt::Debug for CrossGlobal<'cg, R>
+impl<'suite_context, R> fmt::Debug for CrossSuite<'suite_context, R>
 where
-    R: Runtime<'cg> + Sync,
+    R: Runtime<'suite_context> + Sync,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CrossGlobal").finish_non_exhaustive()
+        f.debug_struct("CrossSuite").finish_non_exhaustive()
     }
 }
 
-impl<'tc, R> CrossTest<'tc, R>
+impl<'test_context, R> CrossTest<'test_context, R>
 where
-    R: Runtime<'tc> + Sync,
+    R: Runtime<'test_context> + Sync,
 {
     /// Hand off a blocking closure to the group's async runtime.
     fn spawn_blocking<F, T>(
         &self,
         func: F,
-    ) -> impl Future<Output = Result<T, JoinError>> + Send + 'tc
+    ) -> impl Future<Output = Result<T, JoinError>> + Send + 'test_context
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
@@ -81,16 +79,16 @@ where
     }
 }
 
-impl<'tc, R> fmt::Debug for CrossTest<'tc, R>
+impl<'test_context, R> fmt::Debug for CrossTest<'test_context, R>
 where
-    R: Runtime<'tc> + Sync,
+    R: Runtime<'test_context> + Sync,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CrossTest").finish_non_exhaustive()
     }
 }
 
-impl<'cg, R> context::Global<'cg, R> for CrossGlobal<'cg, R>
+impl<'suite_context, R> context::Suite<'suite_context, R> for CrossSuite<'suite_context, R>
 where
     R: for<'r> Runtime<'r> + Sync,
 {
@@ -112,7 +110,7 @@ where
         })
     }
 
-    async fn setup(rt: &'cg R, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<Self, Self::SetupError> {
+    async fn setup(rt: &'suite_context R, _cancel: ::rudzio::tokio_util::sync::CancellationToken, _config: &'suite_context ::rudzio::Config) -> Result<Self, Self::SetupError> {
         start_watchdog();
         Ok(Self { rt })
     }
@@ -122,9 +120,9 @@ where
     }
 }
 
-impl<'tc, R> context::Test<'tc, R> for CrossTest<'tc, R>
+impl<'test_context, R> context::Test<'test_context, R> for CrossTest<'test_context, R>
 where
-    R: Runtime<'tc> + Sync,
+    R: Runtime<'test_context> + Sync,
 {
     type TeardownError = NeverFails;
 
@@ -157,14 +155,14 @@ fn start_watchdog() {
 
 #[rudzio::suite([
     (
-        runtime = Multithread::new,
-        global_context = CrossGlobal,
-        test_context = CrossTest,
+        runtime = rudzio::runtime::tokio::Multithread::new,
+        suite = CrossSuite,
+        test = CrossTest,
     ),
     (
-        runtime = CompioRuntime::new,
-        global_context = CrossGlobal,
-        test_context = CrossTest,
+        runtime = rudzio::runtime::compio::Runtime::new,
+        suite = CrossSuite,
+        test = CrossTest,
     ),
 ])]
 mod tests {

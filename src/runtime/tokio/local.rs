@@ -9,6 +9,7 @@ use send_wrapper::SendWrapper;
 use tokio::runtime::{Builder, LocalRuntime};
 use tokio::time::sleep;
 
+use crate::config::Config;
 use crate::runtime::tokio::error::tokio_join_error_to_join_error;
 use crate::runtime::{JoinError, Runtime};
 
@@ -18,6 +19,8 @@ pub struct Local {
     /// borrowing `&Local` can meet the framework's `Send + Sync` bounds.
     /// Access stays on the one group thread that owns the runtime.
     rt: SendWrapper<LocalRuntime>,
+    /// Resolved [`Config`] this runtime was constructed from.
+    config: Config,
 }
 
 impl fmt::Debug for Local {
@@ -28,21 +31,39 @@ impl fmt::Debug for Local {
 }
 
 impl Local {
+    /// Build a tokio `LocalRuntime`.
+    ///
+    /// Fields consulted from [`Config`]: **none** — this runtime is
+    /// single-threaded by design. The full config is still stored and
+    /// exposed via [`Runtime::config`](super::super::Runtime::config) so
+    /// test bodies can read whatever they like.
+    ///
     /// # Errors
     ///
     /// Returns an error if the tokio local runtime cannot be built.
     #[inline]
-    pub fn new() -> io::Result<Self> {
+    pub fn new(config: &Config) -> io::Result<Self> {
         let rt = Builder::new_current_thread()
             .enable_all()
             .build_local(Default::default())?;
         Ok(Self {
             rt: SendWrapper::new(rt),
+            config: config.clone(),
         })
     }
 }
 
 impl<'rt> Runtime<'rt> for Local {
+    #[inline]
+    fn config(&self) -> &Config {
+        &self.config
+    }
+
+    #[inline]
+    fn name(&self) -> &'static str {
+        "tokio::Local"
+    }
+
     #[inline]
     fn block_on<F>(&self, fut: F) -> F::Output
     where
