@@ -1,5 +1,5 @@
 mod generate_spec;
-mod rustflags_spec;
+mod spawn_env_spec;
 
 #[rudzio::main]
 fn main() {}

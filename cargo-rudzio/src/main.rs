@@ -83,9 +83,8 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
     let target = plan.default_output_dir();
     generate::write_runner(&plan, &target)?;
     let manifest = target.join("Cargo.toml");
-    let envs = spawn_env(std::env::var("RUSTFLAGS").ok().as_deref());
     let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
-    for (key, value) in &envs {
+    for (key, value) in &spawn_env() {
         cmd.env(key, value);
     }
     let status = cmd
