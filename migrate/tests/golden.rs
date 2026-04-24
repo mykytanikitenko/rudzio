@@ -72,6 +72,118 @@ mod tests {
         run_fixture_twice("plain_sync_test");
         ::core::result::Result::Ok(())
     }
+
+    /// Pristine-manifest invariant: no `expected/Cargo.toml` anywhere
+    /// in the fixture tree may contain a `[target."cfg(rudzio_test)".dependencies]`
+    /// block or any `[target.*] rudzio_test` mirror. The only place
+    /// `rudzio_test` is allowed to appear in a generated Cargo.toml is
+    /// the `check-cfg` entry under `[lints.rust]`. Regression guard for
+    /// the mirror removal (commit 495b42f) — catches accidental
+    /// reintroduction of the target.cfg mirror by a future migrator
+    /// change.
+    #[::rudzio::test]
+    async fn no_cfg_rudzio_test_mirror_in_any_fixture_cargo_toml(
+        _ctx: &Test,
+    ) -> ::anyhow::Result<()> {
+        use std::fs;
+        use std::path::Path;
+        fn walk_cargo_tomls(dir: &Path, out: &mut Vec<PathBuf>) {
+            if let Ok(rd) = fs::read_dir(dir) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        walk_cargo_tomls(&p, out);
+                    } else if p.file_name().and_then(|s| s.to_str())
+                        == Some("Cargo.toml")
+                    {
+                        out.push(p);
+                    }
+                }
+            }
+        }
+        let fixtures_root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+        let mut manifests = Vec::new();
+        walk_cargo_tomls(&fixtures_root, &mut manifests);
+        ::anyhow::ensure!(
+            !manifests.is_empty(),
+            "no Cargo.toml files discovered under {}",
+            fixtures_root.display()
+        );
+        let mut offenders: Vec<String> = Vec::new();
+        for path in manifests {
+            // Only check /expected/ trees — input/ trees are raw user
+            // shapes and may legitimately carry anything.
+            if !path.to_string_lossy().contains("/expected/") {
+                continue;
+            }
+            let text = match fs::read_to_string(&path) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            for (line_idx, line) in text.lines().enumerate() {
+                let trimmed = line.trim_start();
+                // The mirror block header — exact match.
+                if trimmed.starts_with("[target")
+                    && trimmed.contains("cfg(rudzio_test)")
+                {
+                    offenders.push(format!(
+                        "{}:{}: found target.cfg(rudzio_test) mirror block",
+                        path.display(),
+                        line_idx + 1
+                    ));
+                }
+            }
+        }
+        ::anyhow::ensure!(
+            offenders.is_empty(),
+            "pristine-manifest invariant broken — {} offender(s):\n{}",
+            offenders.len(),
+            offenders.join("\n")
+        );
+        ::core::result::Result::Ok(())
+    }
+
+    /// Complement to the pristine-manifest check: confirm migrated
+    /// Cargo.tomls don't acquire a `anyhow = ...` entry just because
+    /// the migrator ran. The old rewriter forced anyhow on every crate
+    /// that returned `anyhow::Result<()>`; the current rewriter leaves
+    /// user signatures alone so no `anyhow` line should land in
+    /// `[dev-dependencies]` unless the user's own `[dependencies]` or
+    /// `[dev-dependencies]` already had it.
+    #[::rudzio::test]
+    async fn migrator_does_not_add_anyhow_to_dev_dependencies(
+        _ctx: &Test,
+    ) -> ::anyhow::Result<()> {
+        use std::fs;
+        let fixtures_root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+        for entry in fs::read_dir(&fixtures_root)? {
+            let fixture = entry?.path();
+            if !fixture.is_dir() {
+                continue;
+            }
+            let input_manifest = fixture.join("input/Cargo.toml");
+            let expected_manifest = fixture.join("expected/Cargo.toml");
+            if !input_manifest.exists() || !expected_manifest.exists() {
+                continue;
+            }
+            let input_has_anyhow = fs::read_to_string(&input_manifest)
+                .map(|s| s.contains("anyhow"))
+                .unwrap_or(false);
+            if input_has_anyhow {
+                continue; // user's own dep — migrator must not touch it
+            }
+            let expected_text = fs::read_to_string(&expected_manifest)?;
+            ::anyhow::ensure!(
+                !expected_text.contains("anyhow"),
+                "fixture `{}` gained an `anyhow` entry after migration but had none in input:\n{}",
+                fixture.file_name().unwrap_or_default().to_string_lossy(),
+                expected_text
+            );
+        }
+        ::core::result::Result::Ok(())
+    }
     /* pre-migration (rudzio-migrate):
     #[test]
     fn golden_test_context_migration() {
