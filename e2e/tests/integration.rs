@@ -1,16 +1,3 @@
-// Integration test helpers use `panic!` on unrecoverable I/O, integer
-// literals typed by inference, and slice indexing for source-ordered
-// lookups. These patterns are idiomatic for `#[test]` bodies even if
-// pedantic / restriction lints would flag them elsewhere.
-#![allow(
-    clippy::panic,
-    clippy::default_numeric_fallback,
-    clippy::indexing_slicing,
-    clippy::missing_asserts_for_indexing,
-    clippy::min_ident_chars,
-    reason = "idiomatic for #[test] bodies, not production code"
-)]
-
 use std::io::Read as _;
 use std::process::{Command, Output, Stdio};
 use std::thread;

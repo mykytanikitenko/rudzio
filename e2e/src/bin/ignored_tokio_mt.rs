@@ -1,15 +1,3 @@
-// Ignored test bodies use `panic!` to guard against accidental execution —
-// if they ever run, the run fails loudly. One of them also uses a bare
-// `#[ignore]` on purpose (the fixture exercises exactly that form).
-#![allow(
-    clippy::panic,
-    reason = "ignored tests panic as a tripwire if accidentally executed"
-)]
-#![allow(
-    clippy::ignore_without_reason,
-    reason = "fixture exercises the bare `#[ignore]` form on purpose"
-)]
-
 use common_context::Test;
 use rudzio::runtime::tokio::Multithread;
 
