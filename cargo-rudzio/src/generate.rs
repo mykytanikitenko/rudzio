@@ -1157,7 +1157,52 @@ pub fn write_bridge_crate(plan: &Plan, member: &MemberPlan, out: &Path) -> Resul
     fs::write(bridge_dir.join("Cargo.toml"), manifest).with_context(|| {
         format!("writing bridge Cargo.toml at {}", bridge_dir.display())
     })?;
+    if let Some(build_rs_content) = build_bridge_build_rs(member) {
+        fs::write(bridge_dir.join("build.rs"), build_rs_content).with_context(|| {
+            format!("writing bridge build.rs at {}", bridge_dir.display())
+        })?;
+    }
     Ok(())
+}
+
+/// Synthesize the bridge's `build.rs`, or `None` if the member has no
+/// bins.
+///
+/// When a member declares bins, the bridge CANNOT forward the member's
+/// own `build.rs`: any `rudzio::build::expose_self_bins()` call inside
+/// would query `CARGO_PKG_NAME` (= bridge's name, e.g.
+/// `<member>_rudzio_bridge`) against `cargo metadata`, find the bridge
+/// package (no `[[bin]]` targets), and error out. Instead we generate a
+/// bridge-local `build.rs` that invokes `expose_member_bins` directly
+/// against the real member package — same helper the aggregator uses —
+/// so `cargo:rustc-env=CARGO_BIN_EXE_<bin>=<abs>` reaches the bridge's
+/// compile unit, which is where `rudzio::bin!(...)` ultimately expands.
+///
+/// For members with no bins the bridge's `build.rs` is unnecessary
+/// (nothing to expose); the member's original `build.rs` (if any) is
+/// forwarded via `[package] build` in `build_bridge_cargo_toml` so
+/// side-effects like codegen still fire.
+#[must_use]
+pub fn build_bridge_build_rs(member: &MemberPlan) -> Option<String> {
+    if member.bin_names.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    out.push_str(BUILD_RS_HELPERS);
+    out.push_str("\nfn main() -> Result<(), String> {\n");
+    out.push_str(&format!(
+        "    expose_member_bins({:?}, {:?}, &[",
+        member.package_name,
+        member.manifest_dir.to_string_lossy(),
+    ));
+    for (i, bin) in member.bin_names.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&format!("{bin:?}"));
+    }
+    out.push_str("])?;\n    Ok(())\n}\n");
+    Some(out)
 }
 
 pub fn bridge_package_name(member: &MemberPlan) -> String {
@@ -1183,7 +1228,14 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
     pkg.insert("version", value("0.0.0"));
     pkg.insert("edition", value(member.edition.as_str()));
     pkg.insert("publish", value(false));
-    if let Some(build_rs) = &member.build_rs {
+    if !member.bin_names.is_empty() {
+        // Bridge synthesises its own build.rs (see `build_bridge_build_rs`)
+        // that exposes the member's bins via `expose_member_bins`. This
+        // replaces (does not forward) the member's own build.rs — calling
+        // expose_self_bins through the bridge would query the bridge's
+        // own package metadata, which has no [[bin]] targets.
+        pkg.insert("build", value("build.rs"));
+    } else if let Some(build_rs) = &member.build_rs {
         pkg.insert("build", value(build_rs.to_string_lossy().into_owned()));
     }
     doc.insert("package", Item::Table(pkg));
@@ -1202,7 +1254,13 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
     let deps_tbl = build_bridge_dependencies(plan, member)?;
     doc.insert("dependencies", Item::Table(deps_tbl));
 
-    if member.build_rs.is_some() && !member.build_deps.is_empty() {
+    // [build-dependencies] only apply when the bridge forwards the
+    // member's own build.rs — the synthesised build.rs emitted for bin
+    // members uses `std` only and needs no external deps.
+    if member.bin_names.is_empty()
+        && member.build_rs.is_some()
+        && !member.build_deps.is_empty()
+    {
         let build_deps_tbl = build_bridge_build_dependencies(plan, member)?;
         doc.insert("build-dependencies", Item::Table(build_deps_tbl));
     }

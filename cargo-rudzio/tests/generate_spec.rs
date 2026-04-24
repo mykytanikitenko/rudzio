@@ -4,9 +4,10 @@ use std::path::{Path, PathBuf};
 use cargo_metadata::camino::Utf8PathBuf;
 use cargo_rudzio::generate::{
     DevDepSpec, GitRef, MemberPlan, Plan, RudzioLocation, RudzioSpec, WorkspaceDepSpec,
-    bridge_applies_to, bridge_dir_name, bridge_package_name, build_bridge_cargo_toml,
-    build_main_rs, build_rudzio_inline_table, collect_rudzio_spec, detect_src_rudzio_suite,
-    scan_unbroadened_cfg_test_mods, scan_unbroadened_cfg_test_mods_in_plan, write_runner,
+    bridge_applies_to, bridge_dir_name, bridge_package_name, build_bridge_build_rs,
+    build_bridge_cargo_toml, build_main_rs, build_rudzio_inline_table, collect_rudzio_spec,
+    detect_src_rudzio_suite, scan_unbroadened_cfg_test_mods,
+    scan_unbroadened_cfg_test_mods_in_plan, write_bridge_crate, write_runner,
 };
 
 fn member(name: &str, dev_deps: Vec<DevDepSpec>) -> MemberPlan {
@@ -67,10 +68,11 @@ fn ws_root() -> PathBuf {
 mod tests {
     use super::{
         BTreeMap, DevDepSpec, GitRef, Path, RudzioLocation, RudzioSpec, WorkspaceDepSpec,
-        bridge_applies_to, bridge_dir_name, bridge_package_name, build_bridge_cargo_toml,
-        build_main_rs, build_rudzio_inline_table, collect_rudzio_spec, detect_src_rudzio_suite,
-        member, plan_with_members, rudzio_dep, scan_unbroadened_cfg_test_mods,
-        scan_unbroadened_cfg_test_mods_in_plan, write_runner, ws_root,
+        bridge_applies_to, bridge_dir_name, bridge_package_name, build_bridge_build_rs,
+        build_bridge_cargo_toml, build_main_rs, build_rudzio_inline_table, collect_rudzio_spec,
+        detect_src_rudzio_suite, member, plan_with_members, rudzio_dep,
+        scan_unbroadened_cfg_test_mods, scan_unbroadened_cfg_test_mods_in_plan,
+        write_bridge_crate, write_runner, ws_root,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -523,11 +525,16 @@ mod tests {
     }
 
     #[rudzio::test]
-    fn bridge_cargo_toml_forwards_build_rs_when_present() -> anyhow::Result<()> {
+    fn bridge_cargo_toml_forwards_build_rs_when_member_has_no_bins() -> anyhow::Result<()> {
+        // Preserve member's build.rs side effects (codegen, env-vars) when
+        // there are no bins to expose: the bridge forwards the absolute
+        // path and relies on the sentinel env var to short-circuit any
+        // expose_bins calls inside.
         let mut m = member("alpha", Vec::new());
         m.manifest_dir = PathBuf::from("/abs/alpha");
         m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
         m.has_src_rudzio_suite = true;
+        m.bin_names = Vec::new();
         m.build_rs = Some(PathBuf::from("/abs/alpha/build.rs"));
 
         let plan = plan_with_members(vec![m.clone()], "/abs");
@@ -535,7 +542,134 @@ mod tests {
 
         anyhow::ensure!(
             rendered.contains("build = \"/abs/alpha/build.rs\""),
-            "build.rs path must be forwarded:\n{rendered}"
+            "build.rs path must be forwarded when member has no bins:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn bridge_cargo_toml_synthesizes_build_rs_when_member_has_bins() -> anyhow::Result<()> {
+        // When a member declares bins, the bridge CANNOT forward the
+        // member's build.rs because any `rudzio::build::expose_self_bins()`
+        // call inside it queries CARGO_PKG_NAME (= bridge's name) which
+        // has no `[[bin]]` targets. Instead the bridge synthesises its
+        // own build.rs that calls expose_member_bins against the real
+        // member package, and references it as a LOCAL `build.rs` file.
+        let mut m = member("alpha", Vec::new());
+        m.manifest_dir = PathBuf::from("/abs/alpha");
+        m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
+        m.has_src_rudzio_suite = true;
+        m.bin_names = vec!["alpha-server".to_owned()];
+        m.build_rs = None;
+
+        let plan = plan_with_members(vec![m.clone()], "/abs");
+        let rendered = build_bridge_cargo_toml(&plan, &m)?;
+
+        anyhow::ensure!(
+            rendered.contains("build = \"build.rs\""),
+            "bridge must reference a local build.rs when member has bins:\n{rendered}"
+        );
+        anyhow::ensure!(
+            !rendered.contains("build = \"/abs/alpha/build.rs\""),
+            "bridge must NOT forward the member's build.rs absolute path when it synthesises its own:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn bridge_cargo_toml_synthesized_build_rs_replaces_forward_when_member_has_both() -> anyhow::Result<()> {
+        // Priority: if member has bins, the synthesised build.rs wins —
+        // the member's own build.rs (if any) is NOT forwarded. This is
+        // the file-v3 shape: expose_self_bins in the member's build.rs
+        // does not work under the bridge (no [[bin]] on bridge package),
+        // so we replace with the generated expose_member_bins call.
+        let mut m = member("alpha", Vec::new());
+        m.manifest_dir = PathBuf::from("/abs/alpha");
+        m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
+        m.has_src_rudzio_suite = true;
+        m.bin_names = vec!["alpha-server".to_owned()];
+        m.build_rs = Some(PathBuf::from("/abs/alpha/build.rs"));
+
+        let plan = plan_with_members(vec![m.clone()], "/abs");
+        let rendered = build_bridge_cargo_toml(&plan, &m)?;
+
+        anyhow::ensure!(
+            rendered.contains("build = \"build.rs\""),
+            "bridge must synthesise a local build.rs when member has bins, not forward:\n{rendered}"
+        );
+        anyhow::ensure!(
+            !rendered.contains("/abs/alpha/build.rs"),
+            "bridge must NOT reference the member's absolute build.rs path:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn bridge_synthesized_build_rs_calls_expose_member_bins_per_bin() -> anyhow::Result<()> {
+        let mut m = member("alpha", Vec::new());
+        m.manifest_dir = PathBuf::from("/abs/alpha");
+        m.bin_names = vec!["alpha-server".to_owned(), "alpha-cli".to_owned()];
+
+        let content = build_bridge_build_rs(&m)
+            .expect("bridge must synthesise build.rs content for bin members");
+
+        anyhow::ensure!(
+            content.contains("fn main()"),
+            "synthesised build.rs needs fn main:\n{content}"
+        );
+        anyhow::ensure!(
+            content.contains("expose_member_bins"),
+            "synthesised build.rs must call expose_member_bins helper:\n{content}"
+        );
+        anyhow::ensure!(
+            content.contains("\"alpha\"") && content.contains("\"/abs/alpha\""),
+            "synthesised build.rs must pass member pkg name + manifest dir:\n{content}"
+        );
+        anyhow::ensure!(
+            content.contains("\"alpha-server\"") && content.contains("\"alpha-cli\""),
+            "synthesised build.rs must list every bin:\n{content}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn bridge_synthesized_build_rs_none_when_no_bins() -> anyhow::Result<()> {
+        let mut m = member("alpha", Vec::new());
+        m.manifest_dir = PathBuf::from("/abs/alpha");
+        m.bin_names = Vec::new();
+
+        anyhow::ensure!(
+            build_bridge_build_rs(&m).is_none(),
+            "no synthesised build.rs when member has no bins"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn write_bridge_crate_writes_synthesized_build_rs_file() -> anyhow::Result<()> {
+        let tmp = tempdir()?;
+        let mut m = member("alpha", Vec::new());
+        m.manifest_dir = PathBuf::from("/abs/alpha");
+        m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
+        m.has_src_rudzio_suite = true;
+        m.bin_names = vec!["alpha-server".to_owned()];
+
+        let plan = plan_with_members(vec![m.clone()], "/abs");
+        let out_dir = tmp.path().join("members");
+        fs::create_dir_all(&out_dir)?;
+        write_bridge_crate(&plan, &m, &out_dir)?;
+
+        let bridge_build = out_dir.join(bridge_dir_name(&m)).join("build.rs");
+        anyhow::ensure!(
+            bridge_build.exists(),
+            "bridge build.rs file must be written to {}",
+            bridge_build.display()
+        );
+        let content = fs::read_to_string(&bridge_build)?;
+        anyhow::ensure!(
+            content.contains("expose_member_bins(\"alpha\"")
+                && content.contains("\"alpha-server\""),
+            "bridge build.rs missing expected content:\n{content}"
         );
         Ok(())
     }
