@@ -25,6 +25,38 @@ pub fn box_error<E: fmt::Display>(e: E) -> BoxError {
     Box::new(DisplayError(format!("{e:#}")))
 }
 
+/// Bridge trait the test macro uses to accept every shape of test-body
+/// return value that stock `#[test]` / `#[tokio::test]` accept.
+///
+/// Implemented for:
+/// - `()` (bare-body tests: `#[rudzio::test] fn foo() { assert!(...) }`)
+///    — treated as success; any panic inside the body is caught by the
+///    runner's `catch_unwind`.
+/// - `Result<T, E>` where `E: Display` — success on `Ok(_)`, the error
+///    message is extracted on `Err` via [`box_error`]. `T` is discarded.
+///
+/// The codegen at `macro-internals/src/suite_codegen.rs` emits
+/// `<body>.into_rudzio_result()` (or `.await.into_rudzio_result()` for
+/// async bodies) so a single dispatch path covers every supported
+/// signature shape.
+pub trait IntoRudzioResult {
+    fn into_rudzio_result(self) -> Result<(), BoxError>;
+}
+
+impl IntoRudzioResult for () {
+    #[inline]
+    fn into_rudzio_result(self) -> Result<(), BoxError> {
+        Ok(())
+    }
+}
+
+impl<T, E: fmt::Display> IntoRudzioResult for Result<T, E> {
+    #[inline]
+    fn into_rudzio_result(self) -> Result<(), BoxError> {
+        self.map(|_| ()).map_err(box_error)
+    }
+}
+
 pub type TestFn =
     for<'body> fn(
         &'body mut dyn Any,

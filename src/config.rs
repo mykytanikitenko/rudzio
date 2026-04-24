@@ -175,6 +175,11 @@ pub struct Config {
     pub output_mode: OutputMode,
     /// `--list`: print test names and exit without running.
     pub list: bool,
+    /// `--help` / `-h`: print a usage message listing every recognised
+    /// flag and environment variable, then exit. Handled by the runner
+    /// (see `crate::runner::run`) so the help text reaches the real
+    /// terminal rather than the capture pipe.
+    pub help: bool,
     /// `--test-timeout=<secs>`. `None` = unbounded.
     pub test_timeout: Option<Duration>,
     /// `--run-timeout=<secs>`. `None` = unbounded.
@@ -224,6 +229,7 @@ impl Config {
         let mut bench_mode = BenchMode::Smoke;
         let mut output_mode_explicit: Option<OutputMode> = None;
         let mut list = false;
+        let mut help = false;
         let mut test_timeout: Option<Duration> = None;
         let mut run_timeout: Option<Duration> = None;
         let mut unparsed: Vec<String> = Vec::new();
@@ -313,6 +319,8 @@ impl Config {
                 output_mode_explicit = Some(OutputMode::Plain);
             } else if arg == "--list" {
                 list = true;
+            } else if arg == "--help" || arg == "-h" {
+                help = true;
             } else if let Some(rest) = arg.strip_prefix("--test-timeout=") {
                 if let Ok(secs) = rest.parse::<u64>() {
                     test_timeout = Some(Duration::from_secs(secs));
@@ -377,6 +385,7 @@ impl Config {
             bench_mode,
             output_mode,
             list,
+            help,
             test_timeout,
             run_timeout,
             unparsed,
@@ -385,3 +394,69 @@ impl Config {
         }
     }
 }
+
+/// Human-readable usage string emitted by `--help` / `-h`. Lives on
+/// `Config` so the runner and any custom aggregator (hand-rolled
+/// `#[rudzio::main]` call site) print the same canonical text.
+pub const USAGE: &str = "\
+rudzio test runner
+
+USAGE:
+    <test-binary> [OPTIONS] [FILTER]
+
+ARGUMENTS:
+    <FILTER>                    Positional substring; only tests whose name
+                                contains this substring run. Combine with
+                                --skip to carve out a complementary subset.
+
+OPTIONS:
+    --skip <SUBSTRING>          Exclude tests whose name contains <SUBSTRING>.
+                                Repeatable — accumulates across occurrences.
+    --ignored                   Only run tests marked #[ignore].
+    --include-ignored           Run every test, ignored or not.
+    --bench                     Dispatch #[rudzio::test(benchmark=...)] tests
+                                through their strategy. Non-bench tests still
+                                run.
+    --no-bench                  Skip bench-annotated tests (reported as
+                                ignored).
+    --list                      Print test names (one per line, libtest
+                                format) and exit without running anything.
+    --test-threads <N>          OS worker-thread count runtimes size their
+                                pool to. Defaults to RUST_TEST_THREADS, else
+                                std::thread::available_parallelism().
+    --concurrency-limit <N>     Max in-flight tests per runtime group.
+                                Defaults to --test-threads.
+    --format <pretty|terse>     Output format. Default: pretty.
+    --color <auto|always|never> ANSI colour policy. Default: auto.
+    --output <live|plain>       Output rendering. 'live' = bottom-of-terminal
+                                live region + history above (default on TTY
+                                with CI unset). 'plain' = linear append-only
+                                (default off-TTY or under CI).
+    --plain                     Shorthand for --output=plain.
+    --test-timeout <SECS>       Per-test budget. On expiry, the per-test
+                                cancellation token fires and teardown runs.
+    --run-timeout <SECS>        Whole-run budget. Cancels the root token;
+                                in-flight tests wind down, queued tests are
+                                reported as cancelled, teardowns run.
+    -h, --help                  Print this message and exit.
+
+ENVIRONMENT:
+    RUST_TEST_THREADS           Default for --test-threads when the flag
+                                is absent.
+    NO_COLOR                    If set (any value) and --color=auto, colour
+                                off.
+    FORCE_COLOR                 If set (any value), colour on regardless of
+                                --color and TTY status.
+    CI                          If set and --output is absent, selects
+                                --output=plain even on a TTY (CI log
+                                capture often can't render the live region).
+
+EXIT STATUS:
+    0   every test passed (or none ran).
+    1   at least one test failed, panicked, was cancelled, or timed out;
+        or a teardown failure fired.
+    2   runner setup error (output capture init, etc.).
+
+Unknown flags are preserved in Config::unparsed for downstream parsing
+by custom runtimes or test helpers — they do not produce an error.
+";

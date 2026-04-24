@@ -522,6 +522,35 @@ mod tests {
     }
 
     #[rudzio::test]
+    fn bare_return_types_compile_and_pass(_ctx: &Test) -> anyhow::Result<()> {
+        // Captures the promise that `#[rudzio::test]` handles every
+        // return shape `#[test]` / `#[tokio::test]` accept — users
+        // don't have to rewrite void bodies into `-> anyhow::Result`.
+        // If `rudzio::IntoRudzioResult` loses an impl, this fixture
+        // stops compiling; regressions surface at the PR level.
+        let out = run(env!("CARGO_BIN_EXE_bare_return_types_tokio_mt"));
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(0),
+            "expected exit 0, output:\n{log}"
+        );
+        for name in [
+            "bare_sync_void",
+            "explicit_unit_return",
+            "bare_async_void",
+            "result_returning",
+            "result_display_only",
+        ] {
+            anyhow::ensure!(
+                log.contains(name),
+                "fixture must report test `{name}`, output:\n{log}"
+            );
+        }
+        anyhow::ensure!(log.contains("5 passed"), "output:\n{log}");
+        Ok(())
+    }
+
+    #[rudzio::test]
     fn multiple_panics_are_isolated_and_ordered(_ctx: &Test) -> anyhow::Result<()> {
         // RUST_TEST_THREADS=1 forces strict serial execution so the
         // source-order assertion below is meaningful.

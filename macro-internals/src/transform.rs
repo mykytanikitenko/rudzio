@@ -18,6 +18,22 @@ pub fn is_async_fn(func: &ItemFn) -> bool {
     func.sig.asyncness.is_some()
 }
 
+/// `true` if the function's return type is `()` — either left off
+/// entirely (`fn foo()`) or written out (`fn foo() -> ()`). Drives the
+/// `#[rudzio::test]` dispatch: void-return bodies get wrapped in a
+/// trailing `Ok(())` so the surrounding `.map_err(...)` chain still
+/// type-checks, letting users write bare libtest-shaped tests without
+/// thinking about Result.
+pub fn returns_unit(func: &ItemFn) -> bool {
+    match &func.sig.output {
+        syn::ReturnType::Default => true,
+        syn::ReturnType::Type(_, ty) => matches!(
+            &**ty,
+            syn::Type::Tuple(t) if t.elems.is_empty()
+        ),
+    }
+}
+
 /// How a `#[rudzio::test]` fn relates to its per-test context.
 ///
 /// Used by the suite codegen to decide how to dispatch the test body.

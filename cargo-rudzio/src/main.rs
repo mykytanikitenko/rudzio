@@ -19,10 +19,8 @@ USAGE:
 COMMANDS:
     test [ARGS...]                   Build every rudzio test in the workspace
                                      into ONE binary (grouped by runtime and
-                                     suite) and run it. ARGS are forwarded to
-                                     the runner (filter patterns, --skip, etc.
-                                     — the aggregator accepts rudzio's full
-                                     config flag set).
+                                     suite) and run it. ARGS forward to the
+                                     runner (filter patterns, --skip, etc.).
     migrate [ARGS...]                Run rudzio-migrate (converts stock cargo
                                      tests to rudzio). ARGS are forwarded
                                      verbatim. See `cargo rudzio migrate --help`.
@@ -69,6 +67,7 @@ fn dispatch(argv: &[String]) -> Result<ExitCode> {
 fn run_generate(rest: &[String]) -> Result<()> {
     let output = parse_output_flag(rest)?;
     let plan = generate::plan_from_cwd()?;
+    emit_diagnostic_warnings(&plan);
     let target = output.unwrap_or_else(|| plan.default_output_dir());
     generate::write_runner(&plan, &target)?;
     println!(
@@ -80,6 +79,7 @@ fn run_generate(rest: &[String]) -> Result<()> {
 
 fn run_test(rest: &[String]) -> Result<ExitCode> {
     let plan = generate::plan_from_cwd()?;
+    emit_diagnostic_warnings(&plan);
     let target = plan.default_output_dir();
     generate::write_runner(&plan, &target)?;
     let manifest = target.join("Cargo.toml");
@@ -97,6 +97,16 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
         Some(code) => ExitCode::from(u8::try_from(code & 0xFF).unwrap_or(1)),
         None => ExitCode::from(1),
     })
+}
+
+/// Print warnings from the src-scan diagnostic pass before the
+/// aggregator build kicks off. Warnings are advisory — we don't block
+/// the build on them, because silent failure is worse than visible
+/// warnings for the rare false-positive case.
+fn emit_diagnostic_warnings(plan: &generate::Plan) {
+    for w in generate::scan_unbroadened_cfg_test_mods_in_plan(plan) {
+        eprintln!("warning: {w}");
+    }
 }
 
 fn run_migrate(rest: &[String]) -> ExitCode {

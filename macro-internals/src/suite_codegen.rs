@@ -478,15 +478,27 @@ fn generate_per_config(
             CtxKind::Mutable => quote! { &mut ctx },
         };
 
+        // Route every body's return value through the `IntoRudzioResult`
+        // trait (defined in `rudzio::test_case`). This gives us uniform
+        // handling of every libtest-compatible shape:
+        //   - `fn foo()` / `fn foo() -> ()` → `Ok(())`
+        //   - `fn foo() -> Result<T, E: Display>` → `Err` mapped to
+        //     `BoxError` via `box_error`
+        // New shapes (e.g. `impl Termination`) can be added by a single
+        // impl on the trait.
         let dispatch_call = if is_async {
             quote! {
-                #mod_name::#test_name(#dispatch_call_args).await
-                    .map_err(|e| ::rudzio::test_case::box_error(e))
+                {
+                    use ::rudzio::IntoRudzioResult as _;
+                    #mod_name::#test_name(#dispatch_call_args).await.into_rudzio_result()
+                }
             }
         } else {
             quote! {
-                #mod_name::#test_name(#dispatch_call_args)
-                    .map_err(|e| ::rudzio::test_case::box_error(e))
+                {
+                    use ::rudzio::IntoRudzioResult as _;
+                    #mod_name::#test_name(#dispatch_call_args).into_rudzio_result()
+                }
             }
         };
 
@@ -498,15 +510,15 @@ fn generate_per_config(
         let bench_body_closure = if is_async {
             quote! {
                 || async {
-                    #mod_name::#test_name(#dispatch_call_args).await
-                        .map_err(|e| ::rudzio::test_case::box_error(e))
+                    use ::rudzio::IntoRudzioResult as _;
+                    #mod_name::#test_name(#dispatch_call_args).await.into_rudzio_result()
                 }
             }
         } else {
             quote! {
                 || async {
-                    #mod_name::#test_name(#dispatch_call_args)
-                        .map_err(|e| ::rudzio::test_case::box_error(e))
+                    use ::rudzio::IntoRudzioResult as _;
+                    #mod_name::#test_name(#dispatch_call_args).into_rudzio_result()
                 }
             }
         };
