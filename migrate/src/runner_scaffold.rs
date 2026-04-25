@@ -10,6 +10,7 @@ use std::path::Path;
 
 use anyhow::{Context as _, Result};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScaffoldOutcome {
     Created,
     AlreadyExists,

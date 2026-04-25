@@ -5,6 +5,10 @@ edition = { workspace = true }
 publish = false
 description = "Best-effort converter of stock cargo-style Rust tests into rudzio tests. Runs on a clean git tree, rewrites sources in place, keeps backups and pre-migration copies as block comments, and asks before wiring a shared runner."
 
+[lib]
+name = "rudzio_migrate"
+path = "src/lib.rs"
+
 [[bin]]
 name = "rudzio-migrate"
 path = "src/main.rs"
@@ -135,3 +139,15 @@ wildcard_enum_match_arm = "allow"
 # source bytes; rc_buffer would push us to `Arc<str>` which forces
 # an `into_boxed_str` round-trip on every file read for no gain.
 rc_buffer = "allow"
+
+# Lib-target-only lints — these fire because the crate now has a
+# `[lib]` target alongside the bin so integration tests can reach
+# the orchestration surface. The lib is internal to the workspace,
+# not published, so API-ergonomics lints don't apply.
+exhaustive_enums = "allow"
+exhaustive_structs = "allow"
+missing_errors_doc = "allow"
+missing_inline_in_public_items = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+too_long_first_doc_paragraph = "allow"

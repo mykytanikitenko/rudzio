@@ -13,6 +13,7 @@ use crate::report::Report;
 use crate::rewrite::{self, FileRewrite};
 use crate::test_context::{self, TestContextResolver};
 
+#[derive(Debug)]
 pub struct EmitOptions<'a> {
     pub default_runtime: RuntimeChoice,
     pub preserve_originals: bool,
