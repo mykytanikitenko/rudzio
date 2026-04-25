@@ -133,7 +133,7 @@ Then the rewriting begins.
 
 | Input | What the tool emits | Notes |
 |---|---|---|
-| `#[test] fn foo()` inside `#[cfg(test)] mod ... { }` | `#[::rudzio::test] async fn foo() -> ::anyhow::Result<()> { <body>; Ok(()) }`; enclosing mod grows a `#[::rudzio::suite([...])]` attribute placed immediately before the `mod` keyword (after `#[cfg(test)]` and any user-written outer attrs) | `#[cfg(test)]` is kept so dev-dependencies still resolve. Zero-arg tests stay parameterless — the `#[rudzio::test]` macro fills in the context at expansion time, so no `_ctx: &Test` is synthesized and no `use ::rudzio::common::context::Test;` is injected |
+| `#[test] fn foo()` inside `#[cfg(test)] mod ... { }` | `#[::rudzio::test] fn foo() { <body> }` — attribute replaced verbatim; signature and body kept as-is. The enclosing mod gains a `#[::rudzio::suite([...])]` attribute and its `#[cfg(test)]` is broadened to `#[cfg(any(test, rudzio_test))]` | `rudzio::test`'s codegen routes bodies through `IntoRudzioResult`, so void/explicit-unit/Result returns all work unchanged. No `_ctx: &Test` synthesis, no trailing `Ok(())` appended, no anyhow dependency forced onto users. |
 | `#[tokio::test]` | as above, tokio-mt runtime | |
 | `#[tokio::test(flavor = "multi_thread", worker_threads = N)]` | as above, tokio-mt runtime; `worker_threads` is dropped with a warning | |
 | `#[tokio::test(flavor = "current_thread", start_paused = true)]` | as above, tokio-ct runtime; `start_paused` is dropped with a warning | |
@@ -156,7 +156,6 @@ Then the rewriting begins.
   lib's own test target runs through `#[rudzio::main]` instead of
   libtest). Skipped on bin-only crates that have no `src/lib.rs`.
 - A `rudzio = { version = "0.1", features = ["common", "<runtime-feature>"] }` entry (union of runtimes across the package's converted suites). Lands in `[dev-dependencies]`.
-- `anyhow = "1.0"` (also in `[dev-dependencies]`) if anything ended up returning `::anyhow::Result<()>`
 - One `[[test]] name = "..." path = "tests/<stem>.rs" harness = false` per `tests/*.rs` that had conversions
 - If you answered `y` to the shared-runner prompt, a `[[test]] name = "main" path = "tests/main.rs" harness = false` plus a freshly-generated `tests/main.rs` with `use <crate> as _;` + `#[rudzio::main] fn main() {}`
 
@@ -205,9 +204,8 @@ fn sums_correctly() {
 }
 */
 #[::rudzio::test]
-async fn sums_correctly(_ctx: &Test) -> ::anyhow::Result<()> {
+fn sums_correctly() {
     assert_eq!(add(1, 2), 3);
-    ::core::result::Result::Ok(())
 }
 ```
 
