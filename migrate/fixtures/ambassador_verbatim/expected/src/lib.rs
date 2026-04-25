@@ -6,18 +6,31 @@
 //! The tool's `catch_unwind` around `prettyplease::unparse` must turn
 //! that into a specific warning and leave this file untouched
 //! (post-migration content byte-identical to pre-migration).
-
 pub struct MockGenerator;
-
 #[allow(dead_code)]
 impl std::sync::Arc<MockGenerator> {
     fn as_ref(&self) -> &MockGenerator;
 }
-
+#[::rudzio::suite(
+    [(
+        runtime = ::rudzio::runtime::tokio::Multithread::new,
+        suite = ::rudzio::common::context::Suite,
+        test = ::rudzio::common::context::Test,
+    ),
+    ]
+)]
 #[cfg(test)]
 mod tests {
+    use ::rudzio::common::context::Test;
+    /* pre-migration (rudzio-migrate):
     #[test]
     fn trivial() {
         assert!(true);
+    }
+    */
+    #[::rudzio::test]
+    async fn trivial(_ctx: &Test) -> ::anyhow::Result<()> {
+        assert!(true);
+        ::core::result::Result::Ok(())
     }
 }
