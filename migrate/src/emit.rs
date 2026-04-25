@@ -3,6 +3,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 
@@ -24,8 +25,10 @@ pub fn process_file(
     opts: &EmitOptions<'_>,
     report: &mut Report,
 ) -> Result<Option<FileRewrite>> {
-    let source = fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let source: Arc<String> = Arc::new(
+        fs::read_to_string(path)
+            .with_context(|| format!("reading {}", path.display()))?,
+    );
     let mut tree: syn::File = match syn::parse_file(&source) {
         Ok(t) => t,
         Err(err) => {
@@ -39,7 +42,7 @@ pub fn process_file(
     };
 
     let rewrite = rewrite::rewrite_file(
-        &source,
+        Arc::clone(&source),
         &mut tree,
         opts.default_runtime,
         opts.preserve_originals,
@@ -60,7 +63,7 @@ pub fn process_file(
     let mut output = if rewrite.changed {
         prettyplease::unparse(&tree)
     } else {
-        source.clone()
+        (*source).clone()
     };
     if opts.preserve_originals && rewrite.changed {
         output = splice_preserved_originals(&output, &rewrite.original_snippets);
