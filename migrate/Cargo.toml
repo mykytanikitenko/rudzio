@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = { workspace = true }
 publish = false
 description = "Best-effort converter of stock cargo-style Rust tests into rudzio tests. Runs on a clean git tree, rewrites sources in place, keeps backups and pre-migration copies as block comments, and asks before wiring a shared runner."
+autotests = false
 
 [lib]
 name = "rudzio_migrate"
@@ -24,6 +25,7 @@ quote = { workspace = true }
 syn = { workspace = true, features = ["full", "extra-traits", "visit", "visit-mut"] }
 thiserror = { workspace = true }
 toml_edit = { workspace = true }
+rudzio = { path = "..", features = ["common", "runtime-tokio"] }
 
 [dev-dependencies]
 tempfile = "=3.10.1"
@@ -151,3 +153,13 @@ missing_inline_in_public_items = "allow"
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
 too_long_first_doc_paragraph = "allow"
+
+[[test]]
+name = "golden"
+path = "tests/golden.rs"
+harness = false
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
+harness = false
