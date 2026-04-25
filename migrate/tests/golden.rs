@@ -56,6 +56,11 @@ mod tests {
         ::core::result::Result::Ok(())
     }
     #[::rudzio::test]
+    async fn golden_mirror_dev_deps_for_rudzio_test(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("mirror_dev_deps_for_rudzio_test");
+        ::core::result::Result::Ok(())
+    }
+    #[::rudzio::test]
     async fn migrator_is_idempotent_on_already_migrated_crate(
         _ctx: &Test,
     ) -> ::anyhow::Result<()> {

@@ -15,5 +15,9 @@ test = false
 rudzio = { version = "0.1", features = ["common", "runtime-tokio-current-thread"] }
 anyhow = "1.0"
 
+[target."cfg(rudzio_test)".dependencies]
+rudzio = { version = "0.1", features = ["common", "runtime-tokio-current-thread"] }
+anyhow = "1.0"
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rudzio_test)"] }

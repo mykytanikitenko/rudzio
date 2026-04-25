@@ -273,6 +273,15 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
         if pkg_had_conversions {
             pkg_edits.needs_rudzio_test_cfg = true;
         }
+        // Mirror `[dev-dependencies]` into
+        // `[target.'cfg(rudzio_test)'.dependencies]` only when a
+        // `src/**` file was rewritten. Tests-only conversions are
+        // compiled through cargo's regular test target (dev-deps
+        // active) — the aggregator pulls tests/*.rs into itself via
+        // `#[path]`, so no mirror is needed for them either.
+        if pkg_edits.had_src_conversion {
+            pkg_edits.mirror_dev_deps_for_rudzio_test = true;
+        }
         if !args.dry_run && pkg_had_conversions {
             match manifest::apply(&pkg.manifest_path, &pkg_edits) {
                 Ok(true) => report.cargo_edit(pkg.manifest_path.clone()),

@@ -15,5 +15,10 @@ anyhow = "1.0"
 harness = false
 test = false
 
+[target."cfg(rudzio_test)".dependencies]
+async-std = { version = "1", features = ["attributes"] }
+rudzio = { version = "0.1", features = ["common", "runtime-tokio-multi-thread"] }
+anyhow = "1.0"
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rudzio_test)"] }
