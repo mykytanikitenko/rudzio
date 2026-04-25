@@ -138,6 +138,66 @@ mod tests {
         run_fixture("rstest_skipped");
         ::core::result::Result::Ok(())
     }
+    #[::rudzio::test]
+    async fn golden_plain_async_test(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("plain_async_test");
+        ::core::result::Result::Ok(())
+    }
+    #[::rudzio::test]
+    async fn golden_async_std_test(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("async_std_test");
+        ::core::result::Result::Ok(())
+    }
+    #[::rudzio::test]
+    async fn golden_compio_test(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("compio_test");
+        ::core::result::Result::Ok(())
+    }
+    #[::rudzio::test]
+    async fn golden_result_returning_test(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("result_returning_test");
+        ::core::result::Result::Ok(())
+    }
+    #[::rudzio::test]
+    async fn golden_dry_run(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("dry_run");
+        ::core::result::Result::Ok(())
+    }
+    #[::rudzio::test]
+    async fn golden_no_shared_runner_flag(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("no_shared_runner_flag");
+        ::core::result::Result::Ok(())
+    }
+    #[::rudzio::test]
+    async fn golden_no_preserve_originals_flag(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("no_preserve_originals_flag");
+        ::core::result::Result::Ok(())
+    }
+    #[::rudzio::test]
+    async fn golden_nested_modules(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("nested_modules");
+        ::core::result::Result::Ok(())
+    }
+    #[::rudzio::test]
+    async fn golden_integration_file(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("integration_file");
+        ::core::result::Result::Ok(())
+    }
+    #[::rudzio::test]
+    async fn golden_test_context_sync_variant(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("test_context_sync_variant");
+        ::core::result::Result::Ok(())
+    }
+    #[::rudzio::test]
+    async fn golden_test_context_unresolvable(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("test_context_unresolvable");
+        ::core::result::Result::Ok(())
+    }
+    #[::rudzio::test]
+    async fn golden_workspace_crate(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("workspace_crate");
+        ::core::result::Result::Ok(())
+    }
     /* pre-migration (rudzio-migrate):
     #[test]
     fn golden_dirty_tree_refusal() {

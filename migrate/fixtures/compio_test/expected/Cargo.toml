@@ -1,0 +1,12 @@
+[package]
+name = "compio_test"
+version = "0.1.0"
+edition = "2024"
+autotests = false
+
+[dependencies]
+rudzio = { version = "0.1", features = ["common", "runtime-compio"] }
+anyhow = "1.0"
+
+[dev-dependencies]
+compio = "0.15"

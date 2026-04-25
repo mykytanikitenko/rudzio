@@ -149,6 +149,15 @@ impl Rewriter<'_, '_> {
         if has_rudzio_suite(&m.attrs) {
             return;
         }
+        // Nested modules without their own `#[cfg(test)]` inherit
+        // test-gating from their ancestor. If we're already deeper
+        // than the file's root, an ancestor is about to get the
+        // suite attr and will collect this module's inner tests via
+        // rudzio's linkme mechanism — wrapping here too would
+        // double-register each test.
+        if self.mod_depth > 0 && !m.attrs.iter().any(is_cfg_test_attr) {
+            return;
+        }
         // IMPORTANT: keep the `#[cfg(test)]` attr in place. Stripping
         // it would compile the module unconditionally, losing access
         // to dev-dependencies (`pretty_assertions`, `mockall`, etc.)

@@ -1,0 +1,9 @@
+[package]
+name = "compio_test"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[dev-dependencies]
+compio = "0.15"

@@ -1,0 +1,9 @@
+[package]
+name = "async_std_test"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[dev-dependencies]
+async-std = { version = "1", features = ["attributes"] }
