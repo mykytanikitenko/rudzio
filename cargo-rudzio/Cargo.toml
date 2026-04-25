@@ -6,16 +6,30 @@ description = "Cargo subcommand: `cargo rudzio test` auto-generates a single-bin
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/mykytanikitenko/rudzio"
 
+[lib]
+name = "cargo_rudzio"
+path = "src/lib.rs"
+test = false
+doctest = false
+
 [[bin]]
 name = "cargo-rudzio"
 path = "src/main.rs"
 test = false
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
+harness = false
 
 [dependencies]
 anyhow = { workspace = true }
 cargo_metadata = { workspace = true }
 rudzio-migrate = { path = "../migrate" }
 toml_edit = { workspace = true }
+
+[dev-dependencies]
+rudzio = { path = "..", features = ["common", "runtime-tokio-multi-thread"] }
 
 # Duplicate of the workspace lint set with CLI-appropriate relaxations.
 # Cargo disallows combining `lints.workspace = true` with per-crate

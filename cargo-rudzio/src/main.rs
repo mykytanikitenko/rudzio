@@ -4,12 +4,11 @@
     reason = "toml_edit's insert/push API routinely returns the previous value; CLI glue does not care about the dropped option"
 )]
 
-mod generate;
-
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 
 use anyhow::{Context as _, Result, bail};
+use cargo_rudzio::generate;
 
 const USAGE: &str = "\
 cargo-rudzio - Cargo subcommand: single-binary test aggregation + rudzio-migrate

@@ -13,6 +13,7 @@ const AGGREGATOR_NAME: &str = "rudzio-auto-runner";
 
 /// Everything extracted from `cargo metadata` plus the workspace root's
 /// Cargo.toml that the generator needs to emit the aggregator.
+#[derive(Debug)]
 pub struct Plan {
     pub workspace_root: Utf8PathBuf,
     pub target_directory: Utf8PathBuf,
@@ -30,6 +31,7 @@ pub struct Plan {
     pub workspace_deps: BTreeMap<String, WorkspaceDepSpec>,
 }
 
+#[derive(Debug)]
 pub struct MemberPlan {
     pub package_name: String,
     pub manifest_dir: PathBuf,
@@ -55,7 +57,7 @@ pub enum GitRef {
     Tag(String),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct DevDepSpec {
     pub name: String,
     pub rename: Option<String>,
@@ -70,7 +72,7 @@ pub struct DevDepSpec {
     pub workspace_inherited: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct WorkspaceDepSpec {
     pub version_req: Option<String>,
     pub path: Option<PathBuf>,
@@ -254,7 +256,7 @@ fn inject_required_features(
 ///   workspace root with `default-features = true`. This preserves the
 ///   in-rudzio-repo dogfood behaviour even if every member's declaration
 ///   somehow becomes unreadable.
-fn collect_rudzio_spec(
+pub fn collect_rudzio_spec(
     members: &[MemberPlan],
     workspace_deps: &BTreeMap<String, WorkspaceDepSpec>,
     workspace_root: &Path,
@@ -393,7 +395,7 @@ fn collect_rudzio_spec(
 /// minimal correct shape: location keys (`path` / `git` + ref / `version`)
 /// followed by `features` (only when non-empty) and
 /// `default-features = false` (only when the user opted out).
-fn build_rudzio_inline_table(spec: &RudzioSpec) -> InlineTable {
+pub fn build_rudzio_inline_table(spec: &RudzioSpec) -> InlineTable {
     let mut tbl = InlineTable::new();
     match &spec.location {
         RudzioLocation::Path(p) => {
@@ -1202,3 +1204,4 @@ fn paths_equal(a: &Path, b: &Path) -> bool {
         .is_some_and(|(x, y)| x == y)
         || a == b
 }
+
