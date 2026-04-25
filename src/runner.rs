@@ -348,18 +348,10 @@ impl SuiteReporter for ModeReporter {
                     } else {
                         format!("<{runtime_name}, {}>", token.ignore_reason)
                     };
-                    let lhs_naked = format!(
-                        "{:width$} {display}",
-                        "",
-                        width = tag_visible,
-                    );
+                    let lhs_naked = format!("{:width$} {display}", "", width = tag_visible,);
                     let lhs_rendered = format!("{tag_rendered} {display}");
-                    let line = render_status_line(
-                        &lhs_naked,
-                        &lhs_rendered,
-                        &trailing,
-                        terminal_width(),
-                    );
+                    let line =
+                        render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
                     println!("{line}");
                 }
             }
@@ -383,19 +375,11 @@ impl SuiteReporter for ModeReporter {
                 Format::Pretty => {
                     let (tag_rendered, tag_visible) = status_tag(StatusLabel::Cancel, p.colored);
                     let display = format!("{}::{}", token.module_path, token.name);
-                    let lhs_naked = format!(
-                        "{:width$} {display}",
-                        "",
-                        width = tag_visible,
-                    );
+                    let lhs_naked = format!("{:width$} {display}", "", width = tag_visible,);
                     let lhs_rendered = format!("{tag_rendered} {display}");
                     let trailing = runtime_only_info(runtime_name);
-                    let line = render_status_line(
-                        &lhs_naked,
-                        &lhs_rendered,
-                        &trailing,
-                        terminal_width(),
-                    );
+                    let line =
+                        render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
                     println!("{line}");
                 }
             }
@@ -444,18 +428,10 @@ impl SuiteReporter for ModeReporter {
                 let (tag_rendered, tag_visible) = status_tag(label, p.colored);
                 let display = format!("{}::{}", token.module_path, token.name);
                 let trailing = trailing_info(&outcome, runtime_name);
-                let lhs_naked = format!(
-                    "{:width$} {display}",
-                    "",
-                    width = tag_visible,
-                );
+                let lhs_naked = format!("{:width$} {display}", "", width = tag_visible,);
                 let lhs_rendered = format!("{tag_rendered} {display}");
-                let header = render_status_line(
-                    &lhs_naked,
-                    &lhs_rendered,
-                    &trailing,
-                    terminal_width(),
-                );
+                let header =
+                    render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
                 if let TestOutcome::Benched { report, .. } = &outcome {
                     // Bench status line + detailed stats + histogram,
                     // emitted as a single atomic println! so concurrent

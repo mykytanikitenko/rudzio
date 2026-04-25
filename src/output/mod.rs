@@ -38,9 +38,9 @@ pub mod reader;
 pub mod render;
 
 use std::io;
-use std::sync::OnceLock;
 #[cfg(unix)]
 use std::sync::Arc;
+use std::sync::OnceLock;
 #[cfg(unix)]
 use std::thread::JoinHandle;
 

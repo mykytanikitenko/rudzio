@@ -275,7 +275,10 @@ impl BenchReport {
     pub fn detailed_summary(&self) -> String {
         let n = self.samples.len();
         if n == 0 {
-            let mut out = format!("  no successful samples (iterations: {})\n", self.iterations);
+            let mut out = format!(
+                "  no successful samples (iterations: {})\n",
+                self.iterations
+            );
             if !self.failures.is_empty() {
                 out.push_str(&format!("  failed iterations: {}\n", self.failures.len()));
             }
@@ -338,10 +341,7 @@ impl BenchReport {
             }
         }
         if !self.failures.is_empty() {
-            out.push_str(&format!(
-                "  failed iterations: {}\n",
-                self.failures.len(),
-            ));
+            out.push_str(&format!("  failed iterations: {}\n", self.failures.len(),));
         }
         if self.panics > 0 {
             out.push_str(&format!("  panicked iterations: {}\n", self.panics));

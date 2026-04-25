@@ -14,9 +14,7 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned as _;
 use syn::token;
 use syn::visit_mut::{self, VisitMut};
-use syn::{
-    Attribute, Expr, ExprBlock, FnArg, Item, ItemFn, ItemMod, Meta, ReturnType, Stmt, Type,
-};
+use syn::{Attribute, Expr, ExprBlock, FnArg, Item, ItemFn, ItemMod, Meta, ReturnType, Stmt, Type};
 
 use crate::cli::RuntimeChoice;
 use crate::detect;
@@ -176,7 +174,11 @@ impl Rewriter<'_, '_> {
             groups.keys().cloned().map(|k| (k, Vec::new())).collect();
         for item in items {
             match &item {
-                Item::Fn(f) if f.attrs.iter().any(|a| detect::classify_test_attr(a).is_some()) => {
+                Item::Fn(f)
+                    if f.attrs
+                        .iter()
+                        .any(|a| detect::classify_test_attr(a).is_some()) =>
+                {
                     let key = f.attrs.iter().find_map(|a| {
                         let path = detect::as_test_context(a)?;
                         let k = detect::path_to_string(&path);
@@ -199,10 +201,7 @@ impl Rewriter<'_, '_> {
             }
             let child_ident = match &key {
                 None => "tests_default".to_owned(),
-                Some(k) => format!(
-                    "tests_with_{}",
-                    last_segment_snake(k)
-                ),
+                Some(k) => format!("tests_with_{}", last_segment_snake(k)),
             };
             let child = self.build_split_child_mod(
                 child_ident,
@@ -651,7 +650,10 @@ impl Rewriter<'_, '_> {
         let original_return = fn_return_kind(&f.sig.output);
         self.apply_signature_rewrite(f, had_resolved_test_context);
         apply_body_rewrite(f, original_return);
-        if matches!(fn_return_kind(&f.sig.output), ReturnKind::UnitImplicit | ReturnKind::UnitExplicit) {
+        if matches!(
+            fn_return_kind(&f.sig.output),
+            ReturnKind::UnitImplicit | ReturnKind::UnitExplicit
+        ) {
             // Now `apply_signature_rewrite` has already upgraded the return
             // type; mark `anyhow` needed.
         }
@@ -683,10 +685,7 @@ impl Rewriter<'_, '_> {
         self.report.add_converted(1);
     }
 
-    fn pop_resolved_test_context_plan(
-        &self,
-        attrs: &[Attribute],
-    ) -> Option<TestContextPlan> {
+    fn pop_resolved_test_context_plan(&self, attrs: &[Attribute]) -> Option<TestContextPlan> {
         for a in attrs {
             if let Some(path) = detect::as_test_context(a) {
                 let key = detect::path_to_string(&path);
@@ -944,9 +943,10 @@ fn is_cfg_test_attr(attr: &Attribute) -> bool {
 }
 
 fn has_rudzio_suite(attrs: &[Attribute]) -> bool {
-    attrs
-        .iter()
-        .any(|a| detect::path_to_string(a.path()) == "rudzio::suite" || detect::path_to_string(a.path()) == "::rudzio::suite")
+    attrs.iter().any(|a| {
+        detect::path_to_string(a.path()) == "rudzio::suite"
+            || detect::path_to_string(a.path()) == "::rudzio::suite"
+    })
 }
 
 fn unanimous_inner_runtime(m: &ItemMod) -> Option<RuntimeChoice> {
@@ -1018,7 +1018,11 @@ fn group_test_fns_by_ctx(
     };
     for item in items {
         if let Item::Fn(f) = item {
-            if !f.attrs.iter().any(|a| detect::classify_test_attr(a).is_some()) {
+            if !f
+                .attrs
+                .iter()
+                .any(|a| detect::classify_test_attr(a).is_some())
+            {
                 continue;
             }
             let key = f.attrs.iter().find_map(|a| {
@@ -1063,7 +1067,10 @@ fn module_has_any_test_fn(m: &ItemMod) -> bool {
 
 fn item_has_any_test_fn(item: &Item) -> bool {
     match item {
-        Item::Fn(f) => f.attrs.iter().any(|a| detect::classify_test_attr(a).is_some()),
+        Item::Fn(f) => f
+            .attrs
+            .iter()
+            .any(|a| detect::classify_test_attr(a).is_some()),
         Item::Mod(m) => module_has_any_test_fn(m),
         _ => false,
     }
@@ -1099,8 +1106,7 @@ fn is_tests_binary_root(path: &std::path::Path) -> bool {
     // count: a direct child `tests/<stem>.rs`, or a suite-dir
     // `tests/<suite>/mod.rs`. Anything deeper is a submodule and
     // inherits its main from the root via `mod` declarations.
-    let mut components: Vec<&std::ffi::OsStr> =
-        path.components().map(|c| c.as_os_str()).collect();
+    let mut components: Vec<&std::ffi::OsStr> = path.components().map(|c| c.as_os_str()).collect();
     // Find the outermost `tests` segment.
     let Some(tests_idx) = components
         .iter()

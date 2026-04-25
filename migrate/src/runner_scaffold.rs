@@ -28,8 +28,7 @@ pub fn ensure_tests_main(
         return Ok(ScaffoldOutcome::AlreadyExists);
     }
     if let Some(parent) = tests_main_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     let content = render_template(crate_lib_name, lib_modules, use_lib_aggregation);
     fs::write(tests_main_path, content)

@@ -154,8 +154,8 @@ impl Drawer {
                     stderr_buffer: Vec::new(),
                     last_output_line: String::new(),
                 };
-                let _unused =self.tests.insert(test_id, state);
-                let _unused =self.thread_to_test.insert(thread, test_id);
+                let _unused = self.tests.insert(test_id, state);
+                let _unused = self.thread_to_test.insert(thread, test_id);
                 let had_slot = self.slots.contains_key(&thread);
                 if !had_slot {
                     self.slot_order.push(thread);
@@ -198,12 +198,7 @@ impl Drawer {
                 } else {
                     format!("<{runtime_name}, {reason}>")
                 };
-                let line = render_line(
-                    &lhs_naked,
-                    &lhs_rendered,
-                    &trailing,
-                    terminal_width(),
-                );
+                let line = render_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
                 let _unused = self.terminal.write_all(line.as_bytes());
                 let _unused = self.terminal.write_all(b"\n");
                 self.last_live_rows = 0;
@@ -219,10 +214,7 @@ impl Drawer {
                 if let Some(state) = self.tests.remove(&test_id) {
                     if is_failure(&outcome) {
                         self.summary.failures.push(FailureRecord {
-                            display_name: format!(
-                                "{}::{}",
-                                state.module_path, state.test_name
-                            ),
+                            display_name: format!("{}::{}", state.module_path, state.test_name),
                             outcome_label: outcome_label(&outcome),
                             message: outcome_message(&outcome),
                             captured_stderr: String::from_utf8_lossy(&state.stderr_buffer)
@@ -235,7 +227,7 @@ impl Drawer {
                     // Clear the thread and slot mappings *after*
                     // emission so late-drained bytes attributed via
                     // the thread map are already flushed.
-                    let _unused =self.thread_to_test.remove(&state.thread);
+                    let _unused = self.thread_to_test.remove(&state.thread);
                     if let Some(slot) = self.slots.get_mut(&state.thread) {
                         if slot.current == Some(test_id) {
                             slot.current = None;
@@ -285,7 +277,7 @@ impl Drawer {
         if matches!(self.output_mode, OutputMode::Live) {
             self.clear_live_region();
         }
-        let _unused =self.terminal.write_all(&chunk.bytes);
+        let _unused = self.terminal.write_all(&chunk.bytes);
     }
 
     fn emit_plain_started(&mut self, test_id: TestId) {
@@ -294,7 +286,7 @@ impl Drawer {
                 "test {}::{} ... started [{}]\n",
                 state.module_path, state.test_name, state.runtime_name,
             );
-            let _unused =self.terminal.write_all(line.as_bytes());
+            let _unused = self.terminal.write_all(line.as_bytes());
         }
     }
 
@@ -343,15 +335,18 @@ impl Drawer {
         }
         self.clear_live_region();
         let mut buf = String::new();
-        buf.push_str(&self.color.dim(
-            "──────────────────────── running ────────────────────────",
-        ));
+        buf.push_str(
+            &self
+                .color
+                .dim("──────────────────────── running ────────────────────────"),
+        );
         buf.push('\n');
         let mut rows = 1_usize;
         for thread in &self.slot_order {
             let slot = self.slots.get(thread);
             let (status_line, hint_line) = match slot.and_then(|s| {
-                s.current.and_then(|id| self.tests.get(&id).map(|st| (s, st)))
+                s.current
+                    .and_then(|id| self.tests.get(&id).map(|st| (s, st)))
             }) {
                 Some((slot, state)) => (
                     running_line(slot.runtime_name, state, self.color),
@@ -368,8 +363,8 @@ impl Drawer {
             buf.push('\n');
             rows = rows.saturating_add(2);
         }
-        let _unused =self.terminal.write_all(buf.as_bytes());
-        let _unused =self.terminal.flush();
+        let _unused = self.terminal.write_all(buf.as_bytes());
+        let _unused = self.terminal.flush();
         self.last_live_rows = rows;
     }
 
@@ -378,7 +373,7 @@ impl Drawer {
             return;
         }
         let esc = format!("\x1b[{n}A\x1b[J", n = self.last_live_rows);
-        let _unused =self.terminal.write_all(esc.as_bytes());
+        let _unused = self.terminal.write_all(esc.as_bytes());
         self.last_live_rows = 0;
     }
 
@@ -397,32 +392,32 @@ impl Drawer {
             .started_at
             .map_or(Duration::ZERO, |t| t.elapsed());
         if !self.summary.failures.is_empty() {
-            let _unused =self.terminal.write_all(b"\nfailures:\n\n");
+            let _unused = self.terminal.write_all(b"\nfailures:\n\n");
             for fr in &self.summary.failures {
                 let header = format!("---- {} {} ----\n", fr.display_name, fr.outcome_label);
-                let _unused =self.terminal.write_all(header.as_bytes());
+                let _unused = self.terminal.write_all(header.as_bytes());
                 if !fr.message.is_empty() {
-                    let _unused =self.terminal.write_all(fr.message.as_bytes());
+                    let _unused = self.terminal.write_all(fr.message.as_bytes());
                     if !fr.message.ends_with('\n') {
-                        let _unused =self.terminal.write_all(b"\n");
+                        let _unused = self.terminal.write_all(b"\n");
                     }
                 }
                 if !fr.captured_stdout.is_empty() {
-                    let _unused =self.terminal.write_all(b"---- stdout ----\n");
-                    let _unused =self.terminal.write_all(fr.captured_stdout.as_bytes());
+                    let _unused = self.terminal.write_all(b"---- stdout ----\n");
+                    let _unused = self.terminal.write_all(fr.captured_stdout.as_bytes());
                     if !fr.captured_stdout.ends_with('\n') {
-                        let _unused =self.terminal.write_all(b"\n");
+                        let _unused = self.terminal.write_all(b"\n");
                     }
                 }
                 if !fr.captured_stderr.is_empty() {
-                    let _unused =self.terminal.write_all(b"---- stderr ----\n");
+                    let _unused = self.terminal.write_all(b"---- stderr ----\n");
                     let coloured = self.color.red(&fr.captured_stderr);
-                    let _unused =self.terminal.write_all(coloured.as_bytes());
+                    let _unused = self.terminal.write_all(coloured.as_bytes());
                     if !fr.captured_stderr.ends_with('\n') {
-                        let _unused =self.terminal.write_all(b"\n");
+                        let _unused = self.terminal.write_all(b"\n");
                     }
                 }
-                let _unused =self.terminal.write_all(b"\n");
+                let _unused = self.terminal.write_all(b"\n");
             }
         }
         let failed_total = self.summary.failed
@@ -442,8 +437,8 @@ impl Drawer {
             self.summary.ignored,
             total_elapsed.as_secs_f64(),
         );
-        let _unused =self.terminal.write_all(summary_line.as_bytes());
-        let _unused =self.terminal.flush();
+        let _unused = self.terminal.write_all(summary_line.as_bytes());
+        let _unused = self.terminal.flush();
     }
 }
 
@@ -634,9 +629,9 @@ fn outcome_message(outcome: &TestOutcome) -> String {
         TestOutcome::Failed { message, .. } => message.clone(),
         TestOutcome::TimedOut => "test exceeded its timeout".to_owned(),
         TestOutcome::Cancelled => "test was cancelled before completion".to_owned(),
-        TestOutcome::Panicked { .. }
-        | TestOutcome::Passed { .. }
-        | TestOutcome::Benched { .. } => String::new(),
+        TestOutcome::Panicked { .. } | TestOutcome::Passed { .. } | TestOutcome::Benched { .. } => {
+            String::new()
+        }
     }
 }
 

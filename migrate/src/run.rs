@@ -87,10 +87,7 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
         if n == 0 {
             false
         } else {
-            matches!(
-                reply.trim().to_ascii_lowercase().as_str(),
-                "y" | "yes"
-            )
+            matches!(reply.trim().to_ascii_lowercase().as_str(), "y" | "yes")
         }
     };
 
@@ -143,7 +140,9 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
             match emit::process_file(file, &emit_opts, &mut report) {
                 Ok(Some(rewrite)) => {
                     pkg_had_conversions = true;
-                    pkg_edits.runtimes.extend(rewrite.runtimes_used.iter().copied());
+                    pkg_edits
+                        .runtimes
+                        .extend(rewrite.runtimes_used.iter().copied());
                     pkg_edits.needs_anyhow |= rewrite.needs_anyhow;
                     if file.starts_with(pkg.root.join("src")) {
                         pkg_edits.had_src_conversion = true;
@@ -326,9 +325,7 @@ fn suite_root_mod_rs_for(file: &Path, pkg_root: &Path) -> Option<PathBuf> {
     let rest: Vec<&std::ffi::OsStr> = components.map(|c| c.as_os_str()).collect();
     // File IS the suite root; nothing to do here — the rewriter
     // handles fn main injection for files that did change.
-    if rest.is_empty()
-        || (rest.len() == 1 && rest[0] == std::ffi::OsStr::new("mod.rs"))
-    {
+    if rest.is_empty() || (rest.len() == 1 && rest[0] == std::ffi::OsStr::new("mod.rs")) {
         return None;
     }
     Some(tests_dir.join(&suite).join("mod.rs"))
@@ -358,8 +355,7 @@ fn demote_forbid_unsafe_in_lib(pkg_root: &Path) -> anyhow::Result<Option<PathBuf
     let new = source.replace(target, "#![deny(unsafe_code)]");
     let _bak = crate::backup::copy_before_write(&lib_rs)
         .with_context(|| format!("backing up {}", lib_rs.display()))?;
-    std::fs::write(&lib_rs, &new)
-        .with_context(|| format!("writing {}", lib_rs.display()))?;
+    std::fs::write(&lib_rs, &new).with_context(|| format!("writing {}", lib_rs.display()))?;
     Ok(Some(lib_rs))
 }
 
@@ -385,9 +381,10 @@ fn ensure_lib_has_rudzio_main(pkg_root: &Path) -> anyhow::Result<Option<PathBuf>
     // append path; worst case the user gets a duplicate `fn main`
     // and a compile error that points straight at the fix.
     if let Ok(tree) = syn::parse_file(&source) {
-        let has_main = tree.items.iter().any(|it| {
-            matches!(it, syn::Item::Fn(f) if f.sig.ident == "main")
-        });
+        let has_main = tree
+            .items
+            .iter()
+            .any(|it| matches!(it, syn::Item::Fn(f) if f.sig.ident == "main"));
         if has_main {
             return Ok(None);
         }
@@ -399,8 +396,7 @@ fn ensure_lib_has_rudzio_main(pkg_root: &Path) -> anyhow::Result<Option<PathBuf>
     } else {
         format!("{source}\n#[cfg(test)]\n#[::rudzio::main]\nfn main() {{}}\n")
     };
-    std::fs::write(&lib_rs, &appended)
-        .with_context(|| format!("writing {}", lib_rs.display()))?;
+    std::fs::write(&lib_rs, &appended).with_context(|| format!("writing {}", lib_rs.display()))?;
     Ok(Some(lib_rs))
 }
 
@@ -409,15 +405,16 @@ fn ensure_suite_root_has_main(mod_rs: &Path) -> anyhow::Result<bool> {
     if !mod_rs.is_file() {
         return Ok(false);
     }
-    let source = std::fs::read_to_string(mod_rs)
-        .with_context(|| format!("reading {}", mod_rs.display()))?;
+    let source =
+        std::fs::read_to_string(mod_rs).with_context(|| format!("reading {}", mod_rs.display()))?;
     let tree = match syn::parse_file(&source) {
         Ok(t) => t,
         Err(_) => return Ok(false),
     };
-    let has_main = tree.items.iter().any(|it| {
-        matches!(it, syn::Item::Fn(f) if f.sig.ident == "main")
-    });
+    let has_main = tree
+        .items
+        .iter()
+        .any(|it| matches!(it, syn::Item::Fn(f) if f.sig.ident == "main"));
     if has_main {
         return Ok(false);
     }
@@ -428,8 +425,7 @@ fn ensure_suite_root_has_main(mod_rs: &Path) -> anyhow::Result<bool> {
     } else {
         format!("{source}\n\n#[rudzio::main]\nfn main() {{}}\n")
     };
-    std::fs::write(mod_rs, appended)
-        .with_context(|| format!("writing {}", mod_rs.display()))?;
+    std::fs::write(mod_rs, appended).with_context(|| format!("writing {}", mod_rs.display()))?;
     Ok(true)
 }
 
@@ -447,8 +443,7 @@ fn integration_test_entry_for(
     let rel = file.strip_prefix(&tests_dir).ok()?;
     let mut components = rel.components();
     let first = components.next()?.as_os_str().to_str()?.to_owned();
-    let rest: Vec<&std::ffi::OsStr> =
-        components.map(|c| c.as_os_str()).collect();
+    let rest: Vec<&std::ffi::OsStr> = components.map(|c| c.as_os_str()).collect();
 
     // `tests/<stem>.rs` (direct child).
     if rest.is_empty() {

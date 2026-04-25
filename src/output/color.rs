@@ -25,11 +25,7 @@ impl ColorPolicy {
     /// everything else) > explicit `--color=always|never` >
     /// `NO_COLOR` (if set, colour off) > `--color=auto` + TTY check.
     #[must_use]
-    pub fn resolve(
-        mode: ColorMode,
-        stdout_is_tty: bool,
-        env: &BTreeMap<String, String>,
-    ) -> Self {
+    pub fn resolve(mode: ColorMode, stdout_is_tty: bool, env: &BTreeMap<String, String>) -> Self {
         if env.contains_key("FORCE_COLOR") {
             return Self { use_color: true };
         }

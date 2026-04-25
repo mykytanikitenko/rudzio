@@ -37,8 +37,8 @@ const ACK_PHRASE: &str = "I am not and idion and understand what I am doing in m
     ]
 )]
 mod tests {
-    use ::rudzio::common::context::Test;
     use super::*;
+    use ::rudzio::common::context::Test;
     /* pre-migration (rudzio-migrate):
     #[test]
     fn golden_plain_sync_test() {
@@ -291,19 +291,19 @@ mod tests {
         let path = dir.path();
         setup_minimal_lib_crate(path, "dirty_tree").expect("setup");
         git_init_commit(path).expect("git commit");
-        fs::write(path.join("src/lib.rs"), b"// uncommitted edit\n")
-            .expect("dirty write");
+        fs::write(path.join("src/lib.rs"), b"// uncommitted edit\n").expect("dirty write");
         let output = run_migrate(path, &["--dry-run"], "").expect("spawn");
         assert_eq!(
-            output.status.code(), Some(1_i32),
-            "expected exit 1 for dirty tree; got {:?}\nstdout:\n{}\nstderr:\n{}", output
-            .status, String::from_utf8_lossy(& output.stdout), String::from_utf8_lossy(&
-            output.stderr),
+            output.status.code(),
+            Some(1_i32),
+            "expected exit 1 for dirty tree; got {:?}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            stdout
-            .contains("refusing to run because the working tree has uncommitted changes"),
+            stdout.contains("refusing to run because the working tree has uncommitted changes"),
             "expected dirty-tree disclaimer; got:\n{stdout}"
         );
         assert!(
@@ -311,7 +311,9 @@ mod tests {
             "expected best-effort disclaimer; got:\n{stdout}"
         );
         assert!(
-            ! path.join("src/lib.rs.backup_before_migration_to_rudzio").exists(),
+            !path
+                .join("src/lib.rs.backup_before_migration_to_rudzio")
+                .exists(),
             "backup should not have been created for a dirty tree refusal",
         );
         ::core::result::Result::Ok(())
@@ -355,10 +357,12 @@ mod tests {
         let wrong = "I am not an idiot and understand what I am doing in most cases at least\n";
         let output = run_migrate(path, &[], wrong).expect("spawn");
         assert_eq!(
-            output.status.code(), Some(1_i32),
-            "expected exit 1 for wrong ack; got {:?}\nstdout:\n{}\nstderr:\n{}", output
-            .status, String::from_utf8_lossy(& output.stdout), String::from_utf8_lossy(&
-            output.stderr),
+            output.status.code(),
+            Some(1_i32),
+            "expected exit 1 for wrong ack; got {:?}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
@@ -366,7 +370,9 @@ mod tests {
             "expected ack-mismatch abort message; got:\n{stdout}"
         );
         assert!(
-            ! path.join("src/lib.rs.backup_before_migration_to_rudzio").exists(),
+            !path
+                .join("src/lib.rs.backup_before_migration_to_rudzio")
+                .exists(),
             "backup should not have been created for a wrong ack",
         );
         ::core::result::Result::Ok(())
@@ -376,9 +382,15 @@ fn run_fixture(name: &str) {
     let fixtures_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
     let input_dir = fixtures_root.join(name).join("input");
     let expected_dir = fixtures_root.join(name).join("expected");
-    assert!(input_dir.exists(), "fixture input missing: {}", input_dir.display());
     assert!(
-        expected_dir.exists(), "fixture expected missing: {}", expected_dir.display()
+        input_dir.exists(),
+        "fixture input missing: {}",
+        input_dir.display()
+    );
+    assert!(
+        expected_dir.exists(),
+        "fixture expected missing: {}",
+        expected_dir.display()
     );
     let tempdir = tempfile::tempdir().expect("tempdir");
     copy_tree(&input_dir, tempdir.path()).expect("copy input");
@@ -421,9 +433,10 @@ fn run_fixture(name: &str) {
     let output = child.wait_with_output().expect("wait");
     if !output.status.success() {
         panic!(
-            "rudzio-migrate exited with {}\nstdout:\n{}\nstderr:\n{}", output.status,
-            String::from_utf8_lossy(& output.stdout), String::from_utf8_lossy(& output
-            .stderr),
+            "rudzio-migrate exited with {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
         );
     }
     compare_trees(&expected_dir, tempdir.path());
@@ -503,7 +516,10 @@ fn setup_minimal_lib_crate(path: &Path, package_name: &str) -> std::io::Result<(
             "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\n"
         ),
     )?;
-    fs::write(path.join("rust-toolchain.toml"), "[toolchain]\nchannel = \"1.95.0\"\n")?;
+    fs::write(
+        path.join("rust-toolchain.toml"),
+        "[toolchain]\nchannel = \"1.95.0\"\n",
+    )?;
     fs::write(path.join("src/lib.rs"), "pub fn noop() {}\n")
 }
 /// Run the `rudzio-migrate` binary against `path` with the given extra
@@ -547,13 +563,12 @@ fn compare_trees(expected: &Path, actual: &Path) {
     if !diffs.is_empty() {
         let mut msg = String::from("fixture output differs from expected:\n");
         for (rel, exp, act) in &diffs {
-            msg.push_str(
-                &format!(
-                    "--- {} (expected vs actual) ---\nEXPECTED:\n{}\nACTUAL:\n{}\n", rel
-                    .display(), String::from_utf8_lossy(exp),
-                    String::from_utf8_lossy(act),
-                ),
-            );
+            msg.push_str(&format!(
+                "--- {} (expected vs actual) ---\nEXPECTED:\n{}\nACTUAL:\n{}\n",
+                rel.display(),
+                String::from_utf8_lossy(exp),
+                String::from_utf8_lossy(act),
+            ));
         }
         panic!("{msg}");
     }

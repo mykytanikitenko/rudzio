@@ -162,10 +162,7 @@ fn render_warning<W: Write>(
     };
     let diag = MigrateWarning {
         message: w.message.clone(),
-        src: NamedSource::new(
-            w.file.display().to_string(),
-            Arc::clone(source),
-        ),
+        src: NamedSource::new(w.file.display().to_string(), Arc::clone(source)),
         span: (offset, len.max(1)).into(),
     };
     let mut rendered = String::new();

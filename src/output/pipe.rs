@@ -82,12 +82,12 @@ impl SavedFds {
         // from a restore failure.
         unsafe {
             if stdout != -1 {
-                let _unused =libc::dup2(stdout, libc::STDOUT_FILENO);
-                let _unused =libc::close(stdout);
+                let _unused = libc::dup2(stdout, libc::STDOUT_FILENO);
+                let _unused = libc::close(stdout);
             }
             if stderr != -1 {
-                let _unused =libc::dup2(stderr, libc::STDERR_FILENO);
-                let _unused =libc::close(stderr);
+                let _unused = libc::dup2(stderr, libc::STDERR_FILENO);
+                let _unused = libc::close(stderr);
             }
         }
     }
@@ -141,8 +141,8 @@ pub fn init() -> io::Result<Capture> {
     };
 
     // Expand pipe buffer if supported (Linux); harmless no-op elsewhere.
-    let _unused =set_pipe_size(stdout_write.as_raw_fd(), PIPE_SIZE);
-    let _unused =set_pipe_size(stderr_write.as_raw_fd(), PIPE_SIZE);
+    let _unused = set_pipe_size(stdout_write.as_raw_fd(), PIPE_SIZE);
+    let _unused = set_pipe_size(stderr_write.as_raw_fd(), PIPE_SIZE);
 
     // Install the write ends over FDs 1 and 2. `dup2` closes whatever
     // was at the target FD before duplicating — that's what we want.
@@ -153,7 +153,7 @@ pub fn init() -> io::Result<Capture> {
     }
     if let Err(e) = dup2(stderr_write.as_raw_fd(), libc::STDERR_FILENO) {
         // Try to roll back FD 1 before reporting.
-        let _unused =dup2(saved_stdout, libc::STDOUT_FILENO);
+        let _unused = dup2(saved_stdout, libc::STDOUT_FILENO);
         close(saved_stdout);
         close(saved_stderr);
         return Err(e);
@@ -199,7 +199,7 @@ fn close(fd: RawFd) {
     // SAFETY: closing a valid FD is defined; errors are ignored
     // because Drop paths have nowhere to report them.
     unsafe {
-        let _unused =libc::close(fd);
+        let _unused = libc::close(fd);
     }
 }
 

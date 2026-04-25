@@ -113,8 +113,8 @@ fn resolve_package(pkg: &Package, resolver: &mut TestContextResolver) -> Result<
     let mut ctx_visibility: BTreeMap<String, syn::Visibility> = BTreeMap::new();
 
     for file in pkg.src_files.iter().chain(pkg.tests_files.iter()) {
-        let source = fs::read_to_string(file)
-            .with_context(|| format!("reading {}", file.display()))?;
+        let source =
+            fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
         let Ok(tree) = syn::parse_file(&source) else {
             continue;
         };
@@ -136,7 +136,12 @@ fn resolve_package(pkg: &Package, resolver: &mut TestContextResolver) -> Result<
                 let module_path = infer_module_path(impl_file, &pkg.root);
                 let ctx_visibility = ctx_visibility
                     .get(&ctx_ident)
-                    .map(|v| quote::ToTokens::to_token_stream(v).to_string().trim().to_owned())
+                    .map(|v| {
+                        quote::ToTokens::to_token_stream(v)
+                            .to_string()
+                            .trim()
+                            .to_owned()
+                    })
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| "pub(crate)".to_owned());
                 let plan = TestContextPlan {
@@ -266,10 +271,9 @@ impl<'ast> Visit<'ast> for Scanner<'_> {
             }
         }
         if seen_setup && seen_teardown {
-            let _prev = self.impls.insert(
-                ty_key,
-                (self.current_file.to_path_buf(), is_async),
-            );
+            let _prev = self
+                .impls
+                .insert(ty_key, (self.current_file.to_path_buf(), is_async));
         }
     }
 }
