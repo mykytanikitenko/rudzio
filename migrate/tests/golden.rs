@@ -243,6 +243,11 @@ mod tests {
         run_fixture("lib_unit_tests_harness_false");
         ::core::result::Result::Ok(())
     }
+    #[::rudzio::test]
+    async fn golden_nested_parent_mod_not_promoted(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("nested_parent_mod_not_promoted");
+        ::core::result::Result::Ok(())
+    }
     /* pre-migration (rudzio-migrate):
     #[test]
     fn golden_dirty_tree_refusal() {
