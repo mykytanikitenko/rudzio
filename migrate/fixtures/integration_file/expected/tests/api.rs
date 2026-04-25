@@ -13,8 +13,8 @@ fn expected_prefix() -> &'static str {
     ]
 )]
 mod tests {
-    use ::rudzio::common::context::Test;
     use super::*;
+    use ::rudzio::common::context::Test;
     /* pre-migration (rudzio-migrate):
     #[tokio::test]
     async fn greets_alice() {

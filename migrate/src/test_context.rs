@@ -61,6 +61,16 @@ pub struct TestContextPlan {
     pub bridge_ident: String,
     /// Generated bridge suite struct ident, e.g. `MyCtxRudzioSuite`.
     pub suite_ident: String,
+    /// Best-effort module path from the test binary's crate root to
+    /// the module that owns `impl_file`. `Some("crate::foo::bar")`
+    /// when the impl lives under `src/` in a resolvable spot;
+    /// `Some("crate")` when it's at the lib root; `None` when it
+    /// lives under `tests/` (where the binary's module tree isn't
+    /// knowable from file paths alone) or in a location the
+    /// resolver can't map. `None` triggers a warning at emission
+    /// time and falls back to `crate::<Ident>`, which the user
+    /// will typically need to adjust.
+    pub module_path: Option<String>,
 }
 
 impl TestContextResolver {
@@ -109,6 +119,7 @@ fn resolve_package(pkg: &Package, resolver: &mut TestContextResolver) -> Result<
                 let ctx_ident = last_segment(key);
                 let bridge_ident = format!("{ctx_ident}RudzioBridge");
                 let suite_ident = format!("{ctx_ident}RudzioSuite");
+                let module_path = infer_module_path(impl_file, &pkg.root);
                 let plan = TestContextPlan {
                     ctx_key: key.clone(),
                     impl_file: impl_file.clone(),
@@ -116,6 +127,7 @@ fn resolve_package(pkg: &Package, resolver: &mut TestContextResolver) -> Result<
                     ctx_ident,
                     bridge_ident,
                     suite_ident,
+                    module_path,
                 };
                 let _prev = resolver.plans.insert(key.clone(), plan);
             }
@@ -129,6 +141,54 @@ fn resolve_package(pkg: &Package, resolver: &mut TestContextResolver) -> Result<
 
 fn last_segment(path_str: &str) -> String {
     path_str.rsplit("::").next().unwrap_or(path_str).to_owned()
+}
+
+/// Compute `Some("crate::foo::bar")` when `impl_file` maps to a
+/// reachable position in the lib's module tree — i.e. it's under
+/// `<pkg_root>/src/` and the rustc default resolution (`src/lib.rs`
+/// for the root, `src/X.rs` or `src/X/mod.rs` for `mod X;`, etc.)
+/// can place it. Returns `None` for impl files under `tests/` or
+/// anywhere else (e.g. `examples/`, `benches/`) where the test
+/// binary's module tree isn't derivable from the path alone and the
+/// user needs to tell us via a custom `mod` declaration.
+fn infer_module_path(impl_file: &Path, pkg_root: &Path) -> Option<String> {
+    let rel = impl_file.strip_prefix(pkg_root).ok()?;
+    let mut components: Vec<&str> = rel
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    // Must be under src/.
+    if components.first() != Some(&"src") {
+        return None;
+    }
+    let _src = components.remove(0);
+    // src/lib.rs or src/main.rs → crate root.
+    if components.len() == 1 {
+        if components[0] == "lib.rs" || components[0] == "main.rs" {
+            return Some("crate".to_owned());
+        }
+        // src/foo.rs → crate::foo.
+        let stem = components[0].strip_suffix(".rs")?;
+        return Some(format!("crate::{stem}"));
+    }
+    // src/foo/mod.rs → crate::foo. Deeper is crate::foo::bar::… with
+    // the last path segment being either `.rs` or `mod.rs`.
+    let mut segments: Vec<String> = Vec::new();
+    for (i, comp) in components.iter().enumerate() {
+        if i == components.len() - 1 {
+            if *comp == "mod.rs" {
+                break;
+            }
+            let stem = comp.strip_suffix(".rs")?;
+            segments.push(stem.to_owned());
+        } else {
+            segments.push((*comp).to_owned());
+        }
+    }
+    if segments.is_empty() {
+        return Some("crate".to_owned());
+    }
+    Some(format!("crate::{}", segments.join("::")))
 }
 
 struct Scanner<'a> {

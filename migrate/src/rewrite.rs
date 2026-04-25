@@ -63,6 +63,7 @@ pub fn rewrite_file(
         },
         mod_depth: 0,
         file_scope_runtimes: BTreeSet::new(),
+        file_scope_test_context_plan: None,
     };
     walker.visit_file_mut(file);
     walker.rewrite
@@ -85,6 +86,14 @@ struct Rewriter<'a, 'r> {
     /// file-scope fn agrees, honor that choice; otherwise fall back
     /// to `--runtime`.
     file_scope_runtimes: BTreeSet<RuntimeChoice>,
+    /// First resolved `#[test_context(T)]` plan seen on a converted
+    /// file-scope fn. Used by `wrap_file_scope_test_fns` so the
+    /// synthesized suite attr points at the generated `CtxBridge` /
+    /// `CtxSuite` instead of `common::Test` / `common::Suite` — the
+    /// fn sigs were already rewritten to take `&mut CtxBridge`,
+    /// so falling back to common types would produce a type
+    /// mismatch.
+    file_scope_test_context_plan: Option<TestContextPlan>,
 }
 
 impl VisitMut for Rewriter<'_, '_> {
@@ -179,11 +188,25 @@ impl Rewriter<'_, '_> {
         // a resolved `#[test_context(T)]`.
         let resolved_ctx = first_resolved_test_context(m, self.test_contexts);
         let (suite_path, test_path, uses_generated_ctx) = match resolved_ctx {
-            Some(plan) => (
-                parse_path_str(&format!("crate::{}", plan.suite_ident)),
-                parse_path_str(&format!("crate::{}", plan.bridge_ident)),
-                true,
-            ),
+            Some(plan) => {
+                let base = plan.module_path.as_deref().unwrap_or("crate");
+                if plan.module_path.is_none() {
+                    self.warn_span(
+                        m.ident.span(),
+                        format!(
+                            "bridge for `{}` was generated in `{}`, which isn't reachable from `crate::` (typically because it lives under `tests/`). Emitted `crate::{}` as a best-effort placeholder — adjust the `suite = ...` / `test = ...` paths by hand to match your test binary's module tree.",
+                            plan.ctx_ident,
+                            plan.impl_file.display(),
+                            plan.suite_ident,
+                        ),
+                    );
+                }
+                (
+                    parse_path_str(&format!("{base}::{}", plan.suite_ident)),
+                    parse_path_str(&format!("{base}::{}", plan.bridge_ident)),
+                    true,
+                )
+            }
             None => (
                 parse_path_str("::rudzio::common::context::Suite"),
                 parse_path_str("::rudzio::common::context::Test"),
@@ -210,14 +233,18 @@ impl Rewriter<'_, '_> {
         }
     }
 
-    /// Post-pass: any file under a `tests/` directory whose contents
-    /// we just modified into a rudzio shape is about to become an
-    /// independent test binary (via `[[test]] harness = false`).
-    /// Cargo needs a `fn main` in such a binary; append a
-    /// `#[rudzio::main] fn main() {}` if one isn't already there and
-    /// the file actually has something for rudzio to run.
+    /// Post-pass: a file that's a TEST BINARY ROOT under `tests/`
+    /// (i.e. `tests/<stem>.rs` or `tests/<suite>/mod.rs`) becomes an
+    /// independent `[[test]] harness = false` binary after the
+    /// migration. Cargo needs a `fn main` in such a binary; append
+    /// `#[rudzio::main] fn main() {}` if one isn't already there.
+    ///
+    /// Submodule files deeper in `tests/` are NOT binary roots —
+    /// they're pulled in via `mod` declarations from a root file, so
+    /// adding a `fn main` to each would be meaningless at best and
+    /// produce double linkme registration at worst.
     fn ensure_tests_binary_has_main(&mut self, file: &mut syn::File) {
-        if !is_under_tests_dir(&self.file_path) {
+        if !is_tests_binary_root(&self.file_path) {
             return;
         }
         if !self.rewrite.changed {
@@ -268,8 +295,27 @@ impl Rewriter<'_, '_> {
             self.default_runtime
         };
         let runtime_path = parse_path_str(runtime.suite_path());
-        let suite_path = parse_path_str("::rudzio::common::context::Suite");
-        let test_path = parse_path_str("::rudzio::common::context::Test");
+        // If any of the wrapped fns had a resolved `#[test_context(T)]`,
+        // their signatures were already rewritten to `&mut CtxBridge`.
+        // Pointing the suite attr at `common::Suite` / `common::Test`
+        // in that case would produce a type mismatch the moment
+        // rudzio's macro tries to resolve `Test<'tc>` against the
+        // fn's param type. Use the generated bridge paths instead.
+        let (suite_path, test_path, uses_bridge) =
+            if let Some(plan) = &self.file_scope_test_context_plan {
+                let base = plan.module_path.as_deref().unwrap_or("crate");
+                (
+                    parse_path_str(&format!("{base}::{}", plan.suite_ident)),
+                    parse_path_str(&format!("{base}::{}", plan.bridge_ident)),
+                    true,
+                )
+            } else {
+                (
+                    parse_path_str("::rudzio::common::context::Suite"),
+                    parse_path_str("::rudzio::common::context::Test"),
+                    false,
+                )
+            };
 
         // The synth module is already `#[cfg(test)]`, so the fns we
         // just pulled in no longer need their own `#[cfg(test)]`
@@ -285,14 +331,29 @@ impl Rewriter<'_, '_> {
             })
             .collect();
 
-        let mut synth_items: Vec<Item> = Vec::with_capacity(fns.len() + 2);
-        synth_items.push(syn::parse_quote! {
-            use ::rudzio::common::context::Test;
-        });
+        let mut synth_items: Vec<Item> = Vec::with_capacity(fns.len() + 3);
         synth_items.push(syn::parse_quote! {
             use super::*;
         });
+        if let Some(plan) = &self.file_scope_test_context_plan {
+            // Bring the bridge ident into scope so the wrapped fn
+            // sigs (`&mut <Ctx>RudzioBridge`) resolve. Use the
+            // inferred module path when available, falling back to
+            // `crate::` with a warning (emitted once per plan at
+            // module-promotion time; repeating it here would be
+            // noise).
+            let base = plan.module_path.as_deref().unwrap_or("crate");
+            let path: syn::Path = parse_path_str(&format!("{base}::{}", plan.bridge_ident));
+            synth_items.push(syn::parse_quote! {
+                use #path;
+            });
+        } else {
+            synth_items.push(syn::parse_quote! {
+                use ::rudzio::common::context::Test;
+            });
+        }
         synth_items.extend(fns);
+        let _uses_bridge = uses_bridge;
 
         // `#[allow(non_snake_case)]` on the synth mod silences a
         // rustc warning rudzio's own `#[rudzio::suite]` expansion
@@ -390,9 +451,18 @@ impl Rewriter<'_, '_> {
         let _stripped: bool = self.strip_companion_test_attrs(&mut f.attrs);
         if let Some(plan) = resolved_plan.as_ref() {
             rewrite_ctx_param_to_bridge(f, &plan.ctx_ident, &plan.bridge_ident);
+            if self.mod_depth == 0 && self.file_scope_test_context_plan.is_none() {
+                self.file_scope_test_context_plan = Some(plan.clone());
+            }
         }
+        // Capture the return type BEFORE apply_signature_rewrite
+        // mutates it — apply_body_rewrite needs to know whether the
+        // user already owned a Result body (in which case appending
+        // another `Ok(())` produces a dropped-Result-value warning
+        // at minimum and an unreachable-statement warning often).
+        let original_return = fn_return_kind(&f.sig.output);
         self.apply_signature_rewrite(f, had_resolved_test_context);
-        apply_body_rewrite(f);
+        apply_body_rewrite(f, original_return);
         if matches!(fn_return_kind(&f.sig.output), ReturnKind::UnitImplicit | ReturnKind::UnitExplicit) {
             // Now `apply_signature_rewrite` has already upgraded the return
             // type; mark `anyhow` needed.
@@ -563,7 +633,15 @@ impl Rewriter<'_, '_> {
     }
 }
 
-fn apply_body_rewrite(f: &mut ItemFn) {
+fn apply_body_rewrite(f: &mut ItemFn, original_return: ReturnKind) {
+    // If the user's fn already returned a `Result<...>`, trust the
+    // body — appending `Ok(())` on top of a `{ ... ; Ok(()) }`
+    // block-returning body (or anything else that already yields a
+    // `Result`) creates a dropped-Result-value warning at minimum
+    // and usually an unreachable-statement warning as well.
+    if matches!(original_return, ReturnKind::Result) {
+        return;
+    }
     let block = &mut f.block;
     let needs_ok = !ends_with_ok(&block.stmts);
     if needs_ok {
@@ -779,16 +857,27 @@ fn rewrite_ctx_param_to_bridge(f: &mut ItemFn, ctx_ident: &str, bridge_ident: &s
     }
 }
 
-fn is_under_tests_dir(path: &std::path::Path) -> bool {
-    // True if any component of the path equals `tests` — covers both
-    // `<crate>/tests/foo.rs` and nested patterns like
-    // `<crate>/tests/common/mod.rs`. We don't care whether it's an
-    // integration-test dir specifically or some user dir literally
-    // named `tests`; worst case is a spurious `fn main` on a file
-    // that wasn't a test binary, and that's only reachable if the
-    // file actually had test fns we converted.
-    path.components()
-        .any(|c| c.as_os_str() == std::ffi::OsStr::new("tests"))
+fn is_tests_binary_root(path: &std::path::Path) -> bool {
+    // Only the binary roots get `fn main` synthesised. Two shapes
+    // count: a direct child `tests/<stem>.rs`, or a suite-dir
+    // `tests/<suite>/mod.rs`. Anything deeper is a submodule and
+    // inherits its main from the root via `mod` declarations.
+    let mut components: Vec<&std::ffi::OsStr> =
+        path.components().map(|c| c.as_os_str()).collect();
+    // Find the outermost `tests` segment.
+    let Some(tests_idx) = components
+        .iter()
+        .position(|c| *c == std::ffi::OsStr::new("tests"))
+    else {
+        return false;
+    };
+    let rel = components.split_off(tests_idx + 1);
+    // `tests/<stem>.rs`: exactly one `.rs` component after `tests/`.
+    if rel.len() == 1 {
+        return rel[0].to_str().is_some_and(|s| s.ends_with(".rs"));
+    }
+    // `tests/<suite>/mod.rs`: exactly two components, last is `mod.rs`.
+    rel.len() == 2 && rel[1] == std::ffi::OsStr::new("mod.rs")
 }
 
 fn item_is_fn_main(item: &Item) -> bool {

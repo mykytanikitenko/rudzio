@@ -122,19 +122,19 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
     for pkg in &packages {
         let mut pkg_edits = manifest::ManifestEdits::default();
         let mut pkg_had_conversions = false;
-        for file in pkg.src_files.iter().chain(pkg.tests_files.iter()) {
+        let src_iter: Box<dyn Iterator<Item = &std::path::PathBuf>> = if args.tests_only {
+            Box::new(std::iter::empty())
+        } else {
+            Box::new(pkg.src_files.iter())
+        };
+        for file in src_iter.chain(pkg.tests_files.iter()) {
             match emit::process_file(file, &emit_opts, &mut report) {
                 Ok(Some(rewrite)) => {
                     pkg_had_conversions = true;
                     pkg_edits.runtimes.extend(rewrite.runtimes_used.iter().copied());
                     pkg_edits.needs_anyhow |= rewrite.needs_anyhow;
-                    if is_under_tests_dir(file, &pkg.root) {
-                        if let Some(name) = file.file_stem().and_then(|s| s.to_str()) {
-                            pkg_edits.tests_integration.push(manifest::IntegrationTestEntry {
-                                name: name.to_owned(),
-                                path: format!("tests/{name}.rs"),
-                            });
-                        }
+                    if let Some(entry) = integration_test_entry_for(file, &pkg.root) {
+                        pkg_edits.tests_integration.push(entry);
                     }
                 }
                 Ok(None) => {}
@@ -201,6 +201,36 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn is_under_tests_dir(file: &Path, pkg_root: &Path) -> bool {
-    file.starts_with(pkg_root.join("tests"))
+/// Returns the `[[test]]` entry for a file if it's a test-binary
+/// root — i.e. `tests/<stem>.rs` (direct child) or `tests/<suite>/mod.rs`
+/// (mod-file pattern). Files deeper in `tests/` are submodules of a
+/// test binary whose root lives elsewhere; synthesising a
+/// `[[test]] path = "tests/<stem>.rs"` entry for them would point at
+/// a file that doesn't exist and break the build.
+fn integration_test_entry_for(
+    file: &Path,
+    pkg_root: &Path,
+) -> Option<manifest::IntegrationTestEntry> {
+    let tests_dir = pkg_root.join("tests");
+    let rel = file.strip_prefix(&tests_dir).ok()?;
+    let mut components = rel.components();
+    let first = components.next()?.as_os_str().to_str()?.to_owned();
+    let rest: Vec<&std::ffi::OsStr> =
+        components.map(|c| c.as_os_str()).collect();
+
+    // `tests/<stem>.rs` (direct child).
+    if rest.is_empty() {
+        let name = first.strip_suffix(".rs")?.to_owned();
+        let path = format!("tests/{name}.rs");
+        return Some(manifest::IntegrationTestEntry { name, path });
+    }
+
+    // `tests/<suite>/mod.rs` — a suite root. Deeper files in that
+    // suite are submodules and don't get their own entry.
+    if rest.len() == 1 && rest[0] == std::ffi::OsStr::new("mod.rs") {
+        let path = format!("tests/{first}/mod.rs");
+        return Some(manifest::IntegrationTestEntry { name: first, path });
+    }
+
+    None
 }

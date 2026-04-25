@@ -14,6 +14,13 @@ pub struct Cli {
     /// (matched against `cargo_metadata`'s `Package::name`). Useful
     /// for incremental rollouts across large workspaces.
     pub only_package: Option<String>,
+    /// Skip `src/**/*.rs` during the conversion pass — only files
+    /// under `tests/` are migrated. Useful for crates whose `src/`
+    /// is dense with macro invocations (e.g. `ambassador`,
+    /// delegation crates, procedural wrappers) that syn parses but
+    /// prettyplease can't round-trip. The lib keeps its existing
+    /// `#[cfg(test)] mod tests { ... }` harness unchanged.
+    pub tests_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -91,6 +98,11 @@ OPTIONS:
     --only-package <NAME>   Restrict the run to a single workspace member
                             (matched against the `cargo metadata` package
                             name). Other packages are left alone.
+    --tests-only            Skip src/**/*.rs during conversion — only
+                            tests/ files are migrated. Use when src/
+                            is dense with macros (`ambassador`,
+                            delegation) that syn parses but
+                            prettyplease can't round-trip.
     --help, -h              Print this message.
 
 NOTE: The tool refuses to run on a dirty git tree and requires the user
@@ -105,6 +117,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError>
     let mut no_shared_runner = false;
     let mut no_preserve_originals = false;
     let mut only_package: Option<String> = None;
+    let mut tests_only = false;
 
     let mut it = args.into_iter();
     let _program = it.next();
@@ -114,6 +127,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError>
             "--dry-run" => dry_run = true,
             "--no-shared-runner" => no_shared_runner = true,
             "--no-preserve-originals" => no_preserve_originals = true,
+            "--tests-only" => tests_only = true,
             "--path" => {
                 let value = it
                     .next()
@@ -157,6 +171,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError>
         no_shared_runner,
         no_preserve_originals,
         only_package,
+        tests_only,
     })
 }
 
