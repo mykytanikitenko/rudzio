@@ -14,5 +14,5 @@ path = "tests/integration.rs"
 harness = false
 
 [dev-dependencies]
-rudzio = { version = "0.1", features = ["common", "runtime-tokio"] }
+rudzio = { version = "0.1", features = ["common", "runtime-tokio-multi-thread"] }
 anyhow = "1.0"

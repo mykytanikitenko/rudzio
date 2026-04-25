@@ -25,7 +25,7 @@ crossbeam-channel = { workspace = true }
 linkme = { workspace = true }
 rudzio-macro = { workspace = true }
 tokio-util = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread"], optional = true }
+tokio = { workspace = true, optional = true }
 compio-runtime = { workspace = true, features = ["time"], optional = true }
 embassy-executor = { workspace = true, optional = true }
 futures-executor = { workspace = true, features = ["thread-pool"], optional = true }
@@ -47,12 +47,12 @@ cargo_metadata = { workspace = true, optional = true }
 signal-hook = { workspace = true }
 libc = { workspace = true }
 
-# Self dev-dep turns on `runtime-tokio` for the in-crate integration tests
+# Self dev-dep turns on every runtime for the in-crate integration tests
 # that run under `#[rudzio::main]`. Cargo unifies features, so this does not
 # cause a duplicate build.
 [dev-dependencies]
 # Dogfood under every runtime rudzio ships.
-rudzio = { path = ".", features = ["build", "common", "runtime-tokio", "runtime-compio", "runtime-embassy", "runtime-futures"] }
+rudzio = { path = ".", features = ["build", "common", "runtime-tokio-multi-thread", "runtime-tokio-current-thread", "runtime-tokio-local", "runtime-compio", "runtime-embassy", "runtime-futures"] }
 anyhow = "=1.0.102"
 
 [[test]]
@@ -69,7 +69,9 @@ build = ["dep:cargo_metadata"]
 # Off by default so consumers that implement their own context types don't
 # pay for code they don't use.
 common = []
-runtime-tokio = ["dep:tokio", "dep:send_wrapper"]
+runtime-tokio-multi-thread = ["dep:tokio", "dep:send_wrapper", "tokio/rt-multi-thread"]
+runtime-tokio-current-thread = ["dep:tokio", "dep:send_wrapper"]
+runtime-tokio-local = ["dep:tokio", "dep:send_wrapper"]
 runtime-compio = ["dep:compio-runtime", "dep:send_wrapper"]
 runtime-embassy = ["dep:embassy-executor", "dep:send_wrapper"]
 runtime-futures = ["dep:futures-executor", "dep:futures-timer", "dep:send_wrapper"]

@@ -61,18 +61,28 @@ path = "tests/main.rs"
 harness = false  # rudzio replaces libtest
 
 [dev-dependencies]
-rudzio = { git = "https://github.com/mykytanikitenko/rudzio", features = ["runtime-tokio", "common"] }
+rudzio = { git = "https://github.com/mykytanikitenko/rudzio", features = ["runtime-tokio-multi-thread", "common"] }
 ```
 
 Features are all off by default. Pick what you need:
 - `common` — ready-made `Suite`/`Test` pair on top of `CancellationToken` +
   `TaskTracker` at `rudzio::common::context`. Omit if you're writing your own
   context types.
-- `runtime-tokio` — `rudzio::runtime::tokio::{Multithread, CurrentThread, Local}`.
+- `runtime-tokio-multi-thread` — `rudzio::runtime::tokio::Multithread` (tokio's
+  multi-thread runtime; pulls in `tokio/rt-multi-thread`).
+- `runtime-tokio-current-thread` — `rudzio::runtime::tokio::CurrentThread`
+  (tokio's current-thread runtime + `LocalSet`; `!Send` futures via a
+  `SendWrapper` shim).
+- `runtime-tokio-local` — `rudzio::runtime::tokio::Local` (tokio's
+  `LocalRuntime`; native `!Send` support in `block_on`/`spawn_local`).
 - `runtime-compio` — `rudzio::runtime::compio::Runtime`.
 - `runtime-embassy` — `rudzio::runtime::embassy::Runtime`.
 - `runtime-futures` — `rudzio::runtime::futures::ThreadPool` (on top of
   `futures::executor::ThreadPool`).
+
+The three `runtime-tokio-*` features are independent — enable only the
+flavours you actually use, or enable all three to get every
+`rudzio::runtime::tokio::*` type.
 
 `harness = false` is required — the `#[rudzio::main]` attribute installs the
 runner that walks every `#[rudzio::test]` registered via `linkme`. Not yet on
@@ -91,7 +101,7 @@ through rudzio without adding a `tests/` directory at all. Two edits:
 harness = false            # opt out of libtest for the lib's own test target
 
 [dev-dependencies]
-rudzio = { version = "0.1", features = ["runtime-tokio", "common"] }
+rudzio = { version = "0.1", features = ["runtime-tokio-multi-thread", "common"] }
 ```
 
 ```rust
@@ -242,7 +252,9 @@ of the `(runtime_path, suite_path)` token strings.
 
 Behind feature flags. Default: none — pick what you need.
 
-- `runtime-tokio` → `rudzio::runtime::tokio::{Multithread, CurrentThread, Local}`
+- `runtime-tokio-multi-thread` → `rudzio::runtime::tokio::Multithread`
+- `runtime-tokio-current-thread` → `rudzio::runtime::tokio::CurrentThread`
+- `runtime-tokio-local` → `rudzio::runtime::tokio::Local`
 - `runtime-compio` → `rudzio::runtime::compio::Runtime`
 - `runtime-embassy` → `rudzio::runtime::embassy::Runtime`
 
@@ -275,7 +287,7 @@ integration = []
 e2e         = []
 
 [dev-dependencies]
-rudzio = { version = "0.1", features = ["runtime-tokio", "common"] }
+rudzio = { version = "0.1", features = ["runtime-tokio-multi-thread", "common"] }
 ```
 
 ```rust
@@ -308,17 +320,57 @@ integration` adds integration. `cargo test --lib
 --features integration,e2e` adds e2e. All three flavours share the
 same `#[rudzio::main]` binary and the same scheduler pass.
 
-If the same crate also has `[[bin]]` targets that integration/e2e
-tests spawn via `env!("CARGO_BIN_EXE_<name>")`, nothing extra is
-needed: cargo sets `CARGO_BIN_EXE_<name>` automatically for the
-integration tests of the crate that declares the `[[bin]]`, and the
-`tests/main.rs` runner above is an integration test of that same
-crate. `rudzio::build::expose_bins` is only for the *other* case —
-when the aggregator lives in a separate crate from the bins it
-spawns; see the `Aggregating tests that spawn [[bin]] targets`
-section below. Calling `expose_bins` for the current crate is
-rejected at build time because the nested `cargo build -p <self>`
-would re-run the same build script indefinitely.
+### Spawning this crate's own `[[bin]]` targets
+
+If the tests wired up above spawn this crate's `[[bin]]`s as child
+processes, use `rudzio::bin!` at every call site:
+
+```rust
+let mut server = std::process::Command::new(rudzio::bin!("my-server"))
+    .arg("--port=0")
+    .spawn()?;
+```
+
+The macro returns `std::path::PathBuf` and works identically across
+every rudzio layout.
+
+Unlike `tests/*.rs` integration tests, `cargo test --lib` does **not**
+populate `CARGO_BIN_EXE_<name>` — cargo only auto-wires that env var
+for integration-test binaries, and the `--lib` test binary isn't one.
+So `rudzio::bin!` has to find the bin another way. You've got two
+choices:
+
+- **Pre-build.** Run `cargo build --bins` before `cargo test --lib`.
+  `rudzio::bin!` walks up from `std::env::current_exe()` to
+  `target/<profile>/<name>` at runtime; if the file exists, it's
+  returned.
+- **Auto-build via `build.rs`.** A 3-line build script asks rudzio
+  to build this crate's own bins into a sandboxed cache and emit
+  `CARGO_BIN_EXE_<name>` for each, which `rudzio::bin!` then picks
+  up at compile time:
+
+  ```rust
+  // build.rs
+  fn main() -> Result<(), rudzio::build::Error> {
+      rudzio::build::expose_self_bins()
+  }
+  ```
+
+  ```toml
+  # Cargo.toml
+  [build-dependencies]
+  rudzio = { version = "0.1", default-features = false, features = ["build"] }
+  ```
+
+  `expose_self_bins` reads `CARGO_PKG_NAME` and delegates to
+  `expose_bins` (see the aggregator section below). A re-entry
+  sentinel stops the build script from recursing into itself when the
+  nested `cargo build --bins -p <self>` re-runs this same build
+  script.
+
+If neither path has produced the binary by the time `rudzio::bin!` is
+evaluated, it panics with a message naming the bin and pointing at
+the fix.
 
 ## Borrowing from the `Suite` (HRTB asymmetry)
 
@@ -408,7 +460,7 @@ edition = "2024"
 [workspace]
 
 [dependencies]
-rudzio = { path = "..", features = ["runtime-tokio", "common"] }
+rudzio = { path = "..", features = ["runtime-tokio-multi-thread", "common"] }
 my-crate = { path = "../my-crate" }
 anyhow = "1"
 ```
@@ -448,13 +500,40 @@ One thing to watch:
   wholly different set. In this repo the feature lists line up, so
   `test-runner/` lives inside the parent workspace without issues.
 
+### Resolving `[[bin]]` paths from tests: `rudzio::bin!`
+
+`rudzio::bin!("<name>")` returns a `PathBuf` to the named bin. It's
+the one call site you use in every layout — `tests/*.rs` integration
+tests, shared aggregators, `cargo test --lib` runners — so test code
+doesn't need to branch on which one it's running under:
+
+```rust
+let mut child = std::process::Command::new(rudzio::bin!("my-server"))
+    .arg("--port=0")
+    .spawn()?;
+```
+
+Resolution chain:
+
+1. `option_env!(concat!("CARGO_BIN_EXE_", <name>))` at compile time.
+   Cargo populates this automatically for `tests/*.rs` integration
+   tests of the crate that declares the `[[bin]]`; rudzio's
+   `expose_bins` / `expose_self_bins` build-script helpers populate
+   it for the shared-aggregator and `cargo test --lib` layouts.
+2. Runtime walk from `std::env::current_exe()` to
+   `target/<profile>/<name>` if step 1 missed. Covers the
+   `cargo test --lib` layout when the user pre-builds with
+   `cargo build --bins` instead of adding a build script.
+3. Panic naming the bin and pointing at the two fixes (pre-build, or
+   add `build.rs` with `expose_self_bins`) if both miss.
+
 ### Aggregating tests that spawn `[[bin]]` targets
 
-Integration tests that use `env!("CARGO_BIN_EXE_<name>")` to spawn their
-crate's `[[bin]]` targets — e.g. tests that drive child processes to check
-stdout — don't compile when you `#[path]`-include them from outside their
-defining crate: Cargo only populates `CARGO_BIN_EXE_<name>` for integration
-tests of the crate that declares the `[[bin]]`.
+Tests that `#[path]`-include into an aggregator crate lose access to
+`CARGO_BIN_EXE_<name>`: cargo only populates those for integration
+tests of the crate that declares the `[[bin]]`. Dropping
+`rudzio::bin!` into the call site isn't enough on its own — the
+aggregator's build has nothing to walk up to either.
 
 Rudzio ships `rudzio::build::expose_bins` (behind the `build` feature)
 for exactly this. Call it once in your aggregator's `build.rs`:
@@ -478,9 +557,20 @@ What happens: the build script reads `cargo metadata` for `my-bin-crate`,
 runs `cargo build --bins -p my-bin-crate` with a dedicated target dir
 (`$OUT_DIR/rudzio-bin-cache`, so there's no lock contention with the outer
 cargo), and emits `cargo:rustc-env=CARGO_BIN_EXE_<name>=<abs path>` for each
-bin. Your `#[path]`-included integration test then compiles with
-`env!("CARGO_BIN_EXE_<name>")` working exactly the way it did in the bin
-crate's own tests.
+bin. The `rudzio::bin!("<name>")` call sites in the `#[path]`-included
+tests then resolve via step 1 of the chain above, exactly as they did in
+the bin crate's own integration tests.
+
+For the "this crate's bins for its own `cargo test --lib` runner" case
+(see the `Same-crate single-binary test runner` section), use
+`rudzio::build::expose_self_bins()` — it reads `CARGO_PKG_NAME` and
+delegates to `expose_bins`, so you don't hardcode your own crate name.
+
+A re-entry sentinel (`__RUDZIO_EXPOSE_BINS_ACTIVE`, set on every
+nested cargo) breaks the recursion that would otherwise happen when
+the nested `cargo build --bins -p <self>` re-runs the same build
+script: the second entry short-circuits to `Ok(())`. This makes
+`expose_self_bins()` safe despite the nested-cargo pattern.
 
 Dep requirement: the bin crate must have a lib target (even empty
 `src/lib.rs` is fine) so Cargo accepts it as a regular dep. Everything else
@@ -498,7 +588,8 @@ Rudzio's own workspace demonstrates every mode side-by-side:
   macro-internals parser tests + 29 e2e integration tests, all scheduled
   by one `#[rudzio::main]`. `test-runner/build.rs` uses
   `rudzio::build::expose_bins("rudzio-fixtures")` to make the 30+ fixture
-  binaries reachable via `env!`.
+  binaries reachable from the `rudzio::bin!("<name>")` call sites in
+  those tests.
 
 ## Benchmarks
 
