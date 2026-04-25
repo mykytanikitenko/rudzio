@@ -15,9 +15,7 @@ mod tests {
     */
     #[::rudzio::test]
     #[ignore]
-    async fn bare_ignore() -> ::anyhow::Result<()> {
-        ::core::result::Result::Ok(())
-    }
+    async fn bare_ignore() {}
     /* pre-migration (rudzio-migrate):
     #[test]
     #[ignore = "reason as name-value"]
@@ -25,9 +23,7 @@ mod tests {
     */
     #[::rudzio::test]
     #[ignore = "reason as name-value"]
-    async fn named_ignore() -> ::anyhow::Result<()> {
-        ::core::result::Result::Ok(())
-    }
+    async fn named_ignore() {}
     /* pre-migration (rudzio-migrate):
     #[test]
     #[ignore("reason as list-literal")]
@@ -35,17 +31,13 @@ mod tests {
     */
     #[::rudzio::test]
     #[ignore("reason as list-literal")]
-    async fn list_literal_ignore() -> ::anyhow::Result<()> {
-        ::core::result::Result::Ok(())
-    }
+    async fn list_literal_ignore() {}
     /* pre-migration (rudzio-migrate):
     #[test]
     fn not_ignored() {}
     */
     #[::rudzio::test]
-    async fn not_ignored() -> ::anyhow::Result<()> {
-        ::core::result::Result::Ok(())
-    }
+    async fn not_ignored() {}
 }
 #[cfg(test)]
 #[::rudzio::main]

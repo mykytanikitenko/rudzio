@@ -29,9 +29,8 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn sums_correctly() -> ::anyhow::Result<()> {
+    async fn sums_correctly() {
         assert_eq!(add(1, 2), 3);
-        ::core::result::Result::Ok(())
     }
     /* pre-migration (rudzio-migrate):
     #[test]
@@ -40,9 +39,8 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn sums_zero() -> ::anyhow::Result<()> {
+    async fn sums_zero() {
         assert_eq!(add(0, 0), 0);
-        ::core::result::Result::Ok(())
     }
 }
 #[cfg(test)]

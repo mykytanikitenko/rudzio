@@ -20,9 +20,8 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn baseline_works() -> ::anyhow::Result<()> {
+    async fn baseline_works() {
         assert!(prefix_matches("hello", "he"));
-        ::core::result::Result::Ok(())
     }
     #[rstest]
     #[case("x", "x")]

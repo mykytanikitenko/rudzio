@@ -19,9 +19,8 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn a_works() -> ::anyhow::Result<()> {
+    async fn a_works() {
         assert_eq!(a_answer(), 10);
-        ::core::result::Result::Ok(())
     }
 }
 #[cfg(test)]

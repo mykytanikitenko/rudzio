@@ -18,9 +18,8 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn integration_passes() -> ::anyhow::Result<()> {
+    async fn integration_passes() {
         assert_eq!(ident("hi"), "hi");
-        ::core::result::Result::Ok(())
     }
 }
 #[::rudzio::main]

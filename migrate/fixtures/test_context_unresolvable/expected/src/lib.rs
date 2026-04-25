@@ -18,9 +18,8 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn uses_external(ctx: &mut ExternalCtx) -> ::anyhow::Result<()> {
+    async fn uses_external(ctx: &mut ExternalCtx) {
         let _ = ctx;
-        ::core::result::Result::Ok(())
     }
 }
 #[cfg(test)]

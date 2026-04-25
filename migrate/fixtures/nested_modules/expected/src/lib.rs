@@ -21,9 +21,8 @@ mod outer {
         }
         */
         #[::rudzio::test]
-        async fn inner_multiplies() -> ::anyhow::Result<()> {
+        async fn inner_multiplies() {
             assert_eq!(product(3, 4), 12);
-            ::core::result::Result::Ok(())
         }
     }
     /* pre-migration (rudzio-migrate):
@@ -33,9 +32,8 @@ mod outer {
     }
     */
     #[::rudzio::test]
-    async fn outer_multiplies() -> ::anyhow::Result<()> {
+    async fn outer_multiplies() {
         assert_eq!(product(5, 6), 30);
-        ::core::result::Result::Ok(())
     }
 }
 #[cfg(test)]

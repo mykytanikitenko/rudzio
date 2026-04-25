@@ -20,10 +20,9 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn already_async() -> ::anyhow::Result<()> {
+    async fn already_async() {
         let n = identity(7);
         assert_eq!(n, 7);
-        ::core::result::Result::Ok(())
     }
 }
 #[cfg(test)]

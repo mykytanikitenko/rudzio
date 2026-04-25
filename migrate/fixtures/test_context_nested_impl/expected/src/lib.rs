@@ -22,9 +22,8 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn uses_deep_ctx(ctx: &mut DeepCtxRudzioBridge) -> ::anyhow::Result<()> {
+    async fn uses_deep_ctx(ctx: &mut DeepCtxRudzioBridge) {
         assert_eq!(ctx.depth, zero());
-        ::core::result::Result::Ok(())
     }
 }
 #[cfg(test)]

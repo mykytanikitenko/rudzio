@@ -23,11 +23,10 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn greets_alice() -> ::anyhow::Result<()> {
+    async fn greets_alice() {
         let out = greet("alice");
         assert!(out.starts_with(expected_prefix()));
         assert!(out.contains("alice"));
-        ::core::result::Result::Ok(())
     }
     /* pre-migration (rudzio-migrate):
     #[test]
@@ -36,9 +35,8 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn greets_bob_synchronously() -> ::anyhow::Result<()> {
+    async fn greets_bob_synchronously() {
         assert_eq!(greet("bob"), "hello, bob");
-        ::core::result::Result::Ok(())
     }
 }
 #[::rudzio::main]

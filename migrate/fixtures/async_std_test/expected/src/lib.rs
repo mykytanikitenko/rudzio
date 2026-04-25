@@ -19,9 +19,8 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn greets() -> ::anyhow::Result<()> {
+    async fn greets() {
         assert_eq!(hello(). await, "world");
-        ::core::result::Result::Ok(())
     }
 }
 #[cfg(test)]

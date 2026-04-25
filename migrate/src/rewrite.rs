@@ -655,14 +655,6 @@ impl Rewriter<'_, '_> {
         let original_return = fn_return_kind(&f.sig.output);
         self.apply_signature_rewrite(f, had_resolved_test_context);
         apply_body_rewrite(f, original_return);
-        if matches!(
-            fn_return_kind(&f.sig.output),
-            ReturnKind::UnitImplicit | ReturnKind::UnitExplicit
-        ) {
-            // Now `apply_signature_rewrite` has already upgraded the return
-            // type; mark `anyhow` needed.
-        }
-        self.rewrite.needs_anyhow = true;
 
         // Pick the runtime: forced by detected kind > file's default.
         let runtime = detected
@@ -773,7 +765,11 @@ impl Rewriter<'_, '_> {
 
         match fn_return_kind(&f.sig.output) {
             ReturnKind::UnitImplicit | ReturnKind::UnitExplicit => {
-                f.sig.output = syn::parse_quote! { -> ::anyhow::Result<()> };
+                // Leave as-is. `#[rudzio::test]`'s codegen routes the
+                // body through `rudzio::IntoRudzioResult`, which has
+                // an impl for `()` — bare-void test bodies work
+                // without a signature rewrite. This avoids forcing an
+                // `anyhow` dev-dep into migrated crates.
             }
             ReturnKind::Result => {
                 // leave as-is
@@ -781,7 +777,7 @@ impl Rewriter<'_, '_> {
             ReturnKind::Other => {
                 self.warn_span(
                     f.sig.ident.span(),
-                    "test fn returned a non-Result type; wrapping in ::anyhow::Result<()> and discarding the return value",
+                    "test fn returned a non-Result, non-unit type; wrapping in `Result<(), ::rudzio::BoxError>` and discarding the return value",
                 );
                 let inner: syn::Block = f.block.as_ref().clone();
                 let new_block: syn::Block = syn::parse_quote! {{
@@ -789,7 +785,7 @@ impl Rewriter<'_, '_> {
                     ::core::result::Result::Ok(())
                 }};
                 *f.block = new_block;
-                f.sig.output = syn::parse_quote! { -> ::anyhow::Result<()> };
+                f.sig.output = syn::parse_quote! { -> ::core::result::Result<(), ::rudzio::BoxError> };
             }
         }
     }
@@ -827,20 +823,13 @@ impl Rewriter<'_, '_> {
 }
 
 fn apply_body_rewrite(f: &mut ItemFn, original_return: ReturnKind) {
-    // If the user's fn already returned a `Result<...>`, trust the
-    // body — appending `Ok(())` on top of a `{ ... ; Ok(()) }`
-    // block-returning body (or anything else that already yields a
-    // `Result`) creates a dropped-Result-value warning at minimum
-    // and usually an unreachable-statement warning as well.
-    if matches!(original_return, ReturnKind::Result) {
-        return;
-    }
-    let block = &mut f.block;
-    let needs_ok = !ends_with_ok(&block.stmts);
-    if needs_ok {
-        let ok_expr: Expr = syn::parse_quote! { ::core::result::Result::Ok(()) };
-        block.stmts.push(Stmt::Expr(ok_expr, None));
-    }
+    // Only the `Other` case (non-Result, non-unit) needs a body
+    // tweak — `apply_signature_rewrite` already replaced the body
+    // there with `{ let _unused = { <original> }; Ok(()) }`. Result
+    // and unit-return bodies are left verbatim: the `rudzio::test`
+    // codegen routes them through `IntoRudzioResult` and handles
+    // each shape without a source-level wrapper.
+    let _ = (f, original_return);
 }
 
 fn ends_with_ok(stmts: &[Stmt]) -> bool {

@@ -19,9 +19,8 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn delays_cleanly() -> ::anyhow::Result<()> {
+    async fn delays_cleanly() {
         delay().await;
-        ::core::result::Result::Ok(())
     }
 }
 #[cfg(test)]

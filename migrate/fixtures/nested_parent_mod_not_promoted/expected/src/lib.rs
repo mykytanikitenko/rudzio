@@ -29,9 +29,8 @@ pub mod outer {
         }
         */
         #[::rudzio::test]
-        async fn nested() -> ::anyhow::Result<()> {
+        async fn nested() {
             assert_eq!(inner(), 2);
-            ::core::result::Result::Ok(())
         }
     }
 }
