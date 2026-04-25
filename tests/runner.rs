@@ -521,6 +521,260 @@ mod config_parser {
         anyhow::ensure!(c.test_teardown_timeout.is_none());
         Ok(())
     }
+
+    /// L1.3. `--cancel-grace-period=N` populates the new field with N
+    /// whole seconds. Both the equals form and the split form work, in
+    /// keeping with every other timeout-shaped flag.
+    #[rudzio::test]
+    fn parses_cancel_grace_period_flag(_ctx: &Test) -> anyhow::Result<()> {
+        let equals = Config::from_argv_and_env(
+            argv(&["--cancel-grace-period=12"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            equals.cancel_grace_period == Some(std::time::Duration::from_secs(12)),
+            "equals form: got {:?}",
+            equals.cancel_grace_period
+        );
+        let split = Config::from_argv_and_env(
+            argv(&["--cancel-grace-period", "7"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            split.cancel_grace_period == Some(std::time::Duration::from_secs(7)),
+            "split form: got {:?}",
+            split.cancel_grace_period
+        );
+        Ok(())
+    }
+
+    /// L1.3b. `--cancel-grace-period=0` explicitly disables the Layer-1
+    /// process-exit watchdog. We map zero to `None` rather than to a
+    /// degenerate `Some(0)` so the runner can decide "do nothing" purely
+    /// from the option discriminant.
+    #[rudzio::test]
+    fn cancel_grace_period_zero_disables_watchdog(_ctx: &Test) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(
+            argv(&["--cancel-grace-period=0"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            c.cancel_grace_period.is_none(),
+            "zero must disable, got {:?}",
+            c.cancel_grace_period
+        );
+        Ok(())
+    }
+
+    /// L1.4. With no `--cancel-grace-period` flag, the field defaults to
+    /// 5 seconds. The default is meaningful: the watchdog catches
+    /// pathological hangs (sync-blocked tasks ignoring SIGINT) without
+    /// the user having to opt in. 5s mirrors what most CI systems already
+    /// allow before they SIGKILL the runner themselves.
+    #[rudzio::test]
+    fn cancel_grace_period_defaults_to_five_seconds(_ctx: &Test) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(argv(&[]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(
+            c.cancel_grace_period == Some(std::time::Duration::from_secs(5)),
+            "default must be Some(5s), got {:?}",
+            c.cancel_grace_period
+        );
+        Ok(())
+    }
+
+    /// L1.4b. A non-numeric value falls through to `unparsed`, like
+    /// every other timeout flag. Field stays at the default (5s).
+    #[rudzio::test]
+    fn cancel_grace_period_garbage_falls_through_to_default(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(
+            argv(&["--cancel-grace-period=banana"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            c.cancel_grace_period == Some(std::time::Duration::from_secs(5)),
+            "garbage value must leave default in place, got {:?}",
+            c.cancel_grace_period
+        );
+        Ok(())
+    }
+
+    /// L2.5. `--phase-hang-grace=N` populates the new field with N whole
+    /// seconds. Mirror of cancel-grace, but for the per-phase Layer-2
+    /// grace step (different knob, different semantic).
+    #[rudzio::test]
+    fn parses_phase_hang_grace_flag(_ctx: &Test) -> anyhow::Result<()> {
+        let equals = Config::from_argv_and_env(
+            argv(&["--phase-hang-grace=4"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            equals.phase_hang_grace == Some(std::time::Duration::from_secs(4)),
+            "equals form: got {:?}",
+            equals.phase_hang_grace
+        );
+        let split = Config::from_argv_and_env(
+            argv(&["--phase-hang-grace", "9"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            split.phase_hang_grace == Some(std::time::Duration::from_secs(9)),
+            "split form: got {:?}",
+            split.phase_hang_grace
+        );
+        Ok(())
+    }
+
+    /// L2.5b. `--phase-hang-grace=0` disables the Layer-2 grace step:
+    /// when a phase blows its budget the wrapper returns `TimedOut`
+    /// immediately rather than waiting and escalating to `Hung`.
+    #[rudzio::test]
+    fn phase_hang_grace_zero_disables_layer2(_ctx: &Test) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(
+            argv(&["--phase-hang-grace=0"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            c.phase_hang_grace.is_none(),
+            "zero must disable, got {:?}",
+            c.phase_hang_grace
+        );
+        Ok(())
+    }
+
+    /// L2.6. With no flag, Layer-2 escalation is OFF (`None`). The
+    /// inline `run_phase_with_timeout_and_cancel` wrapper otherwise
+    /// changes its behaviour for cooperatively-cancellable phases:
+    /// the grace step polls the cancellable past `phase_token.cancel()`,
+    /// which can let phase bodies observe the cancel and run cleanup
+    /// (including post-cancel printlns) before being dropped — a
+    /// behavioural shift from the pre-Layer-2 drop-on-cancel
+    /// semantics. Users opt into Layer-2 by passing
+    /// `--phase-hang-grace=<secs>`.
+    #[rudzio::test]
+    fn phase_hang_grace_defaults_to_none(_ctx: &Test) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(argv(&[]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(
+            c.phase_hang_grace.is_none(),
+            "default must be None (Layer-2 opt-in), got {:?}",
+            c.phase_hang_grace
+        );
+        Ok(())
+    }
+
+    /// L2.7. `SuiteSummary` exposes a `hung` counter that participates
+    /// in `merge`. A run that records 2 hung tests in suite A and 1 in
+    /// suite B must surface 3 in the merged summary — same shape as
+    /// every other counter on the struct.
+    #[rudzio::test]
+    fn suite_summary_merge_includes_hung(_ctx: &Test) -> anyhow::Result<()> {
+        let a = ::rudzio::SuiteSummary {
+            hung: 2,
+            total: 2,
+            ..::rudzio::SuiteSummary::zero()
+        };
+        let b = ::rudzio::SuiteSummary {
+            hung: 1,
+            total: 1,
+            ..::rudzio::SuiteSummary::zero()
+        };
+        let merged = a.merge(b);
+        anyhow::ensure!(
+            merged.hung == 3,
+            "merge must sum hung counters, got {}",
+            merged.hung
+        );
+        Ok(())
+    }
+
+    /// L2.7b. `SuiteSummary::zero()` must initialise `hung` to 0 just
+    /// like every other counter. The macro-generated dispatch loop
+    /// starts every group's accumulator from `zero()` and then calls
+    /// `record_outcome` per test, so a non-zero default would silently
+    /// corrupt every run's count.
+    #[rudzio::test]
+    fn suite_summary_zero_initialises_hung_to_zero(_ctx: &Test) -> anyhow::Result<()> {
+        let z = ::rudzio::SuiteSummary::zero();
+        anyhow::ensure!(z.hung == 0, "zero() must give hung=0, got {}", z.hung);
+        Ok(())
+    }
+
+    /// L2.8. `TestSummary` (the runner-level aggregate) propagates
+    /// `hung` from the per-suite summaries and includes it in
+    /// `is_success`: a run with any hung tests is NOT a success and
+    /// must produce a non-zero exit code, even if every test that DID
+    /// run passed.
+    ///
+    /// `TestSummary` is `#[non_exhaustive]` so we mutate fields
+    /// post-`zero()` rather than using struct-expression syntax — same
+    /// pattern external users have to follow.
+    #[rudzio::test]
+    fn test_summary_is_success_false_when_hung_gt_zero(_ctx: &Test) -> anyhow::Result<()> {
+        let mut summary = ::rudzio::TestSummary::zero();
+        summary.passed = 5;
+        summary.hung = 1;
+        summary.total = 6;
+        anyhow::ensure!(
+            !summary.is_success(),
+            "is_success must return false when hung > 0"
+        );
+        anyhow::ensure!(
+            summary.exit_code() == 1,
+            "exit_code must be 1 when hung > 0, got {}",
+            summary.exit_code()
+        );
+        Ok(())
+    }
+
+    /// L2.8b. Symmetric check: a run with hung=0 and every other
+    /// failure-class counter at 0 is still a success — adding the new
+    /// field must not regress the happy path.
+    #[rudzio::test]
+    fn test_summary_is_success_true_when_all_failure_counts_zero(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
+        let mut summary = ::rudzio::TestSummary::zero();
+        summary.passed = 10;
+        summary.ignored = 2;
+        summary.total = 12;
+        anyhow::ensure!(
+            summary.is_success(),
+            "is_success must remain true when no failures and hung=0"
+        );
+        anyhow::ensure!(
+            summary.exit_code() == 0,
+            "exit_code must be 0, got {}",
+            summary.exit_code()
+        );
+        Ok(())
+    }
+
+    /// L2.8c. `TestSummary::merge` includes `hung`. Two summaries with
+    /// hung counts 4 and 2 merge to 6.
+    #[rudzio::test]
+    fn test_summary_merge_includes_hung(_ctx: &Test) -> anyhow::Result<()> {
+        let mut a = ::rudzio::TestSummary::zero();
+        a.hung = 4;
+        a.total = 4;
+        let mut b = ::rudzio::TestSummary::zero();
+        b.hung = 2;
+        b.total = 2;
+        let merged = a.merge(b);
+        anyhow::ensure!(
+            merged.hung == 6,
+            "TestSummary::merge must sum hung counters, got {}",
+            merged.hung
+        );
+        Ok(())
+    }
 }
 
 /// Strategy-level smoke tests dogfooded across every runtime rudzio

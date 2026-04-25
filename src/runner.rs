@@ -28,14 +28,18 @@ use crate::token::{TEST_TOKENS, TestToken};
 pub struct TestSummary {
     pub cancelled: usize,
     pub failed: usize,
+    /// Tests escalated from `TimedOut` to `Hung` because they ignored
+    /// cooperative cancellation past `--phase-hang-grace`. Counted
+    /// alongside `failed`/`panicked`/`timed_out` for `is_success`.
+    pub hung: usize,
     pub ignored: usize,
     pub panicked: usize,
     pub passed: usize,
     pub timed_out: usize,
     pub total: usize,
     /// Combined count of suite-level + per-test teardown failures
-    /// (Err *or* panic). Drives [`is_success`] so a botched cleanup
-    /// fails the run even when every test body passed.
+    /// (Err *or* panic *or* Hung). Drives [`is_success`] so a botched
+    /// cleanup fails the run even when every test body passed.
     pub teardown_failures: usize,
 }
 
@@ -51,6 +55,7 @@ impl TestSummary {
     pub const fn is_success(&self) -> bool {
         self.failed == 0
             && self.timed_out == 0
+            && self.hung == 0
             && self.panicked == 0
             && self.cancelled == 0
             && self.teardown_failures == 0
@@ -62,6 +67,7 @@ impl TestSummary {
         Self {
             cancelled: self.cancelled.saturating_add(other.cancelled),
             failed: self.failed.saturating_add(other.failed),
+            hung: self.hung.saturating_add(other.hung),
             ignored: self.ignored.saturating_add(other.ignored),
             panicked: self.panicked.saturating_add(other.panicked),
             passed: self.passed.saturating_add(other.passed),
@@ -79,6 +85,7 @@ impl TestSummary {
         Self {
             cancelled: 0,
             failed: 0,
+            hung: 0,
             ignored: 0,
             panicked: 0,
             passed: 0,
@@ -95,6 +102,7 @@ impl From<SuiteSummary> for TestSummary {
         Self {
             cancelled: s.cancelled,
             failed: s.failed,
+            hung: s.hung,
             ignored: s.ignored,
             panicked: s.panicked,
             passed: s.passed,
@@ -196,6 +204,7 @@ fn status_tag(outcome_label: StatusLabel, colored: bool) -> (String, usize) {
         StatusLabel::Bench => ("BENCH", "32"),
         StatusLabel::BenchErr => ("BENCH", "31"),
         StatusLabel::Setup => ("SETUP", "31"),
+        StatusLabel::Hang => ("HANG", "31"),
     };
     let naked = format!("[{word}]");
     let visible = naked.chars().count();
@@ -220,6 +229,7 @@ enum StatusLabel {
     Bench,
     BenchErr,
     Setup,
+    Hang,
 }
 
 impl StatusLabel {
@@ -230,6 +240,7 @@ impl StatusLabel {
             TestOutcome::Panicked { .. } => Self::Panic,
             TestOutcome::SetupFailed { .. } => Self::Setup,
             TestOutcome::TimedOut => Self::Timeout,
+            TestOutcome::Hung { .. } => Self::Hang,
             TestOutcome::Cancelled => Self::Cancel,
             TestOutcome::Benched { report, .. } => {
                 if report.failures.is_empty() && report.panics == 0 {
@@ -249,6 +260,7 @@ fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
         TestOutcome::Passed { elapsed }
         | TestOutcome::Failed { elapsed, .. }
         | TestOutcome::Panicked { elapsed }
+        | TestOutcome::Hung { elapsed }
         | TestOutcome::SetupFailed { elapsed, .. } => {
             format!("<{runtime_name}, {}>", format_elapsed(*elapsed))
         }
@@ -284,6 +296,7 @@ fn outcome_inline_message(outcome: &TestOutcome) -> Option<String> {
             Some(format!("test setup failed: {message}"))
         }
         TestOutcome::TimedOut => Some("test exceeded its timeout".to_owned()),
+        TestOutcome::Hung { .. } => Some("hung; abort signal sent".to_owned()),
         TestOutcome::Cancelled => {
             Some("test was cancelled before completion".to_owned())
         }
@@ -462,7 +475,8 @@ impl SuiteReporter for ModeReporter {
                     TestOutcome::Failed { .. }
                     | TestOutcome::Panicked { .. }
                     | TestOutcome::SetupFailed { .. }
-                    | TestOutcome::TimedOut => red("F", p.colored),
+                    | TestOutcome::TimedOut
+                    | TestOutcome::Hung { .. } => red("F", p.colored),
                     TestOutcome::Cancelled => yellow("c", p.colored),
                     TestOutcome::Benched { report, .. } => {
                         if report.is_success() {
@@ -674,6 +688,7 @@ impl SuiteReporter for ModeReporter {
                     TeardownResult::Err(_) => StatusLabel::Fail,
                     TeardownResult::Panicked(_) => StatusLabel::Panic,
                     TeardownResult::TimedOut => StatusLabel::Timeout,
+                    TeardownResult::Hung => StatusLabel::Hang,
                 };
                 let (tag_rendered, tag_visible) = status_tag(label, p.colored);
                 let display = format!("teardown {suite}");
@@ -693,6 +708,12 @@ impl SuiteReporter for ModeReporter {
                     }
                     TeardownResult::TimedOut => {
                         println!("  {}", red("timeout: teardown timed out", p.colored));
+                    }
+                    TeardownResult::Hung => {
+                        println!(
+                            "  {}",
+                            red("hang: teardown hung; abort signal sent", p.colored)
+                        );
                     }
                 }
             }
@@ -730,6 +751,18 @@ impl SuiteReporter for ModeReporter {
                         ),
                     });
                 }
+                TeardownResult::Hung => {
+                    let mut guard = p
+                        .failures
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    guard.push(FailureInfo {
+                        name: "<suite teardown>",
+                        message: format!(
+                            "teardown {suite} [{runtime_name}]: hang: teardown hung; abort signal sent"
+                        ),
+                    });
+                }
             }
             return;
         }
@@ -759,6 +792,7 @@ impl SuiteReporter for ModeReporter {
                     TeardownResult::Err(_) => StatusLabel::Fail,
                     TeardownResult::Panicked(_) => StatusLabel::Panic,
                     TeardownResult::TimedOut => StatusLabel::Timeout,
+                    TeardownResult::Hung => StatusLabel::Hang,
                 };
                 let (tag_rendered, tag_visible) = status_tag(label, p.colored);
                 let lhs_display = format!("teardown {display}");
@@ -778,6 +812,12 @@ impl SuiteReporter for ModeReporter {
                     }
                     TeardownResult::TimedOut => {
                         println!("  {}", red("timeout: teardown timed out", p.colored));
+                    }
+                    TeardownResult::Hung => {
+                        println!(
+                            "  {}",
+                            red("hang: teardown hung; abort signal sent", p.colored)
+                        );
                     }
                 }
             }
@@ -812,6 +852,18 @@ impl SuiteReporter for ModeReporter {
                         name: token.name,
                         message: format!(
                             "test teardown timed out [{runtime_name}]: teardown timed out"
+                        ),
+                    });
+                }
+                TeardownResult::Hung => {
+                    let mut guard = p
+                        .failures
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    guard.push(FailureInfo {
+                        name: token.name,
+                        message: format!(
+                            "test teardown hung [{runtime_name}]: hang: teardown hung; abort signal sent"
                         ),
                     });
                 }
@@ -937,6 +989,37 @@ pub fn run(cargo: crate::config::CargoMeta) -> ! {
                 watchdog_token.cancel();
             }
         });
+    }
+
+    // Layer-1 process-exit watchdog. Listens for `root_token`
+    // cancellation (SIGINT / SIGTERM / --run-timeout / explicit
+    // user cancel) and, after `--cancel-grace-period`, force-exits
+    // the process with code 2. This is the universal safety net for
+    // sync-blocked tasks that ignore every cooperative cancellation
+    // signal (e.g. `std::thread::sleep` inside a test body) — no
+    // amount of token-listening or `JoinHandle::abort()` will free
+    // the worker, but `process::exit` lets the OS reap every thread.
+    if let Some(grace) = config.cancel_grace_period {
+        let watchdog_token = root_token.clone();
+        let _watchdog = thread::Builder::new()
+            .name("rudzio-cancel-grace-watchdog".to_owned())
+            .spawn(move || {
+                // Sync poll-loop until the token is cancelled. Avoids
+                // an executor dep — the watchdog runs no rudzio test
+                // code itself, just times out and force-exits. 50ms
+                // tick is fine: this is fault-tolerance plumbing, not
+                // a hot path, and 50ms latency before grace starts is
+                // negligible against the multi-second grace itself.
+                while !watchdog_token.is_cancelled() {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                thread::sleep(grace);
+                eprintln!(
+                    "\nrudzio: {grace:.2?} grace period exceeded after cancellation, \
+                     force-exiting (some phase ignored cooperative cancel)"
+                );
+                process::exit(2);
+            });
     }
 
     let mut groups: HashMap<RuntimeGroupKey, Vec<&'static TestToken>> = HashMap::new();
