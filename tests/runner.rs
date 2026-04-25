@@ -62,6 +62,23 @@ mod config_parser {
     use super::{Config, argv, env_with};
     use rudzio::common::context::Test;
 
+    // `#[rudzio::test]` accepts fns that don't take a context parameter
+    // at all. The runner still creates the per-test context + runs its
+    // teardown; the body just doesn't see it.
+    #[rudzio::test]
+    fn body_without_ctx_parameter() -> anyhow::Result<()> {
+        // Pure-sync test with no ctx — exercises the `CtxKind::None`
+        // codegen branch.
+        anyhow::ensure!(1 + 1 == 2);
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn async_body_without_ctx_parameter() -> anyhow::Result<()> {
+        anyhow::ensure!(1 + 1 == 2);
+        Ok(())
+    }
+
     #[rudzio::test]
     fn joined_argv_form_is_parsed(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(

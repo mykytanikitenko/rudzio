@@ -18,21 +18,44 @@ pub fn is_async_fn(func: &ItemFn) -> bool {
     func.sig.asyncness.is_some()
 }
 
-/// Returns `true` if `func`'s first parameter is `&mut T` (in any form).
+/// How a `#[rudzio::test]` fn relates to its per-test context.
 ///
-/// Used by the suite codegen to decide whether to dispatch the test with
-/// `&mut ctx` (and bind the per-test context as `let mut ctx = …`).
-pub fn first_param_is_mut_ref(func: &ItemFn) -> bool {
+/// Used by the suite codegen to decide how to dispatch the test body.
+/// Regardless of variant, the runner always creates a fresh per-test
+/// context (so suite `context`, test teardown, and cancel-token
+/// propagation behave uniformly); the variant only controls whether —
+/// and how — that context is passed to the test fn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CtxKind {
+    /// `fn test()` — no context parameter. Setup + teardown still run;
+    /// the test body just doesn't see the context.
+    None,
+    /// `fn test(ctx: &T)` — shared borrow.
+    Shared,
+    /// `fn test(ctx: &mut T)` — mutable borrow.
+    Mutable,
+}
+
+/// Inspect `func`'s first parameter and classify it into a [`CtxKind`].
+/// Non-reference and typed-self parameters (unusual in test fns but
+/// possible) are treated as [`CtxKind::None`] — the codegen calls the
+/// fn with no arguments in those cases, which will fail to compile
+/// loudly rather than silently wire up a `&ctx`.
+pub fn classify_ctx_param(func: &ItemFn) -> CtxKind {
     let Some(first) = func.sig.inputs.first() else {
-        return false;
+        return CtxKind::None;
     };
     let syn::FnArg::Typed(pat_type) = first else {
-        return false;
+        return CtxKind::None;
     };
     let syn::Type::Reference(type_ref) = &*pat_type.ty else {
-        return false;
+        return CtxKind::None;
     };
-    type_ref.mutability.is_some()
+    if type_ref.mutability.is_some() {
+        CtxKind::Mutable
+    } else {
+        CtxKind::Shared
+    }
 }
 
 /// Transform test function signature to add generic lifetimes and runtime type.

@@ -28,6 +28,13 @@ mod tests {
         Ok(())
     }
 
+    // The context parameter is optional. Suite setup and per-test
+    // teardown still run — the test body just doesn't see the context.
+    #[rudzio::test]
+    fn pass_without_context() -> anyhow::Result<()> {
+        Ok(())
+    }
+
     #[rudzio::test]
     #[ignore = "demonstrates #[ignore] — not run without --include-ignored"]
     async fn skipped_by_default(_ctx: &Test) -> anyhow::Result<()> {

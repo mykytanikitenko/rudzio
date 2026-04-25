@@ -109,9 +109,11 @@ Three traits, three lifetimes, in strict outer-to-inner order:
 per-test context value genuinely lives in the per-test borrow lifetime, not
 in the suite's. That's what makes `&mut TestCtx` parameters compile.
 
-`#[rudzio::test]` accepts either `&Ctx` or `&mut Ctx` as the first argument,
-sync or async body, returning `anyhow::Result<()>` (or any
-`Display`-able error wrapped in `Result`).
+`#[rudzio::test]` accepts `&Ctx`, `&mut Ctx`, or no parameter at all as
+the first argument, sync or async body, returning `anyhow::Result<()>`
+(or any `Display`-able error wrapped in `Result`). Zero-arg test bodies
+still see full per-test setup + teardown — they just don't receive the
+context.
 
 ## Multiple runtimes per test
 

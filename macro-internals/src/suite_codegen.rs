@@ -5,7 +5,7 @@ use syn::{Ident, Item, ItemFn, ItemMod, Path};
 use crate::args::{MainArgs, RuntimeConfig};
 use crate::codegen::extract_ignore_reason;
 use crate::transform::{
-    first_param_is_mut_ref, has_test_attr, is_async_fn, is_test_attr, transform_test_signature,
+    CtxKind, classify_ctx_param, has_test_attr, is_async_fn, is_test_attr, transform_test_signature,
 };
 
 pub fn expand_suite(args: MainArgs, input_mod: ItemMod) -> syn::Result<TokenStream> {
@@ -347,7 +347,7 @@ fn generate_per_config(
         #[allow(clippy::cast_possible_truncation)]
         let source_line = test.sig.ident.span().start().line as u32;
         let is_async = is_async_fn(test);
-        let wants_mut = first_param_is_mut_ref(test);
+        let ctx_kind = classify_ctx_param(test);
 
         let token_static = format_ident!(
             "__RUDZIO_TOKEN_{}_{}_{}",
@@ -358,30 +358,35 @@ fn generate_per_config(
         let run_test_fn =
             format_ident!("__rudzio_run_test_{}_{}_{}", mod_name, test_name, cfg_idx,);
 
+        // `ctx` is bound in every branch because the runner always runs
+        // per-test teardown (`ctx.teardown()`) — that's the whole point
+        // of the `Test` trait, regardless of whether the test body
+        // takes a context parameter.
+        let ctx_binding = match ctx_kind {
+            CtxKind::Mutable => quote! { let mut ctx },
+            CtxKind::Shared | CtxKind::None => quote! { let ctx },
+        };
+
         // Inline `&ctx` / `&mut ctx` into the call site so no intermediate
         // `let __rudzio_ctx = ...` binding is captured by the test_fut
         // coroutine — that binding made NLL pessimistically extend the
         // borrow past the .await, blocking the subsequent ctx.teardown().
-        let dispatch_arg = if wants_mut {
-            quote! { &mut ctx }
-        } else {
-            quote! { &ctx }
-        };
-
-        let ctx_binding = if wants_mut {
-            quote! { let mut ctx }
-        } else {
-            quote! { let ctx }
+        // `CtxKind::None` expands to nothing → the fn is called with
+        // no arguments; setup + teardown still run around the call.
+        let dispatch_call_args = match ctx_kind {
+            CtxKind::None => quote! {},
+            CtxKind::Shared => quote! { &ctx },
+            CtxKind::Mutable => quote! { &mut ctx },
         };
 
         let dispatch_call = if is_async {
             quote! {
-                #mod_name::#test_name(#dispatch_arg).await
+                #mod_name::#test_name(#dispatch_call_args).await
                     .map_err(|e| ::rudzio::test_case::box_error(e))
             }
         } else {
             quote! {
-                #mod_name::#test_name(#dispatch_arg)
+                #mod_name::#test_name(#dispatch_call_args)
                     .map_err(|e| ::rudzio::test_case::box_error(e))
             }
         };
