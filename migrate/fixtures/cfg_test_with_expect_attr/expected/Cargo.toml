@@ -1,0 +1,11 @@
+[package]
+name = "cfg_test_with_expect_attr"
+version = "0.1.0"
+edition = "2024"
+autotests = false
+
+[dependencies]
+
+[dev-dependencies]
+rudzio = { version = "0.1", features = ["common", "runtime-tokio"] }
+anyhow = "1.0"
