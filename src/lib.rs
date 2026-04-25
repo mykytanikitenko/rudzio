@@ -7,6 +7,7 @@ pub mod common;
 pub mod config;
 pub mod context;
 pub mod output;
+pub mod parallelism;
 pub mod runner;
 pub mod runtime;
 pub mod suite;
