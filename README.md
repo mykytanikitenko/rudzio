@@ -445,9 +445,33 @@ suite-carrying modules.
 
 Tests live in `tests/*.rs` (per-crate integration tests), so
 `cargo test -p <crate>` works the way you'd expect. If you also want a single
-binary that runs every crate's tests in one process — one runtime, one
-scheduler, one pass of output — add a `test-runner` crate that pulls each
-sibling's test file in via `#[path]`:
+binary that runs every crate's tests in one process — one runtime per
+`(runtime, suite)` tuple, one scheduler, one pass of output, tests grouped
+and deduped by the `RuntimeGroupKey` hash — the supported path is:
+
+```
+cargo rudzio test [ARGS...]
+```
+
+`cargo-rudzio` (install with `cargo install cargo-rudzio`, or use
+`cargo run -p cargo-rudzio --` inside this repo) inspects the workspace,
+generates an aggregator crate in `<target-dir>/rudzio-auto-runner/` on every
+invocation, builds it, and runs it. The aggregator depends on every rudzio-
+using member, `#[path]`-includes each member's `tests/*.rs`, and drives
+everything under one `#[rudzio::main]`. ARGS are forwarded to the aggregator
+binary — filter patterns, `--skip`, `--bench`, all the rudzio config flags.
+
+A bin-owning member's `[[bin]]` targets are re-built and exposed via
+`CARGO_BIN_EXE_<name>` automatically (the generated aggregator's `build.rs`
+handles this, per member), so tests that spawn sibling binaries keep
+working. The fallback `rudzio::bin!` / runtime-walk is what makes test
+code portable across per-crate and aggregated modes.
+
+### Hand-rolling an aggregator
+
+If you need to customize the aggregator (e.g. carry different feature
+selections per runtime, or preprocess test files) you can still hand-roll
+the `test-runner` crate. The auto-generator just produces the same shape:
 
 `test-runner/Cargo.toml`:
 ```toml
@@ -861,9 +885,40 @@ false` integration-test path, and appends `#[cfg(test)] #[rudzio::main]
 fn main() {}` to `src/lib.rs` when src-resident unit tests are involved.
 
 ```sh
-cargo install --path migrate
-rudzio-migrate --path /path/to/your/crate
+cargo install --path cargo-rudzio
+cargo rudzio migrate --path /path/to/your/crate
 ```
+
+Or invoke the binary directly: `cargo install --path migrate` then
+`rudzio-migrate --path ...`. Both paths drive the same `run::entry`,
+so behaviour and flags are identical.
+
+## The `cargo rudzio` CLI
+
+Installs as a Cargo subcommand:
+
+```sh
+cargo install --path cargo-rudzio
+```
+
+Subcommands:
+
+- `cargo rudzio test [ARGS...]` — generates + runs the workspace
+  aggregator (see the "Workspace-wide single-binary test runner"
+  section). One binary, one `#[rudzio::main]`, every test from every
+  crate grouped by `(runtime, suite)`. ARGS pass through to the
+  aggregator binary, which accepts the full rudzio config flag set
+  (filter patterns, `--skip`, `--bench`, `--format`, `--threads`, …).
+
+- `cargo rudzio migrate [ARGS...]` — shortcut for the `rudzio-migrate`
+  binary. All migrator flags work (`--path`, `--runtime`, `--dry-run`,
+  `--no-shared-runner`, `--no-preserve-originals`, `--tests-only`,
+  `--only-package`).
+
+- `cargo rudzio generate-runner [--output DIR]` — regenerates the
+  aggregator crate without running it. Useful for inspecting the
+  generated `Cargo.toml` / `src/main.rs` / `build.rs` before
+  committing to cargo rudzio as your primary test driver.
 
 Two hard gates — clean git tree, acknowledgement phrase — then it runs.
 No `--force`, no `--yes`. Explicit honesty up front: the output is not
