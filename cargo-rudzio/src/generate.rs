@@ -1524,9 +1524,23 @@ fn render_dev_dep(dd: &DevDepSpec, plan: &Plan) -> Result<Item> {
             );
         } else if let Some(v) = &ws.version_req {
             tbl.insert("version", Value::String(Formatted::new(v.clone())));
+        } else if let Some(url) = &ws.git {
+            tbl.insert("git", Value::String(Formatted::new(url.clone())));
+            match &ws.git_ref {
+                Some(GitRef::Rev(rev)) => {
+                    tbl.insert("rev", Value::String(Formatted::new(rev.clone())));
+                }
+                Some(GitRef::Branch(branch)) => {
+                    tbl.insert("branch", Value::String(Formatted::new(branch.clone())));
+                }
+                Some(GitRef::Tag(tag)) => {
+                    tbl.insert("tag", Value::String(Formatted::new(tag.clone())));
+                }
+                None => {}
+            }
         } else {
             bail!(
-                "workspace dep `{}` has neither `path` nor `version` to inherit",
+                "workspace dep `{}` has neither `path`, `version`, nor `git` to inherit",
                 dd.name
             );
         }

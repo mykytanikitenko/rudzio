@@ -627,6 +627,60 @@ mod tests {
     }
 
     #[rudzio::test]
+    fn bridge_cargo_toml_expands_workspace_inherited_git_build_dep() -> anyhow::Result<()> {
+        // Regression: a member declaring `rudzio = { workspace = true }`
+        // in [build-dependencies] when the workspace entry is pinned with
+        // only `git = "..." rev = "..."` (no path or version) previously
+        // bailed in render_dev_dep's workspace_inherited branch. The
+        // branch must also accept git-only workspace entries and emit
+        // `git = "..." rev/branch/tag = "..."` into the bridge.
+        let inherited_rudzio = DevDepSpec {
+            name: "rudzio".to_owned(),
+            rename: None,
+            version_req: String::new(),
+            path: None,
+            git: None,
+            git_ref: None,
+            features: Vec::new(),
+            uses_default_features: true,
+            workspace_inherited: true,
+        };
+        let mut m = member("alpha", Vec::new());
+        m.manifest_dir = PathBuf::from("/abs/alpha");
+        m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
+        m.has_src_rudzio_suite = true;
+        m.build_rs = Some(PathBuf::from("/abs/alpha/build.rs"));
+        m.build_deps = vec![inherited_rudzio];
+
+        let mut plan = plan_with_members(vec![m.clone()], "/abs");
+        drop(plan.workspace_deps.insert(
+            "rudzio".to_owned(),
+            WorkspaceDepSpec {
+                version_req: None,
+                path: None,
+                git: Some("https://github.com/mykytanikitenko/rudzio".to_owned()),
+                git_ref: Some(GitRef::Rev("9422cd4590765a9cfc97774d638429efc8239d48".to_owned())),
+                features: Vec::new(),
+                uses_default_features: true,
+            },
+        ));
+        let rendered = build_bridge_cargo_toml(&plan, &m)?;
+
+        let (_, after) = rendered
+            .split_once("[build-dependencies]")
+            .expect("[build-dependencies] present");
+        anyhow::ensure!(
+            after.contains("git = \"https://github.com/mykytanikitenko/rudzio\""),
+            "build-dep must carry the workspace git URL:\n{rendered}"
+        );
+        anyhow::ensure!(
+            after.contains("rev = \"9422cd4590765a9cfc97774d638429efc8239d48\""),
+            "build-dep must carry the workspace rev:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
     fn bridge_cargo_toml_omits_build_dependencies_when_no_build_rs() -> anyhow::Result<()> {
         // Negative: even if build_deps accidentally contains entries (e.g.
         // a stale plan), without build_rs there's nothing to compile; skip
