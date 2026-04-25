@@ -185,6 +185,26 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
                 }
             }
         }
+        // With `[lib] harness = false` (set by manifest::apply when
+        // had_src_conversion), Cargo stops linking libtest into the
+        // lib's test target — and without a `fn main`, the target
+        // won't link at all. Append `#[cfg(test)] #[rudzio::main]
+        // fn main() {}` to src/lib.rs as the replacement entry
+        // point. The cfg(test) gate keeps the fn out of library
+        // consumers' builds.
+        if pkg_edits.had_src_conversion && !args.dry_run {
+            match ensure_lib_has_rudzio_main(&pkg.root) {
+                Ok(Some(path)) => report.touched(path),
+                Ok(None) => {}
+                Err(err) => {
+                    report.warn(
+                        pkg.root.join("src/lib.rs"),
+                        None,
+                        format!("failed to append rudzio::main to src/lib.rs: {err:#}"),
+                    );
+                }
+            }
+        }
         if !args.dry_run {
             for mod_rs in &suite_roots_needing_main {
                 match ensure_suite_root_has_main(mod_rs) {
@@ -338,6 +358,47 @@ fn demote_forbid_unsafe_in_lib(pkg_root: &Path) -> anyhow::Result<Option<PathBuf
     let _bak = crate::backup::copy_before_write(&lib_rs)
         .with_context(|| format!("backing up {}", lib_rs.display()))?;
     std::fs::write(&lib_rs, &new)
+        .with_context(|| format!("writing {}", lib_rs.display()))?;
+    Ok(Some(lib_rs))
+}
+
+/// Append `#[cfg(test)] #[rudzio::main] fn main() {}` to `src/lib.rs`
+/// so the lib's test target (now `harness = false`) has an entry
+/// point. Returns `Ok(Some(path))` if appended, `Ok(None)` if lib.rs
+/// doesn't exist or already declares a `main`. The cfg(test) gate is
+/// critical — without it, binaries that depend on this lib would
+/// collide at link time with their own `fn main`.
+fn ensure_lib_has_rudzio_main(pkg_root: &Path) -> anyhow::Result<Option<PathBuf>> {
+    use anyhow::Context as _;
+    let lib_rs = pkg_root.join("src/lib.rs");
+    if !lib_rs.is_file() {
+        return Ok(None);
+    }
+    let source = std::fs::read_to_string(&lib_rs)
+        .with_context(|| format!("reading {}", lib_rs.display()))?;
+    // Idempotency: if the file already has a `fn main`, don't
+    // append another one. The check uses syn (rather than a text
+    // `contains`) because doc comments legitimately mention
+    // `#[rudzio::main]` in explanatory prose without making the
+    // file rudzio-ready. Parse failure → fall through to the
+    // append path; worst case the user gets a duplicate `fn main`
+    // and a compile error that points straight at the fix.
+    if let Ok(tree) = syn::parse_file(&source) {
+        let has_main = tree.items.iter().any(|it| {
+            matches!(it, syn::Item::Fn(f) if f.sig.ident == "main")
+        });
+        if has_main {
+            return Ok(None);
+        }
+    }
+    let _bak = crate::backup::copy_before_write(&lib_rs)
+        .with_context(|| format!("backing up {}", lib_rs.display()))?;
+    let appended = if source.ends_with('\n') {
+        format!("{source}#[cfg(test)]\n#[::rudzio::main]\nfn main() {{}}\n")
+    } else {
+        format!("{source}\n#[cfg(test)]\n#[::rudzio::main]\nfn main() {{}}\n")
+    };
+    std::fs::write(&lib_rs, &appended)
         .with_context(|| format!("writing {}", lib_rs.display()))?;
     Ok(Some(lib_rs))
 }

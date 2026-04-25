@@ -25,3 +25,6 @@ mod tests {
         b.iter(|| 1 + 1);
     }
 }
+#[cfg(test)]
+#[::rudzio::main]
+fn main() {}

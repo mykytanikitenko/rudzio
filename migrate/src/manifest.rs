@@ -42,6 +42,12 @@ pub fn apply(manifest_path: &Path, edits: &ManifestEdits) -> Result<bool> {
 
     if edits.had_src_conversion {
         set_autotests_false(&mut doc);
+        // Unit tests live in the lib's own test target; libtest
+        // doesn't understand `#[rudzio::test]`, so we have to swap
+        // it out for a custom main. The matching `#[cfg(test)]
+        // #[rudzio::main] fn main()` in src/lib.rs is handled by
+        // `run.rs::ensure_lib_has_rudzio_main`.
+        set_lib_harness_false(&mut doc);
     }
     set_rudzio_dependency(
         &mut doc,
@@ -75,6 +81,33 @@ fn set_autotests_false(doc: &mut DocumentMut) {
         return;
     };
     let _prev = pkg.insert("autotests", value(false));
+}
+
+/// Set `[lib] harness = false` so the lib's test target runs
+/// through the user's own `fn main` (i.e. `#[rudzio::main]`) rather
+/// than libtest. If the user already set `harness = true`
+/// explicitly we leave it — maybe they want libtest alongside.
+/// Otherwise we flip it (or create the `[lib]` table if missing).
+fn set_lib_harness_false(doc: &mut DocumentMut) {
+    let lib = doc
+        .as_table_mut()
+        .entry("lib")
+        .or_insert(Item::Table(Table::new()));
+    let Some(lib_tbl) = lib.as_table_mut() else {
+        return;
+    };
+    // Preserve an explicit `harness = true` override (user opted
+    // into libtest on purpose — e.g. running rudzio out of a
+    // separate binary via tests/main.rs aggregation).
+    let user_opted_in = lib_tbl
+        .get("harness")
+        .and_then(|v| v.as_value())
+        .and_then(toml_edit::Value::as_bool)
+        .is_some_and(|b| b);
+    if user_opted_in {
+        return;
+    }
+    let _prev = lib_tbl.insert("harness", value(false));
 }
 
 fn set_rudzio_dependency(

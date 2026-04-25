@@ -7,6 +7,9 @@ autotests = false
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 
+[lib]
+harness = false
+
 [dev-dependencies]
 rudzio = { version = "0.1", features = ["common", "runtime-tokio"] }
 anyhow = "1.0"
