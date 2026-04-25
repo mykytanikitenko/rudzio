@@ -153,6 +153,18 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
                     pkg_edits.needs_anyhow |= rewrite.needs_anyhow;
                     if file.starts_with(pkg.root.join("src")) {
                         pkg_edits.had_src_conversion = true;
+                        // Only src/** rewrites need the target.cfg
+                        // mirror; tests/*.rs pulled into the
+                        // aggregator are compiled in the aggregator's
+                        // own crate (where the deps already live).
+                        pkg_edits
+                            .mirror_crate_idents
+                            .extend(rewrite.used_crate_idents.iter().cloned());
+                        if rewrite.needs_anyhow {
+                            let _ = pkg_edits
+                                .mirror_crate_idents
+                                .insert("anyhow".to_owned());
+                        }
                     }
                     if let Some(entry) = integration_test_entry_for(file, &pkg.root) {
                         pkg_edits.tests_integration.push(entry);
@@ -272,15 +284,6 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
         }
         if pkg_had_conversions {
             pkg_edits.needs_rudzio_test_cfg = true;
-        }
-        // Mirror `[dev-dependencies]` into
-        // `[target.'cfg(rudzio_test)'.dependencies]` only when a
-        // `src/**` file was rewritten. Tests-only conversions are
-        // compiled through cargo's regular test target (dev-deps
-        // active) — the aggregator pulls tests/*.rs into itself via
-        // `#[path]`, so no mirror is needed for them either.
-        if pkg_edits.had_src_conversion {
-            pkg_edits.mirror_dev_deps_for_rudzio_test = true;
         }
         if !args.dry_run && pkg_had_conversions {
             match manifest::apply(&pkg.manifest_path, &pkg_edits) {
