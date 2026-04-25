@@ -62,5 +62,7 @@ mod test_context;
 #[path = "../src/run.rs"]
 mod run;
 
+mod golden;
+
 #[rudzio::main]
 fn main() {}

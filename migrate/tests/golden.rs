@@ -578,5 +578,3 @@ fn compare_trees(expected: &Path, actual: &Path) {
         panic!("{msg}");
     }
 }
-#[::rudzio::main]
-fn main() {}
