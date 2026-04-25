@@ -79,6 +79,18 @@ runner that walks every `#[rudzio::test]` registered via `linkme`. Not yet on
 crates.io; pin to a commit in your `Cargo.toml` if you care about
 reproducibility.
 
+## Examples
+
+Three runnable examples in `examples/` cover the common shapes:
+
+- `cargo run --example basic` — one runtime, the `common` context, a
+  trivial suite (pass / yield / `#[ignore]`).
+- `cargo run --example multi_runtime` — the same test bodies under
+  tokio's Multithread + CurrentThread + compio, all in one
+  `#[rudzio::suite]` block.
+- `cargo run --example custom_context` — hand-rolled `Suite` / `Test`
+  impls with shared suite-level state.
+
 ## Concepts
 
 Three traits, three lifetimes, in strict outer-to-inner order:
@@ -149,7 +161,7 @@ runner is hard-coded to a specific runtime crate.
 `tokio_util::sync::CancellationToken` + `tokio_util::task::TaskTracker` (enable
 the `common` feature). If you need your own (a `sqlx::PgPool`, an HTTP server
 handle, a mock clock), define structs that implement `rudzio::context::Suite`
-and `rudzio::context::Test`. See `e2e/src/bin/custom_context_tokio_mt.rs` for a
+and `rudzio::context::Test`. See `fixtures/src/bin/custom_context_tokio_mt.rs` for a
 minimal hand-rolled example.
 
 ## Workspace-wide single-binary test runner
@@ -200,22 +212,68 @@ every included file registers through `linkme` into the binary's single
 `TEST_TOKENS` slice; the runner filters / dispatches / reports them all
 together.
 
-Two things to watch:
+One thing to watch:
 
-- **Exclude from parent workspace.** Put `exclude = ["test-runner"]` in the
-  parent's `[workspace]` (or give `test-runner` its own `[workspace]` block).
-  Otherwise Cargo's workspace-wide feature unification propagates whatever
-  features the aggregator requests back into every sibling crate that links
-  those deps — not what you want.
-- **Tests that reference `env!("CARGO_BIN_EXE_<name>")`** (e.g. integration
-  tests that spawn their crate's `[[bin]]` targets) can't be aggregated this
-  way: those env vars are only set when Cargo builds that crate's own
-  integration-test binary. Keep those tests per-crate.
+- **Feature unification.** Cargo unifies features across every workspace
+  member's deps. If your aggregator requests features on `rudzio` that
+  the sibling crates don't already have on, those features activate
+  everywhere. Keep the aggregator's feature list the same as the
+  sibling crates', or exclude the aggregator from the parent workspace
+  (`[workspace] exclude = ["test-runner"]`) if you need it to carry a
+  wholly different set. In this repo the feature lists line up, so
+  `test-runner/` lives inside the parent workspace without issues.
 
-Rudzio's own workspace demonstrates both modes side-by-side: `cargo test
---workspace` runs everything per-crate; `(cd test-runner && cargo run)`
-aggregates rudzio's multi-runtime dogfood suite and `rudzio-macro-internals`'
-parser tests into one 113-test binary.
+### Aggregating tests that spawn `[[bin]]` targets
+
+Integration tests that use `env!("CARGO_BIN_EXE_<name>")` to spawn their
+crate's `[[bin]]` targets — e.g. tests that drive child processes to check
+stdout — don't compile when you `#[path]`-include them from outside their
+defining crate: Cargo only populates `CARGO_BIN_EXE_<name>` for integration
+tests of the crate that declares the `[[bin]]`.
+
+Rudzio ships `rudzio::build::expose_bins` (behind the `build` feature)
+for exactly this. Call it once in your aggregator's `build.rs`:
+
+```toml
+# test-runner/Cargo.toml
+[dependencies]
+my-bin-crate = { path = "../my-bin-crate" }
+
+[build-dependencies]
+rudzio = { version = "0.1", default-features = false, features = ["build"] }
+```
+```rust
+// test-runner/build.rs
+fn main() -> Result<(), rudzio::build::Error> {
+    rudzio::build::expose_bins("my-bin-crate")
+}
+```
+
+What happens: the build script reads `cargo metadata` for `my-bin-crate`,
+runs `cargo build --bins -p my-bin-crate` with a dedicated target dir
+(`$OUT_DIR/rudzio-bin-cache`, so there's no lock contention with the outer
+cargo), and emits `cargo:rustc-env=CARGO_BIN_EXE_<name>=<abs path>` for each
+bin. Your `#[path]`-included integration test then compiles with
+`env!("CARGO_BIN_EXE_<name>")` working exactly the way it did in the bin
+crate's own tests.
+
+Dep requirement: the bin crate must have a lib target (even empty
+`src/lib.rs` is fine) so Cargo accepts it as a regular dep. Everything else
+— feature resolution, profile (`--release` forwarded from the outer
+`PROFILE`), rerun-on-change hooks — `rudzio::build` handles.
+
+No fallbacks: missing env var, missing package in metadata, missing bin,
+nested build failure → build script errors with an explicit message.
+
+Rudzio's own workspace demonstrates every mode side-by-side:
+- `cargo test --workspace` runs each crate's per-crate tests (143 tests
+  across rudzio / macro-internals / e2e).
+- `cargo run -p rudzio-test-runner` aggregates **all** of them into one
+  binary — 96 rudzio dogfood tests (exercised under all 6 runtimes) + 17
+  macro-internals parser tests + 29 e2e integration tests, all scheduled
+  by one `#[rudzio::main]`. `test-runner/build.rs` uses
+  `rudzio::build::expose_bins("rudzio-fixtures")` to make the 30+ fixture
+  binaries reachable via `env!`.
 
 ## Cancellation, timeouts, panics
 
@@ -261,7 +319,8 @@ environment is snapshotted into `Config::env` at startup, so any
 
 `Config` is parsed once per invocation and handed to every runtime
 constructor (`fn new(config: &Config) -> io::Result<Self>`) and to every
-`Suite::setup`. Runtimes can read what they need. Today:
+`Suite::setup` and `Suite::context`. Runtimes can read what they need.
+Today:
 
 - `rudzio::runtime::tokio::Multithread` — uses `config.threads` for
   `Builder::worker_threads`.
@@ -274,6 +333,38 @@ constructor (`fn new(config: &Config) -> io::Result<Self>`) and to every
 Custom runtimes can go further: read `config.unparsed` for their own CLI
 flags, or `config.env` for env-var-driven tuning — no need to extend
 `Config` itself.
+
+### `Config::cargo` (compile-time metadata)
+
+`Config` carries a `CargoMeta` populated from `env!(...)` at the
+`#[rudzio::main]` call site in the user's crate:
+
+```rust
+#[derive(Debug, Clone)]
+pub struct CargoMeta {
+    pub manifest_dir: PathBuf,  // env!("CARGO_MANIFEST_DIR")
+    pub pkg_name: String,       // env!("CARGO_PKG_NAME")
+    pub pkg_version: String,    // env!("CARGO_PKG_VERSION")
+    pub crate_name: String,     // env!("CARGO_CRATE_NAME")
+}
+```
+
+Use it to resolve fixture paths relative to the test crate without
+calling `cargo` at runtime or parsing `Cargo.toml`:
+
+```rust
+let fixtures = ctx.config().cargo.manifest_dir.join("tests/fixtures");
+```
+
+Outside `#[rudzio::main]` (say, in a unit test that constructs a
+`Config` directly), use `rudzio::cargo_meta!()`:
+
+```rust
+let config = rudzio::Config::parse(rudzio::cargo_meta!());
+```
+
+The macro expands to the `env!(...)` block at *your* call site, so the
+captured values belong to your crate.
 
 ## Status
 

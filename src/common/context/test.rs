@@ -4,6 +4,7 @@ use std::fmt;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
+use crate::config::Config;
 use crate::context;
 use crate::runtime::{JoinError, Runtime};
 
@@ -17,6 +18,8 @@ where
     pub(super) rt: &'test_context R,
     /// Shared task tracker inherited from the suite context.
     pub(super) tracker: TaskTracker,
+    /// Resolved CLI/env configuration, handed down from the suite.
+    pub(super) config: &'test_context Config,
 }
 
 impl<'test_context, R> fmt::Debug for Test<'test_context, R>
@@ -46,6 +49,14 @@ where
     #[must_use]
     pub const fn cancel_token(&self) -> &CancellationToken {
         &self.cancel
+    }
+
+    /// Resolved CLI/env [`Config`] for this run — the same `&Config` the
+    /// runtime constructor and `Suite::setup` / `Suite::context` received.
+    #[inline]
+    #[must_use]
+    pub const fn config(&self) -> &Config {
+        self.config
     }
 
     #[inline]

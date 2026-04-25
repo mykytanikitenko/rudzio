@@ -56,14 +56,17 @@ where
     /// (or root-level cancels that fan out through the parent/child chain)
     /// propagate into the test body.
     ///
+    /// `config` mirrors what [`Self::setup`] received. Passed explicitly
+    /// so `Test` impls can store it and surface it to test bodies without
+    /// reaching through `rt.config()`.
+    ///
     /// `'test_context` is the duration of the `&self` borrow that produces
     /// the test — the test runner's own per-test stack frame.
     fn context<'test_context>(
         &'test_context self,
         cancel: CancellationToken,
-    ) -> impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>>
-           + Send
-           + 'test_context;
+        config: &'test_context Config,
+    ) -> impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>> + Send + 'test_context;
 
     /// Create the shared state. Called once per runtime group.
     ///

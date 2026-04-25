@@ -48,6 +48,7 @@ where
     async fn context<'test_context>(
         &'test_context self,
         _cancel: CancellationToken,
+        _config: &'test_context ::rudzio::Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Ok(MutableTest {
             _marker: PhantomData,
@@ -55,8 +56,14 @@ where
         })
     }
 
-    async fn setup(_rt: &'suite_context R, _cancel: CancellationToken, _config: &'suite_context ::rudzio::Config) -> Result<Self, Self::SetupError> {
-        Ok(Self { _marker: PhantomData })
+    async fn setup(
+        _rt: &'suite_context R,
+        _cancel: CancellationToken,
+        _config: &'suite_context ::rudzio::Config,
+    ) -> Result<Self, Self::SetupError> {
+        Ok(Self {
+            _marker: PhantomData,
+        })
     }
 
     async fn teardown(self) -> Result<(), Self::TeardownError> {

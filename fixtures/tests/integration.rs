@@ -7,7 +7,6 @@ use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::Duration;
 
-
 fn run(exe: &str) -> Output {
     Command::new(exe)
         .env("NO_COLOR", "1")
@@ -120,11 +119,17 @@ mod tests {
     fn mut_test_context_is_borrowable(_ctx: &Test) -> anyhow::Result<()> {
         let out = run(env!("CARGO_BIN_EXE_mutable_test_context"));
         let log = log_of(&out);
-        anyhow::ensure!(out.status.code() == Some(0), "expected exit 0, output:\n{log}");
+        anyhow::ensure!(
+            out.status.code() == Some(0),
+            "expected exit 0, output:\n{log}"
+        );
         anyhow::ensure!(log.contains("3 passed"), "output:\n{log}");
         anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
         anyhow::ensure!(log.contains("mutates_via_mut_borrow"), "output:\n{log}");
-        anyhow::ensure!(log.contains("sync_mutates_via_mut_borrow"), "output:\n{log}");
+        anyhow::ensure!(
+            log.contains("sync_mutates_via_mut_borrow"),
+            "output:\n{log}"
+        );
         anyhow::ensure!(log.contains("fresh_ctx_per_test"), "output:\n{log}");
         Ok(())
     }
@@ -133,7 +138,10 @@ mod tests {
     fn passing_tokio_mt_succeeds(_ctx: &Test) -> anyhow::Result<()> {
         let out = run(env!("CARGO_BIN_EXE_passing_tokio_mt"));
         let log = log_of(&out);
-        anyhow::ensure!(out.status.code() == Some(0), "expected exit 0, output:\n{log}");
+        anyhow::ensure!(
+            out.status.code() == Some(0),
+            "expected exit 0, output:\n{log}"
+        );
         anyhow::ensure!(log.contains("first_passes"), "output:\n{log}");
         anyhow::ensure!(log.contains("second_passes"), "output:\n{log}");
         anyhow::ensure!(log.contains("... ok"), "output:\n{log}");
@@ -146,7 +154,10 @@ mod tests {
     fn failing_tokio_mt_exits_one(_ctx: &Test) -> anyhow::Result<()> {
         let out = run(env!("CARGO_BIN_EXE_failing_tokio_mt"));
         let log = log_of(&out);
-        anyhow::ensure!(out.status.code() == Some(1), "expected exit 1, output:\n{log}");
+        anyhow::ensure!(
+            out.status.code() == Some(1),
+            "expected exit 1, output:\n{log}"
+        );
         anyhow::ensure!(log.contains("FAILED"), "output:\n{log}");
         anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
         anyhow::ensure!(log.contains("1 failed"), "output:\n{log}");
@@ -157,7 +168,10 @@ mod tests {
     fn ignored_tests_are_skipped(_ctx: &Test) -> anyhow::Result<()> {
         let out = run(env!("CARGO_BIN_EXE_ignored_tokio_mt"));
         let log = log_of(&out);
-        anyhow::ensure!(out.status.code() == Some(0), "expected exit 0, output:\n{log}");
+        anyhow::ensure!(
+            out.status.code() == Some(0),
+            "expected exit 0, output:\n{log}"
+        );
         anyhow::ensure!(log.contains("... ignored"), "output:\n{log}");
         anyhow::ensure!(log.contains("takes too long"), "output:\n{log}");
         anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
@@ -170,7 +184,10 @@ mod tests {
     fn tokio_current_thread_runtime_works(_ctx: &Test) -> anyhow::Result<()> {
         let out = run(env!("CARGO_BIN_EXE_passing_tokio_ct"));
         let log = log_of(&out);
-        anyhow::ensure!(out.status.code() == Some(0), "expected exit 0, output:\n{log}");
+        anyhow::ensure!(
+            out.status.code() == Some(0),
+            "expected exit 0, output:\n{log}"
+        );
         anyhow::ensure!(log.contains("yields_then_passes"), "output:\n{log}");
         anyhow::ensure!(log.contains("... ok"), "output:\n{log}");
         Ok(())
@@ -180,7 +197,10 @@ mod tests {
     fn compio_runtime_works(_ctx: &Test) -> anyhow::Result<()> {
         let out = run(env!("CARGO_BIN_EXE_passing_compio"));
         let log = log_of(&out);
-        anyhow::ensure!(out.status.code() == Some(0), "expected exit 0, output:\n{log}");
+        anyhow::ensure!(
+            out.status.code() == Some(0),
+            "expected exit 0, output:\n{log}"
+        );
         anyhow::ensure!(log.contains("passes_under_compio"), "output:\n{log}");
         anyhow::ensure!(log.contains("... ok"), "output:\n{log}");
         Ok(())
@@ -190,7 +210,10 @@ mod tests {
     fn futures_runtime_works(_ctx: &Test) -> anyhow::Result<()> {
         let out = run(env!("CARGO_BIN_EXE_passing_futures"));
         let log = log_of(&out);
-        anyhow::ensure!(out.status.code() == Some(0), "expected exit 0, output:\n{log}");
+        anyhow::ensure!(
+            out.status.code() == Some(0),
+            "expected exit 0, output:\n{log}"
+        );
         anyhow::ensure!(log.contains("passes_under_futures"), "output:\n{log}");
         anyhow::ensure!(log.contains("spawn_works_under_futures"), "output:\n{log}");
         anyhow::ensure!(log.contains("futures::ThreadPool"), "output:\n{log}");
@@ -202,7 +225,10 @@ mod tests {
     fn multi_runtime_runs_every_config(_ctx: &Test) -> anyhow::Result<()> {
         let out = run(env!("CARGO_BIN_EXE_multi_runtime"));
         let log = log_of(&out);
-        anyhow::ensure!(out.status.code() == Some(0), "expected exit 0, output:\n{log}");
+        anyhow::ensure!(
+            out.status.code() == Some(0),
+            "expected exit 0, output:\n{log}"
+        );
         anyhow::ensure!(log.contains("Multithread"), "output:\n{log}");
         anyhow::ensure!(log.contains("compio::Runtime"), "output:\n{log}");
         anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
@@ -232,7 +258,10 @@ mod tests {
         // All three sync tests run; isolation keeps panics from killing the thread.
         let out = run(env!("CARGO_BIN_EXE_sync_mixed_tokio_mt"));
         let log = log_of(&out);
-        anyhow::ensure!(out.status.code() == Some(1), "expected exit 1, output:\n{log}");
+        anyhow::ensure!(
+            out.status.code() == Some(1),
+            "expected exit 1, output:\n{log}"
+        );
         anyhow::ensure!(log.contains("sync_passes"), "output:\n{log}");
         anyhow::ensure!(log.contains("sync_returns_err"), "output:\n{log}");
         anyhow::ensure!(log.contains("sync_panics"), "output:\n{log}");
@@ -247,7 +276,10 @@ mod tests {
     fn custom_suite_and_test_impls_work(_ctx: &Test) -> anyhow::Result<()> {
         let out = run(env!("CARGO_BIN_EXE_custom_context_tokio_mt"));
         let log = log_of(&out);
-        anyhow::ensure!(out.status.code() == Some(0), "expected exit 0, output:\n{log}");
+        anyhow::ensure!(
+            out.status.code() == Some(0),
+            "expected exit 0, output:\n{log}"
+        );
         anyhow::ensure!(log.contains("runs_on_custom_context"), "output:\n{log}");
         anyhow::ensure!(log.contains("... ok"), "output:\n{log}");
         anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
@@ -258,7 +290,10 @@ mod tests {
     fn suite_setup_failure_aborts_the_runtime_group(_ctx: &Test) -> anyhow::Result<()> {
         let out = run(env!("CARGO_BIN_EXE_setup_failure_tokio_mt"));
         let log = log_of(&out);
-        anyhow::ensure!(out.status.code() == Some(1), "expected exit 1, output:\n{log}");
+        anyhow::ensure!(
+            out.status.code() == Some(1),
+            "expected exit 1, output:\n{log}"
+        );
         anyhow::ensure!(
             log.contains("FATAL: failed to create suite context"),
             "output:\n{log}"
@@ -273,7 +308,10 @@ mod tests {
     fn context_creation_failure_counts_as_failed(_ctx: &Test) -> anyhow::Result<()> {
         let out = run(env!("CARGO_BIN_EXE_context_creation_failure_tokio_mt"));
         let log = log_of(&out);
-        anyhow::ensure!(out.status.code() == Some(1), "expected exit 1, output:\n{log}");
+        anyhow::ensure!(
+            out.status.code() == Some(1),
+            "expected exit 1, output:\n{log}"
+        );
         anyhow::ensure!(log.contains("first"), "output:\n{log}");
         anyhow::ensure!(log.contains("second"), "output:\n{log}");
         // The error's Display must be propagated through the failure output.
@@ -291,8 +329,14 @@ mod tests {
     fn plain_test_attribute_is_recognized(_ctx: &Test) -> anyhow::Result<()> {
         let out = run(env!("CARGO_BIN_EXE_plain_test_attr_tokio_mt"));
         let log = log_of(&out);
-        anyhow::ensure!(out.status.code() == Some(0), "expected exit 0, output:\n{log}");
-        anyhow::ensure!(log.contains("runs_via_plain_test_attribute"), "output:\n{log}");
+        anyhow::ensure!(
+            out.status.code() == Some(0),
+            "expected exit 0, output:\n{log}"
+        );
+        anyhow::ensure!(
+            log.contains("runs_via_plain_test_attribute"),
+            "output:\n{log}"
+        );
         anyhow::ensure!(log.contains("... ok"), "output:\n{log}");
         anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
         Ok(())
@@ -304,7 +348,10 @@ mod tests {
         // source-order assertion below is meaningful.
         let out = run_serial(env!("CARGO_BIN_EXE_multi_panic_ordering_tokio_mt"));
         let log = log_of(&out);
-        anyhow::ensure!(out.status.code() == Some(1), "expected exit 1, output:\n{log}");
+        anyhow::ensure!(
+            out.status.code() == Some(1),
+            "expected exit 1, output:\n{log}"
+        );
         anyhow::ensure!(log.contains("3 passed"), "output:\n{log}");
         anyhow::ensure!(log.contains("2 panicked"), "output:\n{log}");
         anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
@@ -335,7 +382,10 @@ mod tests {
     fn tracker_drains_on_suite_teardown(_ctx: &Test) -> anyhow::Result<()> {
         let out = run(env!("CARGO_BIN_EXE_tracker_drain_tokio_mt"));
         let log = log_of(&out);
-        anyhow::ensure!(out.status.code() == Some(0), "expected exit 0, output:\n{log}");
+        anyhow::ensure!(
+            out.status.code() == Some(0),
+            "expected exit 0, output:\n{log}"
+        );
         anyhow::ensure!(log.contains("... ok"), "output:\n{log}");
         // The marker only appears if suite teardown waited for the tracked task.
         anyhow::ensure!(
@@ -349,7 +399,10 @@ mod tests {
     fn per_test_teardown_cancels_the_cancel_token(_ctx: &Test) -> anyhow::Result<()> {
         let out = run(env!("CARGO_BIN_EXE_cancel_token_propagation_tokio_mt"));
         let log = log_of(&out);
-        anyhow::ensure!(out.status.code() == Some(0), "expected exit 0, output:\n{log}");
+        anyhow::ensure!(
+            out.status.code() == Some(0),
+            "expected exit 0, output:\n{log}"
+        );
         anyhow::ensure!(log.contains("... ok"), "output:\n{log}");
         anyhow::ensure!(
             log.contains("cancel_propagation_marker"),
@@ -362,7 +415,10 @@ mod tests {
     fn spawn_tracked_test_passes(_ctx: &Test) -> anyhow::Result<()> {
         let out = run(env!("CARGO_BIN_EXE_spawn_tracked"));
         let log = log_of(&out);
-        anyhow::ensure!(out.status.code() == Some(0), "expected exit 0, output:\n{log}");
+        anyhow::ensure!(
+            out.status.code() == Some(0),
+            "expected exit 0, output:\n{log}"
+        );
         anyhow::ensure!(log.contains("spawn_awaits_result"), "output:\n{log}");
         anyhow::ensure!(log.contains("cancel_token_is_child"), "output:\n{log}");
         anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
@@ -373,9 +429,18 @@ mod tests {
     fn sync_work_runs_on_the_runtimes_blocking_pool(_ctx: &Test) -> anyhow::Result<()> {
         let out = run(env!("CARGO_BIN_EXE_spawn_blocking_tokio_mt"));
         let log = log_of(&out);
-        anyhow::ensure!(out.status.code() == Some(0), "expected exit 0, output:\n{log}");
-        anyhow::ensure!(log.contains("runs_sync_fn_via_spawn_blocking"), "output:\n{log}");
-        anyhow::ensure!(log.contains("spawn_blocking_uses_a_different_thread"), "output:\n{log}");
+        anyhow::ensure!(
+            out.status.code() == Some(0),
+            "expected exit 0, output:\n{log}"
+        );
+        anyhow::ensure!(
+            log.contains("runs_sync_fn_via_spawn_blocking"),
+            "output:\n{log}"
+        );
+        anyhow::ensure!(
+            log.contains("spawn_blocking_uses_a_different_thread"),
+            "output:\n{log}"
+        );
         anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
         anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
         Ok(())
@@ -397,7 +462,9 @@ mod tests {
     }
 
     #[rudzio::test]
-    fn multiple_runtime_groups_run_in_separate_threads_concurrently(_ctx: &Test) -> anyhow::Result<()> {
+    fn multiple_runtime_groups_run_in_separate_threads_concurrently(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
         // Fixture has two runtime groups (tokio multi-thread + compio), each with one test.
         // Both tests block on a shared Barrier(2) via spawn_blocking. If the groups' threads
         // run in parallel, both arrive at the barrier and it releases.
@@ -423,7 +490,10 @@ mod tests {
             &["--test-timeout=1"],
         );
         let log = log_of(&out);
-        anyhow::ensure!(out.status.code() == Some(1), "expected exit 1, output:\n{log}");
+        anyhow::ensure!(
+            out.status.code() == Some(1),
+            "expected exit 1, output:\n{log}"
+        );
         anyhow::ensure!(log.contains("FAILED (timed out)"), "output:\n{log}");
         anyhow::ensure!(
             !log.contains("body_times_out_unreached_marker"),
@@ -511,7 +581,10 @@ mod tests {
             &["--run-timeout=1"],
         );
         let log = log_of(&out);
-        anyhow::ensure!(out.status.code() == Some(0), "expected exit 0, output:\n{log}");
+        anyhow::ensure!(
+            out.status.code() == Some(0),
+            "expected exit 0, output:\n{log}"
+        );
         anyhow::ensure!(
             log.contains("gradual_cancel_cleanup_marker"),
             "cleanup marker missing — runner did not wait for graceful cancel, output:\n{log}"
@@ -526,7 +599,10 @@ mod tests {
         // single run under a single `rudzio::run()` call.
         let out = run(env!("CARGO_BIN_EXE_multi_file_suite"));
         let log = log_of(&out);
-        anyhow::ensure!(out.status.code() == Some(0), "expected exit 0, output:\n{log}");
+        anyhow::ensure!(
+            out.status.code() == Some(0),
+            "expected exit 0, output:\n{log}"
+        );
         anyhow::ensure!(log.contains("module_a_first"), "output:\n{log}");
         anyhow::ensure!(log.contains("module_a_second"), "output:\n{log}");
         anyhow::ensure!(log.contains("module_b_first"), "output:\n{log}");
@@ -613,7 +689,10 @@ mod unix_tests {
             log.contains("received SIGTERM"),
             "expected the runner's signal diagnostic, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("sigint_cancel_observed_marker"), "output:\n{log}");
+        anyhow::ensure!(
+            log.contains("sigint_cancel_observed_marker"),
+            "output:\n{log}"
+        );
         anyhow::ensure!(
             !log.contains("never_runs_after_sigint_unreached_marker"),
             "output:\n{log}"
@@ -622,4 +701,3 @@ mod unix_tests {
         Ok(())
     }
 }
-

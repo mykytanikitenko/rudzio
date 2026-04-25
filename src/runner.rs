@@ -11,7 +11,7 @@ use crate::config::{ColorMode, Config, Format, RunIgnoredMode};
 use crate::suite::{
     RuntimeGroupKey, RuntimeGroupOwner, SuiteReporter, SuiteRunRequest, SuiteSummary, TestOutcome,
 };
-use crate::token::{TestToken, TEST_TOKENS};
+use crate::token::{TEST_TOKENS, TestToken};
 
 // ---------------------------------------------------------------------------
 // TestSummary
@@ -100,13 +100,25 @@ fn use_color(mode: ColorMode) -> bool {
 }
 
 fn paint(s: &str, code: &str, colored: bool) -> String {
-    if colored { format!("\x1b[{code}m{s}\x1b[0m") } else { s.to_owned() }
+    if colored {
+        format!("\x1b[{code}m{s}\x1b[0m")
+    } else {
+        s.to_owned()
+    }
 }
 
-fn green(s: &str, c: bool) -> String { paint(s, "32", c) }
-fn red(s: &str, c: bool) -> String { paint(s, "31", c) }
-fn yellow(s: &str, c: bool) -> String { paint(s, "33", c) }
-fn bold(s: &str, c: bool) -> String { paint(s, "1", c) }
+fn green(s: &str, c: bool) -> String {
+    paint(s, "32", c)
+}
+fn red(s: &str, c: bool) -> String {
+    paint(s, "31", c)
+}
+fn yellow(s: &str, c: bool) -> String {
+    paint(s, "33", c)
+}
+fn bold(s: &str, c: bool) -> String {
+    paint(s, "1", c)
+}
 
 // ---------------------------------------------------------------------------
 // Failure accumulator
@@ -204,7 +216,10 @@ impl SuiteReporter for DefaultReporter {
 
         if let TestOutcome::Failed { message, .. } = outcome {
             let mut guard = self.failures.lock().expect("failures mutex poisoned");
-            guard.push(FailureInfo { name: token.name, message });
+            guard.push(FailureInfo {
+                name: token.name,
+                message,
+            });
         }
     }
 
@@ -221,8 +236,12 @@ impl SuiteReporter for DefaultReporter {
 /// run each group in its own OS thread via its
 /// [`RuntimeGroupOwner`](crate::suite::RuntimeGroupOwner), print results in
 /// cargo-test format, then exit the process.
-pub fn run() -> ! {
-    let config = Config::parse();
+///
+/// `cargo` comes from the caller (the `#[rudzio::main]` macro expands
+/// `cargo_meta!()` at the user's crate site so the `env!(...)` values
+/// belong to that crate, not rudzio).
+pub fn run(cargo: crate::config::CargoMeta) -> ! {
+    let config = Config::parse(cargo);
     let colored = use_color(config.color);
 
     let all_tokens: Vec<&'static TestToken> = TEST_TOKENS.iter().collect();
@@ -347,7 +366,11 @@ pub fn run() -> ! {
                     .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
                     .unwrap_or("unknown panic");
                 eprintln!("error: runtime thread panicked: {msg}");
-                acc.merge(TestSummary { panicked: 1, total: 1, ..TestSummary::zero() })
+                acc.merge(TestSummary {
+                    panicked: 1,
+                    total: 1,
+                    ..TestSummary::zero()
+                })
             }
         });
 

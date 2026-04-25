@@ -37,8 +37,7 @@ where
     R: Runtime<'suite_context> + Sync,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BrokenContextSuite")
-            .finish_non_exhaustive()
+        f.debug_struct("BrokenContextSuite").finish_non_exhaustive()
     }
 }
 
@@ -57,11 +56,16 @@ where
     async fn context<'test_context>(
         &'test_context self,
         _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _config: &'test_context ::rudzio::Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Err(ContextErr)
     }
 
-    async fn setup(_rt: &'suite_context R, _cancel: ::rudzio::tokio_util::sync::CancellationToken, _config: &'suite_context ::rudzio::Config) -> Result<Self, Self::SetupError> {
+    async fn setup(
+        _rt: &'suite_context R,
+        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _config: &'suite_context ::rudzio::Config,
+    ) -> Result<Self, Self::SetupError> {
         Ok(Self {
             _marker: PhantomData,
         })

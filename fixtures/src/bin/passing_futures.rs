@@ -18,7 +18,9 @@ mod tests {
 
     #[rudzio::test]
     async fn spawn_works_under_futures(ctx: &Test) -> anyhow::Result<()> {
-        let result = ctx.spawn(async { 7_u32 }).await
+        let result = ctx
+            .spawn(async { 7_u32 })
+            .await
             .map_err(|err| anyhow::anyhow!("spawn failed: {err}"))?;
         anyhow::ensure!(result == 7);
         Ok(())
