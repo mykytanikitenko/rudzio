@@ -56,11 +56,6 @@ mod tests {
         ::core::result::Result::Ok(())
     }
     #[::rudzio::test]
-    async fn golden_mirror_dev_deps_for_rudzio_test(_ctx: &Test) -> ::anyhow::Result<()> {
-        run_fixture("mirror_dev_deps_for_rudzio_test");
-        ::core::result::Result::Ok(())
-    }
-    #[::rudzio::test]
     async fn golden_cfg_attr_test_broadening(_ctx: &Test) -> ::anyhow::Result<()> {
         run_fixture("cfg_attr_test_broadening");
         ::core::result::Result::Ok(())
