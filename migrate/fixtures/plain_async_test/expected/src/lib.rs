@@ -1,6 +1,7 @@
 pub fn identity<T>(v: T) -> T {
     v
 }
+#[cfg(test)]
 #[::rudzio::suite(
     [(
         runtime = ::rudzio::runtime::tokio::Multithread::new,
@@ -9,7 +10,6 @@ pub fn identity<T>(v: T) -> T {
     ),
     ]
 )]
-#[cfg(test)]
 mod tests {
     use ::rudzio::common::context::Test;
     use super::*;

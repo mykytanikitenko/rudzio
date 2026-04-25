@@ -2,6 +2,7 @@ pub mod ctx;
 pub fn zero() -> u32 {
     0
 }
+#[cfg(test)]
 #[::rudzio::suite(
     [(
         runtime = ::rudzio::runtime::tokio::Multithread::new,
@@ -10,7 +11,6 @@ pub fn zero() -> u32 {
     ),
     ]
 )]
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::ctx::DeepCtx;

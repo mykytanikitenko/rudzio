@@ -1,6 +1,7 @@
 pub fn product(a: i32, b: i32) -> i32 {
     a * b
 }
+#[cfg(test)]
 #[::rudzio::suite(
     [(
         runtime = ::rudzio::runtime::tokio::Multithread::new,
@@ -9,7 +10,6 @@ pub fn product(a: i32, b: i32) -> i32 {
     ),
     ]
 )]
-#[cfg(test)]
 mod outer {
     use ::rudzio::common::context::Test;
     use super::*;

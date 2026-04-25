@@ -1,4 +1,5 @@
 pub struct ExternalCtx;
+#[cfg(test)]
 #[::rudzio::suite(
     [(
         runtime = ::rudzio::runtime::tokio::Multithread::new,
@@ -7,7 +8,6 @@ pub struct ExternalCtx;
     ),
     ]
 )]
-#[cfg(test)]
 mod tests {
     use ::rudzio::common::context::Test;
     use super::*;

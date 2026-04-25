@@ -1,6 +1,7 @@
 pub async fn delay() {
     tokio::task::yield_now().await;
 }
+#[cfg(test)]
 #[::rudzio::suite(
     [(
         runtime = ::rudzio::runtime::tokio::Multithread::new,
@@ -9,7 +10,6 @@ pub async fn delay() {
     ),
     ]
 )]
-#[cfg(test)]
 mod tests {
     use ::rudzio::common::context::Test;
     use super::*;

@@ -1,6 +1,7 @@
 pub fn a_answer() -> i32 {
     10
 }
+#[cfg(test)]
 #[::rudzio::suite(
     [(
         runtime = ::rudzio::runtime::tokio::Multithread::new,
@@ -9,7 +10,6 @@ pub fn a_answer() -> i32 {
     ),
     ]
 )]
-#[cfg(test)]
 mod tests {
     use ::rudzio::common::context::Test;
     use super::*;
