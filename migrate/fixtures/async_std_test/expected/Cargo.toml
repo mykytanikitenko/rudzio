@@ -13,3 +13,4 @@ anyhow = "1.0"
 
 [lib]
 harness = false
+test = false

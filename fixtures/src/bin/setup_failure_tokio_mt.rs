@@ -1,7 +1,8 @@
-//! Exercises the FATAL branch where `Suite::setup` returns `Err`.
+//! Exercises the branch where `Suite::setup` returns `Err`.
 //!
-//! Per the macro: the runtime thread logs "FATAL: failed to create suite
-//! context", every test in that group is counted as panicked, and the
+//! Per the macro: the runtime thread emits a `[FAIL] setup <suite>`
+//! lifecycle line carrying the error's `Display`, every test in that
+//! group is reported as `Cancelled` (it never got to run), and the
 //! process exits with code 1.
 
 use std::error::Error;

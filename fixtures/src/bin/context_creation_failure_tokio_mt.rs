@@ -1,8 +1,9 @@
 //! Exercises the per-test branch where `Suite::context(...)` returns `Err`.
 //!
-//! Per the macro: every test whose context creation fails is counted as
-//! Failed (not Panicked — that's reserved for setup failure) and the run
-//! exits with code 1.
+//! Per the macro: every test whose context creation fails is reported
+//! with the distinct `[SETUP]` status tag (it never executed the body)
+//! and counted toward the `failed` summary bucket; the run exits with
+//! code 1.
 
 use std::error::Error;
 use std::fmt;

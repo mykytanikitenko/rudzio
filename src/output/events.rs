@@ -9,9 +9,9 @@
 //! region (terminal mode) or linear text (plain mode).
 
 use std::thread::ThreadId;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use crate::suite::TestOutcome;
+use crate::suite::{TeardownResult, TestOutcome};
 
 /// Unique id for a test *dispatch* — one per wrap in
 /// [`crate::output::first_poll::FirstPoll`]. Multiple dispatches of the
@@ -93,6 +93,51 @@ pub enum LifecycleEvent {
         test_id: TestId,
         done: usize,
         total: usize,
+    },
+    /// A suite is about to run `Suite::setup`. Emitted from the
+    /// runtime group thread before the user's setup body executes.
+    /// `thread` lets the drawer pin the in-flight setup to the same
+    /// runtime slot that will host the suite's tests.
+    SuiteSetupStarted {
+        runtime_name: &'static str,
+        suite: &'static str,
+        thread: ThreadId,
+        at: Instant,
+    },
+    /// `Suite::setup` returned. `error` is `None` on success and
+    /// `Some(message)` on failure (the error's `Display` form).
+    SuiteSetupFinished {
+        runtime_name: &'static str,
+        suite: &'static str,
+        thread: ThreadId,
+        elapsed: Duration,
+        error: Option<String>,
+    },
+    /// A suite is about to run `Suite::teardown` (after all its tests
+    /// have finished, regardless of outcome).
+    SuiteTeardownStarted {
+        runtime_name: &'static str,
+        suite: &'static str,
+        thread: ThreadId,
+        at: Instant,
+    },
+    /// `Suite::teardown` returned (possibly via panic).
+    SuiteTeardownFinished {
+        runtime_name: &'static str,
+        suite: &'static str,
+        thread: ThreadId,
+        elapsed: Duration,
+        result: TeardownResult,
+    },
+    /// A per-test teardown (`Test::teardown`) returned `Err` or
+    /// panicked. The drawer renders a separate FAIL line attributed
+    /// to the test and pushes a FailureRecord so the final
+    /// `failures:` section includes it.
+    TestTeardownFailed {
+        module_path: &'static str,
+        test_name: &'static str,
+        runtime_name: &'static str,
+        result: TeardownResult,
     },
 }
 

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::{self, IsTerminal as _, Write as _};
 use std::process;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -11,7 +12,8 @@ use crate::config::{ColorMode, Config, Format, OutputMode, RunIgnoredMode};
 use crate::output::events::LifecycleEvent;
 use crate::output::{self};
 use crate::suite::{
-    RuntimeGroupKey, RuntimeGroupOwner, SuiteReporter, SuiteRunRequest, SuiteSummary, TestOutcome,
+    RuntimeGroupKey, RuntimeGroupOwner, SuiteReporter, SuiteRunRequest, SuiteSummary,
+    TeardownResult, TestOutcome,
 };
 use crate::token::{TEST_TOKENS, TestToken};
 
@@ -30,6 +32,10 @@ pub struct TestSummary {
     pub passed: usize,
     pub timed_out: usize,
     pub total: usize,
+    /// Combined count of suite-level + per-test teardown failures
+    /// (Err *or* panic). Drives [`is_success`] so a botched cleanup
+    /// fails the run even when every test body passed.
+    pub teardown_failures: usize,
 }
 
 impl TestSummary {
@@ -42,7 +48,11 @@ impl TestSummary {
     #[inline]
     #[must_use]
     pub const fn is_success(&self) -> bool {
-        self.failed == 0 && self.timed_out == 0 && self.panicked == 0 && self.cancelled == 0
+        self.failed == 0
+            && self.timed_out == 0
+            && self.panicked == 0
+            && self.cancelled == 0
+            && self.teardown_failures == 0
     }
 
     #[inline]
@@ -56,6 +66,9 @@ impl TestSummary {
             passed: self.passed.saturating_add(other.passed),
             timed_out: self.timed_out.saturating_add(other.timed_out),
             total: self.total.saturating_add(other.total),
+            teardown_failures: self
+                .teardown_failures
+                .saturating_add(other.teardown_failures),
         }
     }
 
@@ -70,6 +83,7 @@ impl TestSummary {
             passed: 0,
             timed_out: 0,
             total: 0,
+            teardown_failures: 0,
         }
     }
 }
@@ -85,6 +99,7 @@ impl From<SuiteSummary> for TestSummary {
             passed: s.passed,
             timed_out: s.timed_out,
             total: s.total,
+            teardown_failures: s.teardown_failures,
         }
     }
 }
@@ -179,6 +194,7 @@ fn status_tag(outcome_label: StatusLabel, colored: bool) -> (String, usize) {
         StatusLabel::Cancel => ("CANCEL", "33"),
         StatusLabel::Bench => ("BENCH", "32"),
         StatusLabel::BenchErr => ("BENCH", "31"),
+        StatusLabel::Setup => ("SETUP", "31"),
     };
     let naked = format!("[{word}]");
     let visible = naked.chars().count();
@@ -202,6 +218,7 @@ enum StatusLabel {
     Cancel,
     Bench,
     BenchErr,
+    Setup,
 }
 
 impl StatusLabel {
@@ -210,6 +227,7 @@ impl StatusLabel {
             TestOutcome::Passed { .. } => Self::Ok,
             TestOutcome::Failed { .. } => Self::Fail,
             TestOutcome::Panicked { .. } => Self::Panic,
+            TestOutcome::SetupFailed { .. } => Self::Setup,
             TestOutcome::TimedOut => Self::Timeout,
             TestOutcome::Cancelled => Self::Cancel,
             TestOutcome::Benched { report, .. } => {
@@ -229,7 +247,8 @@ fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
     match outcome {
         TestOutcome::Passed { elapsed }
         | TestOutcome::Failed { elapsed, .. }
-        | TestOutcome::Panicked { elapsed } => {
+        | TestOutcome::Panicked { elapsed }
+        | TestOutcome::SetupFailed { elapsed, .. } => {
             format!("<{runtime_name}, {}>", format_elapsed(*elapsed))
         }
         TestOutcome::TimedOut | TestOutcome::Cancelled => format!("<{runtime_name}>"),
@@ -309,6 +328,13 @@ struct FailureInfo {
 ///   dispatch already emits `TestCompleted` with the full outcome.
 struct ModeReporter {
     plain: Option<PlainState>,
+    /// Count of per-test teardown failures (Err or panic). The codegen
+    /// calls [`Self::report_test_teardown_failure`] from inside each
+    /// test's dispatch fn, where the per-thread `SuiteSummary` is not
+    /// in scope; this atomic lets the runner fold them into the
+    /// final `TestSummary.teardown_failures` so the run exits non-zero
+    /// when any per-test teardown failed.
+    test_teardown_failures: AtomicUsize,
 }
 
 struct PlainState {
@@ -326,8 +352,12 @@ impl ModeReporter {
                     fmt: config.format,
                     colored: use_color(config.color),
                 }),
+                test_teardown_failures: AtomicUsize::new(0),
             },
-            OutputMode::Live => Self { plain: None },
+            OutputMode::Live => Self {
+                plain: None,
+                test_teardown_failures: AtomicUsize::new(0),
+            },
         }
     }
 }
@@ -410,6 +440,7 @@ impl SuiteReporter for ModeReporter {
                     TestOutcome::Passed { .. } => ".".to_owned(),
                     TestOutcome::Failed { .. }
                     | TestOutcome::Panicked { .. }
+                    | TestOutcome::SetupFailed { .. }
                     | TestOutcome::TimedOut => red("F", p.colored),
                     TestOutcome::Cancelled => yellow("c", p.colored),
                     TestOutcome::Benched { report, .. } => {
@@ -466,6 +497,16 @@ impl SuiteReporter for ModeReporter {
                     message,
                 });
             }
+            TestOutcome::SetupFailed { message, .. } => {
+                let mut guard = p
+                    .failures
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                guard.push(FailureInfo {
+                    name: token.name,
+                    message: format!("test setup failed: {message}"),
+                });
+            }
             TestOutcome::Benched { report, .. } if !report.is_success() => {
                 let mut guard = p
                     .failures
@@ -489,6 +530,222 @@ impl SuiteReporter for ModeReporter {
 
     fn report_warning(&self, message: &str) {
         eprintln!("warning: {message}");
+    }
+
+    fn report_suite_setup_started(&self, runtime_name: &'static str, suite: &'static str) {
+        if let Some(p) = &self.plain {
+            if matches!(p.fmt, Format::Pretty) {
+                println!("setup    {suite} ... started <{runtime_name}>");
+            }
+            return;
+        }
+        output::send_lifecycle(LifecycleEvent::SuiteSetupStarted {
+            runtime_name,
+            suite,
+            thread: thread::current().id(),
+            at: Instant::now(),
+        });
+    }
+
+    fn report_suite_setup_finished(
+        &self,
+        runtime_name: &'static str,
+        suite: &'static str,
+        elapsed: Duration,
+        error: Option<&str>,
+    ) {
+        if let Some(p) = &self.plain {
+            if matches!(p.fmt, Format::Pretty) {
+                // Suite-level setup failure: render as [FAIL]. The
+                // [SETUP] tag is reserved for per-test
+                // SetupFailed outcomes, where it visually
+                // distinguishes a context-creation miss from a
+                // body-level [FAIL].
+                let label = if error.is_some() {
+                    StatusLabel::Fail
+                } else {
+                    StatusLabel::Ok
+                };
+                let (tag_rendered, tag_visible) = status_tag(label, p.colored);
+                let display = format!("setup {suite}");
+                let trailing = format!("<{runtime_name}, {}>", format_elapsed(elapsed));
+                let lhs_naked = format!("{:width$} {display}", "", width = tag_visible);
+                let lhs_rendered = format!("{tag_rendered} {display}");
+                let line =
+                    render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
+                println!("{line}");
+                if let Some(msg) = error {
+                    println!("  {}", red(&format!("error: {msg}"), p.colored));
+                }
+            }
+            if let Some(msg) = error {
+                let mut guard = p
+                    .failures
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                guard.push(FailureInfo {
+                    name: "<suite setup>",
+                    message: format!("setup {suite} [{runtime_name}]: {msg}"),
+                });
+            }
+            return;
+        }
+        output::send_lifecycle(LifecycleEvent::SuiteSetupFinished {
+            runtime_name,
+            suite,
+            thread: thread::current().id(),
+            elapsed,
+            error: error.map(str::to_owned),
+        });
+    }
+
+    fn report_suite_teardown_started(&self, runtime_name: &'static str, suite: &'static str) {
+        if let Some(p) = &self.plain {
+            if matches!(p.fmt, Format::Pretty) {
+                println!("teardown {suite} ... started <{runtime_name}>");
+            }
+            return;
+        }
+        output::send_lifecycle(LifecycleEvent::SuiteTeardownStarted {
+            runtime_name,
+            suite,
+            thread: thread::current().id(),
+            at: Instant::now(),
+        });
+    }
+
+    fn report_suite_teardown_finished(
+        &self,
+        runtime_name: &'static str,
+        suite: &'static str,
+        elapsed: Duration,
+        result: TeardownResult,
+    ) {
+        if let Some(p) = &self.plain {
+            if matches!(p.fmt, Format::Pretty) {
+                let label = match result {
+                    TeardownResult::Ok => StatusLabel::Ok,
+                    TeardownResult::Err(_) => StatusLabel::Fail,
+                    TeardownResult::Panicked(_) => StatusLabel::Panic,
+                };
+                let (tag_rendered, tag_visible) = status_tag(label, p.colored);
+                let display = format!("teardown {suite}");
+                let trailing = format!("<{runtime_name}, {}>", format_elapsed(elapsed));
+                let lhs_naked = format!("{:width$} {display}", "", width = tag_visible);
+                let lhs_rendered = format!("{tag_rendered} {display}");
+                let line =
+                    render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
+                println!("{line}");
+                match &result {
+                    TeardownResult::Ok => {}
+                    TeardownResult::Err(msg) => {
+                        println!("  {}", red(&format!("error: {msg}"), p.colored));
+                    }
+                    TeardownResult::Panicked(msg) => {
+                        println!("  {}", red(&format!("panic: {msg}"), p.colored));
+                    }
+                }
+            }
+            match result {
+                TeardownResult::Ok => {}
+                TeardownResult::Err(msg) => {
+                    let mut guard = p
+                        .failures
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    guard.push(FailureInfo {
+                        name: "<suite teardown>",
+                        message: format!("teardown {suite} [{runtime_name}]: {msg}"),
+                    });
+                }
+                TeardownResult::Panicked(msg) => {
+                    let mut guard = p
+                        .failures
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    guard.push(FailureInfo {
+                        name: "<suite teardown>",
+                        message: format!("teardown {suite} [{runtime_name}]: panic: {msg}"),
+                    });
+                }
+            }
+            return;
+        }
+        output::send_lifecycle(LifecycleEvent::SuiteTeardownFinished {
+            runtime_name,
+            suite,
+            thread: thread::current().id(),
+            elapsed,
+            result,
+        });
+    }
+
+    fn report_test_teardown_failure(
+        &self,
+        token: &'static TestToken,
+        runtime_name: &'static str,
+        result: TeardownResult,
+    ) {
+        if !matches!(result, TeardownResult::Ok) {
+            let _prev = self.test_teardown_failures.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Some(p) = &self.plain {
+            let display = format!("{}::{}", token.module_path, token.name);
+            if matches!(p.fmt, Format::Pretty) {
+                let label = match result {
+                    TeardownResult::Ok => return,
+                    TeardownResult::Err(_) => StatusLabel::Fail,
+                    TeardownResult::Panicked(_) => StatusLabel::Panic,
+                };
+                let (tag_rendered, tag_visible) = status_tag(label, p.colored);
+                let lhs_display = format!("teardown {display}");
+                let trailing = format!("<{runtime_name}>");
+                let lhs_naked = format!("{:width$} {lhs_display}", "", width = tag_visible);
+                let lhs_rendered = format!("{tag_rendered} {lhs_display}");
+                let line =
+                    render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
+                println!("{line}");
+                match &result {
+                    TeardownResult::Ok => {}
+                    TeardownResult::Err(msg) => {
+                        println!("  {}", red(&format!("error: {msg}"), p.colored));
+                    }
+                    TeardownResult::Panicked(msg) => {
+                        println!("  {}", red(&format!("panic: {msg}"), p.colored));
+                    }
+                }
+            }
+            match result {
+                TeardownResult::Ok => {}
+                TeardownResult::Err(msg) => {
+                    let mut guard = p
+                        .failures
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    guard.push(FailureInfo {
+                        name: token.name,
+                        message: format!("test teardown failed [{runtime_name}]: {msg}"),
+                    });
+                }
+                TeardownResult::Panicked(msg) => {
+                    let mut guard = p
+                        .failures
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    guard.push(FailureInfo {
+                        name: token.name,
+                        message: format!("test teardown panicked [{runtime_name}]: {msg}"),
+                    });
+                }
+            }
+            return;
+        }
+        output::send_lifecycle(LifecycleEvent::TestTeardownFailed {
+            module_path: token.module_path,
+            test_name: token.name,
+            runtime_name,
+            result,
+        });
     }
 }
 
@@ -633,6 +890,14 @@ pub fn run(cargo: crate::config::CargoMeta) -> ! {
             }
         });
 
+    // Per-test teardown failures aren't visible to the per-thread
+    // SuiteSummary (the per-test fn doesn't have it in scope), so fold
+    // the reporter's atomic counter in here.
+    let total = total.merge(TestSummary {
+        teardown_failures: reporter.test_teardown_failures.load(Ordering::Relaxed),
+        ..TestSummary::zero()
+    });
+
     let elapsed = start.elapsed();
 
     // Plain-mode summary rendering. Live mode lets the drawer handle
@@ -667,8 +932,8 @@ pub fn run(cargo: crate::config::CargoMeta) -> ! {
 
         println!(
             "test result: {}. {} passed; {} failed; {} panicked; {} timed out; \
-             {} cancelled; {} ignored; 0 measured; {} total; {} filtered out; \
-             finished in {elapsed:.2?}",
+             {} cancelled; {} ignored; {} teardown failed; 0 measured; {} total; \
+             {} filtered out; finished in {elapsed:.2?}",
             result_label,
             total.passed,
             total.failed,
@@ -676,6 +941,7 @@ pub fn run(cargo: crate::config::CargoMeta) -> ! {
             total.timed_out,
             total.cancelled,
             total.ignored,
+            total.teardown_failures,
             total.total,
             filtered_out,
         );

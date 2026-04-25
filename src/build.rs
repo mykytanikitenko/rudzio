@@ -387,8 +387,9 @@ impl BuildEnv {
 
 /// What [`expose_bins`] should do based on the sentinel env var and the
 /// relationship between `bin_crate` and the calling crate.
-#[derive(Debug, PartialEq, Eq)]
-enum SentinelAction {
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SentinelAction {
     /// No nested invocation in progress — run the full
     /// metadata/build/emit pipeline.
     Proceed,
@@ -410,7 +411,8 @@ enum SentinelAction {
 /// Extracted as a pure function for unit testability — `expose_bins`
 /// reads the sentinel and the calling crate's `CARGO_PKG_NAME` once,
 /// then feeds them through here.
-fn decide_sentinel_action(
+#[doc(hidden)]
+pub fn decide_sentinel_action(
     sentinel: Option<&std::ffi::OsStr>,
     bin_crate: &str,
     current_pkg: &str,
@@ -427,7 +429,8 @@ fn decide_sentinel_action(
 
 /// Returns `true` when the sentinel env var looks like it was set by
 /// an enclosing `expose_bins` invocation (present and non-empty).
-fn sentinel_indicates_nested_call(value: Option<&std::ffi::OsStr>) -> bool {
+#[doc(hidden)]
+pub fn sentinel_indicates_nested_call(value: Option<&std::ffi::OsStr>) -> bool {
     matches!(value, Some(v) if !v.is_empty())
 }
 
@@ -483,80 +486,3 @@ impl ProfileFlag {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::ffi::OsStr;
-
-    use super::{SentinelAction, decide_sentinel_action, sentinel_indicates_nested_call};
-
-    /// Top-level invocation: the sentinel hasn't been set yet, so we
-    /// proceed into the full pipeline regardless of the crate names.
-    #[test]
-    fn no_sentinel_means_proceed() {
-        assert_eq!(
-            decide_sentinel_action(None, "anything", "this-crate"),
-            SentinelAction::Proceed
-        );
-        assert_eq!(
-            decide_sentinel_action(None, "this-crate", "this-crate"),
-            SentinelAction::Proceed
-        );
-    }
-
-    /// `std::env::var_os` returns `Some("")` for env vars set to the
-    /// empty string. Treat that the same as absent so a stray
-    /// `__RUDZIO_EXPOSE_BINS_ACTIVE=` (no value) doesn't accidentally
-    /// short-circuit a legitimate top-level call.
-    #[test]
-    fn empty_sentinel_means_proceed() {
-        assert_eq!(
-            decide_sentinel_action(Some(OsStr::new("")), "x", "x"),
-            SentinelAction::Proceed
-        );
-    }
-
-    /// Same-crate re-entry: outer `expose_bins("file-v3")` ran from
-    /// file-v3's own build.rs, spawned `cargo build --bins -p file-v3`
-    /// with the sentinel set, which re-runs file-v3's build.rs and
-    /// re-enters expose_bins. Silent Ok lets the outer call's nested
-    /// cargo finish building the bins without warning noise.
-    #[test]
-    fn sentinel_set_same_crate_silent_ok() {
-        assert_eq!(
-            decide_sentinel_action(Some(OsStr::new("1")), "file-v3", "file-v3"),
-            SentinelAction::SilentOk
-        );
-    }
-
-    /// Cross-crate re-entry under a set sentinel: A's build.rs called
-    /// `expose_bins("B")`, B's build.rs calls `expose_bins("A")` (a
-    /// real cycle), or any longer chain that loops back. Warn so the
-    /// user sees the misconfiguration; return Ok so we don't recurse
-    /// further.
-    #[test]
-    fn sentinel_set_different_crate_warn_and_ok() {
-        assert_eq!(
-            decide_sentinel_action(Some(OsStr::new("1")), "A", "B"),
-            SentinelAction::WarnAndOk
-        );
-    }
-
-    /// Sentinel detector recognises any non-empty value. Consumers
-    /// can't accidentally bypass the guard by writing something
-    /// non-canonical into the env var.
-    #[test]
-    fn sentinel_detector_recognises_any_non_empty_value() {
-        assert!(sentinel_indicates_nested_call(Some(OsStr::new("1"))));
-        assert!(sentinel_indicates_nested_call(Some(OsStr::new("yes"))));
-        assert!(sentinel_indicates_nested_call(Some(OsStr::new("0"))));
-    }
-
-    /// Absent or empty sentinel must not be treated as nested, so
-    /// normal first-level invocations aren't accidentally
-    /// short-circuited.
-    #[test]
-    fn sentinel_detector_ignores_absent_or_empty() {
-        assert!(!sentinel_indicates_nested_call(None));
-        assert!(!sentinel_indicates_nested_call(Some(OsStr::new(""))));
-    }
-}

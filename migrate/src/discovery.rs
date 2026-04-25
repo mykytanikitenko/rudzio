@@ -38,6 +38,13 @@ pub struct Package {
     /// and Rust's nested submodule resolution doesn't honour the
     /// parent's `#[path]`.
     pub uses_lib_aggregation: bool,
+    /// Names of every `[[bin]]` target in the package (explicit and
+    /// auto-discovered under `src/bin/`). Post-migration, each gets a
+    /// `[[bin]] test = false` entry so `cargo test` doesn't fire up
+    /// the default libtest harness per bin — the rudzio-main binaries
+    /// have no `#[test]` fns and would otherwise emit empty
+    /// "running 0 tests" noise on every run.
+    pub bin_names: Vec<String>,
 }
 
 /// A `mod X;` declaration captured from `src/lib.rs`. Declaration
@@ -79,6 +86,18 @@ pub fn discover(repo_root: &Path) -> Result<Vec<Package>> {
         let tests_files = collect_rs(&root.join("tests"));
         let lib_modules = collect_lib_modules(&root);
         let uses_lib_aggregation = needs_lib_aggregation(&root, &lib_modules);
+        let mut bin_names: Vec<String> = pkg
+            .targets
+            .iter()
+            .filter(|t| {
+                t.kind
+                    .iter()
+                    .any(|k| matches!(k, cargo_metadata::TargetKind::Bin))
+            })
+            .map(|t| t.name.clone())
+            .collect();
+        bin_names.sort();
+        bin_names.dedup();
         packages.push(Package {
             name: pkg.name.to_string(),
             manifest_path,
@@ -87,6 +106,7 @@ pub fn discover(repo_root: &Path) -> Result<Vec<Package>> {
             tests_files,
             lib_modules,
             uses_lib_aggregation,
+            bin_names,
         });
     }
     packages.sort_by(|a, b| a.name.cmp(&b.name));

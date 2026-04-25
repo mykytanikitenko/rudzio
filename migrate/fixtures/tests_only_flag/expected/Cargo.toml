@@ -5,6 +5,9 @@ edition = "2024"
 
 [dependencies]
 
+[lib]
+test = false
+
 [dev-dependencies]
 rudzio = { version = "0.1", features = ["common", "runtime-tokio-multi-thread"] }
 anyhow = "1.0"

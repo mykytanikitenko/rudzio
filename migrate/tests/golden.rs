@@ -248,6 +248,11 @@ mod tests {
         run_fixture("nested_parent_mod_not_promoted");
         ::core::result::Result::Ok(())
     }
+    #[::rudzio::test]
+    async fn golden_crate_with_bins(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("crate_with_bins");
+        ::core::result::Result::Ok(())
+    }
     /* pre-migration (rudzio-migrate):
     #[test]
     fn golden_dirty_tree_refusal() {

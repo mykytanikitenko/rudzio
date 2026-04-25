@@ -294,12 +294,15 @@ mod tests {
             out.status.code() == Some(1),
             "expected exit 1, output:\n{log}"
         );
-        anyhow::ensure!(
-            log.contains("FATAL: failed to create suite context"),
-            "output:\n{log}"
-        );
+        // The new lifecycle line + the error's Display must both appear.
+        anyhow::ensure!(log.contains("[FAIL]"), "output:\n{log}");
+        anyhow::ensure!(log.contains("setup "), "output:\n{log}");
         anyhow::ensure!(log.contains("setup_failed_by_design"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 panicked"), "output:\n{log}");
+        // Tests that never ran are reported as Cancelled, not Panicked.
+        anyhow::ensure!(log.contains("1 cancelled"), "output:\n{log}");
+        anyhow::ensure!(log.contains("0 panicked"), "output:\n{log}");
+        // No test emits an [OK] tag; setup failed before teardown ran, so
+        // the [OK] teardown line never gets emitted either.
         anyhow::ensure!(!log.contains("[OK]"), "output:\n{log}");
         Ok(())
     }
@@ -314,14 +317,190 @@ mod tests {
         );
         anyhow::ensure!(log.contains("first"), "output:\n{log}");
         anyhow::ensure!(log.contains("second"), "output:\n{log}");
+        // Per-test context failures get the distinct [SETUP] status tag
+        // so they're visually different from a regular [FAIL].
+        anyhow::ensure!(log.contains("[SETUP]"), "output:\n{log}");
         // The error's Display must be propagated through the failure output.
         anyhow::ensure!(
             log.contains("context_creation_failed_by_design"),
             "output:\n{log}"
         );
+        // SetupFailed counts toward the `failed` bucket (it's a kind of
+        // failure), preserving the summary-stat semantics.
         anyhow::ensure!(log.contains("2 failed"), "output:\n{log}");
         anyhow::ensure!(log.contains("0 passed"), "output:\n{log}");
         anyhow::ensure!(log.contains("0 panicked"), "output:\n{log}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn suite_setup_and_teardown_lines_appear_in_passing_run(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
+        // A normal passing run must emit visible setup/teardown
+        // lifecycle lines so the user knows the suite phases happened
+        // (the whole point of the new output: see *that* it's
+        // happening, not just *whether* it failed).
+        let out = run(env!("CARGO_BIN_EXE_passing_tokio_mt"));
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(0),
+            "expected exit 0, output:\n{log}"
+        );
+        // "started" lines for setup and teardown both fire in plain
+        // mode regardless of outcome.
+        anyhow::ensure!(
+            log.contains("setup ") && log.contains("started"),
+            "missing setup started line:\n{log}"
+        );
+        anyhow::ensure!(
+            log.contains("teardown ") && log.contains("started"),
+            "missing teardown started line:\n{log}"
+        );
+        // And on success both phases close with an [OK] line.
+        anyhow::ensure!(
+            log.matches("[OK]").count() >= 2,
+            "expected at least 2 [OK] occurrences (setup + teardown), got:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn suite_teardown_failure_is_reported(_ctx: &Test) -> anyhow::Result<()> {
+        // Teardown errors used to print as a one-line `warning:` and
+        // were easy to miss. Now they emit a `[FAIL] teardown` line
+        // carrying the error message and contribute to the
+        // teardown_failures count, which drives the run's exit code.
+        let out = run(env!("CARGO_BIN_EXE_teardown_failure_tokio_mt"));
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(1),
+            "expected exit 1 (teardown failure fails the run), output:\n{log}"
+        );
+        // Setup succeeded → an [OK] line for setup must be present.
+        anyhow::ensure!(
+            log.contains("[OK]") && log.contains("setup "),
+            "missing setup OK line:\n{log}"
+        );
+        // The teardown failure line + error message must both appear.
+        anyhow::ensure!(log.contains("[FAIL]"), "output:\n{log}");
+        anyhow::ensure!(log.contains("teardown "), "output:\n{log}");
+        anyhow::ensure!(log.contains("teardown_failed_by_design"), "output:\n{log}");
+        // The test body itself ran successfully.
+        anyhow::ensure!(log.contains("body_runs_then_teardown_fails"), "output:\n{log}");
+        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
+        anyhow::ensure!(log.contains("1 teardown failed"), "output:\n{log}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn suite_setup_panic_is_caught_and_reported(_ctx: &Test) -> anyhow::Result<()> {
+        // catch_unwind wrapper around Suite::setup turns the panic
+        // into a structured `[FAIL] setup` line carrying the panic
+        // message instead of unwinding through the runtime thread
+        // (which would print the generic "runtime thread panicked").
+        let out = run(env!("CARGO_BIN_EXE_panic_in_suite_setup_tokio_mt"));
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(1),
+            "expected exit 1, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("[FAIL]"), "missing FAIL tag:\n{log}");
+        anyhow::ensure!(log.contains("setup "), "missing setup line:\n{log}");
+        anyhow::ensure!(
+            log.contains("suite_setup_panicked_by_design"),
+            "panic message must propagate, output:\n{log}"
+        );
+        // Should NOT see the generic thread-panic diagnostic from the
+        // runner's catch-all — that would mean catch_unwind didn't fire.
+        anyhow::ensure!(
+            !log.contains("runtime thread panicked"),
+            "panic escaped catch_unwind, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("1 cancelled"), "output:\n{log}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn suite_teardown_panic_is_caught_and_reported(_ctx: &Test) -> anyhow::Result<()> {
+        let out = run(env!("CARGO_BIN_EXE_panic_in_suite_teardown_tokio_mt"));
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(1),
+            "expected exit 1, output:\n{log}"
+        );
+        // Setup ran ok; body ran ok; teardown panicked.
+        anyhow::ensure!(
+            log.contains("[OK]") && log.contains("setup "),
+            "missing setup OK line:\n{log}"
+        );
+        anyhow::ensure!(log.contains("[PANIC]"), "missing PANIC tag:\n{log}");
+        anyhow::ensure!(log.contains("teardown "), "missing teardown line:\n{log}");
+        anyhow::ensure!(
+            log.contains("suite_teardown_panicked_by_design"),
+            "panic message must propagate, output:\n{log}"
+        );
+        anyhow::ensure!(
+            !log.contains("runtime thread panicked"),
+            "panic escaped catch_unwind, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
+        anyhow::ensure!(log.contains("1 teardown failed"), "output:\n{log}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn test_setup_panic_is_caught_and_reported(_ctx: &Test) -> anyhow::Result<()> {
+        // catch_unwind around `Suite::context` turns a per-test setup
+        // panic into a `TestOutcome::SetupFailed` carrying the panic
+        // message — rendered with the `[SETUP]` status tag.
+        let out = run(env!("CARGO_BIN_EXE_panic_in_test_setup_tokio_mt"));
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(1),
+            "expected exit 1, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("[SETUP]"), "missing SETUP tag:\n{log}");
+        anyhow::ensure!(log.contains("body_never_runs"), "output:\n{log}");
+        anyhow::ensure!(
+            log.contains("test_setup_panicked_by_design"),
+            "panic message must propagate, output:\n{log}"
+        );
+        anyhow::ensure!(
+            !log.contains("runtime thread panicked"),
+            "panic escaped catch_unwind, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("1 failed"), "output:\n{log}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn test_teardown_panic_is_caught_and_reported(_ctx: &Test) -> anyhow::Result<()> {
+        // catch_unwind around `Test::teardown` routes the panic
+        // through the structured `report_test_teardown_failure`
+        // method (no `report_warning` escape hatch), bumps the
+        // per-test teardown counter, and the run exits non-zero.
+        let out = run(env!("CARGO_BIN_EXE_panic_in_test_teardown_tokio_mt"));
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(1),
+            "expected exit 1, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("[PANIC]"), "missing PANIC tag:\n{log}");
+        anyhow::ensure!(
+            log.contains("body_runs_then_teardown_panics"),
+            "output:\n{log}"
+        );
+        anyhow::ensure!(
+            log.contains("test_teardown_panicked_by_design"),
+            "panic message must propagate, output:\n{log}"
+        );
+        anyhow::ensure!(
+            !log.contains("runtime thread panicked"),
+            "panic escaped catch_unwind, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
+        anyhow::ensure!(log.contains("1 teardown failed"), "output:\n{log}");
         Ok(())
     }
 
@@ -668,6 +847,35 @@ mod unix_tests {
             "queued test must not start after SIGINT, output:\n{log}"
         );
         anyhow::ensure!(log.contains("1 cancelled"), "output:\n{log}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn two_suites_same_tuple_collapse_into_one_group(_ctx: &Test) -> anyhow::Result<()> {
+        let out = run(env!("CARGO_BIN_EXE_group_dedup_tokio_mt"));
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(0),
+            "fixture must exit 0 (both tests pass), output:\n{log}"
+        );
+        let setup_lines = log.matches("COUNTING_SUITE_SETUP").count();
+        let teardown_lines = log.matches("COUNTING_SUITE_TEARDOWN").count();
+        anyhow::ensure!(
+            setup_lines == 1,
+            "expected exactly 1 Suite::setup invocation across both \
+             `#[rudzio::suite]` blocks sharing the same (runtime, \
+             suite, test) tuple; counted {setup_lines}, output:\n{log}",
+        );
+        anyhow::ensure!(
+            teardown_lines == 1,
+            "expected exactly 1 Suite::teardown invocation; counted \
+             {teardown_lines}, output:\n{log}",
+        );
+        anyhow::ensure!(
+            log.contains("in_first_mod") && log.contains("in_second_mod"),
+            "both tests must have run under the collapsed group, output:\n{log}",
+        );
+        anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
         Ok(())
     }
 

@@ -74,6 +74,14 @@ pub enum TestOutcome {
     Panicked {
         elapsed: Duration,
     },
+    /// The per-test context creation (`Suite::context`) returned `Err`
+    /// before the test body could run. Counted as a failure for
+    /// summary / exit-code purposes but rendered with a distinct
+    /// `[SETUP]` status tag so the user sees that the test never ran.
+    SetupFailed {
+        elapsed: Duration,
+        message: String,
+    },
     TimedOut,
     Cancelled,
     /// The test ran under a [`crate::bench::Strategy`]. `report.is_success()`
@@ -82,6 +90,36 @@ pub enum TestOutcome {
         elapsed: Duration,
         report: BenchReport,
     },
+}
+
+/// Result of a `Suite::teardown` (or per-test teardown) call. Used by
+/// reporter lifecycle events so the drawer can distinguish a clean
+/// teardown from a propagated error from a panic.
+///
+/// `Panicked` carries the panic payload's display form when one is
+/// available (see [`panic_payload_message`]) so the user sees what
+/// actually panicked, not just that something did.
+#[derive(Debug, Clone)]
+pub enum TeardownResult {
+    Ok,
+    Err(String),
+    Panicked(String),
+}
+
+/// Extract a human-readable message from a `catch_unwind` panic
+/// payload. Rust's panic payload is `Box<dyn Any + Send>`; the common
+/// shapes are `&'static str` and `String`. Anything else is reported
+/// as a generic placeholder so the user still sees that *something*
+/// panicked rather than getting nothing.
+#[must_use]
+pub fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_owned()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "panic with non-string payload".to_owned()
+    }
 }
 
 /// Aggregated per-group counts.
@@ -94,6 +132,11 @@ pub struct SuiteSummary {
     pub cancelled: usize,
     pub ignored: usize,
     pub total: usize,
+    /// Number of suite-level teardown calls that returned `Err` or
+    /// panicked. Bumped from the macro-generated dispatch after a
+    /// teardown finishes; participates in [`is_success`](crate::runner::TestSummary::is_success)
+    /// so a botched teardown fails the run even if every test passed.
+    pub teardown_failures: usize,
 }
 
 impl SuiteSummary {
@@ -108,6 +151,7 @@ impl SuiteSummary {
             cancelled: 0,
             ignored: 0,
             total: 0,
+            teardown_failures: 0,
         }
     }
 
@@ -122,6 +166,7 @@ impl SuiteSummary {
             cancelled: self.cancelled.saturating_add(other.cancelled),
             ignored: self.ignored.saturating_add(other.ignored),
             total: self.total.saturating_add(other.total),
+            teardown_failures: self.teardown_failures.saturating_add(other.teardown_failures),
         }
     }
 }
@@ -143,8 +188,45 @@ pub trait SuiteReporter: Send + Sync {
         runtime_name: &'static str,
         outcome: TestOutcome,
     );
-    /// Non-fatal diagnostic (teardown failures, etc.).
+    /// Non-fatal diagnostic (runtime construction failure, etc.).
     fn report_warning(&self, message: &str);
+    /// A suite is about to start `Suite::setup`. Paired with
+    /// [`Self::report_suite_setup_finished`] so the drawer can show
+    /// "setup in progress" and the user can see which suite is being
+    /// initialised.
+    fn report_suite_setup_started(&self, runtime_name: &'static str, suite: &'static str);
+    /// `Suite::setup` returned. `error` is `None` on success and
+    /// `Some(message)` on failure. `elapsed` is the wall-clock time
+    /// the setup call took.
+    fn report_suite_setup_finished(
+        &self,
+        runtime_name: &'static str,
+        suite: &'static str,
+        elapsed: Duration,
+        error: Option<&str>,
+    );
+    /// A suite is about to start `Suite::teardown`. Paired with
+    /// [`Self::report_suite_teardown_finished`].
+    fn report_suite_teardown_started(&self, runtime_name: &'static str, suite: &'static str);
+    /// `Suite::teardown` returned (possibly via panic).
+    fn report_suite_teardown_finished(
+        &self,
+        runtime_name: &'static str,
+        suite: &'static str,
+        elapsed: Duration,
+        result: TeardownResult,
+    );
+    /// A per-test teardown (`Test::teardown`) returned `Err` or
+    /// panicked. The test's own outcome was already reported via
+    /// [`Self::report_outcome`]; this method surfaces the cleanup
+    /// failure as a separate, visible event and lets the runner bump
+    /// its teardown-failure counter.
+    fn report_test_teardown_failure(
+        &self,
+        token: &'static TestToken,
+        runtime_name: &'static str,
+        result: TeardownResult,
+    );
 }
 
 /// Inputs handed to [`RuntimeGroupOwner::run_group`].

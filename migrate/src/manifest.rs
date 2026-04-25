@@ -30,6 +30,11 @@ pub struct ManifestEdits {
     /// emit — Cargo would complain about `[lib]` with no actual
     /// lib target — and we skip that edit.
     pub has_lib_rs: bool,
+    /// `[[bin]]` target names from `cargo metadata`. Each one gets a
+    /// `[[bin]] test = false` entry in the manifest after migration,
+    /// so the rudzio-main binaries don't fire libtest on every
+    /// `cargo test` pass with zero test functions to report.
+    pub bin_names: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +65,12 @@ pub fn apply(manifest_path: &Path, edits: &ManifestEdits) -> Result<bool> {
             // have a library that doesn't exist.
             set_lib_harness_false(&mut doc);
         }
+    }
+    if edits.has_lib_rs {
+        set_lib_test_false(&mut doc);
+    }
+    for name in &edits.bin_names {
+        set_bin_test_false(&mut doc, name);
     }
     set_rudzio_dependency(
         &mut doc,
@@ -120,6 +131,66 @@ fn set_lib_harness_false(doc: &mut DocumentMut) {
         return;
     }
     let _prev = lib_tbl.insert("harness", value(false));
+}
+
+/// `[lib] test = false` suppresses cargo's default libtest "unit
+/// tests" pass on the lib. Post-migration the lib has no stock
+/// `#[test]` fns — they've been rewritten into `#[rudzio::test]`
+/// and run via `#[rudzio::main]` — so the libtest pass is empty
+/// noise. Respects an explicit `test = true` override.
+fn set_lib_test_false(doc: &mut DocumentMut) {
+    let lib = doc
+        .as_table_mut()
+        .entry("lib")
+        .or_insert(Item::Table(Table::new()));
+    let Some(lib_tbl) = lib.as_table_mut() else {
+        return;
+    };
+    let user_opted_in = lib_tbl
+        .get("test")
+        .and_then(|v| v.as_value())
+        .and_then(toml_edit::Value::as_bool)
+        .is_some_and(|b| b);
+    if user_opted_in {
+        return;
+    }
+    let _prev = lib_tbl.insert("test", value(false));
+}
+
+/// Ensure `[[bin]] name = "<name>"` has `test = false`. If an entry
+/// already exists for that name, amend it in place; otherwise append
+/// a minimal `name + test` entry. Cargo merges these with
+/// auto-discovered bins (keyed by name), so we don't need to specify
+/// `path`.
+fn set_bin_test_false(doc: &mut DocumentMut, bin_name: &str) {
+    let bins_item = doc
+        .as_table_mut()
+        .entry("bin")
+        .or_insert(Item::ArrayOfTables(toml_edit::ArrayOfTables::new()));
+    let Some(arr) = bins_item.as_array_of_tables_mut() else {
+        return;
+    };
+    for existing in arr.iter_mut() {
+        let name_match = existing
+            .get("name")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s == bin_name);
+        if name_match {
+            let already_false = existing
+                .get("test")
+                .and_then(|v| v.as_value())
+                .and_then(toml_edit::Value::as_bool)
+                .is_some_and(|b| !b);
+            if !already_false {
+                let _prev = existing.insert("test", value(false));
+            }
+            return;
+        }
+    }
+    let mut tbl = Table::new();
+    let _prev_name = tbl.insert("name", value(bin_name.to_owned()));
+    let _prev_test = tbl.insert("test", value(false));
+    arr.push(tbl);
 }
 
 fn set_rudzio_dependency(

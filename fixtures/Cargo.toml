@@ -31,6 +31,155 @@ name = "main"
 path = "tests/main.rs"
 harness = false
 
+# Each fixture bin is a `#[rudzio::main]` binary, not a libtest target;
+# `test = false` suppresses cargo's default "unittests src/bin/<name>.rs"
+# pass that would otherwise compile and run each bin once under libtest
+# with 0 #[test] fns, cluttering `cargo test` output with empty result
+# lines. Paths are implicit (`src/bin/<name>.rs`).
+[[bin]]
+name = "cancel_token_propagation_tokio_mt"
+test = false
+
+[[bin]]
+name = "context_creation_failure_tokio_mt"
+test = false
+
+[[bin]]
+name = "cross_runtime_parallel"
+test = false
+
+[[bin]]
+name = "custom_context_tokio_mt"
+test = false
+
+[[bin]]
+name = "failing_tokio_mt"
+test = false
+
+[[bin]]
+name = "gradual_cancel_tokio_mt"
+test = false
+
+[[bin]]
+name = "group_dedup_tokio_mt"
+test = false
+
+[[bin]]
+name = "ignored_tokio_mt"
+test = false
+
+[[bin]]
+name = "multi_file_suite"
+test = false
+
+[[bin]]
+name = "multi_panic_ordering_tokio_mt"
+test = false
+
+[[bin]]
+name = "multi_runtime"
+test = false
+
+[[bin]]
+name = "mutable_test_context"
+test = false
+
+[[bin]]
+name = "panic_in_suite_setup_tokio_mt"
+test = false
+
+[[bin]]
+name = "panic_in_suite_teardown_tokio_mt"
+test = false
+
+[[bin]]
+name = "panic_in_test_setup_tokio_mt"
+test = false
+
+[[bin]]
+name = "panic_in_test_teardown_tokio_mt"
+test = false
+
+[[bin]]
+name = "panics_tokio_mt"
+test = false
+
+[[bin]]
+name = "parallel_tokio_mt"
+test = false
+
+[[bin]]
+name = "passing_compio"
+test = false
+
+[[bin]]
+name = "passing_embassy"
+test = false
+
+[[bin]]
+name = "passing_futures"
+test = false
+
+[[bin]]
+name = "passing_tokio_ct"
+test = false
+
+[[bin]]
+name = "passing_tokio_local"
+test = false
+
+[[bin]]
+name = "passing_tokio_mt"
+test = false
+
+[[bin]]
+name = "per_test_timeout_tokio_mt"
+test = false
+
+[[bin]]
+name = "plain_test_attr_tokio_mt"
+test = false
+
+[[bin]]
+name = "repro_drop_barrier"
+test = false
+
+[[bin]]
+name = "run_timeout_tokio_mt"
+test = false
+
+[[bin]]
+name = "setup_failure_tokio_mt"
+test = false
+
+[[bin]]
+name = "sigint_cancel_tokio_mt"
+test = false
+
+[[bin]]
+name = "spawn_blocking_tokio_mt"
+test = false
+
+[[bin]]
+name = "spawn_tracked"
+test = false
+
+[[bin]]
+name = "sync_mixed_tokio_mt"
+test = false
+
+[[bin]]
+name = "teardown_always_runs_tokio_mt"
+test = false
+
+[[bin]]
+name = "teardown_failure_tokio_mt"
+test = false
+
+[[bin]]
+name = "tracker_drain_tokio_mt"
+test = false
+
 # Cargo forbids mixing `lints.workspace = true` with per-crate `[lints.*]`
 # table overrides, so the workspace lint policy is mirrored here and a few
 # test-code allows are appended. Keep the mirrored block in sync with the

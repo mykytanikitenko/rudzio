@@ -56,6 +56,7 @@
             # Additional tools
             pkgs.jq
             pkgs.podman
+            pkgs.git
           ];
 
           shellHook = ''
