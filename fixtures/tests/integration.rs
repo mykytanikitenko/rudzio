@@ -851,6 +851,150 @@ mod unix_tests {
     }
 
     #[rudzio::test]
+    fn stdio_is_attributed_to_the_originating_test(_ctx: &Test) -> anyhow::Result<()> {
+        // Plain mode (when stdout is a pipe, as in this integration
+        // test) keeps each test's stdout/stderr on its own stream
+        // without merging. Attribution is provable via ordering:
+        // alpha/beta/gamma run serially, so within each stream the
+        // per-test lines must appear in that order, each test's
+        // stdout lines bracketed by its own lifecycle markers on the
+        // stdout stream, and its stderr lines bracketed by the
+        // neighbouring tests' stderr markers. The panic payload goes
+        // to stderr — must appear AFTER gamma's stderr markers and
+        // proves the runner routed the panic through the owning
+        // test's stream.
+        let out = run(env!("CARGO_BIN_EXE_stdio_attribution_tokio_mt"));
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        anyhow::ensure!(
+            out.status.code() == Some(1),
+            "expected exit 1 (one panic)\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        );
+
+        fn index_of<'a>(hay: &'a str, needle: &str) -> anyhow::Result<usize> {
+            hay.find(needle)
+                .ok_or_else(|| anyhow::anyhow!("`{needle}` missing"))
+        }
+        fn ordered<'a>(hay: &'a str, needles: &[&str]) -> anyhow::Result<()> {
+            let mut last = 0_usize;
+            for n in needles {
+                let pos = index_of(hay, n).map_err(|e| {
+                    anyhow::anyhow!("{e} in stream:\n{hay}")
+                })?;
+                anyhow::ensure!(
+                    pos >= last,
+                    "`{n}` found at {pos} but expected at >= {last} (previous neighbour). Stream:\n{hay}",
+                );
+                last = pos;
+            }
+            Ok(())
+        }
+
+        // stdout stream: each test's stdout lines appear between its
+        // own lifecycle start and the next test's lifecycle start,
+        // in the order alpha < beta < gamma.
+        ordered(
+            &stdout,
+            &[
+                "[OK]      setup stdio_attribution_tokio_mt::tests",
+                "alpha_stdout_line_1",
+                "alpha_stdout_line_2",
+                "alpha_stdout_line_3",
+                "[OK]      stdio_attribution_tokio_mt::alpha",
+                "beta_stdout_line_1",
+                "beta_stdout_line_2",
+                "beta_stdout_line_3",
+                "[OK]      stdio_attribution_tokio_mt::beta",
+                "gamma_stdout_line_1",
+                "gamma_stdout_line_2",
+                "gamma_stdout_line_3",
+                "[PANIC]   stdio_attribution_tokio_mt::gamma_panics",
+            ],
+        )?;
+
+        // stderr stream: each test's stderr lines appear in the
+        // same order; panic payload comes after gamma's stderr
+        // markers (proving the runner's panic-capture attributed
+        // the unwind message to the owning test's stderr, not to
+        // someone else's block or a floating process-wide stream).
+        ordered(
+            &stderr,
+            &[
+                "alpha_stderr_line_1",
+                "alpha_stderr_line_2",
+                "alpha_stderr_line_3",
+                "beta_stderr_line_1",
+                "beta_stderr_line_2",
+                "beta_stderr_line_3",
+                "gamma_stderr_line_1",
+                "gamma_stderr_line_2",
+                "gamma_stderr_line_3",
+                "gamma_panic_message_line_1",
+                "gamma_panic_message_line_2",
+            ],
+        )?;
+
+        // Cross-stream hygiene: stdout markers never appear on
+        // stderr and stderr markers never appear on stdout. If the
+        // runner ever starts routing stdio through a shared channel,
+        // this guard triggers.
+        for s in [
+            "alpha_stderr_line_1",
+            "beta_stderr_line_1",
+            "gamma_stderr_line_1",
+            "gamma_panic_message_line_1",
+        ] {
+            anyhow::ensure!(
+                !stdout.contains(s),
+                "stderr marker `{s}` leaked into stdout:\n{stdout}",
+            );
+        }
+        for s in [
+            "alpha_stdout_line_1",
+            "beta_stdout_line_1",
+            "gamma_stdout_line_1",
+        ] {
+            anyhow::ensure!(
+                !stderr.contains(s),
+                "stdout marker `{s}` leaked into stderr:\n{stderr}",
+            );
+        }
+
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn teardown_always_runs_and_trackers_drain(_ctx: &Test) -> anyhow::Result<()> {
+        // Proves two invariants in one fixture:
+        //   1. Test::teardown is called exactly once per test, across
+        //      the full outcome matrix we exercise here (pass, fail,
+        //      panic).
+        //   2. Both the per-test and suite TaskTracker drain — every
+        //      spawned tracked task is observed as completed by the
+        //      matching teardown before it returns.
+        // The fixture's Suite::teardown prints one INVARIANTS_CHECK
+        // line with the eight counters; we parse it and assert.
+        let out = run(env!("CARGO_BIN_EXE_teardown_invariants_tokio_mt"));
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(1),
+            "expected exit 1 (fail + panic by design), output:\n{log}",
+        );
+        let line = log
+            .lines()
+            .find(|l| l.contains("INVARIANTS_CHECK"))
+            .ok_or_else(|| anyhow::anyhow!(
+                "INVARIANTS_CHECK line missing — Suite::teardown never ran, output:\n{log}"
+            ))?;
+        let expected = "INVARIANTS_CHECK suite_setup=1 suite_teardown=1 test_setup=3 test_teardown=3 test_tasks_spawned=3 test_tasks_completed=3 suite_tasks_spawned=1 suite_tasks_completed=1";
+        anyhow::ensure!(
+            line.contains(expected),
+            "invariants mismatch\n  expected: {expected}\n  got: {line}\n  full output:\n{log}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
     fn two_suites_same_tuple_collapse_into_one_group(_ctx: &Test) -> anyhow::Result<()> {
         let out = run(env!("CARGO_BIN_EXE_group_dedup_tokio_mt"));
         let log = log_of(&out);

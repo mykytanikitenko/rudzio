@@ -173,6 +173,10 @@ name = "spawn_tracked"
 test = false
 
 [[bin]]
+name = "stdio_attribution_tokio_mt"
+test = false
+
+[[bin]]
 name = "sync_mixed_tokio_mt"
 test = false
 
@@ -182,6 +186,10 @@ test = false
 
 [[bin]]
 name = "teardown_failure_tokio_mt"
+test = false
+
+[[bin]]
+name = "teardown_invariants_tokio_mt"
 test = false
 
 [[bin]]
