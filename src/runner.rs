@@ -813,6 +813,15 @@ impl SuiteReporter for ModeReporter {
 /// belong to that crate, not rudzio).
 pub fn run(cargo: crate::config::CargoMeta) -> ! {
     let config = Config::parse(cargo);
+
+    // --help / -h: print USAGE to real stdout and exit before the
+    // output-capture pipe is installed, so the help text reaches the
+    // user's terminal directly.
+    if config.help {
+        print!("{}", crate::config::USAGE);
+        process::exit(0);
+    }
+
     let colored_plain = matches!(config.output_mode, OutputMode::Plain) && use_color(config.color);
 
     // Output capture + render. In Plain mode returns a no-op guard

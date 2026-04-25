@@ -163,3 +163,12 @@ too_long_first_doc_paragraph = "allow"
 name = "main"
 path = "tests/main.rs"
 harness = false
+
+# The golden-test harness relies on CARGO_MANIFEST_DIR pointing at
+# migrate/ to locate its fixture trees. When the aggregator
+# `#[path]`-includes the file, CARGO_MANIFEST_DIR becomes the
+# aggregator's dir and the fixtures can't be found — runtime panics.
+# Keep the golden tests on the per-crate `cargo test -p rudzio-migrate`
+# path and skip them in `cargo rudzio test`.
+[package.metadata.rudzio]
+exclude = ["tests/golden.rs"]

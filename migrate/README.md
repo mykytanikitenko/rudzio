@@ -3,52 +3,36 @@
 Best-effort converter of stock cargo-style Rust tests into [rudzio]-shaped
 tests. Takes a git repo whose working tree is clean, rewrites every
 recognised test attribute in place, edits `Cargo.toml` for both the lib's
-own `[lib] harness = false` test target and the integration `[[test]]
-harness = false` binaries, appends `#[cfg(test)] #[rudzio::main] fn
-main() {}` to `src/lib.rs` when there are src-resident unit tests, and
+own `[lib] harness = false` test target and the integration
+`[[test]] harness = false` binaries, appends `#[cfg(test)] #[rudzio::main]
+fn main() {}` to `src/lib.rs` when there are src-resident unit tests, and
 leaves a per-file backup plus an inline block-comment copy of every
-converted function so you can diff at the fn level without leaving the
-editor.
+converted function.
 
-**It is not magic**, and the tool is openly honest about that: it does
-not guarantee that the generated code compiles, that your tests still
-pass, or that their original meaning is preserved. The realistic outcome
-on a non-trivial codebase is "mostly compiles, a handful of warnings,
-run `git diff` and fix the rest". On the `application-layer/workflow-orchestrator`
-slice of a real multi-crate repo it migrated 178 tests across 37 files
-with 0 `cargo check` errors and 19 file:line-specific warnings. Your
-mileage will vary.
+The tool does not guarantee that the generated code compiles, that tests
+still pass, or that their original meaning is preserved. Expected outcome
+on a non-trivial codebase: most tests compile on first pass, a short
+warning list at file:line, a handful of manual fix-ups spotted via `git
+diff`.
 
-The tool eats its own dog food — `migrate/` is itself migrated and its
+The migrator is dogfooded — `migrate/` itself is migrated and its
 integration tests run through rudzio's runner.
 
 [rudzio]: https://github.com/mykytanikitenko/rudzio
 
-## Why this exists (and the honest caveat)
+## Why this exists
 
-The author wrote rudzio for a personal real-world rollout: adopting
-it on an existing multi-crate platform meant converting hundreds of
-`#[test]` / `#[tokio::test]` / `#[test_context(T)]` fns, plus
-`Cargo.toml` surgery and `#[rudzio::main]` placement, across a
-workspace that was already in flight. Doing that by hand across
-100+ crates was not going to happen at the speed the rollout
-needed. Hence this tool: partial automation, enough to take the
-drudgery off while leaving the judgement calls visible in a `git
-diff`.
+Adopting rudzio on an existing crate means rewriting every `#[test]` /
+`#[tokio::test]` / `#[test_context(T)]` fn, editing `Cargo.toml` for both
+lib unit tests and integration tests, and appending `#[rudzio::main]`
+where needed. `rudzio-migrate` does this mechanically on a clean git
+tree. The result is a starting point that usually compiles with a short
+warning list; review via `git diff`.
 
-That also means `rudzio-migrate` is *heavily* AI-assisted — hand-wavy
-prototype first, tightened against fixtures second. Every
-transformation has a golden test, warnings point at file:line with
-miette, and the clean-tree + acknowledgement gates exist specifically
-because the tool was written under time pressure by a combination of
-author + LLM and neither half of that team is infallible. The dog food
-(rudzio itself migrated through it) is a useful floor on quality, not
-a ceiling on correctness.
-
-If that caveat makes you pause: good. Read the warnings, review the
-diff, keep the backups around until `cargo check --tests` is green.
-The tool is a stepping stone, not a finished product — and it is
-open about that.
+Every transformation has a golden test, warnings point at file:line with
+miette, and the clean-tree + acknowledgement gates exist because the
+output is not verified to compile — the tool is a diff generator, not a
+guarantee.
 
 ## Install
 

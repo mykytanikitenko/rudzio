@@ -85,7 +85,7 @@ pub use suite::{
     RuntimeGroupKey, RuntimeGroupOwner, SuiteId, SuiteReporter, SuiteRunRequest, SuiteSummary,
     TestOutcome, TestRunFn, fnv1a64,
 };
-pub use test_case::{BoxError, TestCase, TestFn, box_error};
+pub use test_case::{BoxError, IntoRudzioResult, TestCase, TestFn, box_error};
 pub use token::{TEST_TOKENS, TestToken};
 
 pub use futures_util;
