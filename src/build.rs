@@ -136,9 +136,17 @@ use cargo_metadata::{MetadataCommand, TargetKind};
 /// the build; the current call must not spawn a fresh nested cargo or
 /// the whole thing will recurse unboundedly.
 ///
+/// Also set by `cargo rudzio test` before spawning the aggregator
+/// build, so that any bridge crate forwarding a member's `build.rs`
+/// which calls `expose_self_bins()` short-circuits to Ok — the bridge
+/// has no `[[bin]]` targets of its own and cargo-rudzio handles bin
+/// discovery from its own generated build.rs anyway. The constant is
+/// `pub` so external tooling (cargo-rudzio, wrappers) can reference
+/// the name without stringly duplication.
+///
 /// The `__` prefix signals "internal to rudzio, don't touch" — users
 /// should never set or read this variable themselves.
-const NESTED_SENTINEL_ENV: &str = "__RUDZIO_EXPOSE_BINS_ACTIVE";
+pub const NESTED_SENTINEL_ENV: &str = "__RUDZIO_EXPOSE_BINS_ACTIVE";
 
 /// Error returned by [`expose_bins`]. Wraps the underlying failure
 /// cause (missing env var, cargo metadata failure, nested build failure,

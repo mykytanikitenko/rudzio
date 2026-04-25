@@ -592,7 +592,9 @@ mod bench_strategies {
 mod build_sentinel {
     use std::ffi::OsStr;
 
-    use rudzio::build::{SentinelAction, decide_sentinel_action, sentinel_indicates_nested_call};
+    use rudzio::build::{
+        NESTED_SENTINEL_ENV, SentinelAction, decide_sentinel_action, sentinel_indicates_nested_call,
+    };
 
     #[rudzio::test]
     fn no_sentinel_means_proceed() -> anyhow::Result<()> {
@@ -642,6 +644,21 @@ mod build_sentinel {
     fn sentinel_detector_ignores_absent_or_empty() -> anyhow::Result<()> {
         anyhow::ensure!(!sentinel_indicates_nested_call(None));
         anyhow::ensure!(!sentinel_indicates_nested_call(Some(OsStr::new(""))));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn sentinel_env_name_is_pinned() -> anyhow::Result<()> {
+        // Contract: cargo-rudzio sets this env var before spawning cargo
+        // so bridge-forwarded build.rs calls to expose_self_bins detect
+        // re-entry and early-return. The literal is duplicated in
+        // cargo-rudzio/src/lib.rs::EXPOSE_BINS_SENTINEL_ENV — if one
+        // side drifts, the other must follow or bridges regress to
+        // "no [[bin]] targets" errors under cargo rudzio test.
+        anyhow::ensure!(
+            NESTED_SENTINEL_ENV == "__RUDZIO_EXPOSE_BINS_ACTIVE",
+            "sentinel env-var name drift: {NESTED_SENTINEL_ENV}"
+        );
         Ok(())
     }
 }
