@@ -8,7 +8,6 @@
     ]
 )]
 mod tests {
-    use ::rudzio::common::context::Test;
     /* pre-migration (rudzio-migrate):
     #[test]
     fn addition_works() {
@@ -16,7 +15,7 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn addition_works(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn addition_works() -> ::anyhow::Result<()> {
         assert_eq!(1 + 1, 2);
         ::core::result::Result::Ok(())
     }

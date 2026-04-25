@@ -14,7 +14,6 @@ fn expected_prefix() -> &'static str {
 )]
 mod tests {
     use super::*;
-    use ::rudzio::common::context::Test;
     /* pre-migration (rudzio-migrate):
     #[tokio::test]
     async fn greets_alice() {
@@ -24,7 +23,7 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn greets_alice(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn greets_alice() -> ::anyhow::Result<()> {
         let out = greet("alice");
         assert!(out.starts_with(expected_prefix()));
         assert!(out.contains("alice"));
@@ -37,7 +36,7 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn greets_bob_synchronously(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn greets_bob_synchronously() -> ::anyhow::Result<()> {
         assert_eq!(greet("bob"), "hello, bob");
         ::core::result::Result::Ok(())
     }

@@ -8,7 +8,6 @@
     ]
 )]
 mod tests {
-    use ::rudzio::common::context::Test;
     /* pre-migration (rudzio-migrate):
     #[test]
     #[should_panic]
@@ -17,7 +16,7 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn panics_as_expected(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn panics_as_expected() -> ::anyhow::Result<()> {
         panic!("expected");
         ::core::result::Result::Ok(())
     }
@@ -28,7 +27,7 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn ordinary_ok(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn ordinary_ok() -> ::anyhow::Result<()> {
         assert!(true);
         ::core::result::Result::Ok(())
     }

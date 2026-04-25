@@ -11,7 +11,6 @@ pub fn product(a: i32, b: i32) -> i32 {
     ]
 )]
 mod outer {
-    use ::rudzio::common::context::Test;
     use super::*;
     mod inner {
         use super::*;
@@ -22,7 +21,7 @@ mod outer {
         }
         */
         #[::rudzio::test]
-        async fn inner_multiplies(_ctx: &Test) -> ::anyhow::Result<()> {
+        async fn inner_multiplies() -> ::anyhow::Result<()> {
             assert_eq!(product(3, 4), 12);
             ::core::result::Result::Ok(())
         }
@@ -34,7 +33,7 @@ mod outer {
     }
     */
     #[::rudzio::test]
-    async fn outer_multiplies(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn outer_multiplies() -> ::anyhow::Result<()> {
         assert_eq!(product(5, 6), 30);
         ::core::result::Result::Ok(())
     }

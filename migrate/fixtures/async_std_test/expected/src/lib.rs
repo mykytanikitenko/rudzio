@@ -11,7 +11,6 @@ pub async fn hello() -> &'static str {
     ]
 )]
 mod tests {
-    use ::rudzio::common::context::Test;
     use super::*;
     /* pre-migration (rudzio-migrate):
     #[async_std::test]
@@ -20,7 +19,7 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn greets(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn greets() -> ::anyhow::Result<()> {
         assert_eq!(hello(). await, "world");
         ::core::result::Result::Ok(())
     }

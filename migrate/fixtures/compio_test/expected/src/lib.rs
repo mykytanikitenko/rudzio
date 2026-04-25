@@ -11,7 +11,6 @@ pub fn answer() -> i32 {
     ]
 )]
 mod tests {
-    use ::rudzio::common::context::Test;
     use super::*;
     /* pre-migration (rudzio-migrate):
     #[compio::test]
@@ -20,7 +19,7 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn runs_under_compio(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn runs_under_compio() -> ::anyhow::Result<()> {
         assert_eq!(answer(), 42);
         ::core::result::Result::Ok(())
     }

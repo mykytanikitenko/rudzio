@@ -11,7 +11,6 @@ use existing_test_harness_flip::add;
 )]
 mod tests {
     use super::*;
-    use ::rudzio::common::context::Test;
     /* pre-migration (rudzio-migrate):
     #[test]
     fn sums() {
@@ -19,7 +18,7 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn sums(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn sums() -> ::anyhow::Result<()> {
         assert_eq!(add(1, 2), 3);
         ::core::result::Result::Ok(())
     }

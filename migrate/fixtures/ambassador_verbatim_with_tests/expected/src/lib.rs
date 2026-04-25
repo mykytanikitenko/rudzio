@@ -21,7 +21,6 @@ pub fn add(a: i32, b: i32) -> i32 {
     ]
 )]
 mod tests {
-    use ::rudzio::common::context::Test;
     use super::*;
     /* pre-migration (rudzio-migrate):
     #[test]
@@ -30,7 +29,7 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn sums_correctly(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn sums_correctly() -> ::anyhow::Result<()> {
         assert_eq!(add(1, 2), 3);
         ::core::result::Result::Ok(())
     }
@@ -41,7 +40,7 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn sums_zero(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn sums_zero() -> ::anyhow::Result<()> {
         assert_eq!(add(0, 0), 0);
         ::core::result::Result::Ok(())
     }

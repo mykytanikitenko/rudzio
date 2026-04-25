@@ -11,7 +11,6 @@ pub fn identity<T>(v: T) -> T {
     ]
 )]
 mod tests {
-    use ::rudzio::common::context::Test;
     use super::*;
     /* pre-migration (rudzio-migrate):
     #[test]
@@ -21,7 +20,7 @@ mod tests {
     }
     */
     #[::rudzio::test]
-    async fn already_async(_ctx: &Test) -> ::anyhow::Result<()> {
+    async fn already_async() -> ::anyhow::Result<()> {
         let n = identity(7);
         assert_eq!(n, 7);
         ::core::result::Result::Ok(())
