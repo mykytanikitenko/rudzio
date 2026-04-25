@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = { workspace = true }
 publish = false
 description = "Best-effort converter of stock cargo-style Rust tests into rudzio tests. Runs on a clean git tree, rewrites sources in place, keeps backups and pre-migration copies as block comments, and asks before wiring a shared runner."
+readme = "README.md"
 autotests = false
 
 [lib]
