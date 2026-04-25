@@ -158,6 +158,13 @@ pub struct TestState {
     /// truncated to a printable width; displayed as the `↳` hint in
     /// the live region.
     pub last_output_line: String,
+    /// Every complete output line the test has emitted so far,
+    /// oldest first. Populated from the same chunk stream as
+    /// `last_output_line`. The live drawer renders these as stacked
+    /// `↳` rows under the running status line; when empty the hint
+    /// rows are skipped entirely so tests with no output don't take
+    /// vertical space.
+    pub recent_output: Vec<String>,
 }
 
 /// Current rendering state for a test's live-region slot.

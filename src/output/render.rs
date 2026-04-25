@@ -175,6 +175,7 @@ impl Drawer {
                     stdout_buffer: Vec::new(),
                     stderr_buffer: Vec::new(),
                     last_output_line: String::new(),
+                    recent_output: Vec::new(),
                 };
                 let _unused = self.tests.insert(test_id, state);
                 let _unused = self.thread_to_test.insert(thread, test_id);
@@ -476,6 +477,7 @@ impl Drawer {
                     StdStream::Stderr => state.stderr_buffer.extend_from_slice(&chunk.bytes),
                 }
                 update_last_line(&mut state.last_output_line, &chunk.bytes);
+                append_complete_lines(&mut state.recent_output, &chunk.bytes);
                 if matches!(self.output_mode, OutputMode::Plain) {
                     let display = format!("{}::{}", state.module_path, state.test_name);
                     emit_plain_lines(
@@ -561,12 +563,12 @@ impl Drawer {
         let mut rows = 1_usize;
         for thread in &self.slot_order {
             let slot = self.slots.get(thread);
-            let (status_line, hint_line) = if let Some(s) = slot
+            let (status_line, hint_lines) = if let Some(s) = slot
                 && let Some(lifecycle) = s.lifecycle
             {
                 (
                     lifecycle_line(s.runtime_name, &lifecycle, self.color),
-                    lifecycle_hint(self.color),
+                    Vec::new(),
                 )
             } else if let Some((s, state)) = slot.and_then(|s| {
                 s.current
@@ -574,17 +576,20 @@ impl Drawer {
             }) {
                 (
                     running_line(s.runtime_name, state, self.color),
-                    running_hint(state, self.color),
+                    running_hint_lines(state, self.color),
                 )
             } else {
                 let name = slot.map_or("unknown", |s| s.runtime_name);
-                (idle_line(name, self.color), idle_hint(self.color))
+                (idle_line(name, self.color), Vec::new())
             };
             buf.push_str(&status_line);
             buf.push('\n');
-            buf.push_str(&hint_line);
-            buf.push('\n');
-            rows = rows.saturating_add(2);
+            rows = rows.saturating_add(1);
+            for line in &hint_lines {
+                buf.push_str(line);
+                buf.push('\n');
+                rows = rows.saturating_add(1);
+            }
         }
         let _unused = self.terminal.write_all(buf.as_bytes());
         let _unused = self.terminal.flush();
@@ -940,16 +945,28 @@ fn update_last_line(dst: &mut String, bytes: &[u8]) {
     }
 }
 
+/// Append every complete, non-empty line from `bytes` to `dst`. The
+/// live drawer replays all accumulated lines under each running test,
+/// so this vector grows for the lifetime of a test — no size cap, no
+/// per-line truncation (render-time truncation handles terminal-width
+/// clipping).
+fn append_complete_lines(dst: &mut Vec<String>, bytes: &[u8]) {
+    let Ok(s) = std::str::from_utf8(bytes) else {
+        return;
+    };
+    for line in s.split('\n') {
+        if !line.is_empty() {
+            dst.push(line.to_owned());
+        }
+    }
+}
+
 const RUNTIME_PREFIX_WIDTH: usize = 14;
 
 fn idle_line(runtime: &str, color: ColorPolicy) -> String {
     let prefix = format!("{runtime:<RUNTIME_PREFIX_WIDTH$}");
     let tag = render_status_tag(StatusLabel::Idle, color);
     color.dim(&format!("{prefix}{tag}"))
-}
-
-fn idle_hint(color: ColorPolicy) -> String {
-    color.dim("              ↳ ")
 }
 
 fn running_line(runtime: &str, state: &TestState, color: ColorPolicy) -> String {
@@ -973,13 +990,26 @@ fn running_line(runtime: &str, state: &TestState, color: ColorPolicy) -> String 
     render_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width())
 }
 
-fn running_hint(state: &TestState, color: ColorPolicy) -> String {
-    let hint = if state.last_output_line.is_empty() {
-        "(no output yet)"
-    } else {
-        &state.last_output_line
-    };
-    color.dim(&format!("              ↳ {hint}"))
+fn running_hint_lines(state: &TestState, color: ColorPolicy) -> Vec<String> {
+    // Empty output → no hint rows. This lets the drawer collapse
+    // around quiet tests instead of reserving a "(no output yet)"
+    // placeholder row per running test.
+    if state.recent_output.is_empty() {
+        return Vec::new();
+    }
+    let cols = terminal_width();
+    state
+        .recent_output
+        .iter()
+        .map(|line| {
+            let truncated = if line.len() > cols.saturating_sub(16) {
+                &line[..cols.saturating_sub(16).min(line.len())]
+            } else {
+                line.as_str()
+            };
+            color.dim(&format!("              ↳ {truncated}"))
+        })
+        .collect()
 }
 
 fn lifecycle_line(runtime: &str, lifecycle: &SlotLifecycle, color: ColorPolicy) -> String {
@@ -998,10 +1028,6 @@ fn lifecycle_line(runtime: &str, lifecycle: &SlotLifecycle, color: ColorPolicy) 
     );
     let lhs_rendered = format!("{prefix}{tag} {display}");
     render_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width())
-}
-
-fn lifecycle_hint(color: ColorPolicy) -> String {
-    color.dim("              ↳ (suite lifecycle in progress)")
 }
 
 /// Spawn the drawer thread. Returns the join handle; the caller

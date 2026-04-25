@@ -831,12 +831,26 @@ fn apply_dev_dep_field(spec: &mut DevDepSpec, key: &str, val: &Value, manifest_d
 }
 
 pub fn write_runner(plan: &Plan, out_dir: &Path) -> Result<()> {
-    // Regenerate from scratch every call.
-    if out_dir.exists() {
-        fs::remove_dir_all(out_dir)
-            .with_context(|| format!("removing {}", out_dir.display()))?;
-    }
+    // Regenerate our own files from scratch. Preserve the aggregator's
+    // `target/` directory across invocations — blowing it away on every
+    // run would force a full recompile of the entire workspace every
+    // time, and on macOS `remove_dir_all` additionally races with cargo
+    // lock files still being written (ENOTEMPTY under concurrent IO).
     let src_dir = out_dir.join("src");
+    for path in [
+        out_dir.join("Cargo.toml"),
+        out_dir.join("Cargo.lock"),
+        out_dir.join("build.rs"),
+    ] {
+        if path.exists() {
+            fs::remove_file(&path)
+                .with_context(|| format!("removing {}", path.display()))?;
+        }
+    }
+    if src_dir.exists() {
+        fs::remove_dir_all(&src_dir)
+            .with_context(|| format!("removing {}", src_dir.display()))?;
+    }
     fs::create_dir_all(&src_dir).with_context(|| format!("creating {}", src_dir.display()))?;
 
     let cargo_toml = build_cargo_toml(plan)?;
