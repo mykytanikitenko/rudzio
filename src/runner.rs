@@ -272,6 +272,26 @@ fn runtime_only_info(runtime_name: &str) -> String {
     format!("<{runtime_name}>")
 }
 
+/// One-shot diagnostic message for a finished test — rendered
+/// indented right under its status line so the reason for failure
+/// (test body error, setup error, panic payload, timeout note)
+/// is visible without scrolling to the end-of-run failures section.
+fn outcome_inline_message(outcome: &TestOutcome) -> Option<String> {
+    match outcome {
+        TestOutcome::Failed { message, .. } => Some(message.clone()),
+        TestOutcome::SetupFailed { message, .. } => {
+            Some(format!("test setup failed: {message}"))
+        }
+        TestOutcome::TimedOut => Some("test exceeded its timeout".to_owned()),
+        TestOutcome::Cancelled => {
+            Some("test was cancelled before completion".to_owned())
+        }
+        TestOutcome::Panicked { .. }
+        | TestOutcome::Passed { .. }
+        | TestOutcome::Benched { .. } => None,
+    }
+}
+
 /// Right-align `trailing` to the terminal width, with at least
 /// [`MIN_TRAILING_PAD`] spaces between `lhs` and `trailing`. `lhs`
 /// already includes the status tag + space + display name; its
@@ -481,7 +501,32 @@ impl SuiteReporter for ModeReporter {
                     }
                     println!("{buf}");
                 } else {
-                    println!("{header}");
+                    // Single atomic write: header + inlined failure
+                    // message (if any), rendered in the tag's color
+                    // for failing outcomes so the reason is visible
+                    // alongside the status line without scrolling to
+                    // the end-of-run failures section.
+                    let mut buf = header;
+                    if let Some(msg) = outcome_inline_message(&outcome) {
+                        for line in msg.lines() {
+                            buf.push('\n');
+                            let body = format!("  {line}");
+                            let painted = if matches!(
+                                label,
+                                StatusLabel::Fail
+                                    | StatusLabel::Panic
+                                    | StatusLabel::Setup
+                                    | StatusLabel::Timeout
+                                    | StatusLabel::Cancel
+                            ) {
+                                red(&body, p.colored)
+                            } else {
+                                body
+                            };
+                            buf.push_str(&painted);
+                        }
+                    }
+                    println!("{buf}");
                 }
             }
         }

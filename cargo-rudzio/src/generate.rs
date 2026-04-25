@@ -1081,27 +1081,49 @@ fn render_dev_dep(dd: &DevDepSpec, plan: &Plan) -> Result<Item> {
 }
 
 fn build_tests_rs(plan: &Plan) -> String {
-    let mut used_mods: BTreeSet<String> = BTreeSet::new();
+    // Per-crate submodule namespacing. Each member's tests/*.rs files
+    // nest under `mod <crate_name> { ... }` so sibling helper modules
+    // resolve via `use super::helper::*` from inside a test file —
+    // that path works BOTH in per-crate `cargo test -p X` (where the
+    // test binary's crate root has `mod helper;` and `mod test_file;`
+    // as peers, so super from inside test_file = crate root = has
+    // helper) AND in the aggregator (super from tests::X::test_file =
+    // tests::X = has mod helper). Flat prefix-mangling (the previous
+    // layout) broke the former because `crate::helper` resolved to
+    // the aggregator root, which doesn't have helper under its short
+    // name. Per-crate nesting also eliminates cross-crate name
+    // collisions without needing a prefix at all.
+    let mut per_crate_mod_names: BTreeSet<String> = BTreeSet::new();
     let mut out = String::new();
     for member in &plan.members {
-        let prefix = sanitize_ident(&member.package_name);
+        let base_ident = sanitize_ident(&member.package_name);
+        let mut crate_mod = base_ident.clone();
+        let mut dedup = 1u32;
+        while !per_crate_mod_names.insert(crate_mod.clone()) {
+            crate_mod = format!("{base_ident}_{dedup}");
+            dedup += 1;
+        }
+        out.push_str(&format!("mod {crate_mod} {{\n"));
+
+        let mut used_inner: BTreeSet<String> = BTreeSet::new();
         for file in &member.test_files {
             let stem = file
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("test");
             let stem_ident = sanitize_ident(stem);
-            let mut mod_name = format!("{prefix}_{stem_ident}");
-            let mut dedup = 1u32;
-            while !used_mods.insert(mod_name.clone()) {
-                mod_name = format!("{prefix}_{stem_ident}_{dedup}");
-                dedup += 1;
+            let mut inner = stem_ident.clone();
+            let mut d = 1u32;
+            while !used_inner.insert(inner.clone()) {
+                inner = format!("{stem_ident}_{d}");
+                d += 1;
             }
             out.push_str(&format!(
-                "#[path = {:?}]\nmod {mod_name};\n",
+                "    #[path = {:?}]\n    mod {inner};\n",
                 file.to_string_lossy()
             ));
         }
+        out.push_str("}\n");
     }
     out
 }
