@@ -19,10 +19,11 @@ pub struct Plan {
     /// Members of the workspace that actually depend on rudzio AND
     /// contribute at least one integration-test source file.
     pub members: Vec<MemberPlan>,
-    /// Union of `rudzio`'s enabled features across every rudzio-using
-    /// workspace member, normalised to always include `common` + `build`
-    /// and any runtime-* feature that at least one member requested.
-    pub rudzio_features: BTreeSet<String>,
+    /// Resolved `rudzio` dependency to emit in the aggregator's
+    /// `[dependencies]` table — derived from how the workspace's own
+    /// members declare rudzio (path / git / version), with features
+    /// unioned across every member's declaration plus `common` + `build`.
+    pub rudzio_spec: RudzioSpec,
     /// Path → version overrides keyed by dep name, pulled from the
     /// workspace root's `[workspace.dependencies]` table. Used when a
     /// member's dev-dep entry says `workspace = true`.
@@ -47,12 +48,21 @@ pub struct MemberPlan {
     pub dev_deps: Vec<DevDepSpec>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GitRef {
+    Rev(String),
+    Branch(String),
+    Tag(String),
+}
+
 #[derive(Clone)]
 pub struct DevDepSpec {
     pub name: String,
     pub rename: Option<String>,
     pub version_req: String,
     pub path: Option<PathBuf>,
+    pub git: Option<String>,
+    pub git_ref: Option<GitRef>,
     pub features: Vec<String>,
     pub uses_default_features: bool,
     /// Raw spec from the member's Cargo.toml, used when it says
@@ -64,6 +74,26 @@ pub struct DevDepSpec {
 pub struct WorkspaceDepSpec {
     pub version_req: Option<String>,
     pub path: Option<PathBuf>,
+    pub git: Option<String>,
+    pub git_ref: Option<GitRef>,
+    pub features: Vec<String>,
+    pub uses_default_features: bool,
+}
+
+/// Resolved location for the `rudzio` dependency that the aggregator
+/// should emit. Mirrors the three mutually exclusive ways cargo lets a
+/// crate reference another: a local path, a git URL, or a registry
+/// version requirement.
+#[derive(Clone, Debug)]
+pub enum RudzioLocation {
+    Path(PathBuf),
+    Git { url: String, reference: Option<GitRef> },
+    Version(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct RudzioSpec {
+    pub location: RudzioLocation,
     pub features: Vec<String>,
     pub uses_default_features: bool,
 }
@@ -83,13 +113,12 @@ impl Plan {
 }
 
 fn build_plan(metadata: &Metadata) -> Result<Plan> {
-    let workspace_deps = read_workspace_deps(metadata.workspace_root.as_std_path())
+    let workspace_root_std = metadata.workspace_root.as_std_path();
+    let workspace_deps = read_workspace_deps(workspace_root_std)
         .context("reading workspace root Cargo.toml")?;
 
     let mut members: Vec<MemberPlan> = Vec::new();
-    let mut rudzio_features: BTreeSet<String> = BTreeSet::new();
-    rudzio_features.insert("common".to_owned());
-    rudzio_features.insert("build".to_owned());
+    let mut runtime_features: BTreeSet<String> = BTreeSet::new();
 
     let member_ids: BTreeSet<_> = metadata.workspace_members.iter().collect();
     for pkg in &metadata.packages {
@@ -108,7 +137,7 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
         for rdep in &rudzio_deps {
             for feat in &rdep.features {
                 if feat.starts_with("runtime-") {
-                    let _ = rudzio_features.insert(feat.clone());
+                    let _ = runtime_features.insert(feat.clone());
                 }
             }
         }
@@ -166,13 +195,246 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
 
     members.sort_by(|a, b| a.package_name.cmp(&b.package_name));
 
+    let rudzio_spec = collect_rudzio_spec(&members, &workspace_deps, workspace_root_std)
+        .context("deriving rudzio dependency spec for the aggregator")?;
+    let rudzio_spec = inject_required_features(rudzio_spec, &runtime_features);
+
     Ok(Plan {
         workspace_root: metadata.workspace_root.clone(),
         target_directory: metadata.target_directory.clone(),
         members,
-        rudzio_features,
+        rudzio_spec,
         workspace_deps,
     })
+}
+
+/// Add the features the aggregator unconditionally needs (`common`,
+/// `build`) plus any `runtime-*` feature requested by at least one
+/// member's metadata-resolved rudzio dep — `runtime-*` features come
+/// from `cargo metadata`'s dependency view (which already factors in
+/// renames / cfg-target gating), so members may activate runtimes that
+/// don't appear in the raw dev-dep features list we collected from the
+/// member's Cargo.toml.
+fn inject_required_features(
+    mut spec: RudzioSpec,
+    runtime_features: &BTreeSet<String>,
+) -> RudzioSpec {
+    let mut feats: BTreeSet<String> = spec.features.into_iter().collect();
+    let _ = feats.insert("common".to_owned());
+    let _ = feats.insert("build".to_owned());
+    for f in runtime_features {
+        let _ = feats.insert(f.clone());
+    }
+    spec.features = feats.into_iter().collect();
+    spec
+}
+
+/// Walk every rudzio-using member's raw Cargo.toml and reconcile their
+/// `rudzio` declarations into a single `RudzioSpec`.
+///
+/// Rules:
+/// - A member can declare `rudzio` under `[dependencies]`,
+///   `[dev-dependencies]`, or the `[target.'cfg(...)'.*]` variants of
+///   either. (`read_dev_deps` already collects all four sections — so
+///   `MemberPlan::dev_deps` is the right input.)
+/// - `workspace = true` resolves via `[workspace.dependencies] rudzio =
+///   { ... }` in the workspace root's Cargo.toml.
+/// - Across members, all declarations must reference rudzio in a way
+///   that can be unified into one location: at most one of `path` /
+///   `git` may appear. If both surface, we error with a clear message
+///   so the user fixes the inconsistency rather than getting a confused
+///   compile error in the generated aggregator.
+/// - Path beats version-only when both surface (path is more specific).
+///   Git beats version-only the same way.
+/// - Features union across every declaration; `default-features`
+///   ANDs (default-on stays on only if every declaration agreed).
+/// - When NO member declares rudzio in a parseable way (defensive — we
+///   already filter to rudzio-using members upstream, so this only
+///   triggers for malformed manifests), fall back to a path dep on the
+///   workspace root with `default-features = true`. This preserves the
+///   in-rudzio-repo dogfood behaviour even if every member's declaration
+///   somehow becomes unreadable.
+fn collect_rudzio_spec(
+    members: &[MemberPlan],
+    workspace_deps: &BTreeMap<String, WorkspaceDepSpec>,
+    workspace_root: &Path,
+) -> Result<RudzioSpec> {
+    struct Resolved {
+        member: String,
+        path: Option<PathBuf>,
+        git: Option<String>,
+        git_ref: Option<GitRef>,
+        version_req: Option<String>,
+        features: Vec<String>,
+        uses_default_features: bool,
+    }
+
+    let mut resolved: Vec<Resolved> = Vec::new();
+    for member in members {
+        for dd in &member.dev_deps {
+            // `dd.name` is the package name post-rename. Rudzio is only
+            // ever referenced by its own crate name (no rename), so a
+            // straightforward name match is correct.
+            if dd.name != RUDZIO_DEP {
+                continue;
+            }
+            if dd.workspace_inherited {
+                let ws = workspace_deps.get(RUDZIO_DEP).ok_or_else(|| {
+                    anyhow!(
+                        "member `{}` declares `rudzio = {{ workspace = true }}` but the workspace root has no `[workspace.dependencies.rudzio]` entry",
+                        member.package_name
+                    )
+                })?;
+                let mut feats: Vec<String> = ws.features.clone();
+                feats.extend(dd.features.iter().cloned());
+                resolved.push(Resolved {
+                    member: member.package_name.clone(),
+                    path: ws.path.clone(),
+                    git: ws.git.clone(),
+                    git_ref: ws.git_ref.clone(),
+                    version_req: ws.version_req.clone(),
+                    features: feats,
+                    uses_default_features: dd.uses_default_features
+                        && ws.uses_default_features,
+                });
+            } else {
+                let version_req = if dd.version_req.is_empty() {
+                    None
+                } else {
+                    Some(dd.version_req.clone())
+                };
+                resolved.push(Resolved {
+                    member: member.package_name.clone(),
+                    path: dd.path.clone(),
+                    git: dd.git.clone(),
+                    git_ref: dd.git_ref.clone(),
+                    version_req,
+                    features: dd.features.clone(),
+                    uses_default_features: dd.uses_default_features,
+                });
+            }
+        }
+    }
+
+    if resolved.is_empty() {
+        // Defensive fallback: something is off (we already filtered to
+        // rudzio-using members upstream, so this should not happen),
+        // but emit a usable spec so the aggregator at least has a
+        // chance to compile inside rudzio's own repo.
+        return Ok(RudzioSpec {
+            location: RudzioLocation::Path(workspace_root.to_path_buf()),
+            features: Vec::new(),
+            uses_default_features: true,
+        });
+    }
+
+    // Inconsistency check: at most one of `path` / `git` across all
+    // members. Mixing them produces a spec the aggregator can't honour.
+    let path_holder = resolved.iter().find(|r| r.path.is_some());
+    let git_holder = resolved.iter().find(|r| r.git.is_some());
+    if let (Some(p), Some(g)) = (path_holder, git_holder) {
+        bail!(
+            "rudzio is declared inconsistently across workspace members: `{}` uses path={}, `{}` uses git={} — aggregator can't unify these",
+            p.member,
+            p.path.as_ref().map(|x| x.display().to_string()).unwrap_or_default(),
+            g.member,
+            g.git.clone().unwrap_or_default(),
+        );
+    }
+
+    // Pick location. Path > git > version. (Path beats version because
+    // it pins to a specific local checkout; git beats version because
+    // it pins to a specific revision.)
+    let location = if let Some(p) = path_holder.and_then(|r| r.path.clone()) {
+        // Canonicalize so `.` / `..` segments inherited from member
+        // manifests like `path = "."` don't leak into the aggregator's
+        // emitted spec (cosmetic — cargo accepts both, but matching the
+        // workspace_root form keeps regenerated output stable).
+        let normalized = fs::canonicalize(&p).unwrap_or(p);
+        RudzioLocation::Path(normalized)
+    } else if let Some(url) = git_holder.and_then(|r| r.git.clone()) {
+        // For the git ref, take the first non-None ref encountered (git
+        // declarations without `rev`/`branch`/`tag` mean "default branch",
+        // which we encode as None — cargo treats absence the same way).
+        let reference = resolved.iter().find_map(|r| r.git_ref.clone());
+        RudzioLocation::Git { url, reference }
+    } else {
+        // No path or git: every declaration is version-only (or
+        // workspace-inherited from a version-only entry). Take the
+        // first non-None version_req.
+        let version = resolved
+            .iter()
+            .find_map(|r| r.version_req.clone())
+            .ok_or_else(|| {
+                anyhow!(
+                    "rudzio is declared by workspace members but none of the declarations carry `path`, `git`, or `version` — aggregator can't reference rudzio"
+                )
+            })?;
+        RudzioLocation::Version(version)
+    };
+
+    let mut features: BTreeSet<String> = BTreeSet::new();
+    let mut uses_default_features = true;
+    for r in &resolved {
+        for f in &r.features {
+            let _ = features.insert(f.clone());
+        }
+        uses_default_features &= r.uses_default_features;
+    }
+
+    Ok(RudzioSpec {
+        location,
+        features: features.into_iter().collect(),
+        uses_default_features,
+    })
+}
+
+/// Render a `RudzioSpec` as a Cargo dependency inline table. Emits the
+/// minimal correct shape: location keys (`path` / `git` + ref / `version`)
+/// followed by `features` (only when non-empty) and
+/// `default-features = false` (only when the user opted out).
+fn build_rudzio_inline_table(spec: &RudzioSpec) -> InlineTable {
+    let mut tbl = InlineTable::new();
+    match &spec.location {
+        RudzioLocation::Path(p) => {
+            tbl.insert(
+                "path",
+                Value::String(Formatted::new(p.to_string_lossy().into_owned())),
+            );
+        }
+        RudzioLocation::Git { url, reference } => {
+            tbl.insert("git", Value::String(Formatted::new(url.clone())));
+            match reference {
+                Some(GitRef::Rev(rev)) => {
+                    tbl.insert("rev", Value::String(Formatted::new(rev.clone())));
+                }
+                Some(GitRef::Branch(branch)) => {
+                    tbl.insert(
+                        "branch",
+                        Value::String(Formatted::new(branch.clone())),
+                    );
+                }
+                Some(GitRef::Tag(tag)) => {
+                    tbl.insert("tag", Value::String(Formatted::new(tag.clone())));
+                }
+                None => {}
+            }
+        }
+        RudzioLocation::Version(v) => {
+            tbl.insert("version", Value::String(Formatted::new(v.clone())));
+        }
+    }
+    if !spec.features.is_empty() {
+        let mut feats = Array::new();
+        for f in &spec.features {
+            feats.push(Value::String(Formatted::new(f.clone())));
+        }
+        tbl.insert("features", Value::Array(feats));
+    }
+    if !spec.uses_default_features {
+        tbl.insert("default-features", Value::Boolean(Formatted::new(false)));
+    }
+    tbl
 }
 
 /// For each member, list the integration-test source files that should
@@ -319,6 +581,8 @@ fn extract_workspace_dep_spec(item: &Item, workspace_root: &Path) -> WorkspaceDe
     let mut spec = WorkspaceDepSpec {
         version_req: None,
         path: None,
+        git: None,
+        git_ref: None,
         features: Vec::new(),
         uses_default_features: true,
     };
@@ -353,6 +617,26 @@ fn apply_ws_dep_field(spec: &mut WorkspaceDepSpec, key: &str, val: &Value, base:
         "path" => {
             if let Some(s) = val.as_str() {
                 spec.path = Some(base.join(s));
+            }
+        }
+        "git" => {
+            if let Some(s) = val.as_str() {
+                spec.git = Some(s.to_owned());
+            }
+        }
+        "rev" => {
+            if let Some(s) = val.as_str() {
+                spec.git_ref = Some(GitRef::Rev(s.to_owned()));
+            }
+        }
+        "branch" => {
+            if let Some(s) = val.as_str() {
+                spec.git_ref = Some(GitRef::Branch(s.to_owned()));
+            }
+        }
+        "tag" => {
+            if let Some(s) = val.as_str() {
+                spec.git_ref = Some(GitRef::Tag(s.to_owned()));
             }
         }
         "features" => {
@@ -443,6 +727,8 @@ fn parse_dev_dep_entry(name: &str, item: &Item, manifest_dir: &Path) -> Option<D
         rename: None,
         version_req: String::new(),
         path: None,
+        git: None,
+        git_ref: None,
         features: Vec::new(),
         uses_default_features: true,
         workspace_inherited: false,
@@ -497,6 +783,26 @@ fn apply_dev_dep_field(spec: &mut DevDepSpec, key: &str, val: &Value, manifest_d
         "path" => {
             if let Some(s) = val.as_str() {
                 spec.path = Some(manifest_dir.join(s));
+            }
+        }
+        "git" => {
+            if let Some(s) = val.as_str() {
+                spec.git = Some(s.to_owned());
+            }
+        }
+        "rev" => {
+            if let Some(s) = val.as_str() {
+                spec.git_ref = Some(GitRef::Rev(s.to_owned()));
+            }
+        }
+        "branch" => {
+            if let Some(s) = val.as_str() {
+                spec.git_ref = Some(GitRef::Branch(s.to_owned()));
+            }
+        }
+        "tag" => {
+            if let Some(s) = val.as_str() {
+                spec.git_ref = Some(GitRef::Tag(s.to_owned()));
             }
         }
         "features" => {
@@ -598,20 +904,11 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
         .unwrap_or_else(|| "1".to_owned());
     deps.insert("anyhow", value(anyhow_req));
 
-    // rudzio: path dep on the workspace root with the unioned feature set.
+    // rudzio: derived from how workspace members declare it (path, git,
+    // or version — never hardcoded to the workspace root, which is wrong
+    // for downstream users whose workspace root is NOT rudzio).
     {
-        let mut tbl = InlineTable::new();
-        tbl.insert(
-            "path",
-            Value::String(Formatted::new(
-                plan.workspace_root.as_str().to_owned(),
-            )),
-        );
-        let mut feats = Array::new();
-        for f in &plan.rudzio_features {
-            feats.push(Value::String(Formatted::new(f.clone())));
-        }
-        tbl.insert("features", Value::Array(feats));
+        let tbl = build_rudzio_inline_table(&plan.rudzio_spec);
         deps.insert("rudzio", Item::Value(Value::InlineTable(tbl)));
     }
 
