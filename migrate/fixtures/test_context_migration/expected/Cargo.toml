@@ -1,0 +1,10 @@
+[package]
+name = "test_context_migration"
+version = "0.1.0"
+edition = "2024"
+autotests = false
+
+[dependencies]
+test-context = "0.3"
+rudzio = { version = "0.1", features = ["common", "runtime-tokio"] }
+anyhow = "1.0"

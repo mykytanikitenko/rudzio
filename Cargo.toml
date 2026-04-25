@@ -83,6 +83,7 @@ members = [
   "fixtures",
   "macro",
   "macro-internals",
+  "migrate",
   "test-runner",
 ]
 
@@ -106,10 +107,13 @@ embassy-executor = { version = "=0.7.0", features = ["arch-std"] }
 futures-executor = "=0.3.32"
 futures-timer = "=3.0.3"
 futures-util = "=0.3.32"
+ignore = "=0.4.23"
+prettyplease = "=0.2.37"
 proc-macro2 = "=1.0.106"
 quote = "=1.0.45"
 send_wrapper = "=0.6.0"
 syn = "=2.0.117"
+toml_edit = "=0.22.22"
 tokio = { version = "=1.52.1", features = ["rt", "macros", "time"] }
 tokio-util = { version = "=0.7.18", features = ["rt"] }
 trybuild = "=1.0.116"

@@ -1,0 +1,9 @@
+[package]
+name = "ignore_variants"
+version = "0.1.0"
+edition = "2024"
+autotests = false
+
+[dependencies]
+rudzio = { version = "0.1", features = ["common", "runtime-tokio"] }
+anyhow = "1.0"

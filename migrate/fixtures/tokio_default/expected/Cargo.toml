@@ -1,0 +1,10 @@
+[package]
+name = "tokio_default"
+version = "0.1.0"
+edition = "2024"
+autotests = false
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+rudzio = { version = "0.1", features = ["common", "runtime-tokio"] }
+anyhow = "1.0"
