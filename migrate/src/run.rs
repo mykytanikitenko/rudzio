@@ -152,7 +152,11 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
             // Lib crate name uses hyphen→underscore per rustc's
             // "hyphens in crate names are normalized" rule.
             let crate_lib_name = pkg.name.replace('-', "_");
-            match runner_scaffold::ensure_tests_main(&tests_main, Some(&crate_lib_name)) {
+            match runner_scaffold::ensure_tests_main(
+                &tests_main,
+                Some(&crate_lib_name),
+                &pkg.lib_modules,
+            ) {
                 Ok(runner_scaffold::ScaffoldOutcome::Created) => {
                     report.touched(tests_main);
                     pkg_edits
