@@ -290,6 +290,20 @@ pub fn expose_bins(bin_crate: &str) -> Result<()> {
         // accumulate `rudzio-bin-cache/.../rudzio-bin-cache/...`
         // indefinitely — see the module-level docs.
         .env(NESTED_SENTINEL_ENV, "1");
+    // Strip `--cfg rudzio_test` from the ambient RUSTFLAGS before
+    // spawning the nested `cargo build --bins`. `cargo rudzio test` sets
+    // that flag on the aggregator's RUSTFLAGS so member libs compile
+    // under `cfg(rudzio_test)` — but the bin crate we're about to build
+    // is a separate compile unit that should NOT see it, because
+    // `#[cfg(any(test, rudzio_test))]`-gated modules in the bin's deps
+    // would try to pull in dev-deps the bin targets don't declare,
+    // producing thousands of unresolved-crate errors.
+    let stripped = strip_rudzio_test_cfg(&std::env::var("RUSTFLAGS").unwrap_or_default());
+    if stripped.is_empty() {
+        let _: &mut Command = cmd.env_remove("RUSTFLAGS");
+    } else {
+        let _: &mut Command = cmd.env("RUSTFLAGS", stripped);
+    }
     if let Some(flag) = profile_flag.cli_flag() {
         let _: &mut Command = cmd.arg(flag);
     }
@@ -459,6 +473,27 @@ fn require_string_env(name: &str) -> Result<String> {
 
 fn require_path_env(name: &str) -> Result<PathBuf> {
     require_string_env(name).map(PathBuf::from)
+}
+
+/// Remove every `--cfg rudzio_test` pair from a `RUSTFLAGS` string.
+///
+/// Kept `pub` + out-of-module so cargo-rudzio and rudzio share one
+/// canonical implementation of the transform — if it drifts, dogfood
+/// regresses the same way it did before this helper existed.
+#[must_use]
+pub fn strip_rudzio_test_cfg(rustflags: &str) -> String {
+    let tokens: Vec<&str> = rustflags.split_whitespace().collect();
+    let mut out: Vec<&str> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        if tokens[i] == "--cfg" && tokens.get(i + 1).copied() == Some("rudzio_test") {
+            i += 2;
+            continue;
+        }
+        out.push(tokens[i]);
+        i += 1;
+    }
+    out.join(" ")
 }
 
 /// Maps cargo's `PROFILE` env var (set to `debug` or `release` for

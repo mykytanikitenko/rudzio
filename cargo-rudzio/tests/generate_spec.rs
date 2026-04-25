@@ -633,6 +633,34 @@ mod tests {
     }
 
     #[rudzio::test]
+    fn bridge_synthesized_build_rs_strips_rudzio_test_cfg_from_nested_cargo()
+    -> anyhow::Result<()> {
+        // Regression: ambient `RUSTFLAGS=--cfg rudzio_test` set by
+        // cargo-rudzio propagates into the nested `cargo build --bins`
+        // spawned by expose_member_bins. Without stripping, the member's
+        // bin crate compiles with `--cfg rudzio_test`, activating
+        // `#[cfg(any(test, rudzio_test))]` gated modules that reference
+        // dev-deps not in the bin's [dependencies] — producing hundreds
+        // of spurious compile errors (user saw 2735 on file-v3).
+        let mut m = member("alpha", Vec::new());
+        m.manifest_dir = PathBuf::from("/abs/alpha");
+        m.bin_names = vec!["alpha-server".to_owned()];
+
+        let content = build_bridge_build_rs(&m)
+            .expect("bridge must synthesise build.rs content for bin members");
+
+        anyhow::ensure!(
+            content.contains("strip_rudzio_test_cfg"),
+            "synth build.rs must define/use a helper that strips --cfg rudzio_test:\n{content}"
+        );
+        anyhow::ensure!(
+            content.contains("RUSTFLAGS"),
+            "synth build.rs must explicitly set RUSTFLAGS on the nested cargo command:\n{content}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
     fn bridge_synthesized_build_rs_none_when_no_bins() -> anyhow::Result<()> {
         let mut m = member("alpha", Vec::new());
         m.manifest_dir = PathBuf::from("/abs/alpha");

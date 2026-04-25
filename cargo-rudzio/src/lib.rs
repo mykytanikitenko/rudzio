@@ -28,6 +28,34 @@ pub const RUDZIO_TEST_CFG_VALUE: &str = "rudzio_test";
 pub const EXPOSE_BINS_SENTINEL_ENV: &str = "__RUDZIO_EXPOSE_BINS_ACTIVE";
 pub const EXPOSE_BINS_SENTINEL_VALUE: &str = "1";
 
+/// Inverse of [`resolve_rustflags`]: remove every `--cfg rudzio_test`
+/// pair from an existing `RUSTFLAGS` string, preserving other tokens.
+///
+/// Used by the generated `build.rs` scripts (both the aggregator's and
+/// bridge-local ones) before shelling out to nested `cargo build --bins`
+/// for member bins. Without this, the ambient `RUSTFLAGS=--cfg rudzio_test`
+/// that `cargo rudzio test` sets would activate `cfg(any(test,
+/// rudzio_test))`-gated modules during bin compilation — and those
+/// modules typically reference dev-deps that aren't in the bin's
+/// `[dependencies]`, producing hundreds of spurious compile errors.
+#[must_use]
+pub fn strip_rudzio_test_cfg(rustflags: &str) -> String {
+    let tokens: Vec<&str> = rustflags.split_whitespace().collect();
+    let mut out: Vec<&str> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        if tokens[i] == RUDZIO_TEST_CFG_FLAG
+            && tokens.get(i + 1).copied() == Some(RUDZIO_TEST_CFG_VALUE)
+        {
+            i += 2;
+            continue;
+        }
+        out.push(tokens[i]);
+        i += 1;
+    }
+    out.join(" ")
+}
+
 /// Compute the `RUSTFLAGS` value to set when spawning cargo for the
 /// `test` subcommand. Appends `--cfg rudzio_test` to any existing
 /// flags, preserving them; no-op if the flag is already present.
