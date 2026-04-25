@@ -20,6 +20,13 @@ use crate::suite::{RuntimeGroupKey, RuntimeGroupOwner, TestRunFn};
 #[derive(Clone, Copy)]
 pub struct TestToken {
     pub name: &'static str,
+    /// Colon-delimited module path from the test's defining crate root to
+    /// the module that contains the `#[rudzio::test]` function (the value
+    /// of `::core::module_path!()` at the expansion site). The runner
+    /// joins this with [`Self::name`] as `"{module_path}::{name}"` for
+    /// display; the filter substring-match still runs against
+    /// [`Self::name`] alone.
+    pub module_path: &'static str,
     pub ignored: bool,
     pub ignore_reason: &'static str,
     /// `true` when the test was declared with
@@ -50,6 +57,7 @@ impl fmt::Debug for TestToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TestToken")
             .field("name", &self.name)
+            .field("module_path", &self.module_path)
             .field("ignored", &self.ignored)
             .field("ignore_reason", &self.ignore_reason)
             .field("has_benchmark", &self.has_benchmark)

@@ -5,6 +5,7 @@ pub mod build;
 pub mod common;
 pub mod config;
 pub mod context;
+pub mod output;
 pub mod runner;
 pub mod runtime;
 pub mod suite;
@@ -14,7 +15,7 @@ pub mod token;
 pub use rudzio_macro::{main, suite, test};
 
 pub use bench::{BenchReport, Strategy};
-pub use config::{BenchMode, CargoMeta, ColorMode, Config, Format, RunIgnoredMode};
+pub use config::{BenchMode, CargoMeta, ColorMode, Config, Format, OutputMode, RunIgnoredMode};
 
 /// Expand to a [`CargoMeta`] populated from the caller crate's
 /// `env!(...)` values. Use this when you need to build a [`Config`]

@@ -529,41 +529,87 @@ fn generate_per_config(
                     let config: &'s ::rudzio::config::Config =
                         ::rudzio::runtime::Runtime::config(rt);
 
-                    #ctx_binding = match suite.context(per_test_token.clone(), config).await {
-                        ::std::result::Result::Ok(c) => c,
-                        ::std::result::Result::Err(e) => {
-                            return ::rudzio::suite::TestOutcome::Failed {
-                                elapsed: start.elapsed(),
-                                message: ::std::format!(
-                                    "failed to create test context: {}", e,
-                                ),
-                            };
+                    // Allocate a per-dispatch TestId, register it in the
+                    // panic hook's thread-local, and announce the test to
+                    // the drawer. Paired with the `TestCompleted` emit
+                    // below so drawer state stays consistent even for
+                    // tests that fail during context setup.
+                    let __rudzio_test_id =
+                        ::rudzio::output::events::TestId::next();
+                    ::rudzio::output::panic_hook::set_current_test(
+                        ::std::option::Option::Some(__rudzio_test_id),
+                    );
+                    ::rudzio::output::send_lifecycle(
+                        ::rudzio::output::events::LifecycleEvent::TestStarted {
+                            test_id: __rudzio_test_id,
+                            module_path: token.module_path,
+                            test_name: token.name,
+                            runtime_name:
+                                <#runtime_type as ::rudzio::runtime::Runtime<'_>>::name(rt),
+                            thread: ::std::thread::current().id(),
+                            at: start,
+                        },
+                    );
+
+                    let outcome = 'run: {
+                        #ctx_binding = match suite.context(per_test_token.clone(), config).await {
+                            ::std::result::Result::Ok(c) => c,
+                            ::std::result::Result::Err(e) => {
+                                break 'run ::rudzio::suite::TestOutcome::Failed {
+                                    elapsed: start.elapsed(),
+                                    message: ::std::format!(
+                                        "failed to create test context: {}", e,
+                                    ),
+                                };
+                            }
+                        };
+
+                        let test_outcome = #test_outcome_expr;
+
+                        let outcome = ::rudzio::suite::fill_elapsed(
+                            test_outcome,
+                            start.elapsed(),
+                        );
+
+                        let name = token.name;
+                        match ::std::panic::AssertUnwindSafe(ctx.teardown())
+                            .catch_unwind()
+                            .await
+                        {
+                            ::std::result::Result::Ok(::std::result::Result::Ok(())) => {}
+                            ::std::result::Result::Ok(::std::result::Result::Err(e)) => {
+                                reporter.report_warning(&::std::format!(
+                                    "test teardown failed [{}]: {}",
+                                    name, e,
+                                ));
+                            }
+                            ::std::result::Result::Err(_) => {
+                                reporter.report_warning(&::std::format!(
+                                    "test teardown panicked [{}]",
+                                    name,
+                                ));
+                            }
                         }
+
+                        outcome
                     };
 
-                    let test_outcome = #test_outcome_expr;
-
-                    let outcome = ::rudzio::suite::fill_elapsed(test_outcome, start.elapsed());
-
-                    let name = token.name;
-                    match ::std::panic::AssertUnwindSafe(ctx.teardown())
-                        .catch_unwind()
-                        .await
+                    // Flush producer-side stdio so all captured bytes are
+                    // in the drawer's pipe before announcing completion.
                     {
-                        ::std::result::Result::Ok(::std::result::Result::Ok(())) => {}
-                        ::std::result::Result::Ok(::std::result::Result::Err(e)) => {
-                            reporter.report_warning(&::std::format!(
-                                "test teardown failed [{}]: {}",
-                                name, e,
-                            ));
-                        }
-                        ::std::result::Result::Err(_) => {
-                            reporter.report_warning(&::std::format!(
-                                "test teardown panicked [{}]",
-                                name,
-                            ));
-                        }
+                        use ::std::io::Write as _;
+                        let _unused_stdout = ::std::io::stdout().flush();
+                        let _unused_stderr = ::std::io::stderr().flush();
                     }
+                    ::rudzio::output::send_lifecycle(
+                        ::rudzio::output::events::LifecycleEvent::TestCompleted {
+                            test_id: __rudzio_test_id,
+                            outcome: ::std::clone::Clone::clone(&outcome),
+                        },
+                    );
+                    ::rudzio::output::panic_hook::set_current_test(
+                        ::std::option::Option::None,
+                    );
 
                     outcome
                 })
@@ -576,6 +622,7 @@ fn generate_per_config(
             #[doc(hidden)]
             static #token_static: ::rudzio::token::TestToken = ::rudzio::token::TestToken {
                 name: #test_name_str,
+                module_path: ::core::module_path!(),
                 ignored: #ignored,
                 ignore_reason: #ignore_reason,
                 has_benchmark: #has_benchmark,

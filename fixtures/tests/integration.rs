@@ -144,7 +144,7 @@ mod tests {
         );
         anyhow::ensure!(log.contains("first_passes"), "output:\n{log}");
         anyhow::ensure!(log.contains("second_passes"), "output:\n{log}");
-        anyhow::ensure!(log.contains("... ok"), "output:\n{log}");
+        anyhow::ensure!(log.contains("[OK]"), "output:\n{log}");
         anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
         anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
         Ok(())
@@ -158,7 +158,7 @@ mod tests {
             out.status.code() == Some(1),
             "expected exit 1, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("FAILED"), "output:\n{log}");
+        anyhow::ensure!(log.contains("[FAIL]"), "output:\n{log}");
         anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
         anyhow::ensure!(log.contains("1 failed"), "output:\n{log}");
         Ok(())
@@ -172,7 +172,7 @@ mod tests {
             out.status.code() == Some(0),
             "expected exit 0, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("... ignored"), "output:\n{log}");
+        anyhow::ensure!(log.contains("[IGNORE]"), "output:\n{log}");
         anyhow::ensure!(log.contains("takes too long"), "output:\n{log}");
         anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
         anyhow::ensure!(log.contains("2 ignored"), "output:\n{log}");
@@ -189,7 +189,7 @@ mod tests {
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("yields_then_passes"), "output:\n{log}");
-        anyhow::ensure!(log.contains("... ok"), "output:\n{log}");
+        anyhow::ensure!(log.contains("[OK]"), "output:\n{log}");
         Ok(())
     }
 
@@ -202,7 +202,7 @@ mod tests {
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("passes_under_compio"), "output:\n{log}");
-        anyhow::ensure!(log.contains("... ok"), "output:\n{log}");
+        anyhow::ensure!(log.contains("[OK]"), "output:\n{log}");
         Ok(())
     }
 
@@ -281,7 +281,7 @@ mod tests {
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("runs_on_custom_context"), "output:\n{log}");
-        anyhow::ensure!(log.contains("... ok"), "output:\n{log}");
+        anyhow::ensure!(log.contains("[OK]"), "output:\n{log}");
         anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
         Ok(())
     }
@@ -300,7 +300,7 @@ mod tests {
         );
         anyhow::ensure!(log.contains("setup_failed_by_design"), "output:\n{log}");
         anyhow::ensure!(log.contains("1 panicked"), "output:\n{log}");
-        anyhow::ensure!(!log.contains("... ok"), "output:\n{log}");
+        anyhow::ensure!(!log.contains("[OK]"), "output:\n{log}");
         Ok(())
     }
 
@@ -337,7 +337,7 @@ mod tests {
             log.contains("runs_via_plain_test_attribute"),
             "output:\n{log}"
         );
-        anyhow::ensure!(log.contains("... ok"), "output:\n{log}");
+        anyhow::ensure!(log.contains("[OK]"), "output:\n{log}");
         anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
         Ok(())
     }
@@ -386,7 +386,7 @@ mod tests {
             out.status.code() == Some(0),
             "expected exit 0, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("... ok"), "output:\n{log}");
+        anyhow::ensure!(log.contains("[OK]"), "output:\n{log}");
         // The marker only appears if suite teardown waited for the tracked task.
         anyhow::ensure!(
             log.contains("tracker_drain_marker"),
@@ -403,7 +403,7 @@ mod tests {
             out.status.code() == Some(0),
             "expected exit 0, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("... ok"), "output:\n{log}");
+        anyhow::ensure!(log.contains("[OK]"), "output:\n{log}");
         anyhow::ensure!(
             log.contains("cancel_propagation_marker"),
             "teardown did not cancel the token; output:\n{log}"
@@ -494,7 +494,7 @@ mod tests {
             out.status.code() == Some(1),
             "expected exit 1, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("FAILED (timed out)"), "output:\n{log}");
+        anyhow::ensure!(log.contains("[TIMEOUT]"), "output:\n{log}");
         anyhow::ensure!(
             !log.contains("body_times_out_unreached_marker"),
             "test body must not complete, output:\n{log}"
@@ -523,7 +523,7 @@ mod tests {
             out.status.code() == Some(1),
             "expected exit 1 on per-test timeout, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("FAILED (timed out)"), "output:\n{log}");
+        anyhow::ensure!(log.contains("[TIMEOUT]"), "output:\n{log}");
         anyhow::ensure!(
             !log.contains("hangs_until_timeout_unreached_marker"),
             "test body should not have completed, output:\n{log}"
@@ -557,11 +557,11 @@ mod tests {
             "first test should observe cancellation, output:\n{log}"
         );
         anyhow::ensure!(
-            log.contains("never_starts_first [tokio::Multithread") && log.contains("cancelled"),
+            log.contains("[CANCEL]") && log.contains("never_starts_first"),
             "output:\n{log}"
         );
         anyhow::ensure!(
-            log.contains("never_starts_second [tokio::Multithread") && log.contains("cancelled"),
+            log.contains("[CANCEL]") && log.contains("never_starts_second"),
             "output:\n{log}"
         );
         anyhow::ensure!(

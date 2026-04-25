@@ -8,6 +8,8 @@
 
 use std::collections::BTreeMap;
 use std::env;
+use std::io;
+use std::io::IsTerminal as _;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::thread;
@@ -67,6 +69,46 @@ pub enum RunIgnoredMode {
     Only,
     /// `--include-ignored`: run every test, ignored or not.
     Include,
+}
+
+/// Test-output rendering strategy.
+///
+/// `Live` drives a bottom-of-terminal live region with one row pair per
+/// runtime slot (status + latest-output hint) plus an append-only history
+/// region above it (see `crate::output::render`). `Plain` skips the live
+/// region and prints linear append-only output suitable for log files and
+/// CI pipelines.
+///
+/// Resolution rules (in order): explicit `--output=<mode>` or `--plain`
+/// wins; otherwise `Live` iff stdout is a terminal AND the `CI`
+/// environment variable is unset; otherwise `Plain`. See
+/// [`OutputMode::resolve`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputMode {
+    /// Bottom-of-terminal live region + history above.
+    Live,
+    /// Linear append-only output, one line per event.
+    Plain,
+}
+
+impl OutputMode {
+    /// Pick an [`OutputMode`] from an explicit user choice plus the
+    /// ambient environment. `explicit` comes from `--output=` / `--plain`;
+    /// `env` is the snapshot captured at startup (the `CI` key is used as
+    /// a "definitely not a human terminal" hint even when stdout IS a
+    /// TTY, because CI log capture frequently makes ANSI cursor-moves
+    /// unreadable downstream).
+    #[must_use]
+    pub fn resolve(explicit: Option<Self>, env: &BTreeMap<String, String>) -> Self {
+        if let Some(m) = explicit {
+            return m;
+        }
+        if io::stdout().is_terminal() && !env.contains_key("CI") {
+            Self::Live
+        } else {
+            Self::Plain
+        }
+    }
 }
 
 /// How `#[rudzio::test(benchmark = ...)]`-annotated tests should be run.
@@ -129,6 +171,8 @@ pub struct Config {
     pub run_ignored: RunIgnoredMode,
     /// How `#[rudzio::test(benchmark = ...)]`-annotated tests are treated.
     pub bench_mode: BenchMode,
+    /// Rendering strategy for the runner's test output.
+    pub output_mode: OutputMode,
     /// `--list`: print test names and exit without running.
     pub list: bool,
     /// `--test-timeout=<secs>`. `None` = unbounded.
@@ -178,6 +222,7 @@ impl Config {
         let mut color = ColorMode::Auto;
         let mut run_ignored = RunIgnoredMode::Normal;
         let mut bench_mode = BenchMode::Smoke;
+        let mut output_mode_explicit: Option<OutputMode> = None;
         let mut list = false;
         let mut test_timeout: Option<Duration> = None;
         let mut run_timeout: Option<Duration> = None;
@@ -249,6 +294,23 @@ impl Config {
                 bench_mode = BenchMode::Full;
             } else if arg == "--no-bench" {
                 bench_mode = BenchMode::Skip;
+            } else if let Some(rest) = arg.strip_prefix("--output=") {
+                output_mode_explicit = match rest {
+                    "live" => Some(OutputMode::Live),
+                    "plain" => Some(OutputMode::Plain),
+                    _ => output_mode_explicit,
+                };
+            } else if arg == "--output" {
+                i += 1;
+                if let Some(next) = argv.get(i) {
+                    output_mode_explicit = match next.as_str() {
+                        "live" => Some(OutputMode::Live),
+                        "plain" => Some(OutputMode::Plain),
+                        _ => output_mode_explicit,
+                    };
+                }
+            } else if arg == "--plain" {
+                output_mode_explicit = Some(OutputMode::Plain);
             } else if arg == "--list" {
                 list = true;
             } else if let Some(rest) = arg.strip_prefix("--test-timeout=") {
@@ -302,6 +364,8 @@ impl Config {
         // expect: N worker threads, N tests in-flight.
         let concurrency_limit = concurrency_limit.unwrap_or(threads);
 
+        let output_mode = OutputMode::resolve(output_mode_explicit, &env);
+
         Self {
             filter,
             skip_filters,
@@ -311,6 +375,7 @@ impl Config {
             color,
             run_ignored,
             bench_mode,
+            output_mode,
             list,
             test_timeout,
             run_timeout,
