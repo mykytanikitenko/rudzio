@@ -95,10 +95,10 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
     };
 
     // Discovery uses the user-supplied --path (not the git root) so a
-    // multi-repo / multi-workspace tree like platform-backend works:
-    // the clean-tree check enforces the whole git repo is tidy, but
-    // cargo metadata runs at the specific package / workspace the user
-    // is migrating, which may be a subdirectory.
+    // multi-workspace monorepo works: the clean-tree check enforces
+    // the whole git repo is tidy, but cargo metadata runs at the
+    // specific package / workspace the user is migrating, which may
+    // be a subdirectory.
     let mut packages = discovery::discover(&args.path)?;
     if let Some(filter) = args.only_package.as_deref() {
         let before = packages.len();
