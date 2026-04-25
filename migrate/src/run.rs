@@ -123,6 +123,7 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
     for pkg in &packages {
         let mut pkg_edits = manifest::ManifestEdits {
             workspace_dep_names: workspace_dep_names.clone(),
+            has_lib_rs: pkg.root.join("src/lib.rs").is_file(),
             ..manifest::ManifestEdits::default()
         };
         let mut pkg_had_conversions = false;
