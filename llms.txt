@@ -162,12 +162,15 @@ contributors or anyone tracing through a failure:
   [tests/main.rs](tests/main.rs): the in-crate dogfood suite —
   one rudzio test binary that exercises the framework across
   every bundled runtime.
-- [test-runner/src/](test-runner/src/): workspace-aggregated
-  rudzio runner that pulls every testable crate's integration
-  test file in via `#[path]` so all `#[rudzio::test]` tokens
-  land in one `TEST_TOKENS` slice and one runner schedules them
-  all together. The `build.rs` uses `rudzio::build::expose_bins`
-  to populate `CARGO_BIN_EXE_<name>` for fixture binaries.
+- [cargo-rudzio/](cargo-rudzio/): `cargo rudzio test` generator.
+  Inspects `cargo metadata`, emits an aggregator crate at
+  `<target-dir>/rudzio-auto-runner/` that `#[path]`-includes
+  every rudzio-using member's `tests/*.rs` (minus
+  `[package.metadata.rudzio].exclude` entries), then builds and
+  runs it. The generated `build.rs` uses
+  `rudzio::build::expose_bins` to populate `CARGO_BIN_EXE_<name>`
+  for fixture binaries so `rudzio::bin!` resolves in the
+  aggregated layout.
 - [fixtures/](fixtures/): per-runtime fixture binaries used by
   the integration-test harness to exercise cancellation,
   panic-recovery, timeouts, and teardown-ordering edge cases.

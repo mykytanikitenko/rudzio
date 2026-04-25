@@ -1,8 +1,9 @@
 //! Rudzio's own dogfood test suite.
 //!
 //! Lives as a regular integration test (so per-crate `cargo test -p rudzio`
-//! just works) AND is re-compiled into the workspace-wide `test-runner/`
-//! binary via `#[path]`. That dual-role layout keeps Cargo's workspace
+//! just works) AND is re-compiled into the auto-generated workspace-wide
+//! aggregator (`<target-dir>/rudzio-auto-runner/`) via `#[path]` when run
+//! under `cargo rudzio test`. That dual-role layout keeps Cargo's workspace
 //! feature unification from leaking the `tests` feature into e2e fixture
 //! binaries.
 //!

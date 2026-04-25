@@ -120,7 +120,15 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
             .to_path_buf();
         let manifest_dir_std = manifest_dir.as_std_path().to_path_buf();
 
-        let test_files = discover_test_files(pkg, &manifest_dir_std)
+        let exclude_list = load_rudzio_exclude_list(pkg.manifest_path.as_std_path())
+            .with_context(|| {
+                format!(
+                    "loading `[package.metadata.rudzio].exclude` from {}",
+                    pkg.manifest_path.as_std_path().display()
+                )
+            })?;
+
+        let test_files = discover_test_files(pkg, &manifest_dir_std, &exclude_list)
             .with_context(|| format!("discovering test files for `{}`", pkg.name))?;
         if test_files.is_empty() {
             continue;
@@ -176,7 +184,16 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
 ///   `tests/main.rs` shim (which contains its own `#[rudzio::main]`).
 /// - Otherwise (no explicit entries, or `autotests = false` with no
 ///   entries) fall back to scanning immediate children of `tests/*.rs`.
-fn discover_test_files(pkg: &Package, manifest_dir: &Path) -> Result<Vec<PathBuf>> {
+///
+/// Files whose absolute path matches any entry in `exclude` (sourced from
+/// `[package.metadata.rudzio].exclude` in the member's Cargo.toml) are
+/// filtered out — useful for trybuild-driven tests whose manifest-dir-
+/// relative paths would break when `#[path]`-included into the aggregator.
+fn discover_test_files(
+    pkg: &Package,
+    manifest_dir: &Path,
+    exclude: &[PathBuf],
+) -> Result<Vec<PathBuf>> {
     let tests_dir = manifest_dir.join("tests");
     let main_shim = tests_dir.join("main.rs");
 
@@ -219,9 +236,61 @@ fn discover_test_files(pkg: &Package, manifest_dir: &Path) -> Result<Vec<PathBuf
         explicit
     };
 
+    if !exclude.is_empty() {
+        files.retain(|file| !exclude.iter().any(|excluded| paths_equal(file, excluded)));
+    }
+
     files.sort();
     files.dedup();
     Ok(files)
+}
+
+/// Load `[package.metadata.rudzio].exclude` from the member's Cargo.toml.
+///
+/// Returns absolute paths (each entry joined against the manifest's parent
+/// directory). An absent section yields an empty vec; a present but non-
+/// array-of-strings value is a hard error so misconfigurations are caught
+/// at aggregator-generation time rather than silently ignored.
+fn load_rudzio_exclude_list(manifest_path: &Path) -> Result<Vec<PathBuf>> {
+    let text = fs::read_to_string(manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?;
+    let doc: DocumentMut = text
+        .parse()
+        .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    let manifest_dir = manifest_path
+        .parent()
+        .ok_or_else(|| anyhow!("manifest path has no parent"))?;
+
+    let Some(package) = doc.get("package").and_then(Item::as_table) else {
+        return Ok(Vec::new());
+    };
+    let Some(metadata) = package.get("metadata").and_then(Item::as_table) else {
+        return Ok(Vec::new());
+    };
+    let Some(rudzio_meta) = metadata.get("rudzio").and_then(Item::as_table) else {
+        return Ok(Vec::new());
+    };
+    let Some(exclude_item) = rudzio_meta.get("exclude") else {
+        return Ok(Vec::new());
+    };
+    let array = exclude_item.as_array().ok_or_else(|| {
+        anyhow!(
+            "`[package.metadata.rudzio].exclude` in {} must be an array of strings",
+            manifest_path.display()
+        )
+    })?;
+
+    let mut out: Vec<PathBuf> = Vec::with_capacity(array.len());
+    for entry in array {
+        let s = entry.as_str().ok_or_else(|| {
+            anyhow!(
+                "`[package.metadata.rudzio].exclude` in {} must contain only strings",
+                manifest_path.display()
+            )
+        })?;
+        out.push(manifest_dir.join(s));
+    }
+    Ok(out)
 }
 
 fn read_workspace_deps(workspace_root: &Path) -> Result<BTreeMap<String, WorkspaceDepSpec>> {
