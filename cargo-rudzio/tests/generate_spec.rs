@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use cargo_metadata::camino::Utf8PathBuf;
 use cargo_rudzio::generate::{
-    DevDepSpec, GitRef, MemberPlan, RudzioLocation, RudzioSpec, WorkspaceDepSpec,
-    build_rudzio_inline_table, collect_rudzio_spec,
+    DevDepSpec, GitRef, MemberPlan, Plan, RudzioLocation, RudzioSpec, WorkspaceDepSpec,
+    build_main_rs, build_rudzio_inline_table, collect_rudzio_spec,
 };
 
 fn member(name: &str, dev_deps: Vec<DevDepSpec>) -> MemberPlan {
@@ -14,6 +15,20 @@ fn member(name: &str, dev_deps: Vec<DevDepSpec>) -> MemberPlan {
         bin_names: Vec::new(),
         has_lib: true,
         dev_deps,
+    }
+}
+
+fn plan_with_members(members: Vec<MemberPlan>, workspace_root: &str) -> Plan {
+    Plan {
+        workspace_root: Utf8PathBuf::from(workspace_root),
+        target_directory: Utf8PathBuf::from("/tmp/target"),
+        members,
+        rudzio_spec: RudzioSpec {
+            location: RudzioLocation::Version("0.1".to_owned()),
+            features: Vec::new(),
+            uses_default_features: true,
+        },
+        workspace_deps: BTreeMap::new(),
     }
 }
 
@@ -45,7 +60,8 @@ fn ws_root() -> PathBuf {
 mod tests {
     use super::{
         BTreeMap, GitRef, Path, RudzioLocation, RudzioSpec, WorkspaceDepSpec,
-        build_rudzio_inline_table, collect_rudzio_spec, member, rudzio_dep, ws_root,
+        build_main_rs, build_rudzio_inline_table, collect_rudzio_spec, member, plan_with_members,
+        rudzio_dep, ws_root,
     };
     use std::path::PathBuf;
 
@@ -248,6 +264,95 @@ mod tests {
         anyhow::ensure!(
             rendered_disabled.contains("default-features = false"),
             "default-features = false missing: {rendered_disabled}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn main_rs_emits_extern_crate_per_lib_member_for_rlib_linking() -> anyhow::Result<()> {
+        let members = vec![
+            member("alpha", Vec::new()),
+            member("beta", Vec::new()),
+        ];
+        let rendered = build_main_rs(&plan_with_members(members, "/nowhere"));
+
+        anyhow::ensure!(
+            rendered.contains("extern crate alpha;"),
+            "missing extern crate alpha; in:\n{rendered}",
+        );
+        anyhow::ensure!(
+            rendered.contains("extern crate beta;"),
+            "missing extern crate beta; in:\n{rendered}",
+        );
+        anyhow::ensure!(
+            rendered.contains("#[rudzio::main]"),
+            "missing #[rudzio::main] in:\n{rendered}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn main_rs_normalises_hyphens_to_underscores_in_extern_crate() -> anyhow::Result<()> {
+        let members = vec![member("foo-bar-baz", Vec::new())];
+        let rendered = build_main_rs(&plan_with_members(members, "/nowhere"));
+
+        anyhow::ensure!(
+            rendered.contains("extern crate foo_bar_baz;"),
+            "hyphen-in-pkg-name not normalised to underscore:\n{rendered}",
+        );
+        anyhow::ensure!(
+            !rendered.contains("extern crate foo-bar-baz;"),
+            "emitted invalid ident with hyphens:\n{rendered}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn main_rs_skips_workspace_root_and_bin_only_members() -> anyhow::Result<()> {
+        let mut root_member = member("root_crate", Vec::new());
+        root_member.manifest_dir = PathBuf::from("/ws-root");
+
+        let mut bin_only = member("only_bins", Vec::new());
+        bin_only.has_lib = false;
+        bin_only.bin_names = vec!["only_bins".to_owned()];
+
+        let regular = member("regular", Vec::new());
+
+        let members = vec![root_member, bin_only, regular];
+        let rendered = build_main_rs(&plan_with_members(members, "/ws-root"));
+
+        anyhow::ensure!(
+            !rendered.contains("extern crate root_crate;"),
+            "workspace-root member must not appear (already covered by rudzio dep):\n{rendered}",
+        );
+        anyhow::ensure!(
+            !rendered.contains("extern crate only_bins;"),
+            "bin-only member has no rlib to link:\n{rendered}",
+        );
+        anyhow::ensure!(
+            rendered.contains("extern crate regular;"),
+            "regular lib member is missing:\n{rendered}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn main_rs_dedups_extern_crate_on_name_collision() -> anyhow::Result<()> {
+        // Two members whose normalised idents collide (cargo disallows
+        // this in a real workspace, but the dedup keeps the emitted file
+        // from containing a duplicate `extern crate foo_bar;`).
+        let members = vec![
+            member("foo-bar", Vec::new()),
+            member("foo_bar", Vec::new()),
+        ];
+        let rendered = build_main_rs(&plan_with_members(members, "/nowhere"));
+
+        let occurrences: Vec<&str> =
+            rendered.match_indices("extern crate foo_bar;").map(|(_, s)| s).collect();
+        anyhow::ensure!(
+            occurrences.len() == 1,
+            "expected one extern crate foo_bar;, got {}:\n{rendered}",
+            occurrences.len(),
         );
         Ok(())
     }

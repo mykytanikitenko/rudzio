@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 
 use anyhow::{Context as _, Result, bail};
-use cargo_rudzio::generate;
+use cargo_rudzio::{generate, resolve_rustflags};
 
 const USAGE: &str = "\
 cargo-rudzio - Cargo subcommand: single-binary test aggregation + rudzio-migrate
@@ -83,7 +83,9 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
     let target = plan.default_output_dir();
     generate::write_runner(&plan, &target)?;
     let manifest = target.join("Cargo.toml");
+    let rustflags = resolve_rustflags(std::env::var("RUSTFLAGS").ok().as_deref());
     let status = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+        .env("RUSTFLAGS", &rustflags)
         .arg("run")
         .arg("--manifest-path")
         .arg(&manifest)

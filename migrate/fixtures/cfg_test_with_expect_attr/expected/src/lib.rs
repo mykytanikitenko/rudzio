@@ -6,7 +6,7 @@
 pub fn add(a: i32, b: i32) -> i32 {
     a + b
 }
-#[cfg(test)]
+#[cfg(any(test, rudzio_test))]
 #[expect(clippy::panic_in_result_fn, reason = "assertions panic by design")]
 #[::rudzio::suite(
     [(

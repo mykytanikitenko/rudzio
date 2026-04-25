@@ -1,7 +1,7 @@
 pub fn prefix_matches(haystack: &str, needle: &str) -> bool {
     haystack.starts_with(needle)
 }
-#[cfg(test)]
+#[cfg(any(test, rudzio_test))]
 #[::rudzio::suite(
     [(
         runtime = ::rudzio::runtime::tokio::Multithread::new,

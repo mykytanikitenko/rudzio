@@ -35,6 +35,13 @@ pub struct ManifestEdits {
     /// so the rudzio-main binaries don't fire libtest on every
     /// `cargo test` pass with zero test functions to report.
     pub bin_names: Vec<String>,
+    /// Whether any rewritten file in this package emits a reference to
+    /// the `rudzio_test` cfg symbol (via the `cfg(any(test,
+    /// rudzio_test))` rewrite or the synthesized integration-file
+    /// wrapper module). When true, the package's Cargo.toml needs a
+    /// `[lints.rust] unexpected_cfgs = { check-cfg = ['cfg(rudzio_test)'] }`
+    /// entry so Rust 1.80+'s unknown-cfg warning doesn't fire.
+    pub needs_rudzio_test_cfg: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +89,9 @@ pub fn apply(manifest_path: &Path, edits: &ManifestEdits) -> Result<bool> {
     }
     for entry in &edits.tests_integration {
         ensure_test_entry(&mut doc, entry);
+    }
+    if edits.needs_rudzio_test_cfg {
+        ensure_check_cfg_rudzio_test(&mut doc);
     }
 
     let after = doc.to_string();
@@ -275,6 +285,68 @@ fn dep_already_present(doc: &DocumentMut, name: &str) -> bool {
         }
     }
     false
+}
+
+/// Ensure `[lints.rust] unexpected_cfgs = { level = "warn", check-cfg
+/// = ['cfg(rudzio_test)'] }` is present. Merge-safe: if `[lints.rust]`
+/// already exists, only the `check-cfg` array is touched (and only
+/// to add the `cfg(rudzio_test)` entry if it's missing). `level` is
+/// added only when `unexpected_cfgs` didn't already exist — we never
+/// override a user-chosen severity.
+fn ensure_check_cfg_rudzio_test(doc: &mut DocumentMut) {
+    const CFG_ENTRY: &str = "cfg(rudzio_test)";
+    let lints_was_absent = !doc.as_table().contains_key("lints");
+    let lints = doc
+        .as_table_mut()
+        .entry("lints")
+        .or_insert(Item::Table(Table::new()));
+    let Some(lints_tbl) = lints.as_table_mut() else {
+        return;
+    };
+    if lints_was_absent {
+        // Avoid emitting a bare `[lints]` header before `[lints.rust]`.
+        // toml_edit renders implicit parent tables without their own
+        // header, which is what the user would normally write by hand.
+        lints_tbl.set_implicit(true);
+    }
+    let rust = lints_tbl
+        .entry("rust")
+        .or_insert(Item::Table(Table::new()));
+    let Some(rust_tbl) = rust.as_table_mut() else {
+        return;
+    };
+    let existed = rust_tbl.contains_key("unexpected_cfgs");
+    let unexpected = rust_tbl
+        .entry("unexpected_cfgs")
+        .or_insert(Item::Value(toml_edit::Value::InlineTable({
+            let mut t = InlineTable::new();
+            let _lvl = t.insert("level", "warn".into());
+            let mut arr = Array::new();
+            arr.push(CFG_ENTRY);
+            let _cc = t.insert("check-cfg", arr.into());
+            t
+        })));
+    if !existed {
+        return;
+    }
+    let inline = match unexpected {
+        Item::Value(toml_edit::Value::InlineTable(t)) => Some(t),
+        _ => None,
+    };
+    let Some(inline) = inline else {
+        return;
+    };
+    let check_cfg_item = inline
+        .entry("check-cfg")
+        .or_insert(toml_edit::Value::Array(Array::new()));
+    if let toml_edit::Value::Array(arr) = check_cfg_item {
+        let already = arr
+            .iter()
+            .any(|v| v.as_str().is_some_and(|s| s == CFG_ENTRY));
+        if !already {
+            arr.push(CFG_ENTRY);
+        }
+    }
 }
 
 fn ensure_test_entry(doc: &mut DocumentMut, entry: &IntegrationTestEntry) {

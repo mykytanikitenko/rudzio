@@ -1,7 +1,7 @@
 pub fn b_answer() -> i32 {
     20
 }
-#[cfg(test)]
+#[cfg(any(test, rudzio_test))]
 #[::rudzio::suite(
     [(
         runtime = ::rudzio::runtime::tokio::Multithread::new,

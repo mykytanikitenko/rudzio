@@ -11,7 +11,7 @@ pub struct MockGenerator;
 impl std::sync::Arc<MockGenerator> {
     fn as_ref(&self) -> &MockGenerator;
 }
-#[cfg(test)]
+#[cfg(any(test, rudzio_test))]
 #[::rudzio::suite(
     [(
         runtime = ::rudzio::runtime::tokio::Multithread::new,

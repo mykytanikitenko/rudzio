@@ -50,6 +50,18 @@ mod tests {
         run_fixture("plain_sync_test");
         ::core::result::Result::Ok(())
     }
+    #[::rudzio::test]
+    async fn golden_cfg_lints_preserve_existing(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("cfg_lints_preserve_existing");
+        ::core::result::Result::Ok(())
+    }
+    #[::rudzio::test]
+    async fn migrator_is_idempotent_on_already_migrated_crate(
+        _ctx: &Test,
+    ) -> ::anyhow::Result<()> {
+        run_fixture_twice("plain_sync_test");
+        ::core::result::Result::Ok(())
+    }
     /* pre-migration (rudzio-migrate):
     #[test]
     fn golden_test_context_migration() {
@@ -446,6 +458,92 @@ fn run_fixture(name: &str) {
     }
     compare_trees(&expected_dir, tempdir.path());
 }
+
+/// Run the migrator twice against the same input and assert both runs
+/// produce byte-identical trees matching `expected/`. Simulates the
+/// workflow a user takes after a successful migration: first run
+/// produces the migration + backup files, the user deletes backups
+/// and commits, then re-runs the tool. The second run must be a no-op
+/// — no further rewrites, no duplicated Cargo.toml entries, no
+/// double-wrapped cfg attrs.
+fn run_fixture_twice(name: &str) {
+    let fixtures_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    let input_dir = fixtures_root.join(name).join("input");
+    let expected_dir = fixtures_root.join(name).join("expected");
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    copy_tree(&input_dir, tempdir.path()).expect("copy input");
+    git_init_commit(tempdir.path()).expect("git init/commit");
+    invoke_migrate(tempdir.path(), &[]);
+    // Clean backups so the working tree is ready for a second run;
+    // then commit the tool's changes so the clean-tree gate passes.
+    delete_backups(tempdir.path()).expect("delete backups");
+    git_commit_all(tempdir.path()).expect("git commit post-first-run");
+    invoke_migrate(tempdir.path(), &[]);
+    delete_backups(tempdir.path()).expect("delete backups after 2nd run");
+    compare_trees(&expected_dir, tempdir.path());
+}
+
+fn invoke_migrate(root: &Path, extra_args: &[&str]) {
+    let bin = env!("CARGO_BIN_EXE_rudzio-migrate");
+    let stdin_script = format!("{ACK_PHRASE}\nn\n");
+    let mut cmd = Command::new(bin);
+    let _c = cmd.arg("--path").arg(root);
+    for a in extra_args {
+        let _c = cmd.arg(a);
+    }
+    let _c = cmd.stdin(Stdio::piped());
+    let _c = cmd.stdout(Stdio::piped());
+    let _c = cmd.stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rudzio-migrate");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(stdin_script.as_bytes())
+        .expect("write stdin");
+    let output = child.wait_with_output().expect("wait");
+    if !output.status.success() {
+        panic!(
+            "rudzio-migrate exited with {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+}
+
+fn delete_backups(root: &Path) -> std::io::Result<()> {
+    for path in walk(root) {
+        if path
+            .to_str()
+            .is_some_and(|s| s.ends_with(".backup_before_migration_to_rudzio"))
+        {
+            fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
+}
+
+fn git_commit_all(root: &Path) -> std::io::Result<()> {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["add", "-A"])
+        .status()?;
+    if !status.success() {
+        return Err(std::io::Error::other("git add failed"));
+    }
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["commit", "-q", "--allow-empty", "-m", "post-migrate"])
+        .status()?;
+    if !status.success() {
+        return Err(std::io::Error::other("git commit failed"));
+    }
+    Ok(())
+}
+
 fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
     for entry in walk(src) {
         let rel = entry

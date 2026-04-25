@@ -161,9 +161,6 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
 
         let test_files = discover_test_files(pkg, &manifest_dir_std, &exclude_list)
             .with_context(|| format!("discovering test files for `{}`", pkg.name))?;
-        if test_files.is_empty() {
-            continue;
-        }
 
         let bin_names: Vec<String> = pkg
             .targets
@@ -857,7 +854,7 @@ pub fn write_runner(plan: &Plan, out_dir: &Path) -> Result<()> {
     fs::write(out_dir.join("Cargo.toml"), cargo_toml)
         .with_context(|| format!("writing Cargo.toml under {}", out_dir.display()))?;
 
-    fs::write(src_dir.join("main.rs"), MAIN_RS)
+    fs::write(src_dir.join("main.rs"), build_main_rs(plan))
         .with_context(|| format!("writing src/main.rs under {}", out_dir.display()))?;
 
     fs::write(src_dir.join("tests.rs"), build_tests_rs(plan))
@@ -869,19 +866,63 @@ pub fn write_runner(plan: &Plan, out_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-const MAIN_RS: &str = "#![allow(
+/// Build the aggregator's `src/main.rs`. Emits `extern crate <crate>;`
+/// for every member we also list as a path dep in the aggregator's
+/// `[dependencies]`, which forces rustc to actually link each member's
+/// rlib into the final binary. Without this, rustc drops unreferenced
+/// rlibs during link-time DCE and linkme's `#[link_section]` statics in
+/// those crates (even annotated `#[used]`, which only blocks in-object
+/// DCE) never reach the binary — meaning `#[rudzio::test]` fns under a
+/// member's `src/**` wouldn't be discovered at run time. The member
+/// package name is normalised hyphens→underscores to match cargo's own
+/// crate-name-to-ident rule.
+pub fn build_main_rs(plan: &Plan) -> String {
+    let mut out = String::from(
+        "#![allow(
     unsafe_code,
     unreachable_pub,
     unused_crate_dependencies,
+    unused_extern_crates,
     clippy::tests_outside_test_module,
+    clippy::single_component_path_imports,
     reason = \"auto-generated rudzio test aggregator\"
 )]
 
+",
+    );
+
+    let workspace_root_abs = plan.workspace_root.as_std_path();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for member in &plan.members {
+        if paths_equal(&member.manifest_dir, workspace_root_abs) {
+            continue;
+        }
+        if !member.has_lib {
+            continue;
+        }
+        let ident = crate_name_to_ident(&member.package_name);
+        if !seen.insert(ident.clone()) {
+            continue;
+        }
+        out.push_str(&format!("extern crate {ident};\n"));
+    }
+
+    out.push_str(
+        "
 mod tests;
 
 #[rudzio::main]
 fn main() {}
-";
+",
+    );
+    out
+}
+
+/// Normalise a Cargo package name (which allows hyphens) into the Rust
+/// identifier cargo actually uses for `extern crate` / path references.
+fn crate_name_to_ident(name: &str) -> String {
+    name.replace('-', "_")
+}
 
 fn build_cargo_toml(plan: &Plan) -> Result<String> {
     let mut doc = DocumentMut::new();
@@ -1096,6 +1137,9 @@ fn build_tests_rs(plan: &Plan) -> String {
     let mut per_crate_mod_names: BTreeSet<String> = BTreeSet::new();
     let mut out = String::new();
     for member in &plan.members {
+        if member.test_files.is_empty() {
+            continue;
+        }
         let base_ident = sanitize_ident(&member.package_name);
         let mut crate_mod = base_ident.clone();
         let mut dedup = 1u32;

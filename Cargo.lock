@@ -71,6 +71,7 @@ dependencies = [
  "cargo_metadata",
  "rudzio",
  "rudzio-migrate",
+ "tempfile",
  "toml_edit",
 ]
 
