@@ -61,6 +61,16 @@ mod tests {
         ::core::result::Result::Ok(())
     }
     #[::rudzio::test]
+    async fn golden_cfg_attr_test_broadening(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("cfg_attr_test_broadening");
+        ::core::result::Result::Ok(())
+    }
+    #[::rudzio::test]
+    async fn golden_cfg_attr_only_no_suite(_ctx: &Test) -> ::anyhow::Result<()> {
+        run_fixture("cfg_attr_only_no_suite");
+        ::core::result::Result::Ok(())
+    }
+    #[::rudzio::test]
     async fn migrator_is_idempotent_on_already_migrated_crate(
         _ctx: &Test,
     ) -> ::anyhow::Result<()> {

@@ -151,12 +151,20 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
                         .runtimes
                         .extend(rewrite.runtimes_used.iter().copied());
                     pkg_edits.needs_anyhow |= rewrite.needs_anyhow;
-                    if file.starts_with(pkg.root.join("src")) {
+                    // `runtimes_used` is non-empty iff the rewriter
+                    // actually promoted a `#[cfg(test)]` module into a
+                    // `#[rudzio::suite(...)]`. A file whose only
+                    // rewrite was a cfg_attr broadening
+                    // (`cfg_attr(test, ...) → cfg_attr(any(test,
+                    // rudzio_test), ...)`) contributes nothing here,
+                    // so we skip `had_src_conversion` and the
+                    // downstream `[lib] harness = false` /
+                    // `#[rudzio::main]` / dev-dep mirror edits that
+                    // only make sense when the crate hosts at least
+                    // one rudzio suite.
+                    let promoted_suite = !rewrite.runtimes_used.is_empty();
+                    if promoted_suite && file.starts_with(pkg.root.join("src")) {
                         pkg_edits.had_src_conversion = true;
-                        // Only src/** rewrites need the target.cfg
-                        // mirror; tests/*.rs pulled into the
-                        // aggregator are compiled in the aggregator's
-                        // own crate (where the deps already live).
                         pkg_edits
                             .mirror_crate_idents
                             .extend(rewrite.used_crate_idents.iter().cloned());

@@ -89,11 +89,18 @@ pub fn apply(manifest_path: &Path, edits: &ManifestEdits) -> Result<bool> {
     for name in &edits.bin_names {
         set_bin_test_false(&mut doc, name);
     }
-    set_rudzio_dependency(
-        &mut doc,
-        &edits.runtimes,
-        edits.workspace_dep_names.contains("rudzio"),
-    );
+    // Only add `rudzio` as a dev-dep when at least one test fn was
+    // actually wrapped into a rudzio suite — a crate whose only rewrite
+    // was a `cfg_attr(test, ...) → cfg_attr(any(test, rudzio_test), ...)`
+    // broadening doesn't need rudzio itself (that rewrite only
+    // references the cfg symbol, not the crate).
+    if !edits.runtimes.is_empty() {
+        set_rudzio_dependency(
+            &mut doc,
+            &edits.runtimes,
+            edits.workspace_dep_names.contains("rudzio"),
+        );
+    }
     if edits.needs_anyhow {
         set_anyhow_dependency(&mut doc, edits.workspace_dep_names.contains("anyhow"));
     }
