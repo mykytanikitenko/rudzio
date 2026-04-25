@@ -64,6 +64,7 @@ pub fn rewrite_file(
         mod_depth: 0,
         file_scope_runtimes: BTreeSet::new(),
         file_scope_test_context_plan: None,
+        stripped_any_test_context_attr: false,
     };
     walker.visit_file_mut(file);
     walker.rewrite
@@ -94,6 +95,11 @@ struct Rewriter<'a, 'r> {
     /// so falling back to common types would produce a type
     /// mismatch.
     file_scope_test_context_plan: Option<TestContextPlan>,
+    /// True if any `#[test_context(...)]` attr in this file was
+    /// stripped. Used by the post-pass to clean up the now-unused
+    /// `use test_context::test_context;` import (the function-attr
+    /// macro that the user's tests were referring to).
+    stripped_any_test_context_attr: bool,
 }
 
 impl VisitMut for Rewriter<'_, '_> {
@@ -106,6 +112,9 @@ impl VisitMut for Rewriter<'_, '_> {
         visit_mut::visit_file_mut(self, file);
         self.wrap_file_scope_test_fns(file);
         self.ensure_tests_binary_has_main(file);
+        if self.stripped_any_test_context_attr {
+            prune_test_context_macro_imports(file);
+        }
     }
 
     fn visit_item_mod_mut(&mut self, m: &mut ItemMod) {
@@ -114,6 +123,11 @@ impl VisitMut for Rewriter<'_, '_> {
         visit_mut::visit_item_mod_mut(self, m);
         self.mod_depth = self.mod_depth.saturating_sub(1);
         prune_unused_test_context_import(m);
+        if self.stripped_any_test_context_attr {
+            if let Some((_, items)) = &mut m.content {
+                prune_test_context_macro_imports_in_items(items);
+            }
+        }
     }
 
     fn visit_item_fn_mut(&mut self, f: &mut ItemFn) {
@@ -140,6 +154,144 @@ impl VisitMut for Rewriter<'_, '_> {
 }
 
 impl Rewriter<'_, '_> {
+    /// Split a single `mod tests { ... }` into one wrapper module
+    /// per resolved-ctx group, each with its own
+    /// `#[rudzio::suite(...)]`. The outer module keeps `#[cfg(test)]`
+    /// and any non-test items (use statements, helpers) so the
+    /// children can `use super::*;` to reach them.
+    fn split_module_by_ctx_groups(
+        &mut self,
+        m: &mut ItemMod,
+        groups: std::collections::BTreeMap<Option<String>, ()>,
+        runtime: RuntimeChoice,
+        runtime_path: &syn::Path,
+    ) {
+        let Some((brace, items)) = m.content.take() else {
+            return;
+        };
+        // Bucket items: non-test items stay in the outer mod;
+        // test fns get bucketed by their ctx group.
+        let mut shared: Vec<Item> = Vec::new();
+        let mut buckets: std::collections::BTreeMap<Option<String>, Vec<Item>> =
+            groups.keys().cloned().map(|k| (k, Vec::new())).collect();
+        for item in items {
+            match &item {
+                Item::Fn(f) if f.attrs.iter().any(|a| detect::classify_test_attr(a).is_some()) => {
+                    let key = f.attrs.iter().find_map(|a| {
+                        let path = detect::as_test_context(a)?;
+                        let k = detect::path_to_string(&path);
+                        self.test_contexts.plan_for(&k).map(|_| k)
+                    });
+                    if let Some(bucket) = buckets.get_mut(&key) {
+                        bucket.push(item);
+                    } else {
+                        shared.push(item);
+                    }
+                }
+                _ => shared.push(item),
+            }
+        }
+
+        let mut new_items = shared;
+        for (idx, (key, fns)) in buckets.into_iter().enumerate() {
+            if fns.is_empty() {
+                continue;
+            }
+            let child_ident = match &key {
+                None => "tests_default".to_owned(),
+                Some(k) => format!(
+                    "tests_with_{}",
+                    last_segment_snake(k)
+                ),
+            };
+            let child = self.build_split_child_mod(
+                child_ident,
+                key.as_deref(),
+                runtime,
+                runtime_path,
+                fns,
+                // Per-child cfg-idx index is always 0 (each child
+                // suite has only one runtime tuple).
+                idx,
+            );
+            new_items.push(Item::Mod(child));
+        }
+
+        // Hoist any inner attrs on the outer mod to outer-style so
+        // the rudzio macros expanded inside the children don't
+        // re-encounter them as inner attrs (the children carry
+        // their own attrs via the suite generation path below).
+        hoist_inner_attrs_on_mod(m);
+        m.content = Some((brace, new_items));
+        let _inserted = self.rewrite.runtimes_used.insert(runtime);
+        self.rewrite.changed = true;
+        self.warn_span(
+            m.ident.span(),
+            "module mixed `#[test_context(...)]` and plain tests; split into per-context child modules so each suite tuple has the right `test = ...` path. Suite blocks remain inside the original `#[cfg(test)] mod` for dev-dep visibility.",
+        );
+    }
+
+    fn build_split_child_mod(
+        &mut self,
+        ident: String,
+        ctx_key: Option<&str>,
+        runtime: RuntimeChoice,
+        runtime_path: &syn::Path,
+        fns: Vec<Item>,
+        _idx: usize,
+    ) -> ItemMod {
+        let plan = ctx_key.and_then(|k| self.test_contexts.plan_for(k));
+        let (suite_path, test_path, uses_generated_ctx) = match plan {
+            Some(plan) => {
+                let base = plan.module_path.as_deref().unwrap_or("crate");
+                (
+                    parse_path_str(&format!("{base}::{}", plan.suite_ident)),
+                    parse_path_str(&format!("{base}::{}", plan.bridge_ident)),
+                    true,
+                )
+            }
+            None => (
+                parse_path_str("::rudzio::common::context::Suite"),
+                parse_path_str("::rudzio::common::context::Test"),
+                false,
+            ),
+        };
+        let suite_attr: Attribute = syn::parse_quote! {
+            #[::rudzio::suite([
+                (
+                    runtime = #runtime_path,
+                    suite = #suite_path,
+                    test = #test_path,
+                ),
+            ])]
+        };
+        let _runtime_used = runtime;
+        let mut child_items: Vec<Item> = Vec::with_capacity(fns.len() + 2);
+        child_items.push(syn::parse_quote! {
+            use super::*;
+        });
+        if let Some(plan) = plan {
+            let base = plan.module_path.as_deref().unwrap_or("crate");
+            let path: syn::Path = parse_path_str(&format!("{base}::{}", plan.bridge_ident));
+            child_items.push(syn::parse_quote! {
+                use #path;
+            });
+        } else {
+            child_items.push(syn::parse_quote! {
+                use ::rudzio::common::context::Test;
+            });
+        }
+        let _uses = uses_generated_ctx;
+        child_items.extend(fns);
+        let ident = syn::Ident::new(&ident, proc_macro2::Span::call_site());
+        let mut child: ItemMod = syn::parse_quote! {
+            #suite_attr
+            mod #ident {}
+        };
+        child.content = Some((token::Brace::default(), child_items));
+        child
+    }
+
     fn try_promote_cfg_test_mod(&mut self, m: &mut ItemMod) {
         // Declaration-only `mod tests;` (no inline body) can't be
         // wrapped with `#[rudzio::suite]` — the macro expects an
@@ -184,6 +336,17 @@ impl Rewriter<'_, '_> {
         let runtime = unanimous_inner_runtime(m).unwrap_or(self.default_runtime);
         let runtime_path = parse_path_str(runtime.suite_path());
 
+        // Mixed-context handling: when a single `mod tests` holds
+        // both plain `#[tokio::test]` fns and `#[test_context(Ctx)]`
+        // fns (or two distinct ctx types), one shared suite attr
+        // would type-mismatch half the fns. Split into per-ctx
+        // child modules instead.
+        let groups = group_test_fns_by_ctx(m, self.test_contexts);
+        if groups.len() > 1 {
+            self.split_module_by_ctx_groups(m, groups, runtime, &runtime_path);
+            return;
+        }
+
         // Choose suite/test paths based on whether any fn inside uses
         // a resolved `#[test_context(T)]`.
         let resolved_ctx = first_resolved_test_context(m, self.test_contexts);
@@ -222,6 +385,15 @@ impl Rewriter<'_, '_> {
                 ),
             ])]
         };
+        // `#[rudzio::suite(...)]` is an attribute macro on `mod`;
+        // its expansion rejects `#![inner]` attrs inside the module
+        // body with "an inner attribute is not permitted in this
+        // context". Hoist each inner attr to an outer attr on the
+        // `mod` item itself — for the common cases
+        // (`#![allow(clippy::…)]`, `#![deny(…)]`, etc.) this is
+        // semantically equivalent: the lints propagate into the
+        // body either way.
+        hoist_inner_attrs_on_mod(m);
         m.attrs.insert(0, suite_attr);
         let _inserted = self.rewrite.runtimes_used.insert(runtime);
         self.rewrite.changed = true;
@@ -530,6 +702,7 @@ impl Rewriter<'_, '_> {
                 continue;
             }
             if let Some(path) = detect::as_test_context(a) {
+                self.stripped_any_test_context_attr = true;
                 let key = detect::path_to_string(&path);
                 if self.test_contexts.plan_for(&key).is_some() {
                     had_resolved_test_context = true;
@@ -795,6 +968,54 @@ fn collect_runtime_hints(items: &[Item], out: &mut BTreeSet<RuntimeChoice>) {
     }
 }
 
+/// Group every recognised test fn inside `m` by its target context
+/// (None for plain tests, Some(ctx_key) for resolved `#[test_context]`
+/// uses). The map's key set is what `try_promote_cfg_test_mod` uses
+/// to decide single-suite vs split — len == 1 is the single case,
+/// len > 1 triggers the per-ctx split.
+/// Convert `crate::foo::DbCtx` → `db_ctx`. Used to derive a snake-case
+/// suffix for split-child module names (`tests_with_db_ctx`).
+fn last_segment_snake(path: &str) -> String {
+    let last = path.rsplit("::").next().unwrap_or(path);
+    let mut out = String::with_capacity(last.len() + 4);
+    for (i, ch) in last.chars().enumerate() {
+        if ch.is_ascii_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn group_test_fns_by_ctx(
+    m: &ItemMod,
+    resolver: &TestContextResolver,
+) -> std::collections::BTreeMap<Option<String>, ()> {
+    let mut groups: std::collections::BTreeMap<Option<String>, ()> =
+        std::collections::BTreeMap::new();
+    let Some((_, items)) = &m.content else {
+        return groups;
+    };
+    for item in items {
+        if let Item::Fn(f) = item {
+            if !f.attrs.iter().any(|a| detect::classify_test_attr(a).is_some()) {
+                continue;
+            }
+            let key = f.attrs.iter().find_map(|a| {
+                let path = detect::as_test_context(a)?;
+                let k = detect::path_to_string(&path);
+                resolver.plan_for(&k).map(|_| k)
+            });
+            let _present = groups.insert(key, ());
+        }
+    }
+    groups
+}
+
 fn first_resolved_test_context<'r>(
     m: &ItemMod,
     resolver: &'r TestContextResolver,
@@ -944,6 +1165,84 @@ fn prune_unused_test_context_import(m: &mut ItemMod) {
         !(normalized == "test_context::test_context"
             || normalized == "::test_context::test_context")
     });
+}
+
+/// After we strip every `#[test_context(...)]` attribute, the
+/// `use test_context::test_context;` (or grouped equivalent) the
+/// user's tests imported is dead. Walk every `use test_context::...`
+/// item and drop any leaf named `test_context` — leaving the trait
+/// (`AsyncTestContext`, `TestContext`) imports intact.
+fn prune_test_context_macro_imports(file: &mut syn::File) {
+    prune_test_context_macro_imports_in_items(&mut file.items);
+}
+
+fn prune_test_context_macro_imports_in_items(items: &mut Vec<Item>) {
+    items.retain_mut(|item| {
+        let Item::Use(u) = item else {
+            return true;
+        };
+        let root_test_context_match =
+            matches!(&u.tree, syn::UseTree::Path(p) if p.ident == "test_context");
+        if !root_test_context_match {
+            return true;
+        }
+        if let syn::UseTree::Path(p) = &mut u.tree {
+            let _empty = drop_test_context_leaf(&mut p.tree);
+        }
+        if tree_is_empty(&u.tree) {
+            return false;
+        }
+        true
+    });
+}
+
+/// Recursively remove a `test_context` leaf or grouped item from a
+/// `UseTree` rooted under `test_context::`. Returns `true` if the
+/// caller's containing tree is now empty (e.g. an empty Group).
+fn drop_test_context_leaf(tree: &mut syn::UseTree) -> bool {
+    use syn::UseTree;
+    match tree {
+        UseTree::Name(n) if n.ident == "test_context" => true,
+        UseTree::Rename(r) if r.ident == "test_context" => true,
+        UseTree::Group(g) => {
+            // `Punctuated` doesn't expose `retain_mut`; rebuild via
+            // a Vec round-trip. The Group's items get reassembled
+            // with the same comma punctuation.
+            let kept: Vec<UseTree> = std::mem::take(&mut g.items)
+                .into_iter()
+                .filter_map(|mut inner| {
+                    if drop_test_context_leaf(&mut inner) {
+                        None
+                    } else {
+                        Some(inner)
+                    }
+                })
+                .collect();
+            for inner in kept {
+                g.items.push(inner);
+            }
+            g.items.is_empty()
+        }
+        UseTree::Path(p) => drop_test_context_leaf(&mut p.tree),
+        _ => false,
+    }
+}
+
+fn tree_is_empty(tree: &syn::UseTree) -> bool {
+    use syn::UseTree;
+    match tree {
+        UseTree::Path(p) => tree_is_empty(&p.tree),
+        UseTree::Group(g) => g.items.is_empty(),
+        _ => false,
+    }
+}
+
+fn hoist_inner_attrs_on_mod(m: &mut ItemMod) {
+    for attr in &mut m.attrs {
+        if matches!(attr.style, syn::AttrStyle::Inner(_)) {
+            attr.style = syn::AttrStyle::Outer;
+        }
+    }
 }
 
 fn ensure_test_import(m: &mut ItemMod) {

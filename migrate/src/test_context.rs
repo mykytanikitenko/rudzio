@@ -71,6 +71,12 @@ pub struct TestContextPlan {
     /// time and falls back to `crate::<Ident>`, which the user
     /// will typically need to adjust.
     pub module_path: Option<String>,
+    /// Token text of the user's `pub`/`pub(crate)`/(private)
+    /// visibility on the ctx struct. The bridge struct + suite
+    /// struct mirror this so the generated `pub struct Bridge {
+    /// pub inner: Ctx }` doesn't run into `private_interfaces`
+    /// when `Ctx` itself is `pub(crate)` or private.
+    pub ctx_visibility: String,
 }
 
 impl TestContextResolver {
@@ -98,6 +104,13 @@ pub fn resolve(packages: &[Package]) -> Result<TestContextResolver> {
 fn resolve_package(pkg: &Package, resolver: &mut TestContextResolver) -> Result<()> {
     let mut use_sites: BTreeSet<String> = BTreeSet::new();
     let mut impls: BTreeMap<String, (PathBuf, bool)> = BTreeMap::new();
+    // Visibility of `struct Ctx { ... }` declarations the scanner
+    // sees. When the user's ctx is `pub(crate)` (or no `pub`), the
+    // generated `pub struct CtxRudzioBridge { pub inner: Ctx }`
+    // would expose a less-private type than its only field, which
+    // rustc rejects under `private_interfaces`. We mirror the user's
+    // visibility on the bridge so the inequality goes away.
+    let mut ctx_visibility: BTreeMap<String, syn::Visibility> = BTreeMap::new();
 
     for file in pkg.src_files.iter().chain(pkg.tests_files.iter()) {
         let source = fs::read_to_string(file)
@@ -108,6 +121,7 @@ fn resolve_package(pkg: &Package, resolver: &mut TestContextResolver) -> Result<
         let mut scan = Scanner {
             use_sites: &mut use_sites,
             impls: &mut impls,
+            ctx_visibility: &mut ctx_visibility,
             current_file: file,
         };
         scan.visit_file(&tree);
@@ -120,6 +134,11 @@ fn resolve_package(pkg: &Package, resolver: &mut TestContextResolver) -> Result<
                 let bridge_ident = format!("{ctx_ident}RudzioBridge");
                 let suite_ident = format!("{ctx_ident}RudzioSuite");
                 let module_path = infer_module_path(impl_file, &pkg.root);
+                let ctx_visibility = ctx_visibility
+                    .get(&ctx_ident)
+                    .map(|v| quote::ToTokens::to_token_stream(v).to_string().trim().to_owned())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "pub(crate)".to_owned());
                 let plan = TestContextPlan {
                     ctx_key: key.clone(),
                     impl_file: impl_file.clone(),
@@ -128,6 +147,7 @@ fn resolve_package(pkg: &Package, resolver: &mut TestContextResolver) -> Result<
                     bridge_ident,
                     suite_ident,
                     module_path,
+                    ctx_visibility,
                 };
                 let _prev = resolver.plans.insert(key.clone(), plan);
             }
@@ -194,10 +214,18 @@ fn infer_module_path(impl_file: &Path, pkg_root: &Path) -> Option<String> {
 struct Scanner<'a> {
     use_sites: &'a mut BTreeSet<String>,
     impls: &'a mut BTreeMap<String, (PathBuf, bool)>,
+    ctx_visibility: &'a mut BTreeMap<String, syn::Visibility>,
     current_file: &'a Path,
 }
 
 impl<'ast> Visit<'ast> for Scanner<'_> {
+    fn visit_item_struct(&mut self, s: &'ast syn::ItemStruct) {
+        let _prev = self
+            .ctx_visibility
+            .insert(s.ident.to_string(), s.vis.clone());
+        syn::visit::visit_item_struct(self, s);
+    }
+
     fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
         for attr in &f.attrs {
             if let Some(path) = crate::detect::as_test_context(attr) {
@@ -253,6 +281,15 @@ pub fn render_bridge_impls(plan: &TestContextPlan) -> String {
     let ctx = &plan.ctx_ident;
     let bridge = &plan.bridge_ident;
     let suite = &plan.suite_ident;
+    // Mirror the user's visibility on Ctx; `pub Bridge { pub inner:
+    // Ctx }` would otherwise trip `private_interfaces` whenever the
+    // user's Ctx is `pub(crate)` or private. The empty-string case
+    // (private struct) renders as no visibility marker.
+    let vis = if plan.ctx_visibility.is_empty() {
+        String::new()
+    } else {
+        format!("{} ", plan.ctx_visibility)
+    };
     let setup_call = if plan.is_async {
         format!("<{ctx} as ::test_context::AsyncTestContext>::setup().await")
     } else {
@@ -269,11 +306,11 @@ pub fn render_bridge_impls(plan: &TestContextPlan) -> String {
 /// `<'test_context, R>` generics rudzio's `#[rudzio::test]` macro
 /// injects into ctx-param types, while the inner field is still your
 /// original `{ctx}` (field access works via `Deref`/`DerefMut`).
-pub struct {bridge}<'test_context, R>
+{vis}struct {bridge}<'test_context, R>
 where
     R: ::rudzio::Runtime<'test_context> + ::core::marker::Sync,
 {{
-    pub inner: {ctx},
+    {vis}inner: {ctx},
     _marker: ::core::marker::PhantomData<&'test_context R>,
 }}
 
@@ -307,7 +344,7 @@ where
 /// mirror what rudzio's `#[rudzio::suite(...)]` attribute expects: a
 /// lifetime and a `Runtime`-bounded type parameter, both injected
 /// invisibly at the callsite.
-pub struct {suite}<'suite_context, R>
+{vis}struct {suite}<'suite_context, R>
 where
     R: for<'__r> ::rudzio::Runtime<'__r> + ::core::marker::Sync,
 {{

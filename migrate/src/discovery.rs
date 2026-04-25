@@ -29,6 +29,15 @@ pub struct Package {
     /// `#[cfg(test)]`-gated suite blocks reach the integration
     /// test binary's compilation.
     pub lib_modules: Vec<LibModuleDecl>,
+    /// True when the lib has anything beyond a pure organizer shape
+    /// — items at crate root, `mod.rs`-form submodules, or
+    /// submodule files with their own nested `mod X;` declarations.
+    /// The scaffold then emits `#[path = "../src/lib.rs"] mod __lib;
+    /// pub use __lib::*;` instead of per-submodule `#[path]`
+    /// includes; per-file includes can't reach root-level items
+    /// and Rust's nested submodule resolution doesn't honour the
+    /// parent's `#[path]`.
+    pub uses_lib_aggregation: bool,
 }
 
 /// A `mod X;` declaration captured from `src/lib.rs`. Declaration
@@ -69,6 +78,7 @@ pub fn discover(repo_root: &Path) -> Result<Vec<Package>> {
         // non-recursive scan would miss them and silently no-op.
         let tests_files = collect_rs(&root.join("tests"));
         let lib_modules = collect_lib_modules(&root);
+        let uses_lib_aggregation = needs_lib_aggregation(&root, &lib_modules);
         packages.push(Package {
             name: pkg.name.to_string(),
             manifest_path,
@@ -76,6 +86,7 @@ pub fn discover(repo_root: &Path) -> Result<Vec<Package>> {
             src_files,
             tests_files,
             lib_modules,
+            uses_lib_aggregation,
         });
     }
     packages.sort_by(|a, b| a.name.cmp(&b.name));
@@ -136,6 +147,58 @@ fn collect_lib_modules(pkg_root: &Path) -> Vec<LibModuleDecl> {
         });
     }
     out
+}
+
+/// True if the lib should be aggregated as a whole (`mod __lib;`)
+/// instead of via per-submodule `#[path]` includes. Triggers on:
+/// - lib.rs has any item that isn't `mod` / `use` / inner attrs
+///   (functions, structs, traits, consts, impls, type aliases…
+///   anything that lives at the lib's crate root and would be
+///   invisible to per-submodule path includes);
+/// - any top-level `mod X;` resolves to `src/X/mod.rs` (directory
+///   form — submodules have a tree underneath them and Rust's
+///   nested module resolution doesn't honour the parent's
+///   `#[path]` attribute);
+/// - any submodule file (the resolved path of a top-level `mod X;`)
+///   declares its own `mod Y;` with no inline body and no
+///   explicit `#[path]` attr — same nested-resolution problem.
+fn needs_lib_aggregation(pkg_root: &Path, lib_modules: &[LibModuleDecl]) -> bool {
+    let lib_rs = pkg_root.join("src/lib.rs");
+    if !lib_rs.is_file() {
+        return false;
+    }
+    let Ok(source) = fs::read_to_string(&lib_rs) else {
+        return false;
+    };
+    let Ok(tree) = syn::parse_file(&source) else {
+        return false;
+    };
+    for item in &tree.items {
+        match item {
+            syn::Item::Mod(_) | syn::Item::Use(_) | syn::Item::ExternCrate(_) => continue,
+            _ => return true,
+        }
+    }
+    for m in lib_modules {
+        // Directory-form submodule (src/X/mod.rs) → nested.
+        if m.rel_path.ends_with("/mod.rs") {
+            return true;
+        }
+        // Submodule file declares its own non-`#[path]` `mod Y;`.
+        let file = pkg_root.join(&m.rel_path);
+        if let Ok(src) = fs::read_to_string(&file) {
+            if let Ok(t) = syn::parse_file(&src) {
+                for item in &t.items {
+                    if let syn::Item::Mod(sub) = item {
+                        if sub.content.is_none() && extract_path_attr(&sub.attrs).is_none() {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 fn extract_path_attr(attrs: &[syn::Attribute]) -> Option<String> {

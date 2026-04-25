@@ -2,11 +2,8 @@
 name = "tests_subdir_layout"
 version = "0.1.0"
 edition = "2024"
-autotests = false
 
 [dependencies]
-rudzio = { version = "0.1", features = ["common", "runtime-tokio"] }
-anyhow = "1.0"
 
 # Custom [[test]] pointing at a suite root under tests/<suite>/mod.rs.
 # The submodule files below (tests/integration/models.rs etc.) are
@@ -17,3 +14,7 @@ anyhow = "1.0"
 name = "integration"
 path = "tests/integration/mod.rs"
 harness = false
+
+[dev-dependencies]
+rudzio = { version = "0.1", features = ["common", "runtime-tokio"] }
+anyhow = "1.0"
