@@ -276,6 +276,9 @@ impl Drawer {
                     TeardownResult::Ok => None,
                     TeardownResult::Err(msg) => Some(LifecycleFailure::Error(msg)),
                     TeardownResult::Panicked(msg) => Some(LifecycleFailure::Panicked(msg)),
+                    TeardownResult::TimedOut => {
+                        Some(LifecycleFailure::TimedOut("teardown timed out".to_owned()))
+                    }
                 };
                 if failure.is_some() {
                     self.summary.teardown_failures =
@@ -304,6 +307,11 @@ impl Drawer {
                     TeardownResult::Ok => return,
                     TeardownResult::Err(msg) => (StatusLabel::Fail, "error", msg),
                     TeardownResult::Panicked(msg) => (StatusLabel::Panic, "panic", msg),
+                    TeardownResult::TimedOut => (
+                        StatusLabel::Timeout,
+                        "timeout",
+                        "teardown timed out".to_owned(),
+                    ),
                 };
                 let tag_rendered = render_status_tag(label, self.color);
                 let lhs_display = format!("teardown {display}");
@@ -416,6 +424,10 @@ impl Drawer {
             LifecyclePhase::Teardown => "teardown",
         };
         let label = match (kind, &failure) {
+            (LifecyclePhase::Setup, Some(LifecycleFailure::TimedOut(_)))
+            | (LifecyclePhase::Teardown, Some(LifecycleFailure::TimedOut(_))) => {
+                StatusLabel::Timeout
+            }
             (LifecyclePhase::Setup, None) => StatusLabel::SetupOk,
             // Suite-level setup failure renders as [FAIL]; the
             // [SETUP] tag is reserved for per-test SetupFailed.
@@ -438,6 +450,7 @@ impl Drawer {
             let (label_text, message) = match failure {
                 LifecycleFailure::Error(msg) => ("error", msg),
                 LifecycleFailure::Panicked(msg) => ("panic", msg),
+                LifecycleFailure::TimedOut(msg) => ("timeout", msg),
             };
             let body = format!("  {label_text}: {message}\n");
             let painted = self.color.red(&body);
@@ -761,6 +774,7 @@ enum StatusLabel {
 enum LifecycleFailure {
     Error(String),
     Panicked(String),
+    TimedOut(String),
 }
 
 fn status_label_from_outcome(outcome: &TestOutcome) -> StatusLabel {

@@ -248,6 +248,20 @@ pub struct Config {
     pub test_timeout: Option<Duration>,
     /// `--run-timeout=<secs>`. `None` = unbounded.
     pub run_timeout: Option<Duration>,
+    /// `--suite-setup-timeout=<secs>`. Default budget for `Suite::setup`.
+    /// `None` = unbounded.
+    pub suite_setup_timeout: Option<Duration>,
+    /// `--suite-teardown-timeout=<secs>`. Default budget for
+    /// `Suite::teardown`. `None` = unbounded.
+    pub suite_teardown_timeout: Option<Duration>,
+    /// `--test-setup-timeout=<secs>`. Default budget for `Suite::context`
+    /// (per-test setup). Overridden per-test by
+    /// `#[rudzio::test(setup_timeout = ...)]`. `None` = unbounded.
+    pub test_setup_timeout: Option<Duration>,
+    /// `--test-teardown-timeout=<secs>`. Default budget for
+    /// `Test::teardown`. Overridden per-test by
+    /// `#[rudzio::test(teardown_timeout = ...)]`. `None` = unbounded.
+    pub test_teardown_timeout: Option<Duration>,
     /// CLI arguments the runner did not recognise, preserved verbatim for
     /// downstream parsing by user code / custom runtimes.
     pub unparsed: Vec<String>,
@@ -318,6 +332,10 @@ impl Config {
         let mut help = false;
         let mut test_timeout: Option<Duration> = None;
         let mut run_timeout: Option<Duration> = None;
+        let mut suite_setup_timeout: Option<Duration> = None;
+        let mut suite_teardown_timeout: Option<Duration> = None;
+        let mut test_setup_timeout: Option<Duration> = None;
+        let mut test_teardown_timeout: Option<Duration> = None;
         let mut unparsed: Vec<String> = Vec::new();
 
         let mut i = 0_usize;
@@ -438,6 +456,50 @@ impl Config {
                 {
                     run_timeout = Some(Duration::from_secs(secs));
                 }
+            } else if let Some(rest) = arg.strip_prefix("--suite-setup-timeout=") {
+                if let Ok(secs) = rest.parse::<u64>() {
+                    suite_setup_timeout = Some(Duration::from_secs(secs));
+                }
+            } else if arg == "--suite-setup-timeout" {
+                i += 1;
+                if let Some(next) = argv.get(i)
+                    && let Ok(secs) = next.parse::<u64>()
+                {
+                    suite_setup_timeout = Some(Duration::from_secs(secs));
+                }
+            } else if let Some(rest) = arg.strip_prefix("--suite-teardown-timeout=") {
+                if let Ok(secs) = rest.parse::<u64>() {
+                    suite_teardown_timeout = Some(Duration::from_secs(secs));
+                }
+            } else if arg == "--suite-teardown-timeout" {
+                i += 1;
+                if let Some(next) = argv.get(i)
+                    && let Ok(secs) = next.parse::<u64>()
+                {
+                    suite_teardown_timeout = Some(Duration::from_secs(secs));
+                }
+            } else if let Some(rest) = arg.strip_prefix("--test-setup-timeout=") {
+                if let Ok(secs) = rest.parse::<u64>() {
+                    test_setup_timeout = Some(Duration::from_secs(secs));
+                }
+            } else if arg == "--test-setup-timeout" {
+                i += 1;
+                if let Some(next) = argv.get(i)
+                    && let Ok(secs) = next.parse::<u64>()
+                {
+                    test_setup_timeout = Some(Duration::from_secs(secs));
+                }
+            } else if let Some(rest) = arg.strip_prefix("--test-teardown-timeout=") {
+                if let Ok(secs) = rest.parse::<u64>() {
+                    test_teardown_timeout = Some(Duration::from_secs(secs));
+                }
+            } else if arg == "--test-teardown-timeout" {
+                i += 1;
+                if let Some(next) = argv.get(i)
+                    && let Ok(secs) = next.parse::<u64>()
+                {
+                    test_teardown_timeout = Some(Duration::from_secs(secs));
+                }
             } else if let Some(rest) = arg.strip_prefix("--skip=") {
                 skip_filters.push(rest.to_owned());
             } else if arg == "--skip" {
@@ -504,6 +566,10 @@ impl Config {
             help,
             test_timeout,
             run_timeout,
+            suite_setup_timeout,
+            suite_teardown_timeout,
+            test_setup_timeout,
+            test_teardown_timeout,
             unparsed,
             env,
             cargo,

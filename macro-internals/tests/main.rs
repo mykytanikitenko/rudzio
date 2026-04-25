@@ -4,6 +4,7 @@
 
 mod args;
 mod codegen;
+mod test_attr_args;
 mod transform;
 
 #[rudzio::main]

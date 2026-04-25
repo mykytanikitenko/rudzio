@@ -1,37 +1,39 @@
-//! Exercises the `catch_unwind` wrapper around `Suite::teardown`.
+//! Suite-teardown timeout fixture.
 //!
-//! Setup and the test body both succeed; teardown panics. The wrapper
-//! turns the panic into a structured `[PANIC] teardown` lifecycle line
-//! carrying the panic message, bumps `teardown_failures`, and the run
-//! exits with code 1.
+//! Setup and the test body succeed; suite teardown sleeps past
+//! `--suite-teardown-timeout`. The phase wrapper drops the teardown
+//! future, the lifecycle line shows `[TIMEOUT]`, and the binary exits
+//! non-zero (teardown failures are non-fatal for the per-test outcome
+//! but the run is failed via `teardown_failures`).
 
 use std::convert::Infallible;
 use std::fmt;
 use std::marker::PhantomData;
+use std::time::Duration;
 
 use rudzio::context;
 use rudzio::runtime::Runtime;
+use rudzio::tokio_util::sync::CancellationToken;
 
-struct PanickingTeardownSuite<'suite_context, R>
+struct HangingTeardownSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
     _marker: PhantomData<&'suite_context R>,
 }
 
-impl<'suite_context, R> fmt::Debug for PanickingTeardownSuite<'suite_context, R>
+impl<'suite_context, R> fmt::Debug for HangingTeardownSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PanickingTeardownSuite")
+        f.debug_struct("HangingTeardownSuite")
             .finish_non_exhaustive()
     }
 }
 
 impl<'suite_context, R> context::Suite<'suite_context, R>
-    for PanickingTeardownSuite<'suite_context, R>
+    for HangingTeardownSuite<'suite_context, R>
 where
     R: for<'r> Runtime<'r> + Sync,
 {
@@ -45,7 +47,7 @@ where
 
     async fn context<'test_context>(
         &'test_context self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
         _config: &'test_context ::rudzio::Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Ok(TrivialTest {
@@ -55,7 +57,7 @@ where
 
     async fn setup(
         _rt: &'suite_context R,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
         _config: &'suite_context ::rudzio::Config,
     ) -> Result<Self, Self::SetupError> {
         Ok(Self {
@@ -63,8 +65,17 @@ where
         })
     }
 
-    async fn teardown(self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<(), Self::TeardownError> {
-        panic!("suite_teardown_panicked_by_design")
+    async fn teardown(
+        self,
+        cancel: CancellationToken,
+    ) -> Result<(), Self::TeardownError> {
+        let _unused = cancel
+            .run_until_cancelled(async {
+                ::tokio::time::sleep(Duration::from_secs(30)).await;
+            })
+            .await;
+        println!("hanging_suite_teardown_unreached_marker");
+        Ok(())
     }
 }
 
@@ -72,7 +83,6 @@ struct TrivialTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
     _marker: PhantomData<&'test_context R>,
 }
 
@@ -91,7 +101,10 @@ where
 {
     type TeardownError = Infallible;
 
-    async fn teardown(self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<(), Self::TeardownError> {
+    async fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> Result<(), Self::TeardownError> {
         Ok(())
     }
 }
@@ -99,7 +112,7 @@ where
 #[rudzio::suite([
     (
         runtime = rudzio::runtime::tokio::Multithread::new,
-        suite = PanickingTeardownSuite,
+        suite = HangingTeardownSuite,
         test = TrivialTest,
     ),
 ])]
@@ -107,7 +120,7 @@ mod tests {
     use super::TrivialTest;
 
     #[rudzio::test]
-    fn body_runs_then_teardown_panics(_ctx: &TrivialTest) -> anyhow::Result<()> {
+    fn body_passes_then_suite_teardown_times_out(_ctx: &TrivialTest) -> anyhow::Result<()> {
         Ok(())
     }
 }

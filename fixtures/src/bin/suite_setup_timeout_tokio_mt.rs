@@ -1,39 +1,38 @@
-//! Exercises the `catch_unwind` wrapper around `Suite::context`
-//! (per-test setup).
+//! Suite-setup timeout fixture.
 //!
-//! Suite setup succeeds; per-test context creation panics rather than
-//! returning Err. The wrapper turns the panic into a
-//! `TestOutcome::SetupFailed` carrying the panic message. The test
-//! shows up in output with the distinct `[SETUP]` status tag and the
-//! run exits with code 1.
+//! Suite::setup sleeps past the per-suite-setup budget. The phase
+//! wrapper drops the in-flight setup future, every queued test reports
+//! `[CANCEL]`, the lifecycle line for the suite shows `[TIMEOUT]`, and
+//! the binary exits non-zero. Companion to `setup_failure_tokio_mt`
+//! (which exercises the Err-return path) and
+//! `panic_in_suite_setup_tokio_mt` (the panic path).
 
 use std::convert::Infallible;
 use std::fmt;
 use std::marker::PhantomData;
+use std::time::Duration;
 
 use rudzio::context;
 use rudzio::runtime::Runtime;
+use rudzio::tokio_util::sync::CancellationToken;
 
-struct PanickingContextSuite<'suite_context, R>
+struct HangingSetupSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
     _marker: PhantomData<&'suite_context R>,
 }
 
-impl<'suite_context, R> fmt::Debug for PanickingContextSuite<'suite_context, R>
+impl<'suite_context, R> fmt::Debug for HangingSetupSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PanickingContextSuite")
-            .finish_non_exhaustive()
+        f.debug_struct("HangingSetupSuite").finish_non_exhaustive()
     }
 }
 
-impl<'suite_context, R> context::Suite<'suite_context, R>
-    for PanickingContextSuite<'suite_context, R>
+impl<'suite_context, R> context::Suite<'suite_context, R> for HangingSetupSuite<'suite_context, R>
 where
     R: for<'r> Runtime<'r> + Sync,
 {
@@ -47,23 +46,39 @@ where
 
     async fn context<'test_context>(
         &'test_context self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
         _config: &'test_context ::rudzio::Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
-        panic!("test_setup_panicked_by_design")
+        Ok(NeverBuiltTest {
+            _marker: PhantomData,
+        })
     }
 
     async fn setup(
         _rt: &'suite_context R,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        cancel: CancellationToken,
         _config: &'suite_context ::rudzio::Config,
     ) -> Result<Self, Self::SetupError> {
+        // Hang well past the integration test's `--suite-setup-timeout=1`.
+        // Cooperate with the cancel token so we exit the moment the
+        // wrapper signals timeout (otherwise the test runner has to wait
+        // 30s for the future to be dropped).
+        let _unused = cancel
+            .run_until_cancelled(async {
+                ::tokio::time::sleep(Duration::from_secs(30)).await;
+            })
+            .await;
+        println!("hanging_suite_setup_unreached_marker");
         Ok(Self {
             _marker: PhantomData,
         })
     }
 
-    async fn teardown(self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<(), Self::TeardownError> {
+    async fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> Result<(), Self::TeardownError> {
+        println!("teardown_must_not_run_marker");
         Ok(())
     }
 }
@@ -72,7 +87,6 @@ struct NeverBuiltTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
     _marker: PhantomData<&'test_context R>,
 }
 
@@ -91,7 +105,10 @@ where
 {
     type TeardownError = Infallible;
 
-    async fn teardown(self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<(), Self::TeardownError> {
+    async fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> Result<(), Self::TeardownError> {
         Ok(())
     }
 }
@@ -99,7 +116,7 @@ where
 #[rudzio::suite([
     (
         runtime = rudzio::runtime::tokio::Multithread::new,
-        suite = PanickingContextSuite,
+        suite = HangingSetupSuite,
         test = NeverBuiltTest,
     ),
 ])]
@@ -107,8 +124,8 @@ mod tests {
     use super::NeverBuiltTest;
 
     #[rudzio::test]
-    fn body_never_runs(_ctx: &NeverBuiltTest) -> anyhow::Result<()> {
-        unreachable!("body must not run when context() panicked")
+    fn never_runs(_ctx: &NeverBuiltTest) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 

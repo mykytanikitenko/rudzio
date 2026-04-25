@@ -94,3 +94,17 @@ pub use futures_util;
 pub use linkme;
 #[doc(hidden)]
 pub use tokio_util;
+
+/// Re-export of the `tokio` runtime crate. Available whenever any of
+/// the `runtime-tokio-*` cargo features is on; lets downstream tests
+/// reach `tokio::time::sleep` etc. without listing tokio as a separate
+/// dev-dep (and crucially, without breaking the `cargo-rudzio`
+/// aggregator, which would otherwise see `::tokio` as missing from the
+/// generated bridge crate's resolver).
+#[doc(hidden)]
+#[cfg(any(
+    feature = "runtime-tokio-multi-thread",
+    feature = "runtime-tokio-current-thread",
+    feature = "runtime-tokio-local",
+))]
+pub use tokio;

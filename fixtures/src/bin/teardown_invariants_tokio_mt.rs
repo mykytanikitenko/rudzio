@@ -98,7 +98,7 @@ where
         })
     }
 
-    async fn teardown(self) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<(), Self::TeardownError> {
         let _ = self.suite_tracker.close();
         self.suite_tracker.wait().await;
         let _ = SUITE_TEARDOWN_CALLS.fetch_add(1, Ordering::SeqCst);
@@ -154,7 +154,7 @@ where
 {
     type TeardownError = Infallible;
 
-    async fn teardown(self) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<(), Self::TeardownError> {
         let _ = self.test_tracker.close();
         self.test_tracker.wait().await;
         let _ = TEST_TEARDOWN_CALLS.fetch_add(1, Ordering::SeqCst);

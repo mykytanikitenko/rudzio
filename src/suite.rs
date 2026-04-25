@@ -104,6 +104,10 @@ pub enum TeardownResult {
     Ok,
     Err(String),
     Panicked(String),
+    /// The teardown future was still running when its per-phase
+    /// timeout fired. Distinct from `Err` so the renderer can show
+    /// `[TIMEOUT teardown]` instead of `[FAIL] teardown`.
+    TimedOut,
 }
 
 /// Extract a human-readable message from a `catch_unwind` panic
@@ -282,8 +286,87 @@ pub trait RuntimeGroupOwner: Send + Sync + 'static {
     fn run_group(&self, req: SuiteRunRequest<'_>, reporter: &dyn SuiteReporter) -> SuiteSummary;
 }
 
+/// Outcome of a phase wrapped by [`run_phase_with_timeout_and_cancel`].
+///
+/// One variant per terminal state the wrapper distinguishes: a clean
+/// completion (carries the phase future's own return value), a panic
+/// caught via `catch_unwind` (carries the formatted payload), an
+/// external cancellation propagated from the parent token, or a
+/// per-phase timeout.
+///
+/// `Cancelled` and `TimedOut` are deliberately split: the former means
+/// "someone above us pulled the plug" (run-timeout, ctrl+c, sibling
+/// failure) and the latter means "this phase blew its own budget".
+/// Reporters use the distinction to render the right status tag.
+#[derive(Debug)]
+pub enum PhaseOutcome<T> {
+    Completed(T),
+    Panicked(String),
+    Cancelled,
+    TimedOut,
+}
+
+/// Race a phase future against an optional per-phase timeout, while
+/// staying responsive to a parent cancellation token.
+///
+/// This is the canonical primitive every phase (suite setup, suite
+/// teardown, per-test setup, test body, per-test teardown) wraps
+/// itself in. The pattern reuses [`tokio_util::sync::CancellationToken::run_until_cancelled`]
+/// for the cancellation half and [`futures_util::future::select`]
+/// against a caller-supplied sleep fn for the timeout half.
+///
+/// On `TimedOut`, the wrapper cancels `phase_token` so a cooperative
+/// phase future (one that polls the token in tight loops) can bail out
+/// immediately on its next yield.
+///
+/// `sleep` is supplied by the caller so each runtime can hand in its
+/// own timer (`tokio::time::sleep`, `compio::time::sleep`, …) without
+/// the wrapper depending on any one runtime crate.
+#[doc(hidden)]
+pub async fn run_phase_with_timeout_and_cancel<F, T, S>(
+    phase_fut: F,
+    phase_timeout: Option<Duration>,
+    phase_token: CancellationToken,
+    sleep: impl FnOnce(Duration) -> S,
+) -> PhaseOutcome<T>
+where
+    F: Future<Output = T>,
+    S: Future<Output = ()>,
+{
+    use futures_util::FutureExt as _;
+    use futures_util::future::{Either, select};
+
+    let catch_fut = std::panic::AssertUnwindSafe(phase_fut).catch_unwind();
+    let cancellable = std::pin::pin!(phase_token.run_until_cancelled(catch_fut));
+
+    if let Some(dur) = phase_timeout {
+        let sleep_fut = std::pin::pin!(sleep(dur));
+        match select(cancellable, sleep_fut).await {
+            Either::Left((Some(Ok(value)), _)) => PhaseOutcome::Completed(value),
+            Either::Left((Some(Err(payload)), _)) => {
+                PhaseOutcome::Panicked(panic_payload_message(&*payload))
+            }
+            Either::Left((None, _)) => PhaseOutcome::Cancelled,
+            Either::Right(_) => {
+                phase_token.cancel();
+                PhaseOutcome::TimedOut
+            }
+        }
+    } else {
+        match cancellable.await {
+            Some(Ok(value)) => PhaseOutcome::Completed(value),
+            Some(Err(payload)) => PhaseOutcome::Panicked(panic_payload_message(&*payload)),
+            None => PhaseOutcome::Cancelled,
+        }
+    }
+}
+
 /// Runs `test_fut` under the per-test cancellation token and the optional
 /// per-test timeout, classifying the resulting state into a [`TestOutcome`].
+///
+/// Thin caller of [`run_phase_with_timeout_and_cancel`]; the wrapper
+/// provides timeout + cancel + panic catching, and this fn maps the
+/// result into the test-body-shaped `TestOutcome` variants.
 ///
 /// The `elapsed` field is left at `Duration::ZERO`; the caller fills it in.
 ///
@@ -302,45 +385,19 @@ where
     F: Future<Output = Result<(), BoxError>>,
     S: Future<Output = ()>,
 {
-    use futures_util::FutureExt as _;
-    use futures_util::future::{Either, select};
-
-    let catch_fut = std::panic::AssertUnwindSafe(test_fut).catch_unwind();
-    let cancellable = std::pin::pin!(per_test_token.run_until_cancelled(catch_fut));
-
-    if let Some(dur) = test_timeout {
-        let sleep_fut = std::pin::pin!(sleep(dur));
-        match select(cancellable, sleep_fut).await {
-            Either::Left((Some(Ok(Ok(()))), _)) => TestOutcome::Passed {
-                elapsed: Duration::ZERO,
-            },
-            Either::Left((Some(Ok(Err(e))), _)) => TestOutcome::Failed {
-                elapsed: Duration::ZERO,
-                message: e.to_string(),
-            },
-            Either::Left((Some(Err(_payload)), _)) => TestOutcome::Panicked {
-                elapsed: Duration::ZERO,
-            },
-            Either::Left((None, _)) => TestOutcome::Cancelled,
-            Either::Right(_) => {
-                per_test_token.cancel();
-                TestOutcome::TimedOut
-            }
-        }
-    } else {
-        match cancellable.await {
-            Some(Ok(Ok(()))) => TestOutcome::Passed {
-                elapsed: Duration::ZERO,
-            },
-            Some(Ok(Err(e))) => TestOutcome::Failed {
-                elapsed: Duration::ZERO,
-                message: e.to_string(),
-            },
-            Some(Err(_payload)) => TestOutcome::Panicked {
-                elapsed: Duration::ZERO,
-            },
-            None => TestOutcome::Cancelled,
-        }
+    match run_phase_with_timeout_and_cancel(test_fut, test_timeout, per_test_token, sleep).await {
+        PhaseOutcome::Completed(Ok(())) => TestOutcome::Passed {
+            elapsed: Duration::ZERO,
+        },
+        PhaseOutcome::Completed(Err(e)) => TestOutcome::Failed {
+            elapsed: Duration::ZERO,
+            message: e.to_string(),
+        },
+        PhaseOutcome::Panicked(_) => TestOutcome::Panicked {
+            elapsed: Duration::ZERO,
+        },
+        PhaseOutcome::Cancelled => TestOutcome::Cancelled,
+        PhaseOutcome::TimedOut => TestOutcome::TimedOut,
     }
 }
 
@@ -379,38 +436,15 @@ where
     F: Future<Output = BenchReport>,
     S: Future<Output = ()>,
 {
-    use futures_util::FutureExt as _;
-    use futures_util::future::{Either, select};
-
-    let catch_fut = std::panic::AssertUnwindSafe(bench_fut).catch_unwind();
-    let cancellable = std::pin::pin!(per_test_token.run_until_cancelled(catch_fut));
-
-    if let Some(dur) = test_timeout {
-        let sleep_fut = std::pin::pin!(sleep(dur));
-        match select(cancellable, sleep_fut).await {
-            Either::Left((Some(Ok(report)), _)) => TestOutcome::Benched {
-                elapsed: Duration::ZERO,
-                report,
-            },
-            Either::Left((Some(Err(_payload)), _)) => TestOutcome::Panicked {
-                elapsed: Duration::ZERO,
-            },
-            Either::Left((None, _)) => TestOutcome::Cancelled,
-            Either::Right(_) => {
-                per_test_token.cancel();
-                TestOutcome::TimedOut
-            }
-        }
-    } else {
-        match cancellable.await {
-            Some(Ok(report)) => TestOutcome::Benched {
-                elapsed: Duration::ZERO,
-                report,
-            },
-            Some(Err(_payload)) => TestOutcome::Panicked {
-                elapsed: Duration::ZERO,
-            },
-            None => TestOutcome::Cancelled,
-        }
+    match run_phase_with_timeout_and_cancel(bench_fut, test_timeout, per_test_token, sleep).await {
+        PhaseOutcome::Completed(report) => TestOutcome::Benched {
+            elapsed: Duration::ZERO,
+            report,
+        },
+        PhaseOutcome::Panicked(_) => TestOutcome::Panicked {
+            elapsed: Duration::ZERO,
+        },
+        PhaseOutcome::Cancelled => TestOutcome::Cancelled,
+        PhaseOutcome::TimedOut => TestOutcome::TimedOut,
     }
 }

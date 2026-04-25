@@ -90,7 +90,7 @@ where
         })
     }
 
-    async fn teardown(self) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<(), Self::TeardownError> {
         println!("teardown_suite_marker");
         Ok(())
     }
@@ -119,7 +119,7 @@ where
 {
     type TeardownError = Infallible;
 
-    async fn teardown(self) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<(), Self::TeardownError> {
         println!("teardown_test_marker");
         Ok(())
     }

@@ -45,6 +45,10 @@ harness = false
 # with 0 #[test] fns, cluttering `cargo test` output with empty result
 # lines. Paths are implicit (`src/bin/<name>.rs`).
 [[bin]]
+name = "bg_thread_panic_in_setup_tokio_mt"
+test = false
+
+[[bin]]
 name = "cancel_token_propagation_tokio_mt"
 test = false
 
@@ -141,6 +145,18 @@ name = "passing_tokio_mt"
 test = false
 
 [[bin]]
+name = "per_test_attr_body_timeout_tokio_mt"
+test = false
+
+[[bin]]
+name = "per_test_attr_setup_timeout_tokio_mt"
+test = false
+
+[[bin]]
+name = "per_test_attr_teardown_timeout_tokio_mt"
+test = false
+
+[[bin]]
 name = "per_test_timeout_tokio_mt"
 test = false
 
@@ -158,6 +174,14 @@ test = false
 
 [[bin]]
 name = "setup_failure_tokio_mt"
+test = false
+
+[[bin]]
+name = "suite_setup_timeout_tokio_mt"
+test = false
+
+[[bin]]
+name = "suite_teardown_timeout_tokio_mt"
 test = false
 
 [[bin]]
@@ -190,6 +214,14 @@ test = false
 
 [[bin]]
 name = "teardown_invariants_tokio_mt"
+test = false
+
+[[bin]]
+name = "test_setup_timeout_tokio_mt"
+test = false
+
+[[bin]]
+name = "test_teardown_timeout_tokio_mt"
 test = false
 
 [[bin]]
