@@ -3,7 +3,7 @@
 //! hypothetical library user) can drive the same flow.
 
 use std::io::{self, BufRead as _, Write as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crate::{cli, discovery, emit, manifest, preflight, report, runner_scaffold, test_context};
@@ -122,7 +122,14 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
     for pkg in &packages {
         let mut pkg_edits = manifest::ManifestEdits::default();
         let mut pkg_had_conversions = false;
-        let src_iter: Box<dyn Iterator<Item = &std::path::PathBuf>> = if args.tests_only {
+        // Suite roots (`tests/<suite>/mod.rs`) whose subtree had
+        // files modified. The rewriter only appends `fn main` to a
+        // binary-root file that itself changed; for subdir layouts
+        // the mod.rs is wiring-only and stays unchanged, but the
+        // binary still needs a `fn main` to link. Fixed up below.
+        let mut suite_roots_needing_main: std::collections::BTreeSet<PathBuf> =
+            std::collections::BTreeSet::new();
+        let src_iter: Box<dyn Iterator<Item = &PathBuf>> = if args.tests_only {
             Box::new(std::iter::empty())
         } else {
             Box::new(pkg.src_files.iter())
@@ -136,6 +143,9 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
                     if let Some(entry) = integration_test_entry_for(file, &pkg.root) {
                         pkg_edits.tests_integration.push(entry);
                     }
+                    if let Some(root) = suite_root_mod_rs_for(file, &pkg.root) {
+                        let _inserted = suite_roots_needing_main.insert(root);
+                    }
                 }
                 Ok(None) => {}
                 Err(err) => {
@@ -144,6 +154,21 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
                         None,
                         format!("error processing file: {err:#}"),
                     );
+                }
+            }
+        }
+        if !args.dry_run {
+            for mod_rs in &suite_roots_needing_main {
+                match ensure_suite_root_has_main(mod_rs) {
+                    Ok(true) => report.touched(mod_rs.clone()),
+                    Ok(false) => {}
+                    Err(err) => {
+                        report.warn(
+                            mod_rs.clone(),
+                            None,
+                            format!("failed to ensure fn main in {}: {err:#}", mod_rs.display()),
+                        );
+                    }
                 }
             }
         }
@@ -199,6 +224,60 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
 
     report.print_summary(&mut stdout_locked)?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// When `file` is a deeper descendant of `tests/<suite>/` (anything
+/// below the suite's `mod.rs`), return the path to that
+/// `tests/<suite>/mod.rs` root — otherwise `None`. Used to detect
+/// the binary root that needs a `fn main` even though it wasn't
+/// directly modified.
+fn suite_root_mod_rs_for(file: &Path, pkg_root: &Path) -> Option<PathBuf> {
+    let tests_dir = pkg_root.join("tests");
+    let rel = file.strip_prefix(&tests_dir).ok()?;
+    let mut components = rel.components();
+    let suite = components.next()?.as_os_str().to_str()?.to_owned();
+    let rest: Vec<&std::ffi::OsStr> = components.map(|c| c.as_os_str()).collect();
+    // File IS the suite root; nothing to do here — the rewriter
+    // handles fn main injection for files that did change.
+    if rest.is_empty()
+        || (rest.len() == 1 && rest[0] == std::ffi::OsStr::new("mod.rs"))
+    {
+        return None;
+    }
+    Some(tests_dir.join(&suite).join("mod.rs"))
+}
+
+/// Append `#[rudzio::main] fn main() {}` to `mod_rs` if the file
+/// exists and doesn't already contain a `fn main`. Returns `Ok(true)`
+/// if the file was rewritten, `Ok(false)` if a `fn main` was already
+/// there (or the file didn't exist). Makes a backup before writing.
+fn ensure_suite_root_has_main(mod_rs: &Path) -> anyhow::Result<bool> {
+    use anyhow::Context as _;
+    if !mod_rs.is_file() {
+        return Ok(false);
+    }
+    let source = std::fs::read_to_string(mod_rs)
+        .with_context(|| format!("reading {}", mod_rs.display()))?;
+    let tree = match syn::parse_file(&source) {
+        Ok(t) => t,
+        Err(_) => return Ok(false),
+    };
+    let has_main = tree.items.iter().any(|it| {
+        matches!(it, syn::Item::Fn(f) if f.sig.ident == "main")
+    });
+    if has_main {
+        return Ok(false);
+    }
+    let _bak = crate::backup::copy_before_write(mod_rs)
+        .with_context(|| format!("backing up {}", mod_rs.display()))?;
+    let appended = if source.ends_with('\n') {
+        format!("{source}\n#[rudzio::main]\nfn main() {{}}\n")
+    } else {
+        format!("{source}\n\n#[rudzio::main]\nfn main() {{}}\n")
+    };
+    std::fs::write(mod_rs, appended)
+        .with_context(|| format!("writing {}", mod_rs.display()))?;
+    Ok(true)
 }
 
 /// Returns the `[[test]]` entry for a file if it's a test-binary
