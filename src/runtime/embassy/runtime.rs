@@ -216,12 +216,12 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
         // pending task via the receiver's future, which in turn fires
         // `__pender` and unparks the executor loop.
         let (tx, rx) = mpsc::channel::<()>();
-        let _unused = thread::spawn(move || {
+        let _timer_handle: thread::JoinHandle<()> = thread::spawn(move || {
             thread::sleep(duration);
-            let _unused = tx.send(());
+            let _send_ret: Result<(), mpsc::SendError<()>> = tx.send(());
         });
         async move {
-            let _unused = poll_channel(rx).await;
+            let _poll_ret: Result<(), JoinError> = poll_channel(rx).await;
         }
     }
 

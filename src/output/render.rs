@@ -240,7 +240,7 @@ impl Drawer {
             return;
         }
         let esc = format!("\x1b[{n}A\x1b[J", n = self.last_live_rows);
-        let _unused = self.terminal.write_all(esc.as_bytes());
+        drop(self.terminal.write_all(esc.as_bytes()));
         self.last_live_rows = 0;
     }
 
@@ -269,8 +269,8 @@ impl Drawer {
         let lhs_rendered = format!("{tag_rendered} {display}");
         let term_cols = terminal_width();
         let header = render_line(&lhs_naked, &lhs_rendered, &trailing, term_cols);
-        let _unused = self.terminal.write_all(header.as_bytes());
-        let _unused = self.terminal.write_all(b"\n");
+        drop(self.terminal.write_all(header.as_bytes()));
+        drop(self.terminal.write_all(b"\n"));
 
         // Surface the failure message right under the header so the
         // user sees WHY a test failed/setup-failed/etc. without
@@ -290,7 +290,7 @@ impl Drawer {
                     | StatusLabel::Hang => self.color.red(&body),
                     _ => body,
                 };
-                let _unused = self.terminal.write_all(painted.as_bytes());
+                drop(self.terminal.write_all(painted.as_bytes()));
             }
         }
 
@@ -302,16 +302,16 @@ impl Drawer {
 
         if let TestOutcome::Benched { report, .. } = outcome {
             let detail = report.detailed_summary();
-            let _unused = self.terminal.write_all(detail.as_bytes());
+            drop(self.terminal.write_all(detail.as_bytes()));
             if report.failures.is_empty() && report.panics == 0 {
                 let hist = report.ascii_histogram(10, 30);
                 if !hist.is_empty() {
-                    let _unused = self.terminal.write_all(b"  histogram:\n");
-                    let _unused = self.terminal.write_all(hist.as_bytes());
+                    drop(self.terminal.write_all(b"  histogram:\n"));
+                    drop(self.terminal.write_all(hist.as_bytes()));
                 }
             }
         }
-        let _unused = self.terminal.write_all(b"\n");
+        drop(self.terminal.write_all(b"\n"));
         self.last_live_rows = 0;
     }
 
@@ -323,7 +323,7 @@ impl Drawer {
                 qualified_test_name(state.module_path, state.test_name),
                 state.runtime_name,
             );
-            let _unused = self.terminal.write_all(line.as_bytes());
+            drop(self.terminal.write_all(line.as_bytes()));
         }
     }
 
@@ -351,8 +351,9 @@ impl Drawer {
                     last_output_line: String::new(),
                     recent_output: Vec::new(),
                 };
-                let _unused = self.tests.insert(test_id, state);
-                let _unused = self.thread_to_test.insert(thread, test_id);
+                drop(self.tests.insert(test_id, state));
+                let _previous_thread_test: Option<TestId> =
+                    self.thread_to_test.insert(thread, test_id);
                 let had_slot = self.slots.contains_key(&thread);
                 if !had_slot {
                     self.slot_order.push(thread);
@@ -393,8 +394,8 @@ impl Drawer {
                     format!("<{runtime_name}, {reason}>")
                 };
                 let line = render_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
-                let _unused = self.terminal.write_all(line.as_bytes());
-                let _unused = self.terminal.write_all(b"\n");
+                drop(self.terminal.write_all(line.as_bytes()));
+                drop(self.terminal.write_all(b"\n"));
                 self.last_live_rows = 0;
             }
             LifecycleEvent::SuiteSetupStarted {
@@ -503,11 +504,11 @@ impl Drawer {
                 let lhs_naked = format!("{:width$} {lhs_display}", "", width = STATUS_TAG_WIDTH);
                 let lhs_rendered = format!("{tag_rendered} {lhs_display}");
                 let header = render_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
-                let _unused = self.terminal.write_all(header.as_bytes());
-                let _unused = self.terminal.write_all(b"\n");
+                drop(self.terminal.write_all(header.as_bytes()));
+                drop(self.terminal.write_all(b"\n"));
                 let body = format!("  {label_text}: {message}\n");
                 let painted = self.color.red(&body);
-                let _unused = self.terminal.write_all(painted.as_bytes());
+                drop(self.terminal.write_all(painted.as_bytes()));
                 self.summary.teardown_failures = self.summary.teardown_failures.saturating_add(1);
                 self.summary.failures.push(FailureRecord {
                     display_name: format!("teardown {display}"),
@@ -542,7 +543,8 @@ impl Drawer {
                     // Clear the thread and slot mappings *after*
                     // emission so late-drained bytes attributed via
                     // the thread map are already flushed.
-                    let _unused = self.thread_to_test.remove(&state.thread);
+                    let _removed_thread_test: Option<TestId> =
+                        self.thread_to_test.remove(&state.thread);
                     if let Some(slot) = self.slots.get_mut(&state.thread)
                         && slot.current == Some(test_id) {
                             slot.current = None;
@@ -593,7 +595,7 @@ impl Drawer {
         if matches!(self.output_mode, OutputMode::Live) {
             self.clear_live_region();
         }
-        let _unused = self.terminal.write_all(&chunk.bytes);
+        drop(self.terminal.write_all(&chunk.bytes));
     }
 
     /// Render the result line for a suite setup or teardown that just
@@ -640,8 +642,8 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
         let lhs_naked = format!("{:width$} {display}", "", width = STATUS_TAG_WIDTH);
         let lhs_rendered = format!("{tag_rendered} {display}");
         let header = render_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
-        let _unused = self.terminal.write_all(header.as_bytes());
-        let _unused = self.terminal.write_all(b"\n");
+        drop(self.terminal.write_all(header.as_bytes()));
+        drop(self.terminal.write_all(b"\n"));
 
         if let Some(failure) = failure {
             let (label_text, message) = match failure {
@@ -652,7 +654,7 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
             };
             let body = format!("  {label_text}: {message}\n");
             let painted = self.color.red(&body);
-            let _unused = self.terminal.write_all(painted.as_bytes());
+            drop(self.terminal.write_all(painted.as_bytes()));
             self.summary.failures.push(FailureRecord {
                 display_name: format!("{phase_word} {suite_disp}"),
                 outcome_label: match kind {
@@ -698,7 +700,7 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
             };
             let suite_disp = normalize_module_path(suite);
             let line = format!("{phase_word:<8} {suite_disp} ... started <{runtime_name}>\n");
-            let _unused = self.terminal.write_all(line.as_bytes());
+            drop(self.terminal.write_all(line.as_bytes()));
         }
     }
 
@@ -743,32 +745,32 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
             .started_at
             .map_or(Duration::ZERO, |start| start.elapsed());
         if !self.summary.failures.is_empty() {
-            let _unused = self.terminal.write_all(b"\nfailures:\n\n");
+            drop(self.terminal.write_all(b"\nfailures:\n\n"));
             for fr in &self.summary.failures {
                 let header = format!("---- {} {} ----\n", fr.display_name, fr.outcome_label);
-                let _unused = self.terminal.write_all(header.as_bytes());
+                drop(self.terminal.write_all(header.as_bytes()));
                 if !fr.message.is_empty() {
-                    let _unused = self.terminal.write_all(fr.message.as_bytes());
+                    drop(self.terminal.write_all(fr.message.as_bytes()));
                     if !fr.message.ends_with('\n') {
-                        let _unused = self.terminal.write_all(b"\n");
+                        drop(self.terminal.write_all(b"\n"));
                     }
                 }
                 if !fr.captured_stdout.is_empty() {
-                    let _unused = self.terminal.write_all(b"---- stdout ----\n");
-                    let _unused = self.terminal.write_all(fr.captured_stdout.as_bytes());
+                    drop(self.terminal.write_all(b"---- stdout ----\n"));
+                    drop(self.terminal.write_all(fr.captured_stdout.as_bytes()));
                     if !fr.captured_stdout.ends_with('\n') {
-                        let _unused = self.terminal.write_all(b"\n");
+                        drop(self.terminal.write_all(b"\n"));
                     }
                 }
                 if !fr.captured_stderr.is_empty() {
-                    let _unused = self.terminal.write_all(b"---- stderr ----\n");
+                    drop(self.terminal.write_all(b"---- stderr ----\n"));
                     let coloured = self.color.red(&fr.captured_stderr);
-                    let _unused = self.terminal.write_all(coloured.as_bytes());
+                    drop(self.terminal.write_all(coloured.as_bytes()));
                     if !fr.captured_stderr.ends_with('\n') {
-                        let _unused = self.terminal.write_all(b"\n");
+                        drop(self.terminal.write_all(b"\n"));
                     }
                 }
-                let _unused = self.terminal.write_all(b"\n");
+                drop(self.terminal.write_all(b"\n"));
             }
         }
         let failed_total = self.summary.failed
@@ -792,8 +794,8 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
             self.summary.teardown_failures,
             total_elapsed.as_secs_f64(),
         );
-        let _unused = self.terminal.write_all(summary_line.as_bytes());
-        let _unused = self.terminal.flush();
+        drop(self.terminal.write_all(summary_line.as_bytes()));
+        drop(self.terminal.flush());
     }
 
     /// Erase and repaint the live region with the current per-slot
@@ -858,8 +860,8 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
         if rows == 0 {
             return;
         }
-        let _unused = self.terminal.write_all(buf.as_bytes());
-        let _unused = self.terminal.flush();
+        drop(self.terminal.write_all(buf.as_bytes()));
+        drop(self.terminal.flush());
         self.last_live_rows = rows;
     }
 
@@ -1079,14 +1081,14 @@ fn terminal_size_unix() -> (Option<usize>, Option<usize>) {
     // stderr capture pipe, so it's not useful) — we walk likely-
     // terminal FDs until one answers.
     #[expect(unsafe_code)]
-    unsafe {
-        let mut ws: libc::winsize = mem::zeroed();
-        for fd in [libc::STDERR_FILENO, libc::STDIN_FILENO, libc::STDOUT_FILENO] {
-            if libc::ioctl(fd, libc::TIOCGWINSZ, &raw mut ws) == 0 && ws.ws_col > 0 {
-                let cols = Some(usize::from(ws.ws_col));
-                let rows = (ws.ws_row > 0).then(|| usize::from(ws.ws_row));
-                return (cols, rows);
-            }
+    let mut ws: libc::winsize = unsafe { mem::zeroed() };
+    for fd in [libc::STDERR_FILENO, libc::STDIN_FILENO, libc::STDOUT_FILENO] {
+        #[expect(unsafe_code)]
+        let ioctl_ret = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &raw mut ws) };
+        if ioctl_ret == 0 && ws.ws_col > 0 {
+            let cols = Some(usize::from(ws.ws_col));
+            let rows = (ws.ws_row > 0).then(|| usize::from(ws.ws_row));
+            return (cols, rows);
         }
     }
     (None, None)
@@ -1139,11 +1141,11 @@ fn outcome_message(outcome: &TestOutcome) -> String {
 fn emit_captured_block(terminal: &mut File, state: &TestState, color: ColorPolicy) {
     for line in split_lines(&state.stdout_buffer) {
         let formatted = format!("  {line}\n");
-        let _unused = terminal.write_all(formatted.as_bytes());
+        drop(terminal.write_all(formatted.as_bytes()));
     }
     for line in split_lines(&state.stderr_buffer) {
         let formatted = format!("  {line}\n");
-        let _unused = terminal.write_all(color.red(&formatted).as_bytes());
+        drop(terminal.write_all(color.red(&formatted).as_bytes()));
     }
 }
 
@@ -1162,7 +1164,7 @@ fn emit_plain_lines(
             StdStream::Stdout => formatted,
             StdStream::Stderr => color.red(&formatted),
         };
-        let _unused = terminal.write_all(styled.as_bytes());
+        drop(terminal.write_all(styled.as_bytes()));
     }
 }
 
@@ -1266,7 +1268,6 @@ pub fn bench_progress_trailing(
     if cols >= 100 && cov_finite {
         #[expect(
             clippy::cast_possible_truncation,
-            clippy::cast_precision_loss,
             reason = "cov rendering; precision loss well within display rounding."
         )]
         {

@@ -19,10 +19,11 @@ use std::time::Instant;
 
 use super::events::{LifecycleEvent, TestId};
 
-/// Wrap `inner` so the first `poll` emits a `TestStarted` lifecycle
-/// event. `test_id` should come from [`TestId::next`] at dispatch
-/// site; `module_path`, `test_name`, `runtime_name` are static strings
-/// that end up in the event (and, transitively, in the drawer's
+/// Wrap `inner` so the first `poll` emits `TestStarted`.
+///
+/// `test_id` should come from [`TestId::next`] at dispatch site;
+/// `module_path`, `test_name`, `runtime_name` are static strings that
+/// end up in the event (and, transitively, in the drawer's
 /// [`super::events::TestState`]).
 #[derive(Debug)]
 pub struct FirstPoll<F> {

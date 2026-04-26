@@ -767,13 +767,12 @@ fn enable_full_backtrace_default() {
     // so no other thread is mutating the environment concurrently.
     // `env::set_var` is sound under that single-threaded invariant.
     #[expect(unsafe_code)]
-    unsafe {
-        if env::var_os("RUST_BACKTRACE").is_none() {
-            env::set_var("RUST_BACKTRACE", "full");
-        }
-        if env::var_os("RUST_LIB_BACKTRACE").is_none() {
-            env::set_var("RUST_LIB_BACKTRACE", "full");
-        }
+    if env::var_os("RUST_BACKTRACE").is_none() {
+        unsafe { env::set_var("RUST_BACKTRACE", "full") };
+    }
+    #[expect(unsafe_code)]
+    if env::var_os("RUST_LIB_BACKTRACE").is_none() {
+        unsafe { env::set_var("RUST_LIB_BACKTRACE", "full") };
     }
 }
 
@@ -936,10 +935,11 @@ fn render_status_line(
     out
 }
 
-/// Collect all registered [`TestToken`]s, group them by
-/// `runtime_group_key`, run each group in its own OS thread via its
-/// [`RuntimeGroupOwner`](crate::suite::RuntimeGroupOwner), and render
-/// per-test output according to [`Config::output_mode`]:
+/// Collect all registered [`TestToken`]s and dispatch them.
+///
+/// Groups them by `runtime_group_key`, runs each group in its own OS
+/// thread via its [`RuntimeGroupOwner`](crate::suite::RuntimeGroupOwner),
+/// and renders per-test output according to [`Config::output_mode`]:
 ///
 /// - [`OutputMode::Live`]: the bottom-of-terminal live region + append
 ///   history (see `crate::output::render`).
@@ -1251,12 +1251,12 @@ fn terminal_width() -> usize {
     // SAFETY: ioctl TIOCGWINSZ writes a `winsize` struct; we supply a
     // zero-initialised one and only read it when ioctl returns 0.
     #[expect(unsafe_code)]
-    unsafe {
-        let mut ws: libc::winsize = mem::zeroed();
-        let fd = io::stdout().as_raw_fd();
-        if libc::ioctl(fd, libc::TIOCGWINSZ, &raw mut ws) == 0 && ws.ws_col > 0 {
-            return usize::from(ws.ws_col);
-        }
+    let mut ws: libc::winsize = unsafe { mem::zeroed() };
+    let fd = io::stdout().as_raw_fd();
+    #[expect(unsafe_code)]
+    let ioctl_ret = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &raw mut ws) };
+    if ioctl_ret == 0 && ws.ws_col > 0 {
+        return usize::from(ws.ws_col);
     }
     100
 }
@@ -1317,7 +1317,8 @@ fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
                 report.strategy,
             );
             if let Some(p50) = report.median() {
-                inner.push_str(&format!(", p50 {p50:.2?}"));
+                use std::fmt::Write as _;
+                let _write_ret: Result<(), std::fmt::Error> = write!(inner, ", p50 {p50:.2?}");
             }
             format!("<{inner}>")
         }

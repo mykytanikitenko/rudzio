@@ -58,13 +58,14 @@ static INSTALLED: AtomicBool = AtomicBool::new(false);
 /// account for them.
 static UNATTRIBUTED_PANICS: AtomicUsize = AtomicUsize::new(0);
 
-/// Install the custom panic hook once. Idempotent; subsequent calls
-/// are no-ops. `saved_fds` is an `Arc` shared with the
-/// [`crate::output::CaptureGuard`] so either side can restore
-/// FDs (restore is internally idempotent — whichever runs first
-/// takes ownership via atomic swap; the loser no-ops). Pass `None`
-/// from plain-mode init — the counter still bumps but no FD restore
-/// is needed because nothing was captured.
+/// Install the custom panic hook once.
+///
+/// Idempotent; subsequent calls are no-ops. `saved_fds` is an `Arc`
+/// shared with the [`crate::output::CaptureGuard`] so either side can
+/// restore FDs (restore is internally idempotent — whichever runs
+/// first takes ownership via atomic swap; the loser no-ops). Pass
+/// `None` from plain-mode init — the counter still bumps but no FD
+/// restore is needed because nothing was captured.
 #[inline]
 pub fn install(saved_fds: Option<Arc<SavedFds>>) {
     if INSTALLED.swap(true, Ordering::AcqRel) {

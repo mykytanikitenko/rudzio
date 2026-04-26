@@ -18,6 +18,7 @@
 
 pub mod strategy;
 
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use crate::test_case::BoxError;
@@ -26,10 +27,11 @@ use crate::test_case::BoxError;
 /// [`BenchProgressSnapshot`].
 pub const HISTOGRAM_BUCKETS: usize = 32;
 
-/// Cheap, fixed-size summary of a benchmark's progress, emitted from
-/// [`Strategy::run`] roughly every 1% of iterations and consumed by
-/// the live-region renderer to draw a progress bar, p50 / p95 / cov,
-/// and a mini-histogram below the running row.
+/// Cheap, fixed-size summary of a benchmark's progress.
+///
+/// Emitted from [`Strategy::run`] roughly every 1% of iterations and
+/// consumed by the live-region renderer to draw a progress bar, p50 /
+/// p95 / cov, and a mini-histogram below the running row.
 ///
 /// `Copy` so it travels through the lifecycle channel without
 /// allocation. The histogram is pre-binned (linear over `[min, max]`)
@@ -191,17 +193,9 @@ impl BenchProgressSnapshot {
         let min_ns = min.as_nanos();
         let max_ns = max.as_nanos();
         let span = max_ns.saturating_sub(min_ns).max(1);
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "HISTOGRAM_BUCKETS fits in u128; bucket index always < HISTOGRAM_BUCKETS."
-        )]
         let bucket_span = span.div_ceil(HISTOGRAM_BUCKETS as u128).max(1);
         for sample in &sorted {
             let offset = sample.as_nanos().saturating_sub(min_ns);
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "Index clamped to HISTOGRAM_BUCKETS - 1 below."
-            )]
             let idx = ((offset / bucket_span) as usize).min(HISTOGRAM_BUCKETS.saturating_sub(1));
             histogram[idx] = histogram[idx].saturating_add(1);
         }
@@ -274,9 +268,10 @@ impl BenchReport {
             );
             let bar_len = (count * width) / max_count;
             let bar = "#".repeat(bar_len);
-            out.push_str(&format!(
+            let _write_ret: Result<(), std::fmt::Error> = write!(
+                out,
                 "  [{lo:>9.2?} .. {hi:>9.2?}) |{bar:<width$}  {count}\n"
-            ));
+            );
         }
         out
     }
@@ -319,48 +314,59 @@ impl BenchReport {
                 self.iterations
             );
             if !self.failures.is_empty() {
-                out.push_str(&format!("  failed iterations: {}\n", self.failures.len()));
+                let _early_failures_ret: Result<(), std::fmt::Error> =
+                    writeln!(out, "  failed iterations: {}", self.failures.len());
             }
             if self.panics > 0 {
-                out.push_str(&format!("  panicked iterations: {}\n", self.panics));
+                let _early_panics_ret: Result<(), std::fmt::Error> =
+                    writeln!(out, "  panicked iterations: {}", self.panics);
             }
             return out;
         }
         let mut out = String::new();
-        out.push_str(&format!("  samples:           {n}\n"));
-        out.push_str(&format!(
-            "  wall-clock:        {:.2?}\n",
-            self.total_elapsed
-        ));
+        let _samples_ret: Result<(), std::fmt::Error> =
+            writeln!(out, "  samples:           {n}");
+        let _wallclock_ret: Result<(), std::fmt::Error> =
+            writeln!(out, "  wall-clock:        {:.2?}", self.total_elapsed);
         if let Some(throughput) = self.throughput_per_sec() {
-            out.push_str(&format!("  throughput:        {throughput:.2} iter/s\n"));
+            let _throughput_ret: Result<(), std::fmt::Error> =
+                writeln!(out, "  throughput:        {throughput:.2} iter/s");
         }
         if let (Some(min), Some(max)) = (self.min(), self.max()) {
-            out.push_str(&format!("  min / max:         {min:.2?} / {max:.2?}\n"));
+            let _minmax_ret: Result<(), std::fmt::Error> =
+                writeln!(out, "  min / max:         {min:.2?} / {max:.2?}");
         }
         if let Some(range) = self.range() {
-            out.push_str(&format!("  range:             {range:.2?}\n"));
+            let _range_ret: Result<(), std::fmt::Error> =
+                writeln!(out, "  range:             {range:.2?}");
         }
         if let Some(mean) = self.mean() {
-            out.push_str(&format!("  mean:              {mean:.2?}\n"));
+            let _mean_ret: Result<(), std::fmt::Error> =
+                writeln!(out, "  mean:              {mean:.2?}");
         }
         if let Some(median) = self.median() {
-            out.push_str(&format!("  median:            {median:.2?}\n"));
+            let _median_ret: Result<(), std::fmt::Error> =
+                writeln!(out, "  median:            {median:.2?}");
         }
         if let Some(sd) = self.std_dev() {
-            out.push_str(&format!("  std dev:           {sd:.2?}\n"));
+            let _sd_ret: Result<(), std::fmt::Error> =
+                writeln!(out, "  std dev:           {sd:.2?}");
         }
         if let Some(mad) = self.mad() {
-            out.push_str(&format!("  MAD:               {mad:.2?}\n"));
+            let _mad_ret: Result<(), std::fmt::Error> =
+                writeln!(out, "  MAD:               {mad:.2?}");
         }
         if let Some(cv) = self.coefficient_of_variation() {
-            out.push_str(&format!("  coeff of variation:{cv:>8.3}\n"));
+            let _cv_ret: Result<(), std::fmt::Error> =
+                writeln!(out, "  coeff of variation:{cv:>8.3}");
         }
         if let Some(iqr) = self.iqr() {
-            out.push_str(&format!("  IQR (p75 − p25):   {iqr:.2?}\n"));
+            let _iqr_ret: Result<(), std::fmt::Error> =
+                writeln!(out, "  IQR (p75 − p25):   {iqr:.2?}");
         }
         if let Some(outliers) = self.outlier_count(3.0) {
-            out.push_str(&format!("  outliers (>3σ):    {outliers}\n"));
+            let _outliers_ret: Result<(), std::fmt::Error> =
+                writeln!(out, "  outliers (>3σ):    {outliers}");
         }
         out.push_str("  percentiles:\n");
         for (percentile, label) in [
@@ -376,14 +382,17 @@ impl BenchReport {
             (0.999, "p99.9"),
         ] {
             if let Some(value) = self.percentile(percentile) {
-                out.push_str(&format!("    {label:>6}:         {value:.2?}\n"));
+                let _percentile_ret: Result<(), std::fmt::Error> =
+                    writeln!(out, "    {label:>6}:         {value:.2?}");
             }
         }
         if !self.failures.is_empty() {
-            out.push_str(&format!("  failed iterations: {}\n", self.failures.len()));
+            let _failures_ret: Result<(), std::fmt::Error> =
+                writeln!(out, "  failed iterations: {}", self.failures.len());
         }
         if self.panics > 0 {
-            out.push_str(&format!("  panicked iterations: {}\n", self.panics));
+            let _panics_ret: Result<(), std::fmt::Error> =
+                writeln!(out, "  panicked iterations: {}", self.panics);
         }
         out
     }

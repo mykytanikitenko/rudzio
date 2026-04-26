@@ -1,7 +1,8 @@
-//! Build-script helper: make `[[bin]]` targets reachable from
-//! `env!("CARGO_BIN_EXE_<name>")` in the calling crate's compiled
-//! sources, in the two cases where cargo does *not* set those env vars
-//! automatically:
+//! Build-script helper for `[[bin]]` env-var exposure.
+//!
+//! Make `[[bin]]` targets reachable from `env!("CARGO_BIN_EXE_<name>")`
+//! in the calling crate's compiled sources, in the two cases where
+//! cargo does *not* set those env vars automatically:
 //!
 //! 1. **Cross-crate aggregator** — a workspace-wide test runner that
 //!    spawns bins owned by *different* crates.
@@ -133,10 +134,12 @@ use std::result::Result as StdResult;
 use cargo_metadata::{MetadataCommand, TargetKind};
 
 /// Sentinel env var set on every nested `cargo build` spawned by
-/// [`expose_bins`]. Its presence in the ambient env at the top of
-/// [`expose_bins`] means some enclosing invocation is already driving
-/// the build; the current call must not spawn a fresh nested cargo or
-/// the whole thing will recurse unboundedly.
+/// [`expose_bins`].
+///
+/// Its presence in the ambient env at the top of [`expose_bins`] means
+/// some enclosing invocation is already driving the build; the current
+/// call must not spawn a fresh nested cargo or the whole thing will
+/// recurse unboundedly.
 ///
 /// Also set by `cargo rudzio test` before spawning the aggregator
 /// build, so that any `expose_self_bins()` call downstream in the
@@ -304,8 +307,10 @@ impl ProfileFlag {
     }
 }
 
-/// Build `bin_crate`'s `[[bin]]` targets into a sandboxed cache inside
-/// the caller's `OUT_DIR` and emit `cargo:rustc-env=CARGO_BIN_EXE_<n>`
+/// Build `bin_crate`'s `[[bin]]` targets and expose them via cargo env.
+///
+/// Targets are built into a sandboxed cache inside the caller's
+/// `OUT_DIR`; the function emits `cargo:rustc-env=CARGO_BIN_EXE_<n>`
 /// directives so `env!("CARGO_BIN_EXE_<n>")` resolves in the caller's
 /// compiled sources.
 ///
@@ -450,11 +455,12 @@ pub fn expose_bins(bin_crate: &str) -> Result<()> {
     Ok(())
 }
 
-/// Same as [`expose_bins`] but reads `CARGO_PKG_NAME` so the caller
-/// doesn't have to hardcode their own crate's name. Intended for the
-/// `cargo test --lib` + `#[cfg(test)] #[rudzio::main]` pattern where
-/// cargo doesn't auto-populate `CARGO_BIN_EXE_*` for the `--lib` test
-/// binary.
+/// Same as [`expose_bins`] but reads `CARGO_PKG_NAME`.
+///
+/// The caller doesn't have to hardcode their own crate's name. Intended
+/// for the `cargo test --lib` + `#[cfg(test)] #[rudzio::main]` pattern
+/// where cargo doesn't auto-populate `CARGO_BIN_EXE_*` for the `--lib`
+/// test binary.
 ///
 /// ```rust,no_run
 /// // build.rs — make this crate's own bins reachable to tests run by

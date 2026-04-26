@@ -84,13 +84,13 @@ pub struct SuiteId(pub TypeId);
 
 /// Inputs handed to [`RuntimeGroupOwner::run_group`].
 #[derive(Debug)]
-pub struct SuiteRunRequest<'a> {
+pub struct SuiteRunRequest<'req> {
     /// Resolved CLI / environment configuration for this run. Shared by
     /// every group; runtime constructors may inspect it (e.g. to size
     /// worker pools).
-    pub config: &'a Config,
+    pub config: &'req Config,
     pub root_token: CancellationToken,
-    pub tokens: &'a [&'static TestToken],
+    pub tokens: &'req [&'static TestToken],
 }
 
 /// Aggregated per-group counts.
@@ -194,15 +194,15 @@ pub enum TestOutcome {
 ///      cancellation token and the optional per-test timeout;
 ///   3. always runs `Test::teardown` (catching panics and surfacing them
 ///      via `reporter`).
-pub type TestRunFn = for<'s> unsafe fn(
+pub type TestRunFn = for<'suite> unsafe fn(
     runtime_ptr: *const (),
     suite_ptr: *const (),
-    _phantom: PhantomData<&'s ()>,
+    _phantom: PhantomData<&'suite ()>,
     token: &'static TestToken,
     test_timeout: Option<Duration>,
     root_token: CancellationToken,
-    reporter: &'s dyn SuiteReporter,
-) -> Pin<Box<dyn Future<Output = TestOutcome> + 's>>;
+    reporter: &'suite dyn SuiteReporter,
+) -> Pin<Box<dyn Future<Output = TestOutcome> + 'suite>>;
 
 /// Per-`(runtime_type, suite_type)` lifecycle owner.
 ///
@@ -485,19 +485,19 @@ where
 #[doc(hidden)]
 #[expect(unsafe_code, reason = "scoped spawn — see fn docstring")]
 #[inline]
-pub unsafe fn extend_phase_future_lifetime<'a, F, T>(
+pub unsafe fn extend_phase_future_lifetime<'fut, F, T>(
     fut: F,
 ) -> Pin<Box<dyn Future<Output = T> + Send + 'static>>
 where
-    F: Future<Output = T> + Send + 'a,
+    F: Future<Output = T> + Send + 'fut,
     T: Send + 'static,
 {
-    let pinned: Pin<Box<dyn Future<Output = T> + Send + 'a>> = Box::pin(fut);
+    let pinned: Pin<Box<dyn Future<Output = T> + Send + 'fut>> = Box::pin(fut);
     // SAFETY: see fn-level docstring — caller awaits or runtime-aborts
     // before any captured borrow expires.
     unsafe {
         mem::transmute::<
-            Pin<Box<dyn Future<Output = T> + Send + 'a>>,
+            Pin<Box<dyn Future<Output = T> + Send + 'fut>>,
             Pin<Box<dyn Future<Output = T> + Send + 'static>>,
         >(pinned)
     }
@@ -538,10 +538,11 @@ pub const fn fnv1a64(text: &str) -> u64 {
     hash
 }
 
-/// Extract a human-readable message from a `catch_unwind` panic
-/// payload. Rust's panic payload is `Box<dyn Any + Send>`; the common
-/// shapes are `&'static str` and `String`. Anything else is reported
-/// as a generic placeholder so the user still sees that *something*
+/// Extract a human-readable message from a `catch_unwind` payload.
+///
+/// Rust's panic payload is `Box<dyn Any + Send>`; the common shapes
+/// are `&'static str` and `String`. Anything else is reported as a
+/// generic placeholder so the user still sees that *something*
 /// panicked rather than getting nothing.
 #[must_use]
 #[inline]

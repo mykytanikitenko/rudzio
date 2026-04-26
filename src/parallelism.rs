@@ -57,10 +57,10 @@ struct State {
 /// waiter (if any). A guard from a disabled (`None`-mode) [`HardLimit`]
 /// is a no-op on drop.
 #[derive(Debug)]
-pub struct HardLimitGuard<'a> {
+pub struct HardLimitGuard<'gate> {
     /// Owning gate when this guard holds a real permit; `None` for
     /// no-op guards from disabled-mode acquires.
-    owner: Option<&'a HardLimit>,
+    owner: Option<&'gate HardLimit>,
 }
 
 impl HardLimit {

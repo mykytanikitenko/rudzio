@@ -46,10 +46,12 @@ pub struct Capture {
     pub stdout_read: OwnedFd,
 }
 
-/// Shared storage for the pre-capture FDs. Holding one of these
-/// inside an `Arc` lets the [`crate::output::CaptureGuard`] and the
-/// custom panic hook both try to restore; the internal atomic swap
-/// makes subsequent calls no-op.
+/// Shared storage for the pre-capture FDs.
+///
+/// Holding one of these inside an `Arc` lets the
+/// [`crate::output::CaptureGuard`] and the custom panic hook both
+/// try to restore; the internal atomic swap makes subsequent calls
+/// no-op.
 #[derive(Debug)]
 pub struct SavedFds {
     /// Saved-original FD 2 (stderr); set to `-1` once restored.
@@ -84,21 +86,22 @@ impl SavedFds {
         // exclusive to whoever swapped a non-`-1` value out. Errors
         // from dup2 / close are ignored — there's no recovery path
         // from a restore failure.
-        unsafe {
-            if stdout != -1 {
-                let _unused = libc::dup2(stdout, libc::STDOUT_FILENO);
-                let _unused = libc::close(stdout);
-            }
-            if stderr != -1 {
-                let _unused = libc::dup2(stderr, libc::STDERR_FILENO);
-                let _unused = libc::close(stderr);
-            }
+        if stdout != -1 {
+            let _stdout_dup_ret: libc::c_int =
+                unsafe { libc::dup2(stdout, libc::STDOUT_FILENO) };
+            let _stdout_close_ret: libc::c_int = unsafe { libc::close(stdout) };
+        }
+        if stderr != -1 {
+            let _stderr_dup_ret: libc::c_int =
+                unsafe { libc::dup2(stderr, libc::STDERR_FILENO) };
+            let _stderr_close_ret: libc::c_int = unsafe { libc::close(stderr) };
         }
     }
 }
 
-/// Save the original FDs 1 and 2, install anonymous pipes in their
-/// place, and hand back the read ends + saved originals. Best-effort
+/// Save FDs 1 and 2 and install anonymous pipes in their place.
+///
+/// Hands back the read ends plus the saved originals. Best-effort
 /// enlargement of the pipe buffers to [`PIPE_SIZE`] — ignored silently
 /// if the platform or system policy refuses.
 ///
@@ -151,8 +154,8 @@ pub fn init() -> io::Result<Capture> {
     };
 
     // Expand pipe buffer if supported (Linux); harmless no-op elsewhere.
-    let _unused = set_pipe_size(stdout_write.as_raw_fd(), PIPE_SIZE);
-    let _unused = set_pipe_size(stderr_write.as_raw_fd(), PIPE_SIZE);
+    let _stdout_pipe_resize: io::Result<()> = set_pipe_size(stdout_write.as_raw_fd(), PIPE_SIZE);
+    let _stderr_pipe_resize: io::Result<()> = set_pipe_size(stderr_write.as_raw_fd(), PIPE_SIZE);
 
     // Install the write ends over FDs 1 and 2. `dup2` closes whatever
     // was at the target FD before duplicating — that's what we want.

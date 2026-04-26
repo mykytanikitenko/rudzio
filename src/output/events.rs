@@ -14,11 +14,13 @@ use std::time::{Duration, Instant};
 use crate::bench::BenchProgressSnapshot;
 use crate::suite::{TeardownResult, TestOutcome};
 
-/// Unique id for a test *dispatch* — one per wrap in
-/// [`crate::output::first_poll::FirstPoll`]. Multiple dispatches of the
-/// same test (e.g. re-runs, unlikely for rudzio but possible in theory)
-/// get distinct ids. Monotonic within a single process run; an
-/// `AtomicU64` counter hands them out in [`TestId::next`].
+/// Unique id for a test *dispatch*.
+///
+/// One per wrap in [`crate::output::first_poll::FirstPoll`]. Multiple
+/// dispatches of the same test (e.g. re-runs, unlikely for rudzio but
+/// possible in theory) get distinct ids. Monotonic within a single
+/// process run; an `AtomicU64` counter hands them out in
+/// [`TestId::next`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TestId(pub u64);
 
@@ -42,10 +44,11 @@ pub enum StdStream {
     Stdout,
 }
 
-/// A raw byte chunk read from a captured pipe, not yet attributed to
-/// any test. The drawer attaches it to whichever test is currently
-/// mapped for the thread that produced it, using its
-/// lifecycle-event-maintained `thread_to_test` table.
+/// A raw byte chunk read from a captured pipe, not yet attributed.
+///
+/// The drawer attaches it to whichever test is currently mapped for
+/// the thread that produced it, using its lifecycle-event-maintained
+/// `thread_to_test` table.
 #[derive(Debug)]
 pub struct PipeChunk {
     pub bytes: Vec<u8>,

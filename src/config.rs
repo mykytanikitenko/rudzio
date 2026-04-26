@@ -125,10 +125,12 @@ pub enum BenchMode {
     Smoke,
 }
 
-/// Compile-time cargo metadata captured from `env!(...)` at the user's
-/// `#[rudzio::main]` expansion site. Lets test bodies resolve fixture
-/// paths relative to the test crate's manifest without calling out to
-/// `cargo` or parsing `Cargo.toml` at runtime.
+/// Compile-time cargo metadata captured at the macro expansion site.
+///
+/// Captured from `env!(...)` at the user's `#[rudzio::main]` expansion
+/// site. Lets test bodies resolve fixture paths relative to the test
+/// crate's manifest without calling out to `cargo` or parsing
+/// `Cargo.toml` at runtime.
 ///
 /// Construct with the [`cargo_meta!`](crate::cargo_meta) macro — it
 /// expands to the `env!(...)` block in the caller's crate:
@@ -161,11 +163,13 @@ pub enum ColorMode {
     Never,
 }
 
-/// Resolved configuration for a test run, aggregating every CLI flag the
-/// runner understands plus the process environment. Handed to every runtime
-/// constructor, every suite `setup`, and accessible from any running test
-/// via [`crate::runtime::Runtime::config`] (and transitively from the suite
-/// context through its runtime borrow).
+/// Resolved configuration for a test run.
+///
+/// Aggregates every CLI flag the runner understands plus the process
+/// environment. Handed to every runtime constructor, every suite
+/// `setup`, and accessible from any running test via
+/// [`crate::runtime::Runtime::config`] (and transitively from the
+/// suite context through its runtime borrow).
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Config {
