@@ -77,7 +77,7 @@ pub fn classify_ctx_param(func: &ItemFn) -> CtxKind {
 /// Transform test function signature to add generic lifetimes and runtime type.
 ///
 /// Converts: `async fn test(ctx: &BaseTestContext) -> Result<()>`
-/// To:       `async fn test<'test_context, 'suite_context: 'test_context, R: Runtime<'suite_context> + Sync>(ctx: &'test_context BaseTestContext<'suite_context, R>) -> Result<()>`
+/// To:       `async fn test<'test_context, 'suite_context: 'test_context, R: Runtime<'suite_context> + Sync>(ctx: &'test_context BaseTestContext<'suite_context, R>) -> Result<()>`.
 ///
 /// Two distinct lifetimes are emitted on purpose:
 ///   - `'suite_context` is the lifetime parameter on the user's context type (the

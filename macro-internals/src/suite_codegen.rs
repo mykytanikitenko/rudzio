@@ -101,12 +101,11 @@ fn generate_per_config(
     let runtime_ctor = &cfg.runtime;
     let runtime_type = cfg.runtime_type();
     let suite_base = &cfg.suite;
-    let _test_base = &cfg.test;
 
     // Stable id derived from the (runtime_type, suite_base) path strings.
     // Two suite blocks declaring the same (R, S) get the same key and share
     // an OS thread / runtime / suite at runtime.
-    let group_key_source = format!("{}::{}", quote!(#runtime_type), quote!(#suite_base),);
+    let group_key_source = format!("{}::{}", quote!(#runtime_type), quote!(#suite_base));
 
     let mod_camel = to_upper_camel(&mod_name.to_string());
     let owner_struct = format_ident!("__RudzioOwner{}{}", mod_camel, cfg_idx);
@@ -536,10 +535,14 @@ fn generate_per_config(
         // `proc_macro2::Span::start().line` is available on stable and returns
         // line tracking from the compiler in proc-macro context and from
         // proc-macro2's own tracking (e.g. `syn::parse_str`) in regular
-        // contexts. Any file with >2^32 lines is pathological; truncating
-        // via `as` matches the pre-split behaviour.
-        #[allow(clippy::cast_possible_truncation)]
-        let source_line = test.sig.ident.span().start().line as u32;
+        // contexts. Any file with >2^32 lines is pathological; we surface
+        // overflow as a hard `syn::Error` rather than silently truncating.
+        let source_line = u32::try_from(test.sig.ident.span().start().line).map_err(|err| {
+            syn::Error::new(
+                test.sig.ident.span(),
+                format!("source line exceeds u32::MAX: {err}"),
+            )
+        })?;
         let is_async = is_async_fn(test);
         let ctx_kind = classify_ctx_param(test);
 
@@ -951,7 +954,7 @@ fn generate_per_config(
     Ok(())
 }
 
-/// Convert a snake_case identifier to UpperCamelCase. Splits on `_`,
+/// Convert a `snake_case` identifier to `UpperCamelCase`. Splits on `_`,
 /// uppercases the first char of each segment, and drops the underscores
 /// so the result conforms to Rust's type-name convention.
 fn to_upper_camel(s: &str) -> String {

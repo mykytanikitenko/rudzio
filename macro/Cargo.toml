@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = { workspace = true }
 description = "Procedural macros for the rudzio async testing framework."
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/mykytanikitenko/rudzio"
+readme = "../README.md"
+keywords = ["testing", "async", "macro", "proc-macro"]
+categories = ["development-tools::testing", "development-tools::procedural-macro-helpers"]
 
 [lib]
 proc-macro = true

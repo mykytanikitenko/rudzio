@@ -190,10 +190,10 @@ style = { level = "deny", priority = -1 }
 suspicious = { level = "deny", priority = -1 }
 
 blanket_clippy_restriction_lints = { level = "allow", priority = 1 }
-cargo_common_metadata = { level = "allow", priority = 1 }
-multiple_crate_versions = { level = "allow", priority = 1 }
-error_impl_error = { level = "allow", priority = 1 }
-field_scoped_visibility_modifiers = { level = "allow", priority = 1 }
+#cargo_common_metadata = { level = "allow", priority = 1 }
+#multiple_crate_versions = { level = "allow", priority = 1 }
+#error_impl_error = { level = "allow", priority = 1 }
+#field_scoped_visibility_modifiers = { level = "allow", priority = 1 }
 implicit_return = { level = "allow", priority = 1 }
 missing_trait_methods = { level = "allow", priority = 1 }
 mod_module_files = { level = "allow", priority = 1 }
@@ -210,9 +210,6 @@ std_instead_of_core = { level = "allow", priority = 1 }
 separated_literal_suffix = { level = "allow", priority = 1 }
 single_call_fn = { level = "allow", priority = 1 }
 tests_outside_test_module = { level = "allow", priority = 1 }
-# Test bodies under #[rudzio::test] must return Result<(), E> to match the
-# runner's match arms, even when the body can never produce an error.
-unnecessary_wraps = { level = "allow", priority = 1 }
 # Many test binaries include intentional panics and unreachable! calls to
 # exercise the framework's panic handling. Their signature keeps a Result
 # return so the surrounding framework machinery still type-checks.

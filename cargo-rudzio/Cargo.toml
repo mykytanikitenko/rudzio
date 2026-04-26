@@ -5,6 +5,9 @@ edition = { workspace = true }
 description = "Cargo subcommand: `cargo rudzio test` auto-generates a single-binary aggregator that runs every rudzio test in the workspace under one `#[rudzio::main]`."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/mykytanikitenko/rudzio"
+readme = "../README.md"
+keywords = ["cargo-subcommand", "testing", "async", "tokio", "compio"]
+categories = ["development-tools::cargo-plugins", "development-tools::testing"]
 
 [lib]
 name = "cargo_rudzio"
