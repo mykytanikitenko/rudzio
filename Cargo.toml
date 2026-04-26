@@ -144,7 +144,6 @@ futures-executor = "=0.3.32"
 futures-timer = "=3.0.3"
 futures-util = "=0.3.32"
 ignore = "=0.4.25"
-miette = { version = "=7.6.0", features = ["fancy-no-backtrace"] }
 prettyplease = "=0.2.37"
 thiserror = "=2.0.18"
 proc-macro2 = "=1.0.106"

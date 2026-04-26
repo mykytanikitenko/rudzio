@@ -6,8 +6,6 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use miette::{GraphicalReportHandler, NamedSource, SourceSpan};
-
 #[derive(Debug, Default)]
 pub struct Report {
     pub files_touched: Vec<PathBuf>,
@@ -24,9 +22,9 @@ pub struct Warning {
     pub message: String,
     /// Pre-rewrite byte span (offset, length) of the attribute / fn
     /// that produced this warning. Together with `source` this lets
-    /// the summary underline the exact snippet via miette. `None`
-    /// means the warning is location-less (e.g. Cargo.toml edit
-    /// failures that don't point at a specific line).
+    /// the summary underline the exact snippet. `None` means the
+    /// warning is location-less (e.g. Cargo.toml edit failures that
+    /// don't point at a specific line).
     pub span: Option<(usize, usize)>,
     /// Pre-rewrite file bytes, captured at warning time so the summary
     /// renders what the user actually wrote — not the post-rewrite
@@ -109,9 +107,8 @@ impl Report {
         if !self.warnings.is_empty() {
             writeln!(out)?;
             writeln!(out, "Warnings (need manual follow-up):")?;
-            let handler = GraphicalReportHandler::new();
             for w in &self.warnings {
-                render_warning(&mut out, &handler, w)?;
+                render_warning(&mut out, w)?;
             }
         }
         writeln!(out)?;
@@ -148,45 +145,30 @@ pub fn progress<W: Write>(mut out: W, msg: &str) -> std::io::Result<()> {
     out.flush()
 }
 
-fn render_warning<W: Write>(
-    mut out: W,
-    handler: &GraphicalReportHandler,
-    w: &Warning,
-) -> std::io::Result<()> {
-    let (Some((offset, len)), Some(source)) = (w.span, &w.source) else {
-        // Location-less or snippet-less warning: plain one-line form.
-        match w.line {
-            Some(line) => writeln!(out, "  {}:{}: {}", w.file.display(), line, w.message),
-            None => writeln!(out, "  {}: {}", w.file.display(), w.message),
-        }?;
-        return Ok(());
-    };
-    let diag = MigrateWarning {
-        message: w.message.clone(),
-        src: NamedSource::new(w.file.display().to_string(), Arc::clone(source)),
-        span: (offset, len.max(1)).into(),
-    };
-    let mut rendered = String::new();
-    if handler.render_report(&mut rendered, &diag).is_err() {
-        // Miette's renderer doesn't usually fail, but fall back if
-        // it does — losing source underlining is fine.
-        if let Some(line) = w.line {
-            writeln!(out, "  {}:{}: {}", w.file.display(), line, w.message)?;
-        } else {
-            writeln!(out, "  {}: {}", w.file.display(), w.message)?;
-        }
-        return Ok(());
+fn render_warning<W: Write>(mut out: W, w: &Warning) -> std::io::Result<()> {
+    // Header line: `path:line: message` (or `path: message` when location-less).
+    match w.line {
+        Some(line) => writeln!(out, "  {}:{}: {}", w.file.display(), line, w.message)?,
+        None => writeln!(out, "  {}: {}", w.file.display(), w.message)?,
     }
-    out.write_all(rendered.as_bytes())?;
+    // If we captured the offending span and source, render a one-line
+    // snippet with a caret underline beneath it. No fancy graphics,
+    // just enough context for the user to find the spot.
+    let (Some((offset, len)), Some(source)) = (w.span, &w.source) else {
+        return Ok(());
+    };
+    let len = len.max(1);
+    let line_start = source[..offset.min(source.len())]
+        .rfind('\n')
+        .map_or(0, |i| i.saturating_add(1));
+    let line_end = source[line_start..]
+        .find('\n')
+        .map_or(source.len(), |i| line_start.saturating_add(i));
+    let snippet = &source[line_start..line_end];
+    let col = offset.saturating_sub(line_start);
+    writeln!(out, "    | {snippet}")?;
+    let pad = " ".repeat(col);
+    let underline = "^".repeat(len.min(line_end.saturating_sub(offset).max(1)));
+    writeln!(out, "    | {pad}{underline}")?;
     Ok(())
-}
-
-#[derive(Debug, thiserror::Error, miette::Diagnostic)]
-#[error("{message}")]
-struct MigrateWarning {
-    message: String,
-    #[source_code]
-    src: NamedSource<Arc<String>>,
-    #[label("here")]
-    span: SourceSpan,
 }
