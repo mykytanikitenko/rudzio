@@ -56,17 +56,6 @@ pub struct MemberPlan {
     /// bridge crate's `[lib] path` points here so cargo compiles the
     /// real source tree instead of the bridge dir.
     pub src_lib_path: Option<PathBuf>,
-    /// Absolute path to the member's `build.rs`, if present. The bridge
-    /// forwards `[package] build` to this path so build-script side
-    /// effects (rustc-env vars, rerun-if-changed) still fire when cargo
-    /// compiles the bridge.
-    pub build_rs: Option<PathBuf>,
-    /// Member's `[build-dependencies]` + target-cfg variants. The bridge
-    /// re-emits these under its own `[build-dependencies]` so that the
-    /// forwarded `build.rs` resolves the crates it imports (e.g. a
-    /// member calling `rudzio::build::expose_self_bins()` needs rudzio
-    /// in the bridge's build-deps too).
-    pub build_deps: Vec<DevDepSpec>,
     /// `true` iff the member has at least one file under `src/**` that
     /// syntactically declares a rudzio suite or gates a module on the
     /// `rudzio_test` cfg. Drives bridge-crate generation: the bridge
@@ -207,12 +196,6 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
             .find(|t| t.kind.iter().any(|k| matches!(k, TargetKind::Lib)))
             .map(|t| t.src_path.as_std_path().to_path_buf());
 
-        let build_rs = pkg
-            .targets
-            .iter()
-            .find(|t| t.kind.iter().any(|k| matches!(k, TargetKind::CustomBuild)))
-            .map(|t| t.src_path.as_std_path().to_path_buf());
-
         let edition = pkg.edition.to_string();
 
         let dev_deps =
@@ -222,17 +205,6 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
                     pkg.manifest_path.as_std_path().display()
                 )
             })?;
-
-        let build_deps = if build_rs.is_some() {
-            read_build_deps(pkg.manifest_path.as_std_path()).with_context(|| {
-                format!(
-                    "reading build-deps from {}",
-                    pkg.manifest_path.as_std_path().display()
-                )
-            })?
-        } else {
-            Vec::new()
-        };
 
         let has_src_rudzio_suite = has_lib
             && src_lib_path
@@ -249,8 +221,6 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
             dev_deps,
             edition,
             src_lib_path,
-            build_rs,
-            build_deps,
             has_src_rudzio_suite,
         });
     }
@@ -880,25 +850,7 @@ fn apply_ws_dep_field(spec: &mut WorkspaceDepSpec, key: &str, val: &Value, base:
 /// `workspace = true` flag is preserved so the aggregator defers to the
 /// workspace root's pinned version.
 fn read_dev_deps(manifest_path: &Path) -> Result<Vec<DevDepSpec>> {
-    read_deps_in_sections(
-        manifest_path,
-        &["dependencies", "dev-dependencies"],
-    )
-}
-
-/// Read `[build-dependencies]` + `[target.*.build-dependencies]` from the
-/// member's manifest. Parallels `read_dev_deps` but for build scripts:
-/// when the bridge forwards `build = "<abs>/build.rs"`, cargo compiles
-/// that script as part of the bridge crate and needs the bridge's own
-/// `[build-dependencies]` to resolve its imports.
-fn read_build_deps(manifest_path: &Path) -> Result<Vec<DevDepSpec>> {
-    read_deps_in_sections(manifest_path, &["build-dependencies"])
-}
-
-fn read_deps_in_sections(
-    manifest_path: &Path,
-    sections: &[&str],
-) -> Result<Vec<DevDepSpec>> {
+    let sections = ["dependencies", "dev-dependencies"];
     let text = fs::read_to_string(manifest_path)
         .with_context(|| format!("reading {}", manifest_path.display()))?;
     let doc: DocumentMut = text
@@ -919,7 +871,7 @@ fn read_deps_in_sections(
                 continue;
             };
             for section in sections {
-                if let Some(Item::Table(deps_tbl)) = cfg_tbl.get(*section) {
+                if let Some(Item::Table(deps_tbl)) = cfg_tbl.get(section) {
                     for (name, item) in deps_tbl.iter() {
                         if let Some(spec) = parse_dev_dep_entry(name, item, manifest_dir) {
                             out.push(spec);
@@ -1157,39 +1109,37 @@ pub fn write_bridge_crate(plan: &Plan, member: &MemberPlan, out: &Path) -> Resul
     fs::write(bridge_dir.join("Cargo.toml"), manifest).with_context(|| {
         format!("writing bridge Cargo.toml at {}", bridge_dir.display())
     })?;
-    if let Some(build_rs_content) = build_bridge_build_rs(member) {
-        fs::write(bridge_dir.join("build.rs"), build_rs_content).with_context(|| {
-            format!("writing bridge build.rs at {}", bridge_dir.display())
-        })?;
-    }
+    fs::write(bridge_dir.join("build.rs"), build_bridge_build_rs(member)).with_context(|| {
+        format!("writing bridge build.rs at {}", bridge_dir.display())
+    })?;
     Ok(())
 }
 
-/// Synthesize the bridge's `build.rs`, or `None` if the member has no
-/// bins.
+/// Synthesize the bridge's `build.rs`. Every bridge gets one — it is
+/// the per-compile-unit emission site for `cargo:rustc-cfg=rudzio_test`
+/// that scopes the cfg to the bridge's rustc invocation only (as
+/// opposed to propagating it through ambient `RUSTFLAGS`, which leaked
+/// into nested `cargo build --bins` and caused thousands of unresolved
+/// -crate errors in downstream bin crates).
 ///
-/// When a member declares bins, the bridge CANNOT forward the member's
-/// own `build.rs`: any `rudzio::build::expose_self_bins()` call inside
-/// would query `CARGO_PKG_NAME` (= bridge's name, e.g.
-/// `<member>_rudzio_bridge`) against `cargo metadata`, find the bridge
-/// package (no `[[bin]]` targets), and error out. Instead we generate a
-/// bridge-local `build.rs` that invokes `expose_member_bins` directly
-/// against the real member package — same helper the aggregator uses —
-/// so `cargo:rustc-env=CARGO_BIN_EXE_<bin>=<abs>` reaches the bridge's
-/// compile unit, which is where `rudzio::bin!(...)` ultimately expands.
-///
-/// For members with no bins the bridge's `build.rs` is unnecessary
-/// (nothing to expose); the member's original `build.rs` (if any) is
-/// forwarded via `[package] build` in `build_bridge_cargo_toml` so
-/// side-effects like codegen still fire.
+/// For bin-bearing members the build.rs additionally invokes
+/// `expose_member_bins` so `cargo:rustc-env=CARGO_BIN_EXE_<bin>=<abs>`
+/// reaches the bridge's compile unit, where `rudzio::bin!(...)`
+/// ultimately expands. The member's own `build.rs` is never forwarded:
+/// its emissions would scope to the member's standalone compile unit,
+/// but the cfg needs to land on the bridge.
 #[must_use]
-pub fn build_bridge_build_rs(member: &MemberPlan) -> Option<String> {
-    if member.bin_names.is_empty() {
-        return None;
-    }
+pub fn build_bridge_build_rs(member: &MemberPlan) -> String {
     let mut out = String::new();
+    if member.bin_names.is_empty() {
+        out.push_str("fn main() {\n");
+        out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
+        out.push_str("}\n");
+        return out;
+    }
     out.push_str(BUILD_RS_HELPERS);
     out.push_str("\nfn main() -> Result<(), String> {\n");
+    out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
     out.push_str(&format!(
         "    expose_member_bins({:?}, {:?}, &[",
         member.package_name,
@@ -1202,7 +1152,7 @@ pub fn build_bridge_build_rs(member: &MemberPlan) -> Option<String> {
         out.push_str(&format!("{bin:?}"));
     }
     out.push_str("])?;\n    Ok(())\n}\n");
-    Some(out)
+    out
 }
 
 pub fn bridge_package_name(member: &MemberPlan) -> String {
@@ -1228,16 +1178,13 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
     pkg.insert("version", value("0.0.0"));
     pkg.insert("edition", value(member.edition.as_str()));
     pkg.insert("publish", value(false));
-    if !member.bin_names.is_empty() {
-        // Bridge synthesises its own build.rs (see `build_bridge_build_rs`)
-        // that exposes the member's bins via `expose_member_bins`. This
-        // replaces (does not forward) the member's own build.rs — calling
-        // expose_self_bins through the bridge would query the bridge's
-        // own package metadata, which has no [[bin]] targets.
-        pkg.insert("build", value("build.rs"));
-    } else if let Some(build_rs) = &member.build_rs {
-        pkg.insert("build", value(build_rs.to_string_lossy().into_owned()));
-    }
+    // Every bridge gets its own synthesised build.rs that emits
+    // `cargo:rustc-cfg=rudzio_test` (and, for bin members, exposes the
+    // member's bins via `expose_member_bins`). The member's own
+    // build.rs is never forwarded — its emissions would scope to the
+    // member's standalone compile unit, but the cfg needs to land on
+    // the bridge's compile unit instead.
+    pkg.insert("build", value("build.rs"));
     doc.insert("package", Item::Table(pkg));
 
     // No `[workspace]` stanza here: the bridge deliberately attaches to
@@ -1254,49 +1201,12 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
     let deps_tbl = build_bridge_dependencies(plan, member)?;
     doc.insert("dependencies", Item::Table(deps_tbl));
 
-    // [build-dependencies] only apply when the bridge forwards the
-    // member's own build.rs — the synthesised build.rs emitted for bin
-    // members uses `std` only and needs no external deps.
-    if member.bin_names.is_empty()
-        && member.build_rs.is_some()
-        && !member.build_deps.is_empty()
-    {
-        let build_deps_tbl = build_bridge_build_dependencies(plan, member)?;
-        doc.insert("build-dependencies", Item::Table(build_deps_tbl));
-    }
+    // No [build-dependencies]: the synth build.rs uses only std
+    // (PathBuf, Command, std::env). External crates the member's
+    // own build.rs may have needed are not relevant here because
+    // we don't forward that build.rs.
 
     Ok(doc.to_string())
-}
-
-/// Mirror the member's `[build-dependencies]` into the bridge. The
-/// bridge forwards `build = "<abs>/build.rs"`; cargo compiles that
-/// script as the bridge's build target and needs matching build-deps to
-/// resolve its imports.
-fn build_bridge_build_dependencies(plan: &Plan, member: &MemberPlan) -> Result<Table> {
-    let mut deps = Table::new();
-
-    let mut merged: BTreeMap<String, DevDepSpec> = BTreeMap::new();
-    for dd in &member.build_deps {
-        let entry_name = dd.rename.as_deref().unwrap_or(&dd.name).to_owned();
-        merged
-            .entry(entry_name)
-            .and_modify(|existing| {
-                for f in &dd.features {
-                    if !existing.features.contains(f) {
-                        existing.features.push(f.clone());
-                    }
-                }
-                existing.uses_default_features &= dd.uses_default_features;
-            })
-            .or_insert_with(|| dd.clone());
-    }
-
-    for (entry_name, dd) in &merged {
-        let item = render_dev_dep(dd, plan)?;
-        deps.insert(entry_name, item);
-    }
-
-    Ok(deps)
 }
 
 /// Merge the member's `[dependencies]` + `[dev-dependencies]` + both
@@ -1715,22 +1625,30 @@ fn build_build_rs(plan: &Plan) -> String {
         .iter()
         .filter(|m| !m.bin_names.is_empty())
         .collect();
-    if bin_members.is_empty() {
-        return "fn main() {}\n".to_owned();
-    }
-    // Standalone-aggregator build script. The aggregator has an empty
-    // `[workspace]` stanza (to insulate feature unification from the
-    // enclosing rudzio workspace), so `rudzio::build::expose_bins` can't
-    // find bin-only workspace members via `cargo metadata` run from the
-    // aggregator's manifest dir. Instead, shell out to
-    // `cargo build --bins --manifest-path <bin member's Cargo.toml>` into
-    // a sandboxed target dir under `OUT_DIR`, then emit
-    // `cargo:rustc-env=CARGO_BIN_EXE_<bin>=<abs path>` for each bin so
-    // `env!(CARGO_BIN_EXE_<name>)` in the `#[path]`-included integration
-    // sources resolves at compile time.
+    // The aggregator always emits `cargo:rustc-cfg=rudzio_test`: this is
+    // where the cfg enters the aggregator's own compile unit. Cargo
+    // scopes `cargo:rustc-cfg=` per-crate, so the emission here does NOT
+    // leak into nested `cargo build --bins` invocations that
+    // `expose_member_bins` may trigger below — each of those gets its
+    // own untouched rustc.
+    //
+    // For bin members, shell out to `cargo build --bins --manifest-path
+    // <Cargo.toml>` into a sandboxed OUT_DIR target, then emit
+    // `cargo:rustc-env=CARGO_BIN_EXE_<bin>=<abs>` for each so that
+    // `env!(CARGO_BIN_EXE_<name>)` in `#[path]`-included integration
+    // sources resolves at compile time. (The aggregator has its own
+    // `[workspace]` stanza, so `rudzio::build::expose_bins`'s
+    // metadata-based approach isn't applicable here.)
     let mut out = String::new();
+    if bin_members.is_empty() {
+        out.push_str("fn main() {\n");
+        out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
+        out.push_str("}\n");
+        return out;
+    }
     out.push_str(BUILD_RS_HELPERS);
     out.push_str("\nfn main() -> Result<(), String> {\n");
+    out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
     for member in bin_members {
         out.push_str(&format!(
             "    expose_member_bins({:?}, {:?}, &[",
@@ -1756,28 +1674,6 @@ fn env_var(name: &str) -> Result<String, String> {
     std::env::var(name).map_err(|_| format!("env var `{name}` not set by cargo"))
 }
 
-// Inverse of cargo-rudzio's resolve_rustflags: remove every
-// `--cfg rudzio_test` pair. cargo rudzio test sets this flag on the
-// ambient RUSTFLAGS so the aggregator + member libs compile with
-// `cfg(rudzio_test)` active. But the nested `cargo build --bins` spawned
-// below must NOT inherit it: bin crates don't have rudzio tests, and
-// `#[cfg(any(test, rudzio_test))]`-gated modules in their libs would
-// pull in dev-deps the bin targets don't declare, blowing up the build.
-fn strip_rudzio_test_cfg(rustflags: &str) -> String {
-    let tokens: Vec<&str> = rustflags.split_whitespace().collect();
-    let mut out: Vec<&str> = Vec::with_capacity(tokens.len());
-    let mut i = 0;
-    while i < tokens.len() {
-        if tokens[i] == "--cfg" && tokens.get(i + 1).copied() == Some("rudzio_test") {
-            i += 2;
-            continue;
-        }
-        out.push(tokens[i]);
-        i += 1;
-    }
-    out.join(" ")
-}
-
 fn expose_member_bins(pkg: &str, manifest_dir: &str, bins: &[&str]) -> Result<(), String> {
     let out_dir = PathBuf::from(env_var("OUT_DIR")?);
     let profile = env_var("PROFILE")?;
@@ -1791,12 +1687,6 @@ fn expose_member_bins(pkg: &str, manifest_dir: &str, bins: &[&str]) -> Result<()
         .arg("--manifest-path")
         .arg(&manifest)
         .env("CARGO_TARGET_DIR", &target_dir);
-    let stripped = strip_rudzio_test_cfg(&std::env::var("RUSTFLAGS").unwrap_or_default());
-    if stripped.is_empty() {
-        cmd.env_remove("RUSTFLAGS");
-    } else {
-        cmd.env("RUSTFLAGS", stripped);
-    }
     if profile == "release" {
         cmd.arg("--release");
     }

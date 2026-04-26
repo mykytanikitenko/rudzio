@@ -303,8 +303,12 @@ Consequences, all derived from "one process":
 - Test output belongs to one terminal region with live per-runtime
   drawers, rather than N interleaved libtest streams.
 - `src/**` unit tests behind `#[cfg(any(test, rudzio_test))]` gates fire
-  under this regime too (`cargo-rudzio` sets `--cfg rudzio_test` in
-  `RUSTFLAGS`). Under regime 2, the `cfg(test)` arm fires instead.
+  under this regime too. The aggregator's generated `build.rs` emits
+  `cargo:rustc-cfg=rudzio_test` for the aggregator compile unit, and
+  each bridge's generated `build.rs` does the same for the bridge unit
+  — so the cfg scopes exactly to the crates that need it, without
+  leaking into nested cargo invocations. Under regime 2, the
+  `cfg(test)` arm fires instead.
 
 To make dev-deps visible when the aggregator compiles a member as a
 plain lib, `cargo-rudzio` generates per-member "bridge" crates at
@@ -890,9 +894,15 @@ rudzio's lifecycle, move them into `#[rudzio::test]` fns.
 ## `#[cfg(any(test, rudzio_test))]`
 
 `cargo test` activates `cfg(test)`. `cargo rudzio test` activates
-`--cfg rudzio_test` (via `RUSTFLAGS`) but does NOT activate `cfg(test)` —
-the aggregator is not the per-crate test target, so from cargo's
-perspective the member is built as a regular lib.
+`rudzio_test` per compile unit — the aggregator's generated `build.rs`
+emits `cargo:rustc-cfg=rudzio_test`, and each bridge's generated
+`build.rs` does the same. This does NOT activate `cfg(test)` — the
+aggregator is not the per-crate test target, so from cargo's
+perspective the member is built as a regular lib. Per-compile-unit
+emission (rather than ambient RUSTFLAGS) means the cfg scopes exactly
+to the aggregator and bridges; nested cargo invocations (e.g. the
+`cargo build --bins` spawned for bin-member exposure) inherit none of
+it.
 
 `rudzio-migrate` rewrites `#[cfg(test)] mod tests` →
 `#[cfg(any(test, rudzio_test))] mod tests` on modules carrying rudzio

@@ -20,8 +20,6 @@ fn member(name: &str, dev_deps: Vec<DevDepSpec>) -> MemberPlan {
         dev_deps,
         edition: "2024".to_owned(),
         src_lib_path: Some(PathBuf::from("/nonexistent/src/lib.rs")),
-        build_rs: None,
-        build_deps: Vec::new(),
         has_src_rudzio_suite: false,
     }
 }
@@ -525,82 +523,26 @@ mod tests {
     }
 
     #[rudzio::test]
-    fn bridge_cargo_toml_forwards_build_rs_when_member_has_no_bins() -> anyhow::Result<()> {
-        // Preserve member's build.rs side effects (codegen, env-vars) when
-        // there are no bins to expose: the bridge forwards the absolute
-        // path and relies on the sentinel env var to short-circuit any
-        // expose_bins calls inside.
-        let mut m = member("alpha", Vec::new());
-        m.manifest_dir = PathBuf::from("/abs/alpha");
-        m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
-        m.has_src_rudzio_suite = true;
-        m.bin_names = Vec::new();
-        m.build_rs = Some(PathBuf::from("/abs/alpha/build.rs"));
+    fn bridge_cargo_toml_always_references_local_build_rs() -> anyhow::Result<()> {
+        // Every bridge synthesises its own build.rs (emits
+        // `cargo:rustc-cfg=rudzio_test` for the bridge compile unit, plus
+        // `expose_member_bins` for bin members). Cargo.toml therefore
+        // always references a local `build.rs`, never a forwarded path.
+        for bins in [Vec::new(), vec!["alpha-server".to_owned()]] {
+            let mut m = member("alpha", Vec::new());
+            m.manifest_dir = PathBuf::from("/abs/alpha");
+            m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
+            m.has_src_rudzio_suite = true;
+            m.bin_names = bins.clone();
 
-        let plan = plan_with_members(vec![m.clone()], "/abs");
-        let rendered = build_bridge_cargo_toml(&plan, &m)?;
+            let plan = plan_with_members(vec![m.clone()], "/abs");
+            let rendered = build_bridge_cargo_toml(&plan, &m)?;
 
-        anyhow::ensure!(
-            rendered.contains("build = \"/abs/alpha/build.rs\""),
-            "build.rs path must be forwarded when member has no bins:\n{rendered}"
-        );
-        Ok(())
-    }
-
-    #[rudzio::test]
-    fn bridge_cargo_toml_synthesizes_build_rs_when_member_has_bins() -> anyhow::Result<()> {
-        // When a member declares bins, the bridge CANNOT forward the
-        // member's build.rs because any `rudzio::build::expose_self_bins()`
-        // call inside it queries CARGO_PKG_NAME (= bridge's name) which
-        // has no `[[bin]]` targets. Instead the bridge synthesises its
-        // own build.rs that calls expose_member_bins against the real
-        // member package, and references it as a LOCAL `build.rs` file.
-        let mut m = member("alpha", Vec::new());
-        m.manifest_dir = PathBuf::from("/abs/alpha");
-        m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
-        m.has_src_rudzio_suite = true;
-        m.bin_names = vec!["alpha-server".to_owned()];
-        m.build_rs = None;
-
-        let plan = plan_with_members(vec![m.clone()], "/abs");
-        let rendered = build_bridge_cargo_toml(&plan, &m)?;
-
-        anyhow::ensure!(
-            rendered.contains("build = \"build.rs\""),
-            "bridge must reference a local build.rs when member has bins:\n{rendered}"
-        );
-        anyhow::ensure!(
-            !rendered.contains("build = \"/abs/alpha/build.rs\""),
-            "bridge must NOT forward the member's build.rs absolute path when it synthesises its own:\n{rendered}"
-        );
-        Ok(())
-    }
-
-    #[rudzio::test]
-    fn bridge_cargo_toml_synthesized_build_rs_replaces_forward_when_member_has_both() -> anyhow::Result<()> {
-        // Priority: if member has bins, the synthesised build.rs wins —
-        // the member's own build.rs (if any) is NOT forwarded. This is
-        // the file-v3 shape: expose_self_bins in the member's build.rs
-        // does not work under the bridge (no [[bin]] on bridge package),
-        // so we replace with the generated expose_member_bins call.
-        let mut m = member("alpha", Vec::new());
-        m.manifest_dir = PathBuf::from("/abs/alpha");
-        m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
-        m.has_src_rudzio_suite = true;
-        m.bin_names = vec!["alpha-server".to_owned()];
-        m.build_rs = Some(PathBuf::from("/abs/alpha/build.rs"));
-
-        let plan = plan_with_members(vec![m.clone()], "/abs");
-        let rendered = build_bridge_cargo_toml(&plan, &m)?;
-
-        anyhow::ensure!(
-            rendered.contains("build = \"build.rs\""),
-            "bridge must synthesise a local build.rs when member has bins, not forward:\n{rendered}"
-        );
-        anyhow::ensure!(
-            !rendered.contains("/abs/alpha/build.rs"),
-            "bridge must NOT reference the member's absolute build.rs path:\n{rendered}"
-        );
+            anyhow::ensure!(
+                rendered.contains("build = \"build.rs\""),
+                "bridge must always reference local build.rs (bins={bins:?}):\n{rendered}"
+            );
+        }
         Ok(())
     }
 
@@ -610,8 +552,7 @@ mod tests {
         m.manifest_dir = PathBuf::from("/abs/alpha");
         m.bin_names = vec!["alpha-server".to_owned(), "alpha-cli".to_owned()];
 
-        let content = build_bridge_build_rs(&m)
-            .expect("bridge must synthesise build.rs content for bin members");
+        let content = build_bridge_build_rs(&m);
 
         anyhow::ensure!(
             content.contains("fn main()"),
@@ -633,42 +574,36 @@ mod tests {
     }
 
     #[rudzio::test]
-    fn bridge_synthesized_build_rs_strips_rudzio_test_cfg_from_nested_cargo()
+    fn bridge_synthesized_build_rs_emits_rudzio_test_cfg_for_binless_member()
     -> anyhow::Result<()> {
-        // Regression: ambient `RUSTFLAGS=--cfg rudzio_test` set by
-        // cargo-rudzio propagates into the nested `cargo build --bins`
-        // spawned by expose_member_bins. Without stripping, the member's
-        // bin crate compiles with `--cfg rudzio_test`, activating
-        // `#[cfg(any(test, rudzio_test))]` gated modules that reference
-        // dev-deps not in the bin's [dependencies] — producing hundreds
-        // of spurious compile errors (user saw 2735 on file-v3).
         let mut m = member("alpha", Vec::new());
         m.manifest_dir = PathBuf::from("/abs/alpha");
-        m.bin_names = vec!["alpha-server".to_owned()];
+        m.bin_names = Vec::new();
 
-        let content = build_bridge_build_rs(&m)
-            .expect("bridge must synthesise build.rs content for bin members");
-
+        let content = build_bridge_build_rs(&m);
         anyhow::ensure!(
-            content.contains("strip_rudzio_test_cfg"),
-            "synth build.rs must define/use a helper that strips --cfg rudzio_test:\n{content}"
-        );
-        anyhow::ensure!(
-            content.contains("RUSTFLAGS"),
-            "synth build.rs must explicitly set RUSTFLAGS on the nested cargo command:\n{content}"
+            content.contains("cargo:rustc-cfg=rudzio_test"),
+            "bin-less bridge build.rs must emit the cfg:\n{content}"
         );
         Ok(())
     }
 
     #[rudzio::test]
-    fn bridge_synthesized_build_rs_none_when_no_bins() -> anyhow::Result<()> {
+    fn bridge_synthesized_build_rs_emits_rudzio_test_cfg_for_bin_member()
+    -> anyhow::Result<()> {
         let mut m = member("alpha", Vec::new());
         m.manifest_dir = PathBuf::from("/abs/alpha");
-        m.bin_names = Vec::new();
+        m.bin_names = vec!["alpha-server".to_owned()];
+
+        let content = build_bridge_build_rs(&m);
 
         anyhow::ensure!(
-            build_bridge_build_rs(&m).is_none(),
-            "no synthesised build.rs when member has no bins"
+            content.contains("cargo:rustc-cfg=rudzio_test"),
+            "bridge build.rs must emit the rudzio_test cfg:\n{content}"
+        );
+        anyhow::ensure!(
+            content.contains("expose_member_bins"),
+            "bin-member bridge build.rs must still expose the bins:\n{content}"
         );
         Ok(())
     }
@@ -703,174 +638,89 @@ mod tests {
     }
 
     #[rudzio::test]
-    fn bridge_cargo_toml_omits_build_when_absent() -> anyhow::Result<()> {
-        let mut m = member("alpha", Vec::new());
+    fn aggregator_build_rs_emits_rudzio_test_cfg_with_no_bin_members() -> anyhow::Result<()> {
+        // Architectural fix: cargo-rudzio no longer transports the
+        // `--cfg rudzio_test` flag via ambient RUSTFLAGS. Instead, the
+        // aggregator's own build.rs emits `cargo:rustc-cfg=rudzio_test`
+        // so the cfg is scoped to the aggregator compile unit only.
+        // Even with zero bin members the build.rs must still emit it —
+        // the aggregator's lib + tests are exactly what the cfg gates.
+        let mut m = member("alpha", vec![rudzio_dep()]);
         m.manifest_dir = PathBuf::from("/abs/alpha");
         m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
         m.has_src_rudzio_suite = true;
-        m.build_rs = None;
+        m.bin_names = Vec::new();
 
-        let plan = plan_with_members(vec![m.clone()], "/abs");
-        let rendered = build_bridge_cargo_toml(&plan, &m)?;
+        let plan = plan_with_members(vec![m], "/abs");
+        let out = tempdir()?;
+        write_runner(&plan, out.path())?;
 
+        let aggregator_build_rs = out.path().join("build.rs");
         anyhow::ensure!(
-            !rendered.contains("build = "),
-            "build must be absent when member has no build.rs:\n{rendered}"
+            aggregator_build_rs.exists(),
+            "aggregator must always have a build.rs (for cfg emit) at {}",
+            aggregator_build_rs.display()
+        );
+        let content = fs::read_to_string(&aggregator_build_rs)?;
+        anyhow::ensure!(
+            content.contains("cargo:rustc-cfg=rudzio_test"),
+            "aggregator build.rs must emit the rudzio_test cfg:\n{content}"
         );
         Ok(())
     }
 
     #[rudzio::test]
-    fn bridge_cargo_toml_emits_build_dependencies_when_member_has_them() -> anyhow::Result<()> {
-        // Regression: the bridge forwards `build = "<abs>/build.rs"`, so
-        // the bridge's compilation of that build script needs matching
-        // `[build-dependencies]`. Without this, a member's build.rs that
-        // imports e.g. `rudzio::build::expose_self_bins()` fails to resolve
-        // under `cargo rudzio test` even though the member itself builds
-        // fine under regime 2.
-        let rudzio_build_dep = DevDepSpec {
-            name: "rudzio".to_owned(),
-            rename: None,
-            version_req: "0.1".to_owned(),
-            path: None,
-            git: None,
-            git_ref: None,
-            features: Vec::new(),
-            uses_default_features: true,
-            workspace_inherited: false,
-        };
-        let mut m = member("alpha", Vec::new());
+    fn aggregator_build_rs_emits_rudzio_test_cfg_with_bin_members() -> anyhow::Result<()> {
+        // Same invariant when bin members are present — the cfg emit
+        // sits alongside the existing `expose_member_bins` calls.
+        let mut m = member("alpha", vec![rudzio_dep()]);
         m.manifest_dir = PathBuf::from("/abs/alpha");
         m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
         m.has_src_rudzio_suite = true;
-        m.build_rs = Some(PathBuf::from("/abs/alpha/build.rs"));
-        m.build_deps = vec![rudzio_build_dep];
+        m.bin_names = vec!["alpha-server".to_owned()];
 
-        let plan = plan_with_members(vec![m.clone()], "/abs");
-        let rendered = build_bridge_cargo_toml(&plan, &m)?;
+        let plan = plan_with_members(vec![m], "/abs");
+        let out = tempdir()?;
+        write_runner(&plan, out.path())?;
 
+        let content = fs::read_to_string(out.path().join("build.rs"))?;
         anyhow::ensure!(
-            rendered.contains("[build-dependencies]"),
-            "bridge must emit [build-dependencies] when member has build-deps:\n{rendered}"
+            content.contains("cargo:rustc-cfg=rudzio_test"),
+            "aggregator build.rs must emit the rudzio_test cfg:\n{content}"
         );
-        // The rudzio entry must appear AFTER the [build-dependencies]
-        // header — a naive substring check would also match the main
-        // [dependencies] table, so split on the header and inspect the
-        // tail.
-        let (_, after) = rendered
-            .split_once("[build-dependencies]")
-            .expect("[build-dependencies] header present");
         anyhow::ensure!(
-            after.contains("rudzio"),
-            "rudzio must be inside the [build-dependencies] table:\n{rendered}"
+            content.contains("expose_member_bins"),
+            "aggregator build.rs must still expose member bins:\n{content}"
         );
         Ok(())
     }
 
     #[rudzio::test]
-    fn bridge_cargo_toml_omits_build_dependencies_when_member_has_none() -> anyhow::Result<()> {
-        // Negative: a member with build.rs but no [build-dependencies] must
-        // NOT get a synthesised `[build-dependencies]` section.
+    fn write_bridge_crate_writes_build_rs_for_binless_member() -> anyhow::Result<()> {
+        // Every bridge — bin-less ones included — must get a build.rs
+        // written so the cfg emission lands in the right compile unit.
+        let tmp = tempdir()?;
         let mut m = member("alpha", Vec::new());
         m.manifest_dir = PathBuf::from("/abs/alpha");
         m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
         m.has_src_rudzio_suite = true;
-        m.build_rs = Some(PathBuf::from("/abs/alpha/build.rs"));
-        m.build_deps = Vec::new();
+        m.bin_names = Vec::new();
 
         let plan = plan_with_members(vec![m.clone()], "/abs");
-        let rendered = build_bridge_cargo_toml(&plan, &m)?;
+        let out_dir = tmp.path().join("members");
+        fs::create_dir_all(&out_dir)?;
+        write_bridge_crate(&plan, &m, &out_dir)?;
 
+        let bridge_build = out_dir.join(bridge_dir_name(&m)).join("build.rs");
         anyhow::ensure!(
-            !rendered.contains("[build-dependencies]"),
-            "no [build-dependencies] when member has none:\n{rendered}"
+            bridge_build.exists(),
+            "bin-less bridge must still get a build.rs at {}",
+            bridge_build.display()
         );
-        Ok(())
-    }
-
-    #[rudzio::test]
-    fn bridge_cargo_toml_expands_workspace_inherited_git_build_dep() -> anyhow::Result<()> {
-        // Regression: a member declaring `rudzio = { workspace = true }`
-        // in [build-dependencies] when the workspace entry is pinned with
-        // only `git = "..." rev = "..."` (no path or version) previously
-        // bailed in render_dev_dep's workspace_inherited branch. The
-        // branch must also accept git-only workspace entries and emit
-        // `git = "..." rev/branch/tag = "..."` into the bridge.
-        let inherited_rudzio = DevDepSpec {
-            name: "rudzio".to_owned(),
-            rename: None,
-            version_req: String::new(),
-            path: None,
-            git: None,
-            git_ref: None,
-            features: Vec::new(),
-            uses_default_features: true,
-            workspace_inherited: true,
-        };
-        let mut m = member("alpha", Vec::new());
-        m.manifest_dir = PathBuf::from("/abs/alpha");
-        m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
-        m.has_src_rudzio_suite = true;
-        m.build_rs = Some(PathBuf::from("/abs/alpha/build.rs"));
-        m.build_deps = vec![inherited_rudzio];
-
-        let mut plan = plan_with_members(vec![m.clone()], "/abs");
-        drop(plan.workspace_deps.insert(
-            "rudzio".to_owned(),
-            WorkspaceDepSpec {
-                version_req: None,
-                path: None,
-                git: Some("https://github.com/mykytanikitenko/rudzio".to_owned()),
-                git_ref: Some(GitRef::Rev("9422cd4590765a9cfc97774d638429efc8239d48".to_owned())),
-                features: Vec::new(),
-                uses_default_features: true,
-            },
-        ));
-        let rendered = build_bridge_cargo_toml(&plan, &m)?;
-
-        let (_, after) = rendered
-            .split_once("[build-dependencies]")
-            .expect("[build-dependencies] present");
+        let content = fs::read_to_string(&bridge_build)?;
         anyhow::ensure!(
-            after.contains("git = \"https://github.com/mykytanikitenko/rudzio\""),
-            "build-dep must carry the workspace git URL:\n{rendered}"
-        );
-        anyhow::ensure!(
-            after.contains("rev = \"9422cd4590765a9cfc97774d638429efc8239d48\""),
-            "build-dep must carry the workspace rev:\n{rendered}"
-        );
-        Ok(())
-    }
-
-    #[rudzio::test]
-    fn bridge_cargo_toml_omits_build_dependencies_when_no_build_rs() -> anyhow::Result<()> {
-        // Negative: even if build_deps accidentally contains entries (e.g.
-        // a stale plan), without build_rs there's nothing to compile; skip
-        // the section.
-        let stray = DevDepSpec {
-            name: "stray".to_owned(),
-            rename: None,
-            version_req: "1".to_owned(),
-            path: None,
-            git: None,
-            git_ref: None,
-            features: Vec::new(),
-            uses_default_features: true,
-            workspace_inherited: false,
-        };
-        let mut m = member("alpha", Vec::new());
-        m.manifest_dir = PathBuf::from("/abs/alpha");
-        m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
-        m.has_src_rudzio_suite = true;
-        m.build_rs = None;
-        m.build_deps = vec![stray];
-
-        let plan = plan_with_members(vec![m.clone()], "/abs");
-        let rendered = build_bridge_cargo_toml(&plan, &m)?;
-
-        anyhow::ensure!(
-            !rendered.contains("[build-dependencies]"),
-            "no [build-dependencies] when member has no build.rs:\n{rendered}"
+            content.contains("cargo:rustc-cfg=rudzio_test"),
+            "bin-less bridge build.rs must emit the cfg:\n{content}"
         );
         Ok(())
     }
