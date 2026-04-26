@@ -94,9 +94,9 @@ impl SavedFds {
     /// `close` pair. The loser sees `-1` and returns immediately.
     #[inline]
     pub fn restore(&self) {
-        let stdout = self.stdout.swap(-1, Ordering::AcqRel);
-        let stderr = self.stderr.swap(-1, Ordering::AcqRel);
-        if stdout != -1 {
+        let stdout = self.stdout.swap(-1_i32, Ordering::AcqRel);
+        let stderr = self.stderr.swap(-1_i32, Ordering::AcqRel);
+        if stdout != -1_i32 {
             // SAFETY: stdout was obtained from libc::dup at construction time
             // and won the AcqRel swap above, so we hold the only live
             // reference to it. dup2 with STDOUT_FILENO is a defined syscall.
@@ -106,7 +106,7 @@ impl SavedFds {
             // valid FD is defined.
             let _stdout_close_ret: libc::c_int = unsafe { libc::close(stdout) };
         }
-        if stderr != -1 {
+        if stderr != -1_i32 {
             // SAFETY: stderr was obtained from libc::dup at construction time
             // and won the AcqRel swap above, so we hold the only live
             // reference to it. dup2 with STDERR_FILENO is a defined syscall.
@@ -224,7 +224,7 @@ fn dup2(src: RawFd, dst: RawFd) -> io::Result<()> {
     // SAFETY: libc::dup2 with valid src+dst FDs is defined; the kernel
     // atomically closes dst (if open) and duplicates src into it.
     let ret = unsafe { libc::dup2(src, dst) };
-    if ret == -1 {
+    if ret == -1_i32 {
         Err(io::Error::last_os_error())
     } else {
         Ok(())
@@ -248,7 +248,7 @@ fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     // SAFETY: libc::pipe writes two FDs into the provided 2-element
     // array, or returns -1 on error.
     let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
-    if ret == -1 {
+    if ret == -1_i32 {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: both FDs were just produced by libc::pipe and have no
@@ -267,7 +267,7 @@ fn set_pipe_size(fd: RawFd, size: libc::c_int) -> io::Result<()> {
     // SAFETY: F_SETPIPE_SZ is a Linux fcntl command accepting an int.
     // Returns -1 on error which we convert to io::Error.
     let ret = unsafe { libc::fcntl(fd, libc::F_SETPIPE_SZ, size) };
-    if ret == -1 {
+    if ret == -1_i32 {
         Err(io::Error::last_os_error())
     } else {
         Ok(())

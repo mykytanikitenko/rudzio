@@ -1313,7 +1313,7 @@ fn terminal_width() -> usize {
     // above; the pointer is properly aligned and exclusively owned.
     // Result is read only on success.
     let ioctl_ret = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &raw mut ws) };
-    if ioctl_ret == 0 && ws.ws_col > 0 {
+    if ioctl_ret == 0_i32 && ws.ws_col > 0 {
         return usize::from(ws.ws_col);
     }
     100

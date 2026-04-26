@@ -1101,7 +1101,7 @@ fn terminal_size_unix() -> (Option<usize>, Option<usize>) {
         // allocated above; the pointer is properly aligned and
         // exclusively owned. Result is read only on success.
         let ioctl_ret = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &raw mut ws) };
-        if ioctl_ret == 0 && ws.ws_col > 0 {
+        if ioctl_ret == 0_i32 && ws.ws_col > 0 {
             let cols = Some(usize::from(ws.ws_col));
             let rows = (ws.ws_row > 0).then(|| usize::from(ws.ws_row));
             return (cols, rows);
@@ -1278,20 +1278,14 @@ pub fn bench_progress_trailing(
     let bar = bar_render(snap.done, snap.total, 10);
     let cov_finite = snap.cov.is_finite();
     if cols >= 100 && cov_finite {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "cov rendering; precision loss well within display rounding."
-        )]
-        {
-            let cov_pct = (f64::from(snap.cov) * 100.0_f64) as f32;
-            return format!(
-                "<{bar} {pct}% {}/{}  p50={p50:.0?}  p95={p95:.0?}  cov={cov_pct:.1}%>",
-                snap.done,
-                snap.total,
-                p50 = snap.p50,
-                p95 = snap.p95,
-            );
-        }
+        let cov_pct = snap.cov * 100.0_f32;
+        return format!(
+            "<{bar} {pct}% {}/{}  p50={p50:.0?}  p95={p95:.0?}  cov={cov_pct:.1}%>",
+            snap.done,
+            snap.total,
+            p50 = snap.p50,
+            p95 = snap.p95,
+        );
     }
     if cols >= 80 {
         return format!(
@@ -1458,9 +1452,10 @@ pub fn bench_histogram_lines(
         if count == 0 {
             bars.push(' ');
         } else {
-            let level = (count.saturating_mul(8) / max_count.max(1))
+            let level_u32 = (count.saturating_mul(8) / max_count.max(1))
                 .min(8)
-                .saturating_sub(1) as usize;
+                .saturating_sub(1);
+            let level = usize::try_from(level_u32).unwrap_or(0_usize);
             bars.push(levels[level.min(7)]);
         }
     }

@@ -638,7 +638,21 @@ pub const fn fnv1a64(text: &str) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     let mut i = 0;
     while i < bytes.len() {
-        hash ^= bytes[i] as u64;
+        // Widen byte→u64 bit-by-bit in const context. `From` isn't yet
+        // const-stable for `u8 → u64`, and `from_*_bytes` trips the
+        // restriction lints — so we test each bit and OR it into a
+        // u64 accumulator with u64-typed literals.
+        let byte = bytes[i];
+        let mut widened: u64 = 0;
+        if byte & 0b0000_0001 != 0 { widened |= 0x01; }
+        if byte & 0b0000_0010 != 0 { widened |= 0x02; }
+        if byte & 0b0000_0100 != 0 { widened |= 0x04; }
+        if byte & 0b0000_1000 != 0 { widened |= 0x08; }
+        if byte & 0b0001_0000 != 0 { widened |= 0x10; }
+        if byte & 0b0010_0000 != 0 { widened |= 0x20; }
+        if byte & 0b0100_0000 != 0 { widened |= 0x40; }
+        if byte & 0b1000_0000 != 0 { widened |= 0x80; }
+        hash ^= widened;
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         i += 1;
     }

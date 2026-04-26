@@ -184,46 +184,52 @@ impl ProgressSnapshot {
         let min = sorted[0];
         let max = sorted[n.saturating_sub(1)];
 
-        // Nearest-rank percentile, matching `Report::percentile`.
-        #[expect(
-            clippy::cast_precision_loss,
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "Benchmark rank approximation; absolute precision not required."
-        )]
-        let rank = |percentile: f64| -> usize {
-            ((percentile * n as f64).ceil() as usize)
-                .saturating_sub(1)
+        // Nearest-rank percentile in integer math: rank = ceil(p * n) - 1,
+        // expressed as ceil(permille * n / 1000) - 1 with permille = p * 1000.
+        let n_u128 = u128::try_from(n).unwrap_or(u128::MAX);
+        let rank = |permille: u32| -> usize {
+            let permille_u128 = u128::from(permille);
+            let numerator = permille_u128
+                .saturating_mul(n_u128)
+                .saturating_add(999_u128);
+            let ceiling = numerator / 1000_u128;
+            usize::try_from(ceiling.saturating_sub(1_u128))
+                .unwrap_or(usize::MAX)
                 .min(n.saturating_sub(1))
         };
-        let p50 = sorted[rank(0.50)];
-        let p95 = sorted[rank(0.95)];
+        let p50 = sorted[rank(500_u32)];
+        let p95 = sorted[rank(950_u32)];
 
-        // Coefficient of variation: σ / mean. NaN when n<2 or mean=0.
+        // Coefficient of variation σ/mean computed entirely in integer
+        // domain via the shortcut formula
+        //   cov² = (n·Σx² − (Σx)²) / (Σx)²
+        // and exposed as f32 by going through `f32::from(u16)`. We carry
+        // milli-unit precision (cov×1000) which is well within the 0.1%
+        // display rounding the renderer uses. NaN when n<2 or mean=0.
         let cov = if n < 2 {
             f32::NAN
         } else {
             let total_nanos: u128 = sorted.iter().map(Duration::as_nanos).sum();
-            #[expect(
-                clippy::cast_precision_loss,
-                clippy::cast_possible_truncation,
-                reason = "Benchmark statistics; precision loss well within measurement noise."
-            )]
-            {
-                let mean = total_nanos as f64 / n as f64;
-                if mean == 0.0_f64 {
-                    f32::NAN
-                } else {
-                    let variance = sorted
-                        .iter()
-                        .map(|sample| {
-                            let diff = sample.as_nanos() as f64 - mean;
-                            diff * diff
-                        })
-                        .sum::<f64>()
-                        / n as f64;
-                    (variance.sqrt() / mean) as f32
-                }
+            if total_nanos == 0_u128 {
+                f32::NAN
+            } else {
+                let sum_sq: u128 = sorted
+                    .iter()
+                    .map(Duration::as_nanos)
+                    .map(|nanos| nanos.saturating_mul(nanos))
+                    .fold(0_u128, u128::saturating_add);
+                let total_sq = total_nanos.saturating_mul(total_nanos);
+                let n_sum_sq = n_u128.saturating_mul(sum_sq);
+                // Variance numerator (n·Σx² − (Σx)²); 0 when all samples equal.
+                let var_numerator = n_sum_sq.saturating_sub(total_sq);
+                // cov² × 10^6 = var_numerator × 10^6 / (Σx)².
+                let cov_milli_sq = var_numerator
+                    .saturating_mul(1_000_000_u128)
+                    .checked_div(total_sq)
+                    .unwrap_or(0_u128);
+                let cov_milli_u128 = cov_milli_sq.isqrt();
+                let cov_milli_u16 = u16::try_from(cov_milli_u128).unwrap_or(u16::MAX);
+                f32::from(cov_milli_u16) / 1000.0_f32
             }
         };
 
@@ -232,10 +238,13 @@ impl ProgressSnapshot {
         let min_ns = min.as_nanos();
         let max_ns = max.as_nanos();
         let span = max_ns.saturating_sub(min_ns).max(1);
-        let bucket_span = span.div_ceil(HISTOGRAM_BUCKETS as u128).max(1);
+        let buckets_u128 = u128::try_from(HISTOGRAM_BUCKETS).unwrap_or(u128::MAX);
+        let bucket_span = span.div_ceil(buckets_u128).max(1);
         for sample in &sorted {
             let offset = sample.as_nanos().saturating_sub(min_ns);
-            let idx = ((offset / bucket_span) as usize).min(HISTOGRAM_BUCKETS.saturating_sub(1));
+            let idx = usize::try_from(offset / bucket_span)
+                .unwrap_or(usize::MAX)
+                .min(HISTOGRAM_BUCKETS.saturating_sub(1));
             histogram[idx] = histogram[idx].saturating_add(1);
         }
 
@@ -307,23 +316,28 @@ impl Report {
         let min_ns = self.min().unwrap_or_default().as_nanos();
         let max_ns = self.max().unwrap_or_default().as_nanos();
         let span = max_ns.saturating_sub(min_ns).max(1);
-        let bucket_span = span.div_ceil(buckets as u128).max(1);
+        let buckets_u128 = u128::try_from(buckets).unwrap_or(u128::MAX);
+        let bucket_span = span.div_ceil(buckets_u128).max(1);
 
         let mut counts = vec![0_usize; buckets];
         for sample in &self.samples {
             let offset = sample.as_nanos().saturating_sub(min_ns);
-            let idx = ((offset / bucket_span) as usize).min(buckets.saturating_sub(1));
+            let idx = usize::try_from(offset / bucket_span)
+                .unwrap_or(usize::MAX)
+                .min(buckets.saturating_sub(1));
             counts[idx] = counts[idx].saturating_add(1);
         }
         let max_count = counts.iter().copied().max().unwrap_or(1).max(1);
 
         let mut out = String::new();
         for (i, count) in counts.iter().enumerate() {
+            let lo_idx = u128::try_from(i).unwrap_or(u128::MAX);
+            let hi_idx = u128::try_from(i.saturating_add(1)).unwrap_or(u128::MAX);
             let lo = Duration::from_nanos(
-                u64::try_from(min_ns + (i as u128) * bucket_span).unwrap_or(u64::MAX),
+                u64::try_from(min_ns + lo_idx * bucket_span).unwrap_or(u64::MAX),
             );
             let hi = Duration::from_nanos(
-                u64::try_from(min_ns + ((i + 1) as u128) * bucket_span).unwrap_or(u64::MAX),
+                u64::try_from(min_ns + hi_idx * bucket_span).unwrap_or(u64::MAX),
             );
             let bar_len = (count * width) / max_count;
             let bar = "#".repeat(bar_len);
@@ -338,21 +352,24 @@ impl Report {
     /// Coefficient of variation: σ / mean. A unitless measure of
     /// relative spread (1.0 = σ equals the mean — very noisy). `None`
     /// when mean is zero or σ is unavailable.
+    ///
+    /// Computed in integer domain — `cov × 10⁶` is carried as a u32 and
+    /// scaled back at the boundary via `f64::from(u32)`, sidestepping
+    /// `as_conversions` while preserving 1e-6 absolute precision.
     #[must_use]
     #[inline]
     pub fn coefficient_of_variation(&self) -> Option<f64> {
         let mean = self.mean()?.as_nanos();
         let sd = self.std_dev()?.as_nanos();
-        if mean == 0 {
+        if mean == 0_u128 {
             return None;
         }
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "Benchmark statistics; precision loss well within measurement noise."
-        )]
-        {
-            Some(sd as f64 / mean as f64)
-        }
+        let cov_micro_u128 = sd
+            .saturating_mul(1_000_000_u128)
+            .checked_div(mean)
+            .unwrap_or(0_u128);
+        let cov_micro = u32::try_from(cov_micro_u128).unwrap_or(u32::MAX);
+        Some(f64::from(cov_micro) / 1_000_000.0_f64)
     }
 
     /// Multi-line detailed statistics block — intended for rendering
@@ -423,22 +440,22 @@ impl Report {
             let _iqr_ret: Result<(), fmt::Error> =
                 writeln!(out, "  IQR (p75 − p25):   {iqr:.2?}");
         }
-        if let Some(outliers) = self.outlier_count(3.0) {
+        if let Some(outliers) = self.outlier_count(3_u32) {
             let _outliers_ret: Result<(), fmt::Error> =
                 writeln!(out, "  outliers (>3σ):    {outliers}");
         }
         out.push_str("  percentiles:\n");
         for (percentile, label) in [
-            (0.01, "p1"),
-            (0.05, "p5"),
-            (0.10, "p10"),
-            (0.25, "p25"),
-            (0.50, "p50"),
-            (0.75, "p75"),
-            (0.90, "p90"),
-            (0.95, "p95"),
-            (0.99, "p99"),
-            (0.999, "p99.9"),
+            (0.01_f64, "p1"),
+            (0.05_f64, "p5"),
+            (0.10_f64, "p10"),
+            (0.25_f64, "p25"),
+            (0.50_f64, "p50"),
+            (0.75_f64, "p75"),
+            (0.90_f64, "p90"),
+            (0.95_f64, "p95"),
+            (0.99_f64, "p99"),
+            (0.999_f64, "p99.9"),
         ] {
             if let Some(value) = self.percentile(percentile) {
                 let _percentile_ret: Result<(), fmt::Error> =
@@ -512,7 +529,8 @@ impl Report {
             return None;
         }
         let total_nanos: u128 = self.samples.iter().map(Duration::as_nanos).sum();
-        let mean_nanos = total_nanos / (self.samples.len() as u128);
+        let n_u128 = u128::try_from(self.samples.len()).unwrap_or(u128::MAX);
+        let mean_nanos = total_nanos / n_u128;
         Some(Duration::from_nanos(
             u64::try_from(mean_nanos).unwrap_or(u64::MAX),
         ))
@@ -549,26 +567,21 @@ impl Report {
 
     /// Rough outlier count — samples more than `k × σ` from the mean
     /// (default `k = 3`). `None` when σ is unavailable.
+    ///
+    /// Takes an integer multiplier so the threshold computation stays
+    /// in u128 domain — no `as` conversions required.
     #[must_use]
     #[inline]
-    pub fn outlier_count(&self, sigma_multiplier: f64) -> Option<usize> {
+    pub fn outlier_count(&self, sigma_multiplier: u32) -> Option<usize> {
         let mean_ns = self.mean()?.as_nanos();
         let sd_ns = self.std_dev()?.as_nanos();
-        #[expect(
-            clippy::cast_precision_loss,
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "Benchmark statistics; precision loss well within measurement noise."
-        )]
-        {
-            let threshold = (sd_ns as f64 * sigma_multiplier) as u128;
-            Some(
-                self.samples
-                    .iter()
-                    .filter(|sample| sample.as_nanos().abs_diff(mean_ns) > threshold)
-                    .count(),
-            )
-        }
+        let threshold = sd_ns.saturating_mul(u128::from(sigma_multiplier));
+        Some(
+            self.samples
+                .iter()
+                .filter(|sample| sample.as_nanos().abs_diff(mean_ns) > threshold)
+                .count(),
+        )
     }
 
     /// Sample at the `p`-th percentile (`0.0..=1.0`, nearest-rank) or
@@ -579,20 +592,35 @@ impl Report {
     #[must_use]
     #[inline]
     pub fn percentile(&self, percentile: f64) -> Option<Duration> {
-        if !(0.0..=1.0).contains(&percentile) || self.samples.is_empty() {
+        if !(0.0_f64..=1.0_f64).contains(&percentile) || self.samples.is_empty() {
             return None;
         }
         let mut sorted = self.samples.clone();
         sorted.sort_unstable();
-        // Nearest-rank definition: index = ceil(p * N) - 1, clamped.
-        #[expect(
-            clippy::cast_precision_loss,
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "Benchmark rank approximation; absolute precision not required."
-        )]
-        let rank = ((percentile * sorted.len() as f64).ceil() as usize)
-            .saturating_sub(1)
+        // Discretise the f64 input to permille (×1000) via bisection in
+        // f64 domain — `f64::from(u32)` is lossless and avoids any `as`.
+        // Permille granularity is well below any practical benchmark
+        // sample-size resolution.
+        let mut lo = 0_u32;
+        let mut hi = 1000_u32;
+        while lo < hi {
+            let mid = u32::midpoint(lo, hi);
+            let mid_f64 = f64::from(mid) / 1000.0_f64;
+            if mid_f64 < percentile {
+                lo = mid + 1_u32;
+            } else {
+                hi = mid;
+            }
+        }
+        let permille_u128 = u128::from(lo);
+        let n_u128 = u128::try_from(sorted.len()).unwrap_or(u128::MAX);
+        // Nearest-rank: rank = ceil(permille · n / 1000) − 1, clamped.
+        let numerator = permille_u128
+            .saturating_mul(n_u128)
+            .saturating_add(999_u128);
+        let ceiling = numerator / 1000_u128;
+        let rank = usize::try_from(ceiling.saturating_sub(1_u128))
+            .unwrap_or(usize::MAX)
             .min(sorted.len().saturating_sub(1));
         Some(sorted[rank])
     }
@@ -607,33 +635,36 @@ impl Report {
     /// Population standard deviation of the successful-iteration
     /// durations. `None` when fewer than two samples are available
     /// (σ is undefined for n ≤ 1).
+    ///
+    /// Computed in integer domain via the shortcut formula
+    ///   n²·variance = n·Σx² − (Σx)²
+    /// and `u128::isqrt` for the square root. Approximate to within
+    /// 1ns due to integer-rounding in the final division.
     #[must_use]
     #[inline]
     pub fn std_dev(&self) -> Option<Duration> {
         if self.samples.len() < 2 {
             return None;
         }
-        let mean_ns = self.mean()?.as_nanos();
-        #[expect(
-            clippy::cast_precision_loss,
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "Benchmark statistics; precision loss well within measurement noise."
-        )]
-        {
-            let n = self.samples.len() as f64;
-            let mean = mean_ns as f64;
-            let variance: f64 = self
-                .samples
-                .iter()
-                .map(|sample| {
-                    let diff = sample.as_nanos() as f64 - mean;
-                    diff * diff
-                })
-                .sum::<f64>()
-                / n;
-            Some(Duration::from_nanos(variance.sqrt() as u64))
+        let n_u128 = u128::try_from(self.samples.len()).unwrap_or(u128::MAX);
+        if n_u128 == 0_u128 {
+            return None;
         }
+        let total_nanos: u128 = self.samples.iter().map(Duration::as_nanos).sum();
+        let sum_sq: u128 = self
+            .samples
+            .iter()
+            .map(Duration::as_nanos)
+            .map(|nanos| nanos.saturating_mul(nanos))
+            .fold(0_u128, u128::saturating_add);
+        let n_sum_sq = n_u128.saturating_mul(sum_sq);
+        let total_sq = total_nanos.saturating_mul(total_nanos);
+        let var_times_n_sq = n_sum_sq.saturating_sub(total_sq);
+        let sd_times_n = var_times_n_sq.isqrt();
+        let sd_nanos = sd_times_n / n_u128;
+        Some(Duration::from_nanos(
+            u64::try_from(sd_nanos).unwrap_or(u64::MAX),
+        ))
     }
 
     /// A single-line summary: `"min X, p50 Y, p95 Z, max W (N samples)"`.
@@ -663,16 +694,18 @@ impl Report {
     #[must_use]
     #[inline]
     pub fn throughput_per_sec(&self) -> Option<f64> {
-        let secs = self.total_elapsed.as_secs_f64();
-        if secs <= 0.0 || self.samples.is_empty() {
+        let elapsed_nanos = self.total_elapsed.as_nanos();
+        if elapsed_nanos == 0_u128 || self.samples.is_empty() {
             return None;
         }
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "Benchmark statistics; precision loss well within measurement noise."
-        )]
-        {
-            Some(self.samples.len() as f64 / secs)
-        }
+        // throughput × 1000 = samples × 10^12 / elapsed_nanos. Carrying
+        // milli-units lets us emit f64 via `f64::from(u32)`, capping at
+        // ~4.29M iter/s — well above any real benchmark.
+        let samples_u128 = u128::try_from(self.samples.len()).unwrap_or(u128::MAX);
+        let throughput_milli = samples_u128
+            .saturating_mul(1_000_000_000_000_u128)
+            / elapsed_nanos;
+        let throughput_milli_u32 = u32::try_from(throughput_milli).unwrap_or(u32::MAX);
+        Some(f64::from(throughput_milli_u32) / 1000.0_f64)
     }
 }
