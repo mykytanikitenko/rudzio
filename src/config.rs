@@ -109,6 +109,7 @@ by custom runtimes or test helpers \u{2014} they do not produce an error.
 /// [`BenchMode::Smoke`] is the default — `cargo test` on a bench-annotated
 /// test runs its body once as a regular test.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BenchMode {
     /// `--bench`: dispatch each bench-annotated test through its
     /// strategy and render the resulting [`crate::bench::Report`].
@@ -139,6 +140,7 @@ pub enum BenchMode {
 /// let meta = rudzio::cargo_meta!();
 /// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CargoMeta {
     /// `env!("CARGO_CRATE_NAME")` — the `pkg_name` with `-` replaced by
     /// `_`, or the target name for renamed targets.
@@ -152,8 +154,24 @@ pub struct CargoMeta {
     pub pkg_version: String,
 }
 
+impl CargoMeta {
+    /// Construct a `CargoMeta` from its component env-var values.
+    /// Macro-generated code calls this via [`cargo_meta!`](crate::cargo_meta).
+    #[inline]
+    #[must_use]
+    pub fn new(
+        crate_name: String,
+        manifest_dir: PathBuf,
+        pkg_name: String,
+        pkg_version: String,
+    ) -> Self {
+        Self { crate_name, manifest_dir, pkg_name, pkg_version }
+    }
+}
+
 /// ANSI colour policy for terminal output.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ColorMode {
     /// Force colour on.
     Always,
@@ -328,6 +346,7 @@ pub struct Config {
 
 /// Output rendering style.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Format {
     /// One line per test with status and elapsed time.
     #[default]
@@ -381,6 +400,7 @@ enum OptionalDurationParse {
 /// environment variable is unset; otherwise `Plain`. See
 /// [`OutputMode::resolve`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum OutputMode {
     /// Bottom-of-terminal live region + history above.
     Live,
@@ -452,6 +472,7 @@ struct ParsedArgs {
 
 /// How `#[ignore]`d tests should be treated for this run.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RunIgnoredMode {
     /// `--include-ignored`: run every test, ignored or not.
     Include,

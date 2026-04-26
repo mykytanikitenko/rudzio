@@ -99,11 +99,11 @@ macro_rules! bin {
 #[macro_export]
 macro_rules! cargo_meta {
     () => {
-        $crate::CargoMeta {
-            manifest_dir: ::std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
-            pkg_name: env!("CARGO_PKG_NAME").to_owned(),
-            pkg_version: env!("CARGO_PKG_VERSION").to_owned(),
-            crate_name: env!("CARGO_CRATE_NAME").to_owned(),
-        }
+        $crate::CargoMeta::new(
+            env!("CARGO_CRATE_NAME").to_owned(),
+            ::std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+            env!("CARGO_PKG_NAME").to_owned(),
+            env!("CARGO_PKG_VERSION").to_owned(),
+        )
     };
 }

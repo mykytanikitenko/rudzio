@@ -45,31 +45,33 @@ const fn fake_snapshot(done: usize, total: usize) -> ProgressSnapshot {
     histogram[19] = 28;
     histogram[23] = 12;
     histogram[27] = 4;
-    ProgressSnapshot {
+    ProgressSnapshot::new(
         done,
         total,
-        p50: Duration::from_micros(12),
-        p95: Duration::from_micros(28),
-        min: Duration::from_micros(5),
-        max: Duration::from_micros(50),
-        cov: 0.043,
-        histogram,
-    }
+        rudzio::bench::BenchStats::new(
+            0.043,
+            histogram,
+            Duration::from_micros(50),
+            Duration::from_micros(5),
+            Duration::from_micros(12),
+            Duration::from_micros(28),
+        ),
+    )
 }
 
 fn fake_bench_state(snapshot: ProgressSnapshot) -> TestState {
-    TestState {
-        module_path: "rudzio::bench_live",
-        test_name: "demo",
-        runtime_name: "tokio::Multithread",
-        thread: thread::current().id(),
-        started_at: Instant::now().checked_sub(Duration::from_millis(120)).unwrap(),
-        kind: TestStateKind::Bench { snapshot },
-        stdout_buffer: Vec::new(),
-        stderr_buffer: Vec::new(),
-        last_output_line: String::new(),
-        recent_output: Vec::new(),
-    }
+    use rudzio::output::events::{TestStateBuffers, TestStateIdent};
+    TestState::new(
+        TestStateIdent::new(
+            "rudzio::bench_live",
+            "tokio::Multithread",
+            Instant::now().checked_sub(Duration::from_millis(120)).unwrap(),
+            "demo",
+            thread::current().id(),
+        ),
+        TestStateBuffers::empty(),
+        TestStateKind::Bench { snapshot },
+    )
 }
 
 /// Build a `Report` rich enough that
@@ -80,14 +82,14 @@ fn fake_bench_report(samples: usize) -> Report {
     for i in 0..samples {
         s.push(Duration::from_micros((10 + (i % 7) * 2) as u64));
     }
-    Report {
-        strategy: format!("Sequential({samples})"),
-        iterations: samples,
-        samples: s,
-        failures: Vec::new(),
-        panics: 0,
-        total_elapsed: Duration::from_millis(50),
-    }
+    Report::new(
+        Vec::new(),
+        samples,
+        0,
+        s,
+        format!("Sequential({samples})"),
+        Duration::from_millis(50),
+    )
 }
 
 struct Harness {
@@ -314,6 +316,7 @@ mod tests {
             let snap = match state.kind {
                 TestStateKind::Bench { snapshot } => snapshot,
                 TestStateKind::Running => unreachable!("test fixture sets Bench state"),
+                _ => unreachable!("test fixture sets Bench state"),
             };
             for (i, line) in bench_histogram_lines(&snap, ColorPolicy::off(), cols, 24)
                 .iter()

@@ -242,6 +242,7 @@ enum ProfileFlag {
 /// relationship between `bin_crate` and the calling crate.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SentinelAction {
     /// No nested invocation in progress — run the full
     /// metadata/build/emit pipeline.

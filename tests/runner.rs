@@ -674,16 +674,16 @@ mod config_parser {
     /// every other counter on the struct.
     #[rudzio::test]
     fn suite_summary_merge_includes_hung(_ctx: &Test) -> anyhow::Result<()> {
-        let a = ::rudzio::SuiteSummary {
-            hung: 2,
-            total: 2,
-            ..::rudzio::SuiteSummary::zero()
-        };
-        let b = ::rudzio::SuiteSummary {
-            hung: 1,
-            total: 1,
-            ..::rudzio::SuiteSummary::zero()
-        };
+        let a = ::rudzio::SuiteSummary::new(
+            ::rudzio::suite::SummaryOutcomes::new(0, 0, 2, 0, 0, 0, 0),
+            0,
+            2,
+        );
+        let b = ::rudzio::SuiteSummary::new(
+            ::rudzio::suite::SummaryOutcomes::new(0, 0, 1, 0, 0, 0, 0),
+            0,
+            1,
+        );
         let merged = a.merge(b);
         anyhow::ensure!(
             merged.hung == 3,
@@ -821,7 +821,7 @@ mod bench_strategies {
     #[rudzio::test]
     async fn sequential_runs_body_n_times(_ctx: &Test) -> anyhow::Result<()> {
         let count = std::sync::atomic::AtomicUsize::new(0);
-        let report: Report = Sequential(7)
+        let report: Report = Sequential::new(7)
             .run(
                 || async {
                     let _prev = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -843,7 +843,7 @@ mod bench_strategies {
     #[rudzio::test]
     async fn concurrent_runs_body_n_times(_ctx: &Test) -> anyhow::Result<()> {
         let count = std::sync::atomic::AtomicUsize::new(0);
-        let report: Report = Concurrent(5)
+        let report: Report = Concurrent::new(5)
             .run(
                 || async {
                     let _prev = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -863,7 +863,7 @@ mod bench_strategies {
     #[rudzio::test]
     async fn sequential_captures_failures(_ctx: &Test) -> anyhow::Result<()> {
         let counter = std::sync::atomic::AtomicUsize::new(0);
-        let report = Sequential(4)
+        let report = Sequential::new(4)
             .run(
                 || async {
                     let i = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -884,7 +884,7 @@ mod bench_strategies {
 
     #[rudzio::test]
     async fn empty_samples_return_none_for_stats(_ctx: &Test) -> anyhow::Result<()> {
-        let report = Sequential(0)
+        let report = Sequential::new(0)
             .run(
                 || async { Ok::<(), rudzio::test_case::BoxError>(()) },
                 |_| {},
@@ -901,7 +901,7 @@ mod bench_strategies {
 
     #[rudzio::test]
     async fn percentile_rejects_out_of_range(_ctx: &Test) -> anyhow::Result<()> {
-        let report = Sequential(3)
+        let report = Sequential::new(3)
             .run(
                 || async { Ok::<(), rudzio::test_case::BoxError>(()) },
                 |_| {},
@@ -919,19 +919,19 @@ mod bench_strategies {
     // collection). Under `cargo test -- --bench` it runs with the
     // strategy. The iteration count stays tiny so the smoke path
     // doesn't dominate the runtime sweep.
-    #[rudzio::test(benchmark = rudzio::bench::strategy::Sequential(3))]
+    #[rudzio::test(benchmark = rudzio::bench::strategy::Sequential::new(3))]
     async fn sample_sequential_bench(_ctx: &Test) -> anyhow::Result<()> {
         Ok(())
     }
 
-    #[rudzio::test(benchmark = rudzio::bench::strategy::Concurrent(3))]
+    #[rudzio::test(benchmark = rudzio::bench::strategy::Concurrent::new(3))]
     async fn sample_concurrent_bench(_ctx: &Test) -> anyhow::Result<()> {
         Ok(())
     }
 
     // Bench tests without a context parameter also work — setup and
     // teardown still run around the strategy invocation.
-    #[rudzio::test(benchmark = rudzio::bench::strategy::Sequential(2))]
+    #[rudzio::test(benchmark = rudzio::bench::strategy::Sequential::new(2))]
     async fn sample_bench_without_ctx() -> anyhow::Result<()> {
         Ok(())
     }

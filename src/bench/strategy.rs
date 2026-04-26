@@ -23,10 +23,21 @@ use crate::test_case::BoxError;
 ///
 /// Use when you want a clean latency distribution without contention —
 /// every iteration gets the full runtime to itself and samples reflect
-/// the body's isolated cost. `Sequential(1)` degenerates to a single
-/// extra invocation, useful as a smoke-bench baseline.
+/// the body's isolated cost. `Sequential::new(1)` degenerates to a
+/// single extra invocation, useful as a smoke-bench baseline.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct Sequential(pub usize);
+
+impl Sequential {
+    /// Construct a `Sequential` strategy that runs the body `iterations`
+    /// times one after another.
+    #[inline]
+    #[must_use]
+    pub const fn new(iterations: usize) -> Self {
+        Self(iterations)
+    }
+}
 
 impl Strategy for Sequential {
     #[inline]
@@ -83,7 +94,18 @@ impl Strategy for Sequential {
 /// so samples capture time spent awaiting I/O / timers / other
 /// iterations rather than the cost of setting up the N-way fan-out.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct Concurrent(pub usize);
+
+impl Concurrent {
+    /// Construct a `Concurrent` strategy that drives `iterations` copies
+    /// of the body on the same task.
+    #[inline]
+    #[must_use]
+    pub const fn new(iterations: usize) -> Self {
+        Self(iterations)
+    }
+}
 
 impl Strategy for Concurrent {
     #[inline]

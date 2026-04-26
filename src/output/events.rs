@@ -22,9 +22,20 @@ use crate::suite::{TeardownResult, TestOutcome};
 /// process run; an `AtomicU64` counter hands them out in
 /// [`TestId::next`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
 pub struct TestId(pub u64);
 
 impl TestId {
+    /// Construct a `TestId` from a raw counter value. Most callers
+    /// should use [`Self::next`] instead; this exists so external
+    /// crates can still build a `TestId` (e.g. for tests asserting on
+    /// the wire format).
+    #[inline]
+    #[must_use]
+    pub const fn new(id: u64) -> Self {
+        Self(id)
+    }
+
     /// Allocate the next process-unique id. Wait-free.
     #[must_use]
     #[inline]
@@ -37,6 +48,7 @@ impl TestId {
 
 /// Which standard stream a captured chunk came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StdStream {
     /// FD 2 before capture.
     Stderr,
@@ -50,14 +62,25 @@ pub enum StdStream {
 /// the thread that produced it, using its lifecycle-event-maintained
 /// `thread_to_test` table.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct PipeChunk {
     pub bytes: Vec<u8>,
     pub stream: StdStream,
 }
 
+impl PipeChunk {
+    /// Construct a `PipeChunk` from its components.
+    #[inline]
+    #[must_use]
+    pub const fn new(bytes: Vec<u8>, stream: StdStream) -> Self {
+        Self { bytes, stream }
+    }
+}
+
 /// A lifecycle event emitted by runtime threads (directly or via
 /// `FirstPoll` / the panic hook) to the drawer.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum LifecycleEvent {
     /// Periodic progress notification from a bench strategy.
     /// Strategies call the progress callback roughly every 1% of
@@ -148,6 +171,7 @@ pub enum LifecycleEvent {
 
 /// Drawer-owned state for a single in-flight test.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct TestState {
     pub kind: TestStateKind,
     /// Most-recent `\n`-terminated line observed on either stream,
@@ -171,8 +195,107 @@ pub struct TestState {
     pub thread: ThreadId,
 }
 
+/// Identity-and-thread fields of a [`TestState`] — bundled so
+/// [`TestState::new`] takes one struct instead of five positional
+/// args, sidestepping `clippy::too_many_arguments`.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct TestStateIdent {
+    /// See [`TestState::module_path`].
+    pub module_path: &'static str,
+    /// See [`TestState::runtime_name`].
+    pub runtime_name: &'static str,
+    /// See [`TestState::started_at`].
+    pub started_at: Instant,
+    /// See [`TestState::test_name`].
+    pub test_name: &'static str,
+    /// See [`TestState::thread`].
+    pub thread: ThreadId,
+}
+
+impl TestStateIdent {
+    /// Pack the identity / thread / start-time fields.
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        module_path: &'static str,
+        runtime_name: &'static str,
+        started_at: Instant,
+        test_name: &'static str,
+        thread: ThreadId,
+    ) -> Self {
+        Self { module_path, runtime_name, started_at, test_name, thread }
+    }
+}
+
+/// Output-buffer fields of a [`TestState`] — bundled so
+/// [`TestState::new`] takes one struct instead of four positional
+/// args.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct TestStateBuffers {
+    /// See [`TestState::last_output_line`].
+    pub last_output_line: String,
+    /// See [`TestState::recent_output`].
+    pub recent_output: Vec<String>,
+    /// See [`TestState::stderr_buffer`].
+    pub stderr_buffer: Vec<u8>,
+    /// See [`TestState::stdout_buffer`].
+    pub stdout_buffer: Vec<u8>,
+}
+
+impl TestStateBuffers {
+    /// Empty buffers, suitable for a freshly-started test.
+    #[inline]
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            last_output_line: String::new(),
+            recent_output: Vec::new(),
+            stderr_buffer: Vec::new(),
+            stdout_buffer: Vec::new(),
+        }
+    }
+
+    /// Pack the output-buffer fields.
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        last_output_line: String,
+        recent_output: Vec<String>,
+        stderr_buffer: Vec<u8>,
+        stdout_buffer: Vec<u8>,
+    ) -> Self {
+        Self { last_output_line, recent_output, stderr_buffer, stdout_buffer }
+    }
+}
+
+impl TestState {
+    /// Construct a `TestState` from its sub-bundles.
+    #[inline]
+    #[must_use]
+    pub fn new(ident: TestStateIdent, buffers: TestStateBuffers, kind: TestStateKind) -> Self {
+        let TestStateIdent { module_path, runtime_name, started_at, test_name, thread } = ident;
+        let TestStateBuffers { last_output_line, recent_output, stderr_buffer, stdout_buffer } =
+            buffers;
+        Self {
+            kind,
+            last_output_line,
+            module_path,
+            recent_output,
+            runtime_name,
+            started_at,
+            stderr_buffer,
+            stdout_buffer,
+            test_name,
+            thread,
+        }
+    }
+}
+
 /// Current rendering state for a test's live-region slot.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub enum TestStateKind {
     /// Under a bench strategy; the most recent progress snapshot
     /// drives the trailing block + mini-histogram in the renderer.

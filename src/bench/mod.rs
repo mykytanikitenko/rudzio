@@ -39,6 +39,7 @@ pub const HISTOGRAM_BUCKETS: usize = 32;
 /// so the drawer doesn't need to keep the raw per-iteration sample
 /// vector around.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct ProgressSnapshot {
     /// Coefficient of variation (σ / mean) of the successful samples.
     /// `f32::NAN` when fewer than two samples are available; renderers
@@ -63,6 +64,42 @@ pub struct ProgressSnapshot {
     pub total: usize,
 }
 
+/// Distribution-summary fields of a [`ProgressSnapshot`] — bundled so
+/// [`ProgressSnapshot::new`] takes one struct instead of six positional
+/// args, sidestepping `clippy::too_many_arguments`.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct BenchStats {
+    /// See [`ProgressSnapshot::cov`].
+    pub cov: f32,
+    /// See [`ProgressSnapshot::histogram`].
+    pub histogram: [u32; HISTOGRAM_BUCKETS],
+    /// See [`ProgressSnapshot::max`].
+    pub max: Duration,
+    /// See [`ProgressSnapshot::min`].
+    pub min: Duration,
+    /// See [`ProgressSnapshot::p50`].
+    pub p50: Duration,
+    /// See [`ProgressSnapshot::p95`].
+    pub p95: Duration,
+}
+
+impl BenchStats {
+    /// Pack the distribution-summary fields.
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        cov: f32,
+        histogram: [u32; HISTOGRAM_BUCKETS],
+        max: Duration,
+        min: Duration,
+        p50: Duration,
+        p95: Duration,
+    ) -> Self {
+        Self { cov, histogram, max, min, p50, p95 }
+    }
+}
+
 /// Per-iteration results gathered by a [`Strategy`] run.
 ///
 /// `samples` holds the elapsed time of every iteration that completed
@@ -74,6 +111,7 @@ pub struct ProgressSnapshot {
 /// and the last iteration finishing — not the sum of sample durations
 /// (those overlap for concurrent strategies).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Report {
     /// Error strings from iterations that returned `Err(_)`.
     pub failures: Vec<String>,
@@ -229,6 +267,26 @@ impl ProgressSnapshot {
             max: Duration::ZERO,
             cov: f32::NAN,
             histogram: [0_u32; HISTOGRAM_BUCKETS],
+        }
+    }
+
+    /// Construct a `ProgressSnapshot` from progress counters and a
+    /// pre-computed [`BenchStats`] block. Bundled to keep the
+    /// constructor signature short — see [`BenchStats`] for the
+    /// distribution-summary fields.
+    #[inline]
+    #[must_use]
+    pub const fn new(done: usize, total: usize, stats: BenchStats) -> Self {
+        let BenchStats { cov, histogram, max, min, p50, p95 } = stats;
+        Self {
+            cov,
+            done,
+            histogram,
+            max,
+            min,
+            p50,
+            p95,
+            total,
         }
     }
 }
@@ -473,6 +531,20 @@ impl Report {
     #[inline]
     pub fn min(&self) -> Option<Duration> {
         self.samples.iter().copied().min()
+    }
+
+    /// Construct a `Report` from its components.
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        failures: Vec<String>,
+        iterations: usize,
+        panics: usize,
+        samples: Vec<Duration>,
+        strategy: String,
+        total_elapsed: Duration,
+    ) -> Self {
+        Self { failures, iterations, panics, samples, strategy, total_elapsed }
     }
 
     /// Rough outlier count — samples more than `k × σ` from the mean

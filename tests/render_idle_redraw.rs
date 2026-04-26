@@ -236,10 +236,10 @@ mod tests {
         // and the next redraw streams it untruncated below the
         // running status row — that's the "test status line + live
         // stdio/stderr below it" guarantee.
-        h.pipe_tx.send(PipeChunk {
-            stream: StdStream::Stdout,
-            bytes: b"hello from synthetic test\n".to_vec(),
-        })?;
+        h.pipe_tx.send(PipeChunk::new(
+            b"hello from synthetic test\n".to_vec(),
+            StdStream::Stdout,
+        ))?;
         // Allow at least one full redraw cycle (50ms tick).
         thread::sleep(Duration::from_millis(140));
 
@@ -327,18 +327,22 @@ mod tests {
         let long_stdout: String = "x".repeat(200);
         let started_at = Instant::now().checked_sub(Duration::from_millis(220)).unwrap();
 
-        let mut state = TestState {
-            module_path: long_module,
-            test_name: long_test_name,
-            runtime_name: "tokio::Multithread",
-            thread: thread::current().id(),
-            started_at,
-            kind: TestStateKind::Running,
-            stdout_buffer: Vec::new(),
-            stderr_buffer: Vec::new(),
-            last_output_line: long_stdout.clone(),
-            recent_output: vec![long_stdout],
-        };
+        let mut state = TestState::new(
+            rudzio::output::events::TestStateIdent::new(
+                long_module,
+                "tokio::Multithread",
+                started_at,
+                long_test_name,
+                thread::current().id(),
+            ),
+            rudzio::output::events::TestStateBuffers::new(
+                long_stdout.clone(),
+                vec![long_stdout],
+                Vec::new(),
+                Vec::new(),
+            ),
+            TestStateKind::Running,
+        );
         // A second, multi-byte UTF-8 line — the byte-length is > the
         // char-count; an off-by-one width calc on bytes vs chars
         // would still make this overflow.
@@ -422,10 +426,10 @@ mod tests {
             at: Instant::now(),
         })?;
         for i in 0..6 {
-            h.pipe_tx.send(PipeChunk {
-                stream: StdStream::Stdout,
-                bytes: format!("output line {i}\n").into_bytes(),
-            })?;
+            h.pipe_tx.send(PipeChunk::new(
+                format!("output line {i}\n").into_bytes(),
+                StdStream::Stdout,
+            ))?;
         }
         thread::sleep(Duration::from_millis(180));
 

@@ -44,6 +44,7 @@ use crate::token::Token as TestToken;
 /// failure) and the latter means "this phase blew its own budget".
 /// Reporters use the distinction to render the right status tag.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum PhaseOutcome<T> {
     Cancelled,
     Completed(T),
@@ -64,7 +65,17 @@ pub enum PhaseOutcome<T> {
 /// a suite context, even if they were emitted by different
 /// `#[rudzio::suite]` invocations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct RuntimeGroupKey(pub u64);
+
+impl RuntimeGroupKey {
+    /// Construct a `RuntimeGroupKey` from its raw hash value.
+    #[inline]
+    #[must_use]
+    pub const fn new(hash: u64) -> Self {
+        Self(hash)
+    }
+}
 
 /// Outcome of the parent-cancel-vs-budget inner race in
 /// [`drive_per_test_spawn`]. Carried as a value so the outer race
@@ -80,10 +91,21 @@ enum Stage1Trigger {
 /// internally but kept as a thin newtype around `TypeId` for callers that
 /// reach for `rudzio::suite::Id`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct Id(pub TypeId);
+
+impl Id {
+    /// Construct an `Id` wrapping a [`TypeId`].
+    #[inline]
+    #[must_use]
+    pub const fn new(type_id: TypeId) -> Self {
+        Self(type_id)
+    }
+}
 
 /// Inputs handed to [`RuntimeGroupOwner::run_group`].
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct RunRequest<'req> {
     /// Resolved CLI / environment configuration for this run. Shared by
     /// every group; runtime constructors may inspect it (e.g. to size
@@ -93,8 +115,22 @@ pub struct RunRequest<'req> {
     pub tokens: &'req [&'static TestToken],
 }
 
+impl<'req> RunRequest<'req> {
+    /// Construct a `RunRequest` from its components.
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        config: &'req Config,
+        root_token: CancellationToken,
+        tokens: &'req [&'static TestToken],
+    ) -> Self {
+        Self { config, root_token, tokens }
+    }
+}
+
 /// Aggregated per-group counts.
 #[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct Summary {
     pub cancelled: usize,
     pub failed: usize,
@@ -115,6 +151,45 @@ pub struct Summary {
     pub total: usize,
 }
 
+/// Per-outcome counters bundled so [`Summary::new`] takes one struct
+/// instead of seven positional args, sidestepping
+/// `clippy::too_many_arguments`.
+#[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
+pub struct SummaryOutcomes {
+    /// See [`Summary::cancelled`].
+    pub cancelled: usize,
+    /// See [`Summary::failed`].
+    pub failed: usize,
+    /// See [`Summary::hung`].
+    pub hung: usize,
+    /// See [`Summary::ignored`].
+    pub ignored: usize,
+    /// See [`Summary::panicked`].
+    pub panicked: usize,
+    /// See [`Summary::passed`].
+    pub passed: usize,
+    /// See [`Summary::timed_out`].
+    pub timed_out: usize,
+}
+
+impl SummaryOutcomes {
+    /// Pack the seven per-outcome counters.
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        cancelled: usize,
+        failed: usize,
+        hung: usize,
+        ignored: usize,
+        panicked: usize,
+        passed: usize,
+        timed_out: usize,
+    ) -> Self {
+        Self { cancelled, failed, hung, ignored, panicked, passed, timed_out }
+    }
+}
+
 /// Result of a `Suite::teardown` (or per-test teardown) call. Used by
 /// reporter lifecycle events so the drawer can distinguish a clean
 /// teardown from a propagated error from a panic.
@@ -123,6 +198,7 @@ pub struct Summary {
 /// available (see [`panic_payload_message`]) so the user sees what
 /// actually panicked, not just that something did.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum TeardownResult {
     Err(String),
     /// The teardown blew its budget AND remained pending past the
@@ -141,6 +217,7 @@ pub enum TeardownResult {
 
 /// Per-test outcome reported back to the runner.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum TestOutcome {
     /// The test ran under a [`crate::bench::Strategy`]. `report.is_success()`
     /// decides whether the overall outcome counts as passed or failed.
@@ -296,6 +373,33 @@ impl Summary {
             teardown_failures: self
                 .teardown_failures
                 .saturating_add(other.teardown_failures),
+        }
+    }
+
+    /// Construct a `Summary` from the [`SummaryOutcomes`] sub-bundle
+    /// plus the totals counters.
+    #[inline]
+    #[must_use]
+    pub const fn new(outcomes: SummaryOutcomes, teardown_failures: usize, total: usize) -> Self {
+        let SummaryOutcomes {
+            cancelled,
+            failed,
+            hung,
+            ignored,
+            panicked,
+            passed,
+            timed_out,
+        } = outcomes;
+        Self {
+            cancelled,
+            failed,
+            hung,
+            ignored,
+            panicked,
+            passed,
+            teardown_failures,
+            timed_out,
+            total,
         }
     }
 

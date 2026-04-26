@@ -29,6 +29,7 @@ const PIPE_SIZE: libc::c_int = 1 << 20;
 /// [`crate::output::CaptureGuard`], which restores the originals on
 /// drop via [`SavedFds::restore`].
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Capture {
     /// A third dup of the original stdout (taken before the swap),
     /// handed to the drawer so it can write the live region and
@@ -44,6 +45,20 @@ pub struct Capture {
     pub stderr_read: OwnedFd,
     /// Read end of the pipe whose write end is now FD 1.
     pub stdout_read: OwnedFd,
+}
+
+impl Capture {
+    /// Construct a `Capture` from its components.
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        drawer_terminal: OwnedFd,
+        saved: SavedFds,
+        stderr_read: OwnedFd,
+        stdout_read: OwnedFd,
+    ) -> Self {
+        Self { drawer_terminal, saved, stderr_read, stdout_read }
+    }
 }
 
 /// Shared storage for the pre-capture FDs.

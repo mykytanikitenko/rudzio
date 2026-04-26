@@ -119,6 +119,16 @@ fn bench_test_outcome(
                     |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
                 ).await
             }
+            _ => {
+                let test_fut = async { #dispatch_call };
+                ::rudzio::suite::run_test_with_timeout_and_cancel(
+                    test_fut,
+                    test_timeout,
+                    config.phase_hang_grace,
+                    per_test_token.clone(),
+                    |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
+                ).await
+            }
         }
     }
 }
@@ -436,7 +446,7 @@ fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream
             ),
             ::rudzio::token::Dispatch::new(
                 #run_test_fn,
-                ::rudzio::suite::RuntimeGroupKey(::rudzio::suite::fnv1a64(#group_key_source)),
+                ::rudzio::suite::RuntimeGroupKey::new(::rudzio::suite::fnv1a64(#group_key_source)),
                 &#owner_static,
             ),
         );
@@ -519,6 +529,7 @@ fn owner_dispatch_loop_quote(suite_base: &Path, runtime_type: &Path) -> TokenStr
                         summary.failed += 1;
                     }
                 }
+                _ => summary.failed += 1,
             }
             reporter.report_outcome(tok, runtime_name, outcome);
             if !req.root_token.is_cancelled()
@@ -607,6 +618,7 @@ fn owner_runtime_init_quote(
                 ::rudzio::config::RunIgnoredMode::Normal => tok.ignored,
                 ::rudzio::config::RunIgnoredMode::Only
                 | ::rudzio::config::RunIgnoredMode::Include => false,
+                _ => tok.ignored,
             };
             let bench_skip = matches!(
                 req.config.bench_mode,
@@ -746,6 +758,16 @@ fn owner_suite_setup_quote(suite_base: &Path, runtime_type: &Path) -> TokenStrea
                 );
                 #drain_cancelled
             }
+            _ => {
+                // Future PhaseOutcome variants treated as cancelled
+                // (conservative default — every active test reports
+                // cancelled and we skip teardown).
+                reporter.report_suite_setup_finished(
+                    runtime_name, suite_label, __rudzio_setup_elapsed,
+                    ::core::option::Option::Some("setup unknown outcome"),
+                );
+                #drain_cancelled
+            }
         };
     }
 }
@@ -797,6 +819,12 @@ fn owner_suite_teardown_quote(runtime_type: &Path) -> TokenStream {
                 summary.teardown_failures += 1;
                 ::rudzio::suite::TeardownResult::Err(
                     ::std::string::String::from("teardown cancelled"),
+                )
+            }
+            _ => {
+                summary.teardown_failures += 1;
+                ::rudzio::suite::TeardownResult::Err(
+                    ::std::string::String::from("teardown unknown outcome"),
                 )
             }
         };
@@ -1027,6 +1055,14 @@ fn run_test_setup_phase_quote(ctx_binding: &TokenStream, runtime_type: &Path) ->
                     elapsed: start.elapsed(),
                 };
             }
+            _ => {
+                break 'run ::rudzio::suite::TestOutcome::SetupFailed {
+                    elapsed: start.elapsed(),
+                    message: ::std::string::String::from(
+                        "setup unknown outcome",
+                    ),
+                };
+            }
         };
     }
 }
@@ -1073,6 +1109,11 @@ fn run_test_teardown_phase_quote(runtime_type: &Path) -> TokenStream {
             ::rudzio::suite::PhaseOutcome::Cancelled => {
                 ::rudzio::suite::TeardownResult::Err(
                     ::std::string::String::from("teardown cancelled"),
+                )
+            }
+            _ => {
+                ::rudzio::suite::TeardownResult::Err(
+                    ::std::string::String::from("teardown unknown outcome"),
                 )
             }
         };
@@ -1152,7 +1193,7 @@ fn runtime_group_owner_impl(
         impl ::rudzio::suite::RuntimeGroupOwner for #owner_struct {
             #[inline]
             fn group_key(&self) -> ::rudzio::suite::RuntimeGroupKey {
-                ::rudzio::suite::RuntimeGroupKey(
+                ::rudzio::suite::RuntimeGroupKey::new(
                     ::rudzio::suite::fnv1a64(#group_key_source),
                 )
             }

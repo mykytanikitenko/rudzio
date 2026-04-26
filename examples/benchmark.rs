@@ -49,7 +49,7 @@ mod tests {
     // resolves via the file-root `use rudzio::bench::strategy::...`
     // import — attribute-argument tokens keep the source span of the
     // attribute site, so the identifier must be in scope at that site.
-    #[rudzio::test(benchmark = rudzio::bench::strategy::Sequential(64))]
+    #[rudzio::test(benchmark = rudzio::bench::strategy::Sequential::new(64))]
     async fn sequential_bench(ctx: &Test) -> anyhow::Result<()> {
         ctx.yield_now().await;
         Ok(())
@@ -57,7 +57,7 @@ mod tests {
 
     // Concurrent strategy — 16 copies of the body driven concurrently
     // via `futures::join_all`. Useful for latency-under-load shapes.
-    #[rudzio::test(benchmark = rudzio::bench::strategy::Concurrent(16))]
+    #[rudzio::test(benchmark = rudzio::bench::strategy::Concurrent::new(16))]
     async fn concurrent_bench(_ctx: &Test) -> anyhow::Result<()> {
         let _d = Duration::from_nanos(1);
         Ok(())
@@ -65,7 +65,7 @@ mod tests {
 
     // Bench tests don't need a context parameter — setup and teardown
     // still run around the strategy invocation.
-    #[rudzio::test(benchmark = rudzio::bench::strategy::Sequential(8))]
+    #[rudzio::test(benchmark = rudzio::bench::strategy::Sequential::new(8))]
     async fn bench_without_context() -> anyhow::Result<()> {
         Ok(())
     }
