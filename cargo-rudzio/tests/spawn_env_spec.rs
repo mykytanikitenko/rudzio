@@ -6,6 +6,31 @@ use cargo_rudzio::{EXPOSE_BINS_SENTINEL_ENV, spawn_env};
         suite = rudzio::common::context::Suite,
         test = rudzio::common::context::Test,
     ),
+    (
+        runtime = rudzio::runtime::tokio::CurrentThread::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::tokio::Local::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::compio::Runtime::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::embassy::Runtime::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::futures::ThreadPool::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
 ])]
 mod tests {
     use super::{EXPOSE_BINS_SENTINEL_ENV, spawn_env};

@@ -27,6 +27,14 @@ rudzio-macro = { workspace = true }
 tokio-util = { workspace = true }
 tokio = { workspace = true, optional = true }
 compio-runtime = { workspace = true, features = ["time"], optional = true }
+# compio-runtime depends on compio-driver with `default-features = false`,
+# which leaves the I/O driver as a stub on Linux ("Stub driver does not
+# support any operations" → every compio test panics on first poll). Add
+# a direct dep on compio-driver so we can opt in to the io-uring driver
+# explicitly. The `io-uring` cargo feature is the same name as compio's
+# default — it's a no-op on macOS / Windows (their cfg_if branches skip
+# it), so a single feature flip works across platforms.
+compio-driver = { workspace = true, optional = true }
 embassy-executor = { workspace = true, optional = true }
 futures-executor = { workspace = true, features = ["thread-pool"], optional = true }
 futures-timer = { workspace = true, optional = true }
@@ -54,6 +62,10 @@ libc = { workspace = true }
 # Dogfood under every runtime rudzio ships.
 rudzio = { path = ".", features = ["build", "common", "runtime-tokio-multi-thread", "runtime-tokio-current-thread", "runtime-tokio-local", "runtime-compio", "runtime-embassy", "runtime-futures"] }
 anyhow = "=1.0.102"
+# Renderer regression tests construct a `Drawer` directly and feed it
+# synthetic lifecycle events; that requires the same channel primitives
+# the production code uses.
+crossbeam-channel = { workspace = true }
 
 [[test]]
 name = "main"
@@ -75,7 +87,7 @@ common = []
 runtime-tokio-multi-thread = ["dep:tokio", "dep:send_wrapper", "tokio/rt-multi-thread"]
 runtime-tokio-current-thread = ["dep:tokio", "dep:send_wrapper"]
 runtime-tokio-local = ["dep:tokio", "dep:send_wrapper"]
-runtime-compio = ["dep:compio-runtime", "dep:send_wrapper"]
+runtime-compio = ["dep:compio-runtime", "dep:compio-driver", "compio-driver/io-uring", "dep:send_wrapper"]
 runtime-embassy = ["dep:embassy-executor", "dep:send_wrapper"]
 runtime-futures = ["dep:futures-executor", "dep:futures-timer", "dep:send_wrapper"]
 
@@ -105,6 +117,7 @@ rudzio-macro-internals = { version = "0.1.0", path = "macro-internals" }
 anyhow = "=1.0.102"
 cargo_metadata = "=0.19.2"
 compio-runtime = "=0.11.0"
+compio-driver = "=0.11.4"
 crossbeam-channel = "=0.5.15"
 libc = "=0.2.185"
 signal-hook = "=0.4.4"

@@ -155,15 +155,14 @@ pub struct TestState {
     /// Captured stderr bytes, appended as chunks arrive.
     pub stderr_buffer: Vec<u8>,
     /// Most-recent `\n`-terminated line observed on either stream,
-    /// truncated to a printable width; displayed as the `↳` hint in
-    /// the live region.
+    /// kept around for clients that want a single-line summary; the
+    /// live drawer renders the full output stream below the status
+    /// row instead.
     pub last_output_line: String,
     /// Every complete output line the test has emitted so far,
-    /// oldest first. Populated from the same chunk stream as
-    /// `last_output_line`. The live drawer renders these as stacked
-    /// `↳` rows under the running status line; when empty the hint
-    /// rows are skipped entirely so tests with no output don't take
-    /// vertical space.
+    /// oldest first. The live drawer streams these untruncated below
+    /// the running status row, repainted in place every 50ms tick so
+    /// the user sees stdout/stderr live as the test runs.
     pub recent_output: Vec<String>,
 }
 

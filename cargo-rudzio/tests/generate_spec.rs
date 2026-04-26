@@ -922,6 +922,54 @@ mod tests {
         Ok(())
     }
 
+    #[rudzio::test]
+    fn rerun_regenerates_tests_rs_when_test_files_change() -> anyhow::Result<()> {
+        // Regeneration contract: write_runner re-emits src/tests.rs from
+        // scratch on every invocation, so a follow-up run after a member
+        // adds, removes, or renames test files reflects the NEW set with
+        // no residue from the prior run. This is the property that lets
+        // `cargo rudzio test` pick up new tests without `cargo clean`.
+        let out = tempdir()?;
+
+        let mut m = member("alpha", vec![rudzio_dep()]);
+        m.manifest_dir = PathBuf::from("/abs/alpha");
+        m.src_lib_path = Some(PathBuf::from("/abs/alpha/src/lib.rs"));
+        m.test_files = vec![PathBuf::from("/abs/alpha/tests/initial.rs")];
+
+        let plan_v1 = plan_with_members(vec![m.clone()], "/abs");
+        write_runner(&plan_v1, out.path())?;
+
+        let tests_rs = out.path().join("src/tests.rs");
+        let v1 = fs::read_to_string(&tests_rs)?;
+        anyhow::ensure!(
+            v1.contains("mod initial"),
+            "v1 must reference initial.rs:\n{v1}"
+        );
+        anyhow::ensure!(
+            v1.contains("/abs/alpha/tests/initial.rs"),
+            "v1 must carry the #[path] for initial.rs:\n{v1}"
+        );
+
+        // Simulate a renamed file plus a brand-new one.
+        m.test_files = vec![
+            PathBuf::from("/abs/alpha/tests/renamed.rs"),
+            PathBuf::from("/abs/alpha/tests/added.rs"),
+        ];
+        let plan_v2 = plan_with_members(vec![m], "/abs");
+        write_runner(&plan_v2, out.path())?;
+
+        let v2 = fs::read_to_string(&tests_rs)?;
+        anyhow::ensure!(
+            v2.contains("mod renamed") && v2.contains("mod added"),
+            "v2 must reference both renamed.rs and added.rs:\n{v2}"
+        );
+        anyhow::ensure!(
+            !v2.contains("mod initial") && !v2.contains("initial.rs"),
+            "v2 must NOT carry residue from removed initial.rs:\n{v2}"
+        );
+        Ok(())
+    }
+
     // ── B. Diagnostic warnings for unbroadened #[cfg(test)] mods ───────
 
     fn mk_member_with_src(tmp: &::std::path::Path, name: &str, files: &[(&str, &str)]) -> super::MemberPlan {

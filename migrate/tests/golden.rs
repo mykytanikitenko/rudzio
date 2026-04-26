@@ -655,10 +655,24 @@ fn git_commit_all(root: &Path) -> std::io::Result<()> {
     if !status.success() {
         return Err(std::io::Error::other("git add failed"));
     }
+    // Pass user.email / user.name inline (mirroring `git_init_commit`) so
+    // the test passes in sandboxes that don't have a global git identity
+    // configured. Without these, `git commit` exits non-zero with the
+    // "Please tell me who you are" error.
     let status = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["commit", "-q", "--allow-empty", "-m", "post-migrate"])
+        .args([
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=test",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "post-migrate",
+        ])
         .status()?;
     if !status.success() {
         return Err(std::io::Error::other("git commit failed"));

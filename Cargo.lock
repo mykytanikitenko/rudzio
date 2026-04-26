@@ -133,11 +133,14 @@ dependencies = [
  "crossbeam-queue",
  "flume",
  "futures-util",
+ "io-uring",
+ "io_uring_buf_ring",
  "libc",
  "once_cell",
  "paste",
  "pin-project-lite",
  "polling",
+ "slab",
  "smallvec",
  "socket2",
  "synchrony",
@@ -503,6 +506,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-uring"
+version = "0.7.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d09b98f7eace8982db770e4408e7470b028ce513ac28fecdc6bf4c30fe92b62"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
+name = "io_uring_buf_ring"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1838759bb8c2f24cf05a35429d83145c4aa6af43f8ad38477295e12a7320a80e"
+dependencies = [
+ "bytes",
+ "io-uring",
+ "rustix 1.1.4",
+]
+
+[[package]]
 name = "is_ci"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -751,6 +776,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "cargo_metadata",
+ "compio-driver",
  "compio-runtime",
  "crossbeam-channel",
  "embassy-executor",

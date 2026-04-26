@@ -602,50 +602,53 @@ impl Drawer {
     }
 
     fn redraw_live_region(&mut self) {
-        if !matches!(self.output_mode, OutputMode::Live)
-            || matches!(self.format, Format::Terse)
-            || self.slot_order.is_empty()
-        {
+        if !matches!(self.output_mode, OutputMode::Live) || matches!(self.format, Format::Terse) {
             return;
         }
-        self.clear_live_region();
+        // Build the live region from slots that have *actual* activity
+        // — an in-flight test or a suite setup/teardown. Idle slots
+        // contribute no row. When every slot is idle the live region
+        // collapses to nothing on the next clear, instead of stamping
+        // a `── running ──` header + `[IDLE]` rows on every 50ms tick
+        // — which reads as "we're announcing 'running' while nothing
+        // is running" and bloats the scrollback once the user pages
+        // back through it.
         let mut buf = String::new();
-        buf.push_str(
-            &self
-                .color
-                .dim("──────────────────────── running ────────────────────────"),
-        );
-        buf.push('\n');
-        let mut rows = 1_usize;
+        let mut rows = 0_usize;
         for thread in &self.slot_order {
-            let slot = self.slots.get(thread);
-            let (status_line, hint_lines) = if let Some(s) = slot
-                && let Some(lifecycle) = s.lifecycle
-            {
+            let Some(slot) = self.slots.get(thread) else {
+                continue;
+            };
+            let (status_line, output_lines) = if let Some(lifecycle) = slot.lifecycle {
                 (
-                    lifecycle_line(s.runtime_name, &lifecycle, self.color),
+                    lifecycle_line(slot.runtime_name, &lifecycle, self.color),
                     Vec::new(),
                 )
-            } else if let Some((s, state)) = slot.and_then(|s| {
-                s.current
-                    .and_then(|id| self.tests.get(&id).map(|st| (s, st)))
-            }) {
+            } else if let Some(state) = slot.current.and_then(|id| self.tests.get(&id)) {
                 (
-                    running_line(s.runtime_name, state, self.color),
-                    running_hint_lines(state, self.color),
+                    running_line(slot.runtime_name, state, self.color),
+                    running_output_lines(state, self.color),
                 )
             } else {
-                let name = slot.map_or("unknown", |s| s.runtime_name);
-                (idle_line(name, self.color), Vec::new())
+                continue;
             };
             buf.push_str(&status_line);
             buf.push('\n');
             rows = rows.saturating_add(1);
-            for line in &hint_lines {
+            // Stream the test's stdout/stderr live below the status
+            // row, untruncated, in source order.
+            for line in &output_lines {
                 buf.push_str(line);
                 buf.push('\n');
                 rows = rows.saturating_add(1);
             }
+        }
+        // Clear last frame regardless of whether we have something new
+        // to paint — this is what makes the region collapse cleanly
+        // when the active-slot count drops to zero.
+        self.clear_live_region();
+        if rows == 0 {
+            return;
         }
         let _unused = self.terminal.write_all(buf.as_bytes());
         let _unused = self.terminal.flush();
@@ -784,7 +787,6 @@ enum StatusLabel {
     Bench,
     BenchErr,
     Run,
-    Idle,
     /// Failed test outcome where the per-test context (`Suite::context`)
     /// returned `Err` before the body could run. Distinct from `Fail`
     /// so the user sees that the test never executed.
@@ -844,7 +846,6 @@ fn render_status_tag(label: StatusLabel, color: ColorPolicy) -> String {
         StatusLabel::Cancel => "CANCEL",
         StatusLabel::Bench | StatusLabel::BenchErr => "BENCH",
         StatusLabel::Run => "RUN",
-        StatusLabel::Idle => "IDLE",
         StatusLabel::Setup => "SETUP",
         StatusLabel::Hang => "HANG",
     };
@@ -858,7 +859,7 @@ fn render_status_tag(label: StatusLabel, color: ColorPolicy) -> String {
         | StatusLabel::Setup
         | StatusLabel::Hang => color.red(&naked),
         StatusLabel::Timeout | StatusLabel::Cancel | StatusLabel::Run => color.yellow(&naked),
-        StatusLabel::Ignore | StatusLabel::Idle => color.dim(&naked),
+        StatusLabel::Ignore => color.dim(&naked),
     };
     let pad = STATUS_TAG_WIDTH.saturating_sub(visible);
     let mut out = painted;
@@ -918,27 +919,54 @@ fn render_line(lhs_naked: &str, lhs_rendered: &str, trailing: &str, term_cols: u
 /// terminal File wraps), falling back to 100 columns.
 #[cfg(unix)]
 fn terminal_width() -> usize {
+    let (cols, _rows) = terminal_size_unix();
+    cols.unwrap_or(100)
+}
+
+/// Best-effort terminal height. Used to bound the live region so it
+/// never grows taller than the viewport — anything that overflows
+/// scrolls permanently into scrollback and the cursor-up clear can't
+/// erase it. Falls back to 24 rows when the ioctl can't reach a
+/// terminal FD.
+#[cfg(unix)]
+fn terminal_height() -> usize {
+    let (_cols, rows) = terminal_size_unix();
+    rows.unwrap_or(24)
+}
+
+#[cfg(unix)]
+fn terminal_size_unix() -> (Option<usize>, Option<usize>) {
     // SAFETY: ioctl TIOCGWINSZ writes a `winsize` we allocated; we
-    // only read it on success. Stderr is a reliable FD to query —
-    // the drawer doesn't redirect FD 2 after the capture swap
-    // (FD 2 points at the write end of the stderr capture pipe, so
-    // it's not useful, but FD 1 pre-capture is the terminal). We
-    // walk likely-terminal FDs until one answers.
+    // only read it on success. The drawer doesn't redirect FD 2
+    // after the capture swap (FD 2 points at the write end of the
+    // stderr capture pipe, so it's not useful) — we walk likely-
+    // terminal FDs until one answers.
     #[allow(unsafe_code)]
     unsafe {
         let mut ws: libc::winsize = std::mem::zeroed();
         for fd in [libc::STDERR_FILENO, libc::STDIN_FILENO, libc::STDOUT_FILENO] {
             if libc::ioctl(fd, libc::TIOCGWINSZ, &raw mut ws) == 0 && ws.ws_col > 0 {
-                return usize::from(ws.ws_col);
+                let cols = Some(usize::from(ws.ws_col));
+                let rows = if ws.ws_row > 0 {
+                    Some(usize::from(ws.ws_row))
+                } else {
+                    None
+                };
+                return (cols, rows);
             }
         }
     }
-    100
+    (None, None)
 }
 
 #[cfg(not(unix))]
 fn terminal_width() -> usize {
     100
+}
+
+#[cfg(not(unix))]
+fn terminal_height() -> usize {
+    24
 }
 
 fn outcome_label(outcome: &TestOutcome) -> &'static str {
@@ -1021,11 +1049,9 @@ fn update_last_line(dst: &mut String, bytes: &[u8]) {
     }
 }
 
-/// Append every complete, non-empty line from `bytes` to `dst`. The
-/// live drawer replays all accumulated lines under each running test,
-/// so this vector grows for the lifetime of a test — no size cap, no
-/// per-line truncation (render-time truncation handles terminal-width
-/// clipping).
+/// Append every complete, non-empty line in `bytes` to `dst`, oldest
+/// first. Used to maintain `TestState::recent_output` for the live
+/// streaming of test stdio under the running status row.
 fn append_complete_lines(dst: &mut Vec<String>, bytes: &[u8]) {
     let Ok(s) = std::str::from_utf8(bytes) else {
         return;
@@ -1039,12 +1065,6 @@ fn append_complete_lines(dst: &mut Vec<String>, bytes: &[u8]) {
 
 const RUNTIME_PREFIX_WIDTH: usize = 14;
 
-fn idle_line(runtime: &str, color: ColorPolicy) -> String {
-    let prefix = format!("{runtime:<RUNTIME_PREFIX_WIDTH$}");
-    let tag = render_status_tag(StatusLabel::Idle, color);
-    color.dim(&format!("{prefix}{tag}"))
-}
-
 fn running_line(runtime: &str, state: &TestState, color: ColorPolicy) -> String {
     let prefix = format!("{runtime:<RUNTIME_PREFIX_WIDTH$}");
     let label = match state.kind {
@@ -1052,40 +1072,90 @@ fn running_line(runtime: &str, state: &TestState, color: ColorPolicy) -> String 
         TestStateKind::Bench { .. } => StatusLabel::Bench,
     };
     let tag = render_status_tag(label, color);
-    let display = qualified_test_name(state.module_path, state.test_name);
     let elapsed = state.started_at.elapsed();
     let trailing = match state.kind {
         TestStateKind::Running => format!("<{elapsed:.2?}>"),
         TestStateKind::Bench { done, total } => format!("<{done}/{total}, {elapsed:.2?}>"),
+    };
+    let cols = terminal_width();
+    // Clip `display` so the rendered row stays inside the terminal
+    // width — otherwise the row wraps to a second viewport row, the
+    // tracked `last_live_rows` undercounts, and the cursor-up clear
+    // strands the wrap-overflow row in scrollback. We compute the
+    // budget from the terminal width minus the fixed-width pieces
+    // (prefix, tag, trailing, pad) and clip with an `…` suffix.
+    let display = {
+        let raw = qualified_test_name(state.module_path, state.test_name);
+        let prefix_visible = prefix.chars().count();
+        let trailing_visible = trailing.chars().count();
+        let budget = cols
+            .saturating_sub(prefix_visible)
+            .saturating_sub(STATUS_TAG_WIDTH)
+            .saturating_sub(1) // space between tag and display
+            .saturating_sub(MIN_TRAILING_PAD)
+            .saturating_sub(trailing_visible);
+        clip_to_cols(&raw, budget)
     };
     let lhs_naked = format!(
         "{prefix}{pad} {display}",
         pad = " ".repeat(STATUS_TAG_WIDTH),
     );
     let lhs_rendered = format!("{prefix}{tag} {display}");
-    render_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width())
+    render_line(&lhs_naked, &lhs_rendered, &trailing, cols)
 }
 
-fn running_hint_lines(state: &TestState, color: ColorPolicy) -> Vec<String> {
-    // Empty output → no hint rows. This lets the drawer collapse
-    // around quiet tests instead of reserving a "(no output yet)"
-    // placeholder row per running test.
+/// Number of viewport rows reserved for everything other than a
+/// single test's output stream — the status row itself, the runner's
+/// own progress markers, and a safety margin so a final completion
+/// line doesn't trigger a scroll while the live region is being
+/// cleared.
+const LIVE_REGION_RESERVED_ROWS: usize = 4;
+
+/// Lines emitted below a running test's status row — the test's
+/// stdout/stderr appearing live, in source order. The drawer clears
+/// + repaints these every 50ms tick alongside the status row.
+///
+/// Two soft caps keep the live region inside the viewport so the
+/// cursor-up clear escape can actually reach what we painted:
+/// - vertical: at most `terminal_height - LIVE_REGION_RESERVED_ROWS`
+///   lines (showing the most recent tail when capped);
+/// - horizontal: each line truncated to `terminal_width` chars so it
+///   doesn't wrap onto a second viewport row.
+/// Without these bounds the row count we track in `last_live_rows`
+/// stops matching the actual viewport rows occupied by the paint —
+/// the overflow scrolls permanently into scrollback and leaves stale
+/// stripes in the user's scroll history.
+fn running_output_lines(state: &TestState, color: ColorPolicy) -> Vec<String> {
     if state.recent_output.is_empty() {
         return Vec::new();
     }
+    let cap_rows = terminal_height()
+        .saturating_sub(LIVE_REGION_RESERVED_ROWS)
+        .max(1);
     let cols = terminal_width();
-    state
-        .recent_output
+    let start = state.recent_output.len().saturating_sub(cap_rows);
+    state.recent_output[start..]
         .iter()
-        .map(|line| {
-            let truncated = if line.len() > cols.saturating_sub(16) {
-                &line[..cols.saturating_sub(16).min(line.len())]
-            } else {
-                line.as_str()
-            };
-            color.dim(&format!("              ↳ {truncated}"))
-        })
+        .map(|line| color.dim(&clip_to_cols(line, cols)))
         .collect()
+}
+
+/// Clip `s` to `cols` visible characters; appends `…` when truncated
+/// so the user can see the line was cut. `s` is expected to be raw
+/// (no embedded ANSI escapes) — colour wrapping happens by the
+/// caller after the clip.
+fn clip_to_cols(s: &str, cols: usize) -> String {
+    if cols == 0 {
+        return String::new();
+    }
+    let count = s.chars().count();
+    if count <= cols {
+        return s.to_owned();
+    }
+    let take = cols.saturating_sub(1);
+    let mut out: String = s.chars().take(take).collect();
+    out.push('…');
+    out
 }
 
 fn lifecycle_line(runtime: &str, lifecycle: &SlotLifecycle, color: ColorPolicy) -> String {
