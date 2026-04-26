@@ -81,11 +81,6 @@ impl SavedFds {
     pub fn restore(&self) {
         let stdout = self.stdout.swap(-1, Ordering::AcqRel);
         let stderr = self.stderr.swap(-1, Ordering::AcqRel);
-        // SAFETY: each FD value was produced by libc::dup in init()
-        // and has never been shared anywhere else, so restoring is
-        // exclusive to whoever swapped a non-`-1` value out. Errors
-        // from dup2 / close are ignored — there's no recovery path
-        // from a restore failure.
         if stdout != -1 {
             let _stdout_dup_ret: libc::c_int =
                 unsafe { libc::dup2(stdout, libc::STDOUT_FILENO) };

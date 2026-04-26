@@ -57,7 +57,7 @@ pub fn spawn(fd: OwnedFd, stream: StdStream, tx: Sender<PipeChunk>) -> io::Resul
                         break;
                     }
                 }
-                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
                 Err(_) => break,
             }
         }

@@ -6,7 +6,7 @@ use std::io;
 use std::time::Duration;
 
 use send_wrapper::SendWrapper;
-use tokio::runtime::{Builder, LocalRuntime};
+use tokio::runtime::{Builder, LocalOptions, LocalRuntime};
 use tokio::time::sleep;
 
 use crate::config::Config;
@@ -45,7 +45,7 @@ impl Local {
     pub fn new(config: &Config) -> io::Result<Self> {
         let rt = Builder::new_current_thread()
             .enable_all()
-            .build_local(Default::default())?;
+            .build_local(LocalOptions::default())?;
         Ok(Self {
             rt: SendWrapper::new(rt),
             config: config.clone(),

@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::env;
+use std::fmt;
+use std::fmt::Write as _;
 use std::io::{self, IsTerminal as _, Write as _};
 #[cfg(unix)]
 use std::mem;
@@ -13,8 +15,8 @@ use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{CargoMeta, ColorMode, Config, Format, OutputMode, RunIgnoredMode, USAGE};
+use crate::output;
 use crate::output::events::LifecycleEvent;
-use crate::output::{self};
 use crate::suite::{
     RuntimeGroupKey, RuntimeGroupOwner, SuiteReporter, SuiteRunRequest, SuiteSummary,
     TeardownResult, TestOutcome,
@@ -291,12 +293,12 @@ impl SuiteReporter for ModeReporter {
                 let lhs_rendered = format!("{tag_rendered} {display}");
                 let header =
                     render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
+                let mut buf = header;
                 if let TestOutcome::Benched { report, .. } = &outcome {
                     // Bench status line + detailed stats + histogram,
                     // emitted as a single atomic println! so concurrent
                     // runtime threads can't interleave each other's
                     // blocks.
-                    let mut buf = header;
                     buf.push('\n');
                     buf.push_str(report.detailed_summary().trim_end_matches('\n'));
                     if report.failures.is_empty() && report.panics == 0 {
@@ -307,35 +309,31 @@ impl SuiteReporter for ModeReporter {
                             buf.push_str(histogram.trim_end_matches('\n'));
                         }
                     }
-                    println!("{buf}");
-                } else {
+                } else if let Some(msg) = outcome_inline_message(&outcome) {
                     // Single atomic write: header + inlined failure
                     // message (if any), rendered in the tag's color
                     // for failing outcomes so the reason is visible
                     // alongside the status line without scrolling to
                     // the end-of-run failures section.
-                    let mut buf = header;
-                    if let Some(msg) = outcome_inline_message(&outcome) {
-                        for line in msg.lines() {
-                            buf.push('\n');
-                            let body = format!("  {line}");
-                            let painted = if matches!(
-                                label,
-                                StatusLabel::Fail
-                                    | StatusLabel::Panic
-                                    | StatusLabel::Setup
-                                    | StatusLabel::Timeout
-                                    | StatusLabel::Cancel
-                            ) {
-                                red(&body, plain.colored)
-                            } else {
-                                body
-                            };
-                            buf.push_str(&painted);
-                        }
+                    for line in msg.lines() {
+                        buf.push('\n');
+                        let body = format!("  {line}");
+                        let painted = if matches!(
+                            label,
+                            StatusLabel::Fail
+                                | StatusLabel::Panic
+                                | StatusLabel::Setup
+                                | StatusLabel::Timeout
+                                | StatusLabel::Cancel
+                        ) {
+                            red(&body, plain.colored)
+                        } else {
+                            body
+                        };
+                        buf.push_str(&painted);
                     }
-                    println!("{buf}");
                 }
+                println!("{buf}");
             }
         }
 
@@ -439,8 +437,8 @@ impl SuiteReporter for ModeReporter {
     fn report_suite_setup_started(&self, runtime_name: &'static str, suite: &'static str) {
         if let Some(plain) = &self.plain {
             if matches!(plain.fmt, Format::Pretty) {
-                let suite = normalize_module_path(suite);
-                println!("setup    {suite} ... started <{runtime_name}>");
+                let suite_disp = normalize_module_path(suite);
+                println!("setup    {suite_disp} ... started <{runtime_name}>");
             }
             return;
         }
@@ -557,8 +555,8 @@ impl SuiteReporter for ModeReporter {
     fn report_suite_teardown_started(&self, runtime_name: &'static str, suite: &'static str) {
         if let Some(plain) = &self.plain {
             if matches!(plain.fmt, Format::Pretty) {
-                let suite = normalize_module_path(suite);
-                println!("teardown {suite} ... started <{runtime_name}>");
+                let suite_disp = normalize_module_path(suite);
+                println!("teardown {suite_disp} ... started <{runtime_name}>");
             }
             return;
         }
@@ -763,16 +761,23 @@ fn bold(text: &str, colored: bool) -> String {
 /// directly (no rudzio runner), this fn is never called and stdlib's
 /// normal env-var lookup applies.
 fn enable_full_backtrace_default() {
-    // SAFETY: rudzio's entry point runs before any test threads spawn,
-    // so no other thread is mutating the environment concurrently.
-    // `env::set_var` is sound under that single-threaded invariant.
-    #[expect(unsafe_code)]
     if env::var_os("RUST_BACKTRACE").is_none() {
-        unsafe { env::set_var("RUST_BACKTRACE", "full") };
+        // SAFETY: rudzio's entry point runs before any test threads spawn,
+        // so no other thread is mutating the environment concurrently.
+        // `env::set_var` is sound under that single-threaded invariant.
+        #[expect(unsafe_code)]
+        unsafe {
+            env::set_var("RUST_BACKTRACE", "full");
+        }
     }
-    #[expect(unsafe_code)]
     if env::var_os("RUST_LIB_BACKTRACE").is_none() {
-        unsafe { env::set_var("RUST_LIB_BACKTRACE", "full") };
+        // SAFETY: rudzio's entry point runs before any test threads spawn,
+        // so no other thread is mutating the environment concurrently.
+        // `env::set_var` is sound under that single-threaded invariant.
+        #[expect(unsafe_code)]
+        unsafe {
+            env::set_var("RUST_LIB_BACKTRACE", "full");
+        }
     }
 }
 
@@ -1132,7 +1137,7 @@ pub fn run(cargo: CargoMeta) -> ! {
     // Per-test teardown failures aren't visible to the per-thread
     // SuiteSummary (the per-test fn doesn't have it in scope), so fold
     // the reporter's atomic counter in here.
-    let total = total.merge(TestSummary {
+    let grand_total = total.merge(TestSummary {
         teardown_failures: reporter.test_teardown_failures.load(Ordering::Relaxed),
         ..TestSummary::zero()
     });
@@ -1163,7 +1168,7 @@ pub fn run(cargo: CargoMeta) -> ! {
         }
         drop(guard);
 
-        let result_label = if total.is_success() {
+        let result_label = if grand_total.is_success() {
             bold(&green("ok", colored_plain), colored_plain)
         } else {
             bold(&red("FAILED", colored_plain), colored_plain)
@@ -1174,14 +1179,14 @@ pub fn run(cargo: CargoMeta) -> ! {
              {} cancelled; {} ignored; {} teardown failed; 0 measured; {} total; \
              {} filtered out; finished in {elapsed:.2?}",
             result_label,
-            total.passed,
-            total.failed,
-            total.panicked,
-            total.timed_out,
-            total.cancelled,
-            total.ignored,
-            total.teardown_failures,
-            total.total,
+            grand_total.passed,
+            grand_total.failed,
+            grand_total.panicked,
+            grand_total.timed_out,
+            grand_total.cancelled,
+            grand_total.ignored,
+            grand_total.teardown_failures,
+            grand_total.total,
             filtered_out,
         );
     }
@@ -1199,7 +1204,7 @@ pub fn run(cargo: CargoMeta) -> ! {
     // capture guard drop so the warning lands on the real terminal,
     // never inside the live region.
     let bg_panics = output::panic_hook::unattributed_panic_count();
-    if bg_panics > 0 && total.is_success() {
+    if bg_panics > 0 && grand_total.is_success() {
         eprintln!(
             "rudzio: {bg_panics} background-thread panic(s) detected outside any test boundary; \
              marking run as FAILED. Re-run with RUST_BACKTRACE=full for the panic location."
@@ -1207,7 +1212,7 @@ pub fn run(cargo: CargoMeta) -> ! {
         process::exit(1);
     }
 
-    process::exit(total.exit_code())
+    process::exit(grand_total.exit_code())
 }
 
 /// Format the `<runtime>` info block for events that don't carry an
@@ -1317,8 +1322,7 @@ fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
                 report.strategy,
             );
             if let Some(p50) = report.median() {
-                use std::fmt::Write as _;
-                let _write_ret: Result<(), std::fmt::Error> = write!(inner, ", p50 {p50:.2?}");
+                let _write_ret: Result<(), fmt::Error> = write!(inner, ", p50 {p50:.2?}");
             }
             format!("<{inner}>")
         }

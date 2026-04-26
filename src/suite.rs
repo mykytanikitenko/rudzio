@@ -372,7 +372,7 @@ where
 {
     use futures_util::future::{Either, select};
 
-    let mut join_fut = std::pin::pin!(join_fut);
+    let mut join_fut_pinned = std::pin::pin!(join_fut);
 
     // Stage 1: race join, parent cancel, and budget.
     //
@@ -393,8 +393,8 @@ where
                 Either::Right(_) => Stage1Trigger::Budget,
             }
         };
-        let parent_or_budget = std::pin::pin!(parent_or_budget);
-        match select(parent_or_budget, join_fut.as_mut()).await {
+        let parent_or_budget_pinned = std::pin::pin!(parent_or_budget);
+        match select(parent_or_budget_pinned, join_fut_pinned.as_mut()).await {
             Either::Left((Stage1Trigger::Parent, _)) => {
                 // Run-level cancel (SIGINT / --run-timeout). Fire
                 // abort so the spawned body doesn't outlive the
@@ -417,7 +417,7 @@ where
         }
     } else {
         // No outer budget: race parent_cancel against join.
-        match select(std::pin::pin!(phase_token.cancelled()), join_fut.as_mut()).await {
+        match select(std::pin::pin!(phase_token.cancelled()), join_fut_pinned.as_mut()).await {
             Either::Left(_) => {
                 abort_handle.abort();
                 return PhaseOutcome::Cancelled;
@@ -440,7 +440,7 @@ where
     };
 
     let grace_timer = std::pin::pin!(sleep(grace));
-    match select(join_fut, grace_timer).await {
+    match select(join_fut_pinned, grace_timer).await {
         // Body finished within the grace window — either Ok(value),
         // Aborted (inner phase wrapper aborted), or wall-cancelled
         // via the now-cancelled phase_token returned by an inner

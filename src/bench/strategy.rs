@@ -7,6 +7,7 @@
 //! allows their literals (`Sequential(1000)`) to be evaluated directly at
 //! the `benchmark = ...` attribute site.
 
+use std::iter;
 use std::panic::AssertUnwindSafe;
 use std::time::Instant;
 
@@ -101,16 +102,16 @@ impl Strategy for Concurrent {
         // join. `iter_start` is captured inside each wrapped future so
         // the sample measures the body's actual polling time, not the
         // fan-out overhead.
-        let mut in_flight: FuturesUnordered<_> = (0..iterations)
-            .map(|_| {
-                let fut = body();
-                async move {
-                    let iter_start = Instant::now();
-                    let result = AssertUnwindSafe(fut).catch_unwind().await;
-                    (iter_start.elapsed(), result)
-                }
-            })
-            .collect();
+        let mut in_flight: FuturesUnordered<_> = iter::repeat_with(|| {
+            let fut = body();
+            async move {
+                let iter_start = Instant::now();
+                let result = AssertUnwindSafe(fut).catch_unwind().await;
+                (iter_start.elapsed(), result)
+            }
+        })
+        .take(iterations)
+        .collect();
 
         let mut samples = Vec::with_capacity(iterations);
         let mut failures = Vec::new();

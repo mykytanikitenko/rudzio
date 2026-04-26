@@ -629,11 +629,13 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
             (LifecyclePhase::Setup, None) => StatusLabel::SetupOk,
             // Suite-level setup failure renders as [FAIL]; the
             // [SETUP] tag is reserved for per-test SetupFailed.
-            (LifecyclePhase::Setup, Some(LifecycleFailure::Error(_))) => StatusLabel::Fail,
-            (LifecyclePhase::Setup, Some(LifecycleFailure::Panicked(_))) => StatusLabel::Panic,
+            (LifecyclePhase::Setup | LifecyclePhase::Teardown, Some(LifecycleFailure::Error(_))) => {
+                StatusLabel::Fail
+            }
+            (LifecyclePhase::Setup | LifecyclePhase::Teardown, Some(LifecycleFailure::Panicked(_))) => {
+                StatusLabel::Panic
+            }
             (LifecyclePhase::Teardown, None) => StatusLabel::Ok,
-            (LifecyclePhase::Teardown, Some(LifecycleFailure::Error(_))) => StatusLabel::Fail,
-            (LifecyclePhase::Teardown, Some(LifecycleFailure::Panicked(_))) => StatusLabel::Panic,
         };
         let tag_rendered = render_status_tag(label, self.color);
         let suite_disp = normalize_module_path(suite);
@@ -645,8 +647,8 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
         drop(self.terminal.write_all(header.as_bytes()));
         drop(self.terminal.write_all(b"\n"));
 
-        if let Some(failure) = failure {
-            let (label_text, message) = match failure {
+        if let Some(failure_kind) = failure {
+            let (label_text, message) = match failure_kind {
                 LifecycleFailure::Error(msg) => ("error", msg),
                 LifecycleFailure::Panicked(msg) => ("panic", msg),
                 LifecycleFailure::TimedOut(msg) => ("timeout", msg),
@@ -889,8 +891,8 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
                     Ok(chunk) => self.handle_pipe(chunk),
                     Err(_) => break,
                 },
-                recv(timer) -> _tick => self.redraw_live_region(),
-                recv(self.shutdown_rx) -> _done => break,
+                recv(timer) -> _ => self.redraw_live_region(),
+                recv(self.shutdown_rx) -> _ => break,
             }
         }
         self.drain_remaining();
@@ -1218,11 +1220,11 @@ fn bar_render(done: usize, total: usize, width: usize) -> String {
     if width == 0 {
         return String::new();
     }
-    let filled = if total == 0 {
-        0
-    } else {
-        (done.saturating_mul(width) / total).min(width)
-    };
+    let filled = done
+        .saturating_mul(width)
+        .checked_div(total)
+        .unwrap_or(0)
+        .min(width);
     let mut out = String::with_capacity(width.saturating_add(2));
     out.push('[');
     for _ in 0..filled {
@@ -1258,11 +1260,7 @@ pub fn bench_progress_trailing(
     cols: usize,
     _elapsed: Duration,
 ) -> String {
-    let pct = if snap.total == 0 {
-        0
-    } else {
-        snap.done.saturating_mul(100) / snap.total
-    };
+    let pct = snap.done.saturating_mul(100).checked_div(snap.total).unwrap_or(0);
     let bar = bar_render(snap.done, snap.total, 10);
     let cov_finite = snap.cov.is_finite();
     if cols >= 100 && cov_finite {
@@ -1449,12 +1447,12 @@ pub fn bench_histogram_lines(
             bars.push(levels[level.min(7)]);
         }
     }
-    let bars_line = format!("{:width$}{bars}", "", width = indent_width);
-    let bars_line = clip_to_cols(&bars_line, line_budget);
+    let bars_line_raw = format!("{:width$}{bars}", "", width = indent_width);
+    let bars_line = clip_to_cols(&bars_line_raw, line_budget);
 
     let axis_text = format!("{:.0?} … {:.0?}", snap.min, snap.max);
-    let axis_line = format!("{:width$}{axis_text}", "", width = indent_width);
-    let axis_line = clip_to_cols(&axis_line, line_budget);
+    let axis_line_raw = format!("{:width$}{axis_text}", "", width = indent_width);
+    let axis_line = clip_to_cols(&axis_line_raw, line_budget);
 
     vec![color.dim(&bars_line), color.dim(&axis_line)]
 }

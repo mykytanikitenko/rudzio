@@ -41,18 +41,18 @@ use std::path::PathBuf;
 /// `panic!` — users do not construct this directly.
 #[derive(Debug)]
 #[doc(hidden)]
-pub struct BinNotFound {
+pub struct NotFound {
     message: String,
 }
 
-impl fmt::Display for BinNotFound {
+impl fmt::Display for NotFound {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message)
     }
 }
 
-impl Error for BinNotFound {}
+impl Error for NotFound {}
 
 /// Runtime backing for the [`crate::bin!`] macro. Only called when
 /// `option_env!("CARGO_BIN_EXE_<name>")` was `None` at compile time.
@@ -65,12 +65,12 @@ impl Error for BinNotFound {}
 ///
 /// # Errors
 ///
-/// Returns [`BinNotFound`] if `current_exe()` fails, the expected
+/// Returns [`NotFound`] if `current_exe()` fails, the expected
 /// ancestor directories are missing, or the bin file isn't on disk.
 #[doc(hidden)]
 #[inline]
-pub fn __resolve_at_runtime(bin_name: &str) -> Result<PathBuf, BinNotFound> {
-    let current = env::current_exe().map_err(|err| BinNotFound {
+pub fn __resolve_at_runtime(bin_name: &str) -> Result<PathBuf, NotFound> {
+    let current = env::current_exe().map_err(|err| NotFound {
         message: format!(
             "rudzio::bin!(\"{bin_name}\"): failed to read \
              `std::env::current_exe()`: {err}. Cargo's test runner normally \
@@ -78,7 +78,7 @@ pub fn __resolve_at_runtime(bin_name: &str) -> Result<PathBuf, BinNotFound> {
              process environment."
         ),
     })?;
-    let deps_dir = current.parent().ok_or_else(|| BinNotFound {
+    let deps_dir = current.parent().ok_or_else(|| NotFound {
         message: format!(
             "rudzio::bin!(\"{bin_name}\"): the current exe `{}` has no \
              parent directory, so the runtime fallback can't locate a \
@@ -86,7 +86,7 @@ pub fn __resolve_at_runtime(bin_name: &str) -> Result<PathBuf, BinNotFound> {
             current.display()
         ),
     })?;
-    let profile_dir = deps_dir.parent().ok_or_else(|| BinNotFound {
+    let profile_dir = deps_dir.parent().ok_or_else(|| NotFound {
         message: format!(
             "rudzio::bin!(\"{bin_name}\"): the deps directory `{}` has no \
              parent, so the runtime fallback can't walk up to a \
@@ -103,7 +103,7 @@ pub fn __resolve_at_runtime(bin_name: &str) -> Result<PathBuf, BinNotFound> {
     if candidate.exists() {
         return Ok(candidate);
     }
-    Err(BinNotFound {
+    Err(NotFound {
         message: format!(
             "rudzio::bin!(\"{bin_name}\"): no binary at `{}`. \
              `CARGO_BIN_EXE_{bin_name}` wasn't set at compile time and the \

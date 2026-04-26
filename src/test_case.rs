@@ -30,10 +30,10 @@ pub struct TestCase {
 ///
 /// Implemented for:
 /// - `()` (bare-body tests: `#[rudzio::test] fn foo() { assert!(...) }`)
-///    — treated as success; any panic inside the body is caught by the
-///    runner's `catch_unwind`.
+///   — treated as success; any panic inside the body is caught by the
+///   runner's `catch_unwind`.
 /// - `Result<T, E>` where `E: Display` — success on `Ok(_)`, the error
-///    message is extracted on `Err` via [`box_error`]. `T` is discarded.
+///   message is extracted on `Err` via [`box_error`]. `T` is discarded.
 ///
 /// The codegen at `macro-internals/src/suite_codegen.rs` emits
 /// `<body>.into_rudzio_result()` (or `.await.into_rudzio_result()` for

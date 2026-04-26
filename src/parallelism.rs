@@ -85,12 +85,12 @@ impl HardLimit {
         }
 
         let parked_at = Instant::now();
-        let mut state = inner
+        let mut woken_state = inner
             .cvar
-            .wait_while(state, |inner| inner.available == 0)
+            .wait_while(state, |waiting| waiting.available == 0)
             .unwrap_or_else(PoisonError::into_inner);
-        state.available -= 1;
-        drop(state);
+        woken_state.available -= 1;
+        drop(woken_state);
         let parked = parked_at.elapsed();
 
         (self.sink)(&format!(

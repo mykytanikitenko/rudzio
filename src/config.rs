@@ -153,11 +153,12 @@ pub struct CargoMeta {
 }
 
 /// ANSI colour policy for terminal output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ColorMode {
     /// Force colour on.
     Always,
     /// Enable colour if stdout is a TTY and `NO_COLOR` is unset.
+    #[default]
     Auto,
     /// Force colour off.
     Never,
@@ -326,9 +327,10 @@ pub struct Config {
 }
 
 /// Output rendering style.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Format {
     /// One line per test with status and elapsed time.
+    #[default]
     Pretty,
     /// One character per test (`.`/`F`/`c`/`i`) on a single line.
     Terse,
@@ -355,11 +357,12 @@ pub enum OutputMode {
 }
 
 /// How `#[ignore]`d tests should be treated for this run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RunIgnoredMode {
     /// `--include-ignored`: run every test, ignored or not.
     Include,
     /// Default: skip tests marked `#[ignore]`, report them as ignored.
+    #[default]
     Normal,
     /// `--ignored`: only run ignored tests.
     Only,
@@ -386,278 +389,10 @@ impl Config {
         env: BTreeMap<String, String>,
         cargo: CargoMeta,
     ) -> Self {
-        #[derive(Clone, Copy, Default)]
-        enum HardlimitArg {
-            Disabled,
-            Explicit(NonZeroUsize),
-            Threads,
-            #[default]
-            Unset,
-        }
+        let parsed = parse_argv(&argv);
 
-        fn classify_hardlimit(text: &str) -> Option<HardlimitArg> {
-            match text {
-                "none" => Some(HardlimitArg::Disabled),
-                "threads" => Some(HardlimitArg::Threads),
-                _ => text
-                    .parse::<usize>()
-                    .ok()
-                    .and_then(NonZeroUsize::new)
-                    .map(HardlimitArg::Explicit),
-            }
-        }
-
-        let mut filter: Option<String> = None;
-        let mut skip_filters: Vec<String> = Vec::new();
-        let mut threads: Option<usize> = None;
-        let mut concurrency_limit: Option<usize> = None;
-        let mut hardlimit_arg = HardlimitArg::Unset;
-        let mut format = Format::Pretty;
-        let mut color = ColorMode::Auto;
-        let mut run_ignored = RunIgnoredMode::Normal;
-        let mut bench_mode = BenchMode::Smoke;
-        let mut output_mode_explicit: Option<OutputMode> = None;
-        let mut list = false;
-        let mut help = false;
-        let mut test_timeout: Option<Duration> = None;
-        let mut run_timeout: Option<Duration> = None;
-        let mut suite_setup_timeout: Option<Duration> = None;
-        let mut suite_teardown_timeout: Option<Duration> = None;
-        let mut test_setup_timeout: Option<Duration> = None;
-        let mut test_teardown_timeout: Option<Duration> = None;
-        // Layer-2 grace defaults to OFF (`None`). When set, a phase
-        // that exceeds its budget is given the grace window to drop
-        // cooperatively before escalating to `Hung`. Off-by-default
-        // because the grace step polls the cancellable past
-        // `phase_token.cancel()`, which can let cooperative bodies
-        // observe their cancellation and run cleanup before the
-        // wrapper drops them — a behaviour change vs the
-        // pre-Layer-2 "drop on cancel immediately" semantic that
-        // existing fixtures rely on.
-        let mut phase_hang_grace: Option<Duration> = None;
-        // Layer-1 process-exit grace defaults to 5s; sync-blocked
-        // tasks ignoring SIGINT have always-on protection from
-        // `process::exit(2)` so the binary can't hang forever.
-        let mut cancel_grace_period: Option<Duration> = Some(Duration::from_secs(5));
-        let mut unparsed: Vec<String> = Vec::new();
-
-        let mut i = 0_usize;
-        while i < argv.len() {
-            let arg = &argv[i];
-
-            if let Some(rest) = arg.strip_prefix("--test-threads=") {
-                if let Ok(n) = rest.parse::<usize>()
-                    && n > 0
-                {
-                    threads = Some(n);
-                }
-            } else if arg == "--test-threads" {
-                i += 1;
-                if let Some(next) = argv.get(i)
-                    && let Ok(n) = next.parse::<usize>()
-                    && n > 0
-                {
-                    threads = Some(n);
-                }
-            } else if let Some(rest) = arg.strip_prefix("--concurrency-limit=") {
-                if let Ok(n) = rest.parse::<usize>()
-                    && n > 0
-                {
-                    concurrency_limit = Some(n);
-                }
-            } else if arg == "--concurrency-limit" {
-                i += 1;
-                if let Some(next) = argv.get(i)
-                    && let Ok(n) = next.parse::<usize>()
-                    && n > 0
-                {
-                    concurrency_limit = Some(n);
-                }
-            } else if let Some(rest) = arg.strip_prefix("--threads-parallel-hardlimit=") {
-                if let Some(parsed) = classify_hardlimit(rest) {
-                    hardlimit_arg = parsed;
-                }
-            } else if arg == "--threads-parallel-hardlimit" {
-                i += 1;
-                if let Some(parsed) = argv.get(i).and_then(|next| classify_hardlimit(next)) {
-                    hardlimit_arg = parsed;
-                }
-            } else if let Some(rest) = arg.strip_prefix("--color=") {
-                color = match rest {
-                    "always" => ColorMode::Always,
-                    "never" => ColorMode::Never,
-                    _ => ColorMode::Auto,
-                };
-            } else if arg == "--color" {
-                i += 1;
-                if let Some(next) = argv.get(i) {
-                    color = match next.as_str() {
-                        "always" => ColorMode::Always,
-                        "never" => ColorMode::Never,
-                        _ => ColorMode::Auto,
-                    };
-                }
-            } else if let Some(rest) = arg.strip_prefix("--format=") {
-                format = if rest == "terse" {
-                    Format::Terse
-                } else {
-                    Format::Pretty
-                };
-            } else if arg == "--format" {
-                i += 1;
-                if argv.get(i).is_some_and(|val| val == "terse") {
-                    format = Format::Terse;
-                }
-            } else if arg == "--ignored" {
-                run_ignored = RunIgnoredMode::Only;
-            } else if arg == "--include-ignored" {
-                run_ignored = RunIgnoredMode::Include;
-            } else if arg == "--bench" {
-                bench_mode = BenchMode::Full;
-            } else if arg == "--no-bench" {
-                bench_mode = BenchMode::Skip;
-            } else if let Some(rest) = arg.strip_prefix("--output=") {
-                output_mode_explicit = match rest {
-                    "live" => Some(OutputMode::Live),
-                    "plain" => Some(OutputMode::Plain),
-                    _ => output_mode_explicit,
-                };
-            } else if arg == "--output" {
-                i += 1;
-                if let Some(next) = argv.get(i) {
-                    output_mode_explicit = match next.as_str() {
-                        "live" => Some(OutputMode::Live),
-                        "plain" => Some(OutputMode::Plain),
-                        _ => output_mode_explicit,
-                    };
-                }
-            } else if arg == "--plain" {
-                output_mode_explicit = Some(OutputMode::Plain);
-            } else if arg == "--list" {
-                list = true;
-            } else if arg == "--help" || arg == "-h" {
-                help = true;
-            } else if let Some(rest) = arg.strip_prefix("--test-timeout=") {
-                if let Ok(secs) = rest.parse::<u64>() {
-                    test_timeout = Some(Duration::from_secs(secs));
-                }
-            } else if arg == "--test-timeout" {
-                i += 1;
-                if let Some(next) = argv.get(i)
-                    && let Ok(secs) = next.parse::<u64>()
-                {
-                    test_timeout = Some(Duration::from_secs(secs));
-                }
-            } else if let Some(rest) = arg.strip_prefix("--run-timeout=") {
-                if let Ok(secs) = rest.parse::<u64>() {
-                    run_timeout = Some(Duration::from_secs(secs));
-                }
-            } else if arg == "--run-timeout" {
-                i += 1;
-                if let Some(next) = argv.get(i)
-                    && let Ok(secs) = next.parse::<u64>()
-                {
-                    run_timeout = Some(Duration::from_secs(secs));
-                }
-            } else if let Some(rest) = arg.strip_prefix("--suite-setup-timeout=") {
-                if let Ok(secs) = rest.parse::<u64>() {
-                    suite_setup_timeout = Some(Duration::from_secs(secs));
-                }
-            } else if arg == "--suite-setup-timeout" {
-                i += 1;
-                if let Some(next) = argv.get(i)
-                    && let Ok(secs) = next.parse::<u64>()
-                {
-                    suite_setup_timeout = Some(Duration::from_secs(secs));
-                }
-            } else if let Some(rest) = arg.strip_prefix("--suite-teardown-timeout=") {
-                if let Ok(secs) = rest.parse::<u64>() {
-                    suite_teardown_timeout = Some(Duration::from_secs(secs));
-                }
-            } else if arg == "--suite-teardown-timeout" {
-                i += 1;
-                if let Some(next) = argv.get(i)
-                    && let Ok(secs) = next.parse::<u64>()
-                {
-                    suite_teardown_timeout = Some(Duration::from_secs(secs));
-                }
-            } else if let Some(rest) = arg.strip_prefix("--test-setup-timeout=") {
-                if let Ok(secs) = rest.parse::<u64>() {
-                    test_setup_timeout = Some(Duration::from_secs(secs));
-                }
-            } else if arg == "--test-setup-timeout" {
-                i += 1;
-                if let Some(next) = argv.get(i)
-                    && let Ok(secs) = next.parse::<u64>()
-                {
-                    test_setup_timeout = Some(Duration::from_secs(secs));
-                }
-            } else if let Some(rest) = arg.strip_prefix("--test-teardown-timeout=") {
-                if let Ok(secs) = rest.parse::<u64>() {
-                    test_teardown_timeout = Some(Duration::from_secs(secs));
-                }
-            } else if arg == "--test-teardown-timeout" {
-                i += 1;
-                if let Some(next) = argv.get(i)
-                    && let Ok(secs) = next.parse::<u64>()
-                {
-                    test_teardown_timeout = Some(Duration::from_secs(secs));
-                }
-            } else if let Some(rest) = arg.strip_prefix("--phase-hang-grace=") {
-                if let Ok(secs) = rest.parse::<u64>() {
-                    phase_hang_grace = if secs == 0 {
-                        None
-                    } else {
-                        Some(Duration::from_secs(secs))
-                    };
-                }
-            } else if arg == "--phase-hang-grace" {
-                i += 1;
-                if let Some(next) = argv.get(i)
-                    && let Ok(secs) = next.parse::<u64>()
-                {
-                    phase_hang_grace = if secs == 0 {
-                        None
-                    } else {
-                        Some(Duration::from_secs(secs))
-                    };
-                }
-            } else if let Some(rest) = arg.strip_prefix("--cancel-grace-period=") {
-                if let Ok(secs) = rest.parse::<u64>() {
-                    cancel_grace_period = if secs == 0 {
-                        None
-                    } else {
-                        Some(Duration::from_secs(secs))
-                    };
-                }
-            } else if arg == "--cancel-grace-period" {
-                i += 1;
-                if let Some(next) = argv.get(i)
-                    && let Ok(secs) = next.parse::<u64>()
-                {
-                    cancel_grace_period = if secs == 0 {
-                        None
-                    } else {
-                        Some(Duration::from_secs(secs))
-                    };
-                }
-            } else if let Some(rest) = arg.strip_prefix("--skip=") {
-                skip_filters.push(rest.to_owned());
-            } else if arg == "--skip" {
-                i += 1;
-                if let Some(next) = argv.get(i) {
-                    skip_filters.push(next.clone());
-                }
-            } else if !arg.starts_with('-') {
-                filter = Some(arg.clone());
-            } else {
-                unparsed.push(arg.clone());
-            }
-
-            i += 1;
-        }
-
-        let threads = threads
+        let resolved_threads = parsed
+            .threads
             .or_else(|| {
                 env.get("RUST_TEST_THREADS")
                     .and_then(|val| val.parse::<usize>().ok())
@@ -668,54 +403,43 @@ impl Config {
         // `concurrency_limit` defaults to `threads` so the single-flag
         // `--test-threads=N` invocation keeps behaving the way libtest users
         // expect: N worker threads, N tests in-flight.
-        let concurrency_limit = concurrency_limit.unwrap_or(threads);
+        let resolved_concurrency_limit = parsed.concurrency_limit.unwrap_or(resolved_threads);
 
         // `threads` is guaranteed >= 1 by the resolution chain above
         // (available_parallelism returns NonZeroUsize); the fallback is
         // unreachable in practice but keeps us off unwrap/expect.
-        let threads_nz = NonZeroUsize::new(threads).unwrap_or(NonZeroUsize::MIN);
-        let parallel_hardlimit: Option<NonZeroUsize> = match hardlimit_arg {
-            HardlimitArg::Unset => {
-                if bench_mode == BenchMode::Full {
-                    None
-                } else {
-                    Some(threads_nz)
-                }
-            }
-            HardlimitArg::Disabled => None,
-            HardlimitArg::Threads => Some(threads_nz),
-            HardlimitArg::Explicit(n) => Some(n),
-        };
+        let threads_nz = NonZeroUsize::new(resolved_threads).unwrap_or(NonZeroUsize::MIN);
+        let parallel_hardlimit = resolve_parallel_hardlimit(parsed.hardlimit_arg, parsed.bench_mode, threads_nz);
 
-        let output_mode = OutputMode::resolve(output_mode_explicit, &env);
+        let output_mode = OutputMode::resolve(parsed.output_mode_explicit, &env);
 
         let hardlimit = Arc::new(HardLimit::new(parallel_hardlimit));
 
         Self {
-            bench_mode,
-            cancel_grace_period,
+            bench_mode: parsed.bench_mode,
+            cancel_grace_period: parsed.cancel_grace_period,
             cargo,
-            color,
-            concurrency_limit,
+            color: parsed.color,
+            concurrency_limit: resolved_concurrency_limit,
             env,
-            filter,
-            format,
+            filter: parsed.filter,
+            format: parsed.format,
             hardlimit,
-            help,
-            list,
+            help: parsed.help,
+            list: parsed.list,
             output_mode,
             parallel_hardlimit,
-            phase_hang_grace,
-            run_ignored,
-            run_timeout,
-            skip_filters,
-            suite_setup_timeout,
-            suite_teardown_timeout,
-            test_setup_timeout,
-            test_teardown_timeout,
-            test_timeout,
-            threads,
-            unparsed,
+            phase_hang_grace: parsed.phase_hang_grace,
+            run_ignored: parsed.run_ignored,
+            run_timeout: parsed.run_timeout,
+            skip_filters: parsed.skip_filters,
+            suite_setup_timeout: parsed.suite_setup_timeout,
+            suite_teardown_timeout: parsed.suite_teardown_timeout,
+            test_setup_timeout: parsed.test_setup_timeout,
+            test_teardown_timeout: parsed.test_teardown_timeout,
+            test_timeout: parsed.test_timeout,
+            threads: resolved_threads,
+            unparsed: parsed.unparsed,
         }
     }
 
@@ -731,6 +455,358 @@ impl Config {
         let env_snapshot: BTreeMap<String, String> = env::vars().collect();
         Self::from_argv_and_env(argv, env_snapshot, cargo)
     }
+}
+
+/// Resolution outcome for `--threads-parallel-hardlimit=<value>`.
+///
+/// `Default` is [`Self::Unset`], meaning "no flag observed, fall back to the
+/// per-bench-mode default at resolution time".
+#[derive(Clone, Copy, Default)]
+enum HardlimitArg {
+    Disabled,
+    Explicit(NonZeroUsize),
+    Threads,
+    #[default]
+    Unset,
+}
+
+/// Map a `--threads-parallel-hardlimit=<value>` string to a [`HardlimitArg`].
+fn classify_hardlimit(text: &str) -> Option<HardlimitArg> {
+    match text {
+        "none" => Some(HardlimitArg::Disabled),
+        "threads" => Some(HardlimitArg::Threads),
+        _ => text
+            .parse::<usize>()
+            .ok()
+            .and_then(NonZeroUsize::new)
+            .map(HardlimitArg::Explicit),
+    }
+}
+
+/// Resolve the final parallel-hardlimit policy by combining a user's flag
+/// choice with the active bench mode and the resolved thread count.
+fn resolve_parallel_hardlimit(
+    arg: HardlimitArg,
+    bench_mode: BenchMode,
+    threads_nz: NonZeroUsize,
+) -> Option<NonZeroUsize> {
+    match arg {
+        HardlimitArg::Unset => {
+            if bench_mode == BenchMode::Full {
+                None
+            } else {
+                Some(threads_nz)
+            }
+        }
+        HardlimitArg::Disabled => None,
+        HardlimitArg::Threads => Some(threads_nz),
+        HardlimitArg::Explicit(n) => Some(n),
+    }
+}
+
+/// Mutable bag carrying the partial parsing state for a single argv pass.
+///
+/// Splitting the long `from_argv_and_env` flag-loop into `parse_argv` plus
+/// per-flag-family helpers keeps cognitive complexity inside the parser
+/// loop bounded — each helper handles one category of flag.
+#[derive(Default)]
+struct ParsedArgs {
+    bench_mode: BenchMode,
+    cancel_grace_period: Option<Duration>,
+    color: ColorMode,
+    concurrency_limit: Option<usize>,
+    filter: Option<String>,
+    format: Format,
+    hardlimit_arg: HardlimitArg,
+    help: bool,
+    list: bool,
+    output_mode_explicit: Option<OutputMode>,
+    phase_hang_grace: Option<Duration>,
+    run_ignored: RunIgnoredMode,
+    run_timeout: Option<Duration>,
+    skip_filters: Vec<String>,
+    suite_setup_timeout: Option<Duration>,
+    suite_teardown_timeout: Option<Duration>,
+    test_setup_timeout: Option<Duration>,
+    test_teardown_timeout: Option<Duration>,
+    test_timeout: Option<Duration>,
+    threads: Option<usize>,
+    unparsed: Vec<String>,
+}
+
+/// Read the value belonging to a long flag whose syntax is either
+/// `--flag=<value>` or `--flag <value>`. Returns the value (borrowed from
+/// `argv`) and updates `i` to point at the value slot when the spaced form
+/// is observed.
+///
+/// `prefix_eq` must include the trailing `=` (e.g. `"--test-threads="`);
+/// `flag_name` is the bare form (e.g. `"--test-threads"`).
+fn flag_value<'a>(
+    arg: &'a str,
+    flag_name: &str,
+    prefix_eq: &str,
+    argv: &'a [String],
+    i: &mut usize,
+) -> Option<&'a str> {
+    if let Some(rest) = arg.strip_prefix(prefix_eq) {
+        return Some(rest);
+    }
+    if arg == flag_name {
+        *i = i.saturating_add(1);
+        return argv.get(*i).map(String::as_str);
+    }
+    None
+}
+
+/// Parse a positive `usize` value from one of the `--flag=<n>` /
+/// `--flag <n>` flags. Returns `Some(n)` only when the value is `>= 1`.
+fn parse_positive_usize_flag(
+    arg: &str,
+    flag_name: &str,
+    prefix_eq: &str,
+    argv: &[String],
+    i: &mut usize,
+) -> Option<usize> {
+    let value = flag_value(arg, flag_name, prefix_eq, argv, i)?;
+    value.parse::<usize>().ok().filter(|&n| n > 0)
+}
+
+/// Parse a `--flag=<secs>` / `--flag <secs>` duration flag. Returns
+/// `Some(Duration::from_secs(secs))` for any non-negative integer; an
+/// explicit `0` here is preserved as `Duration::ZERO` (callers that want
+/// "0 means disabled" should use [`parse_optional_duration_secs_flag`]).
+fn parse_duration_secs_flag(
+    arg: &str,
+    flag_name: &str,
+    prefix_eq: &str,
+    argv: &[String],
+    i: &mut usize,
+) -> Option<Duration> {
+    let value = flag_value(arg, flag_name, prefix_eq, argv, i)?;
+    value.parse::<u64>().ok().map(Duration::from_secs)
+}
+
+/// Parse a `--flag=<secs>` / `--flag <secs>` duration flag where `secs == 0`
+/// disables the feature (returns `None` inside the outer `Some(_)`). Returns
+/// `Some(Some(d))` for non-zero values, `Some(None)` for explicit `0`, and
+/// `None` when the flag wasn't matched at all.
+fn parse_optional_duration_secs_flag(
+    arg: &str,
+    flag_name: &str,
+    prefix_eq: &str,
+    argv: &[String],
+    i: &mut usize,
+) -> Option<Option<Duration>> {
+    let value = flag_value(arg, flag_name, prefix_eq, argv, i)?;
+    let secs = value.parse::<u64>().ok()?;
+    Some(if secs == 0 {
+        None
+    } else {
+        Some(Duration::from_secs(secs))
+    })
+}
+
+/// Try to consume a flag that selects a thread/concurrency knob. Returns
+/// `true` when the current `arg` matched one of the knobs.
+fn handle_concurrency_flag(
+    state: &mut ParsedArgs,
+    arg: &str,
+    argv: &[String],
+    i: &mut usize,
+) -> bool {
+    if let Some(n) = parse_positive_usize_flag(arg, "--test-threads", "--test-threads=", argv, i) {
+        state.threads = Some(n);
+        return true;
+    }
+    if let Some(n) =
+        parse_positive_usize_flag(arg, "--concurrency-limit", "--concurrency-limit=", argv, i)
+    {
+        state.concurrency_limit = Some(n);
+        return true;
+    }
+    if let Some(value) = flag_value(
+        arg,
+        "--threads-parallel-hardlimit",
+        "--threads-parallel-hardlimit=",
+        argv,
+        i,
+    ) {
+        if let Some(parsed) = classify_hardlimit(value) {
+            state.hardlimit_arg = parsed;
+        }
+        return true;
+    }
+    false
+}
+
+/// Parse a `ColorMode` from its CLI string spelling, defaulting unknown
+/// values to [`ColorMode::Auto`].
+fn color_mode_from_str(s: &str) -> ColorMode {
+    match s {
+        "always" => ColorMode::Always,
+        "never" => ColorMode::Never,
+        _ => ColorMode::Auto,
+    }
+}
+
+/// Try to consume a flag that toggles a presentation knob (color, format,
+/// output mode, list, help, ignored, bench). Returns `true` on match.
+fn handle_presentation_flag(
+    state: &mut ParsedArgs,
+    arg: &str,
+    argv: &[String],
+    i: &mut usize,
+) -> bool {
+    if let Some(value) = flag_value(arg, "--color", "--color=", argv, i) {
+        state.color = color_mode_from_str(value);
+        return true;
+    }
+    if let Some(value) = flag_value(arg, "--format", "--format=", argv, i) {
+        state.format = if value == "terse" {
+            Format::Terse
+        } else {
+            Format::Pretty
+        };
+        return true;
+    }
+    if let Some(value) = flag_value(arg, "--output", "--output=", argv, i) {
+        match value {
+            "live" => state.output_mode_explicit = Some(OutputMode::Live),
+            "plain" => state.output_mode_explicit = Some(OutputMode::Plain),
+            _ => {}
+        }
+        return true;
+    }
+    match arg {
+        "--ignored" => state.run_ignored = RunIgnoredMode::Only,
+        "--include-ignored" => state.run_ignored = RunIgnoredMode::Include,
+        "--bench" => state.bench_mode = BenchMode::Full,
+        "--no-bench" => state.bench_mode = BenchMode::Skip,
+        "--plain" => state.output_mode_explicit = Some(OutputMode::Plain),
+        "--list" => state.list = true,
+        "--help" | "-h" => state.help = true,
+        _ => return false,
+    }
+    true
+}
+
+/// Try to consume one of the `Option<Duration>` timeout flags. Returns
+/// `true` on match.
+fn handle_timeout_flag(state: &mut ParsedArgs, arg: &str, argv: &[String], i: &mut usize) -> bool {
+    if let Some(d) = parse_duration_secs_flag(arg, "--test-timeout", "--test-timeout=", argv, i) {
+        state.test_timeout = Some(d);
+        return true;
+    }
+    if let Some(d) = parse_duration_secs_flag(arg, "--run-timeout", "--run-timeout=", argv, i) {
+        state.run_timeout = Some(d);
+        return true;
+    }
+    if let Some(d) = parse_duration_secs_flag(
+        arg,
+        "--suite-setup-timeout",
+        "--suite-setup-timeout=",
+        argv,
+        i,
+    ) {
+        state.suite_setup_timeout = Some(d);
+        return true;
+    }
+    if let Some(d) = parse_duration_secs_flag(
+        arg,
+        "--suite-teardown-timeout",
+        "--suite-teardown-timeout=",
+        argv,
+        i,
+    ) {
+        state.suite_teardown_timeout = Some(d);
+        return true;
+    }
+    if let Some(d) =
+        parse_duration_secs_flag(arg, "--test-setup-timeout", "--test-setup-timeout=", argv, i)
+    {
+        state.test_setup_timeout = Some(d);
+        return true;
+    }
+    if let Some(d) = parse_duration_secs_flag(
+        arg,
+        "--test-teardown-timeout",
+        "--test-teardown-timeout=",
+        argv,
+        i,
+    ) {
+        state.test_teardown_timeout = Some(d);
+        return true;
+    }
+    if let Some(value) =
+        parse_optional_duration_secs_flag(arg, "--phase-hang-grace", "--phase-hang-grace=", argv, i)
+    {
+        state.phase_hang_grace = value;
+        return true;
+    }
+    if let Some(value) = parse_optional_duration_secs_flag(
+        arg,
+        "--cancel-grace-period",
+        "--cancel-grace-period=",
+        argv,
+        i,
+    ) {
+        state.cancel_grace_period = value;
+        return true;
+    }
+    false
+}
+
+/// Try to consume a `--skip` filter, the implicit positional filter, or
+/// fall back to recording the arg in `unparsed`.
+fn handle_filter_or_unparsed(
+    state: &mut ParsedArgs,
+    arg: &str,
+    argv: &[String],
+    i: &mut usize,
+) -> bool {
+    if let Some(rest) = arg.strip_prefix("--skip=") {
+        state.skip_filters.push(rest.to_owned());
+        return true;
+    }
+    if arg == "--skip" {
+        *i = i.saturating_add(1);
+        if let Some(next) = argv.get(*i) {
+            state.skip_filters.push(next.clone());
+        }
+        return true;
+    }
+    if !arg.starts_with('-') {
+        state.filter = Some(arg.to_owned());
+    } else {
+        state.unparsed.push(arg.to_owned());
+    }
+    true
+}
+
+/// Run the full argv pass, handing each arg to the family-specific
+/// helpers in turn. Returns the populated [`ParsedArgs`] for downstream
+/// resolution.
+fn parse_argv(argv: &[String]) -> ParsedArgs {
+    // Layer-1 process-exit grace defaults to 5s; sync-blocked
+    // tasks ignoring SIGINT have always-on protection from
+    // `process::exit(2)` so the binary can't hang forever.
+    let mut state = ParsedArgs {
+        cancel_grace_period: Some(Duration::from_secs(5)),
+        ..ParsedArgs::default()
+    };
+
+    let mut i = 0_usize;
+    while i < argv.len() {
+        let arg = argv[i].clone();
+        let consumed = handle_concurrency_flag(&mut state, &arg, argv, &mut i)
+            || handle_presentation_flag(&mut state, &arg, argv, &mut i)
+            || handle_timeout_flag(&mut state, &arg, argv, &mut i)
+            || handle_filter_or_unparsed(&mut state, &arg, argv, &mut i);
+        debug_assert!(consumed, "every arg should be consumed by some handler");
+        i = i.saturating_add(1);
+    }
+
+    state
 }
 
 impl OutputMode {

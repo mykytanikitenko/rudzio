@@ -196,8 +196,8 @@ impl StdError for Error {
         // `Box<dyn Error + Send + Sync>::deref` yields `&(dyn Error + Send + Sync)`,
         // which coerces directly to `&(dyn Error + 'static)`.
         self.source.as_deref().map(|err| {
-            let err: &(dyn StdError + 'static) = err;
-            err
+            let upcast: &(dyn StdError + 'static) = err;
+            upcast
         })
     }
 }
