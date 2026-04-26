@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 use crate::config::{CargoMeta, ColorMode, Config, Format, OutputMode, RunIgnoredMode, USAGE};
 use crate::output;
 use crate::output::events::LifecycleEvent;
+use crate::output::{write_stderr, write_stdout};
 use crate::suite::{
     RuntimeGroupKey, RuntimeGroupOwner, SuiteReporter, SuiteRunRequest, SuiteSummary,
     TeardownResult, TestOutcome,
@@ -196,7 +197,7 @@ impl SuiteReporter for ModeReporter {
         if let Some(plain) = &self.plain {
             match plain.fmt {
                 Format::Terse => {
-                    print!("{}", yellow("c", plain.colored));
+                    write_stdout(&yellow("c", plain.colored));
                     let _flush = io::stdout().flush();
                 }
                 Format::Pretty => {
@@ -207,7 +208,7 @@ impl SuiteReporter for ModeReporter {
                     let trailing = runtime_only_info(runtime_name);
                     let line =
                         render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
-                    println!("{line}");
+                    write_stdout(&format!("{line}\n"));
                 }
             }
             return;
@@ -224,7 +225,7 @@ impl SuiteReporter for ModeReporter {
         if let Some(plain) = &self.plain {
             match plain.fmt {
                 Format::Terse => {
-                    print!("{}", yellow("i", plain.colored));
+                    write_stdout(&yellow("i", plain.colored));
                     let _flush = io::stdout().flush();
                 }
                 Format::Pretty => {
@@ -239,7 +240,7 @@ impl SuiteReporter for ModeReporter {
                     let lhs_rendered = format!("{tag_rendered} {display}");
                     let line =
                         render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
-                    println!("{line}");
+                    write_stdout(&format!("{line}\n"));
                 }
             }
             return;
@@ -281,7 +282,7 @@ impl SuiteReporter for ModeReporter {
                         }
                     }
                 };
-                print!("{glyph}");
+                write_stdout(&glyph);
                 let _flush = io::stdout().flush();
             }
             Format::Pretty => {
@@ -333,7 +334,7 @@ impl SuiteReporter for ModeReporter {
                         buf.push_str(&painted);
                     }
                 }
-                println!("{buf}");
+                write_stdout(&format!("{buf}\n"));
             }
         }
 
@@ -405,9 +406,12 @@ impl SuiteReporter for ModeReporter {
                 let lhs_rendered = format!("{tag_rendered} {display}");
                 let line =
                     render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
-                println!("{line}");
+                write_stdout(&format!("{line}\n"));
                 if let Some(msg) = error {
-                    println!("  {}", red(&format!("error: {msg}"), plain.colored));
+                    write_stdout(&format!(
+                        "  {}\n",
+                        red(&format!("error: {msg}"), plain.colored)
+                    ));
                 }
             }
             if let Some(msg) = error {
@@ -438,7 +442,7 @@ impl SuiteReporter for ModeReporter {
         if let Some(plain) = &self.plain {
             if matches!(plain.fmt, Format::Pretty) {
                 let suite_disp = normalize_module_path(suite);
-                println!("setup    {suite_disp} ... started <{runtime_name}>");
+                write_stdout(&format!("setup    {suite_disp} ... started <{runtime_name}>\n"));
             }
             return;
         }
@@ -474,23 +478,32 @@ impl SuiteReporter for ModeReporter {
                 let lhs_rendered = format!("{tag_rendered} {display}");
                 let line =
                     render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
-                println!("{line}");
+                write_stdout(&format!("{line}\n"));
                 match &result {
                     TeardownResult::Ok => {}
                     TeardownResult::Err(msg) => {
-                        println!("  {}", red(&format!("error: {msg}"), plain.colored));
+                        write_stdout(&format!(
+                            "  {}\n",
+                            red(&format!("error: {msg}"), plain.colored)
+                        ));
                     }
                     TeardownResult::Panicked(msg) => {
-                        println!("  {}", red(&format!("panic: {msg}"), plain.colored));
+                        write_stdout(&format!(
+                            "  {}\n",
+                            red(&format!("panic: {msg}"), plain.colored)
+                        ));
                     }
                     TeardownResult::TimedOut => {
-                        println!("  {}", red("timeout: teardown timed out", plain.colored));
+                        write_stdout(&format!(
+                            "  {}\n",
+                            red("timeout: teardown timed out", plain.colored)
+                        ));
                     }
                     TeardownResult::Hung => {
-                        println!(
-                            "  {}",
+                        write_stdout(&format!(
+                            "  {}\n",
                             red("hang: teardown hung; abort signal sent", plain.colored)
-                        );
+                        ));
                     }
                 }
             }
@@ -556,7 +569,7 @@ impl SuiteReporter for ModeReporter {
         if let Some(plain) = &self.plain {
             if matches!(plain.fmt, Format::Pretty) {
                 let suite_disp = normalize_module_path(suite);
-                println!("teardown {suite_disp} ... started <{runtime_name}>");
+                write_stdout(&format!("teardown {suite_disp} ... started <{runtime_name}>\n"));
             }
             return;
         }
@@ -594,23 +607,32 @@ impl SuiteReporter for ModeReporter {
                 let lhs_rendered = format!("{tag_rendered} {lhs_display}");
                 let line =
                     render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
-                println!("{line}");
+                write_stdout(&format!("{line}\n"));
                 match &result {
                     TeardownResult::Ok => {}
                     TeardownResult::Err(msg) => {
-                        println!("  {}", red(&format!("error: {msg}"), plain.colored));
+                        write_stdout(&format!(
+                            "  {}\n",
+                            red(&format!("error: {msg}"), plain.colored)
+                        ));
                     }
                     TeardownResult::Panicked(msg) => {
-                        println!("  {}", red(&format!("panic: {msg}"), plain.colored));
+                        write_stdout(&format!(
+                            "  {}\n",
+                            red(&format!("panic: {msg}"), plain.colored)
+                        ));
                     }
                     TeardownResult::TimedOut => {
-                        println!("  {}", red("timeout: teardown timed out", plain.colored));
+                        write_stdout(&format!(
+                            "  {}\n",
+                            red("timeout: teardown timed out", plain.colored)
+                        ));
                     }
                     TeardownResult::Hung => {
-                        println!(
-                            "  {}",
+                        write_stdout(&format!(
+                            "  {}\n",
                             red("hang: teardown hung; abort signal sent", plain.colored)
-                        );
+                        ));
                     }
                 }
             }
@@ -672,7 +694,7 @@ impl SuiteReporter for ModeReporter {
     }
 
     fn report_warning(&self, message: &str) {
-        eprintln!("warning: {message}");
+        write_stderr(&format!("warning: {message}\n"));
     }
 }
 
@@ -802,7 +824,7 @@ fn install_signal_handler(token: CancellationToken) {
     let mut signals = match Signals::new([SIGINT, SIGTERM]) {
         Ok(handle) => handle,
         Err(err) => {
-            eprintln!("warning: failed to install signal handler: {err}");
+            write_stderr(&format!("warning: failed to install signal handler: {err}\n"));
             return;
         }
     };
@@ -815,7 +837,7 @@ fn install_signal_handler(token: CancellationToken) {
                     SIGTERM => "SIGTERM",
                     _ => "unknown signal",
                 };
-                eprintln!("\nreceived {name}, cancelling run...");
+                write_stderr(&format!("\nreceived {name}, cancelling run...\n"));
                 token.cancel();
             }
         });
@@ -974,7 +996,7 @@ pub fn run(cargo: CargoMeta) -> ! {
     // output-capture pipe is installed, so the help text reaches the
     // user's terminal directly.
     if config.help {
-        print!("{USAGE}");
+        write_stdout(USAGE);
         process::exit(0);
     }
 
@@ -986,7 +1008,7 @@ pub fn run(cargo: CargoMeta) -> ! {
     let capture_guard = match output::init(&config) {
         Ok(guard) => guard,
         Err(err) => {
-            eprintln!("rudzio: failed to initialise output capture: {err}");
+            write_stderr(&format!("rudzio: failed to initialise output capture: {err}\n"));
             process::exit(2);
         }
     };
@@ -1013,10 +1035,10 @@ pub fn run(cargo: CargoMeta) -> ! {
     if config.list {
         drop(capture_guard);
         for token in &filtered_tokens {
-            println!(
-                "{}: test",
+            write_stdout(&format!(
+                "{}: test\n",
                 qualified_test_name(token.module_path, token.name)
-            );
+            ));
         }
         process::exit(0);
     }
@@ -1025,11 +1047,11 @@ pub fn run(cargo: CargoMeta) -> ! {
     // Only print the "running N tests" header in Plain mode — the
     // Live drawer has its own banner inside the live region.
     if matches!(config.output_mode, OutputMode::Plain) {
-        println!(
-            "running {} {}",
+        write_stdout(&format!(
+            "running {} {}\n",
             total_count,
             if total_count == 1 { "test" } else { "tests" }
-        );
+        ));
     }
 
     // Root cancellation token: cancelled on run-timeout, SIGINT, or SIGTERM.
@@ -1041,7 +1063,9 @@ pub fn run(cargo: CargoMeta) -> ! {
         let _watchdog = thread::spawn(move || {
             thread::sleep(dur);
             if !watchdog_token.is_cancelled() {
-                eprintln!("\nrun timeout ({dur:.2?}) exceeded, cancelling run...");
+                write_stderr(&format!(
+                    "\nrun timeout ({dur:.2?}) exceeded, cancelling run...\n"
+                ));
                 watchdog_token.cancel();
             }
         });
@@ -1070,10 +1094,10 @@ pub fn run(cargo: CargoMeta) -> ! {
                     thread::sleep(Duration::from_millis(50));
                 }
                 thread::sleep(grace);
-                eprintln!(
+                write_stderr(&format!(
                     "\nrudzio: {grace:.2?} grace period exceeded after cancellation, \
-                     force-exiting (some phase ignored cooperative cancel)"
-                );
+                     force-exiting (some phase ignored cooperative cancel)\n"
+                ));
                 process::exit(2);
             });
     }
@@ -1124,7 +1148,7 @@ pub fn run(cargo: CargoMeta) -> ! {
                         .copied()
                         .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
                         .unwrap_or("unknown panic");
-                    eprintln!("error: runtime thread panicked: {msg}");
+                    write_stderr(&format!("error: runtime thread panicked: {msg}\n"));
                     acc.merge(TestSummary {
                         panicked: 1,
                         total: 1,
@@ -1148,23 +1172,23 @@ pub fn run(cargo: CargoMeta) -> ! {
     // it during its shutdown path.
     if let Some(plain) = &reporter.plain {
         if plain.fmt == Format::Terse && total_count > 0 {
-            println!();
+            write_stdout("\n");
         }
         let guard = plain
             .failures
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if !guard.is_empty() {
-            println!("\nfailures:\n");
+            write_stdout("\nfailures:\n\n");
             for failure in guard.iter() {
-                println!("---- {} ----", failure.name);
-                println!("{}\n", failure.message);
+                write_stdout(&format!("---- {} ----\n", failure.name));
+                write_stdout(&format!("{}\n\n", failure.message));
             }
-            println!("failures:");
+            write_stdout("failures:\n");
             for failure in guard.iter() {
-                println!("    {}", failure.name);
+                write_stdout(&format!("    {}\n", failure.name));
             }
-            println!();
+            write_stdout("\n");
         }
         drop(guard);
 
@@ -1174,10 +1198,10 @@ pub fn run(cargo: CargoMeta) -> ! {
             bold(&red("FAILED", colored_plain), colored_plain)
         };
 
-        println!(
+        write_stdout(&format!(
             "test result: {}. {} passed; {} failed; {} panicked; {} timed out; \
              {} cancelled; {} ignored; {} teardown failed; 0 measured; {} total; \
-             {} filtered out; finished in {elapsed:.2?}",
+             {} filtered out; finished in {elapsed:.2?}\n",
             result_label,
             grand_total.passed,
             grand_total.failed,
@@ -1188,7 +1212,7 @@ pub fn run(cargo: CargoMeta) -> ! {
             grand_total.teardown_failures,
             grand_total.total,
             filtered_out,
-        );
+        ));
     }
 
     // Drop the guard — in Live mode this signals and joins the drawer
@@ -1205,10 +1229,10 @@ pub fn run(cargo: CargoMeta) -> ! {
     // never inside the live region.
     let bg_panics = output::panic_hook::unattributed_panic_count();
     if bg_panics > 0 && grand_total.is_success() {
-        eprintln!(
+        write_stderr(&format!(
             "rudzio: {bg_panics} background-thread panic(s) detected outside any test boundary; \
-             marking run as FAILED. Re-run with RUST_BACKTRACE=full for the panic location."
-        );
+             marking run as FAILED. Re-run with RUST_BACKTRACE=full for the panic location.\n"
+        ));
         process::exit(1);
     }
 

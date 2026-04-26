@@ -18,6 +18,8 @@ use std::num::NonZeroUsize;
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::Instant;
 
+use crate::output::write_stdout;
+
 /// Global hard cap on concurrent test-body execution.
 ///
 /// Constructed once per test run and shared via [`crate::config::Config`];
@@ -116,7 +118,7 @@ impl HardLimit {
                 cvar: Condvar::new(),
                 max,
             }),
-            sink: Box::new(|msg| println!("{msg}")),
+            sink: Box::new(|msg| write_stdout(&format!("{msg}\n"))),
         }
     }
 

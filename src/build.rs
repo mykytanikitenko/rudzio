@@ -133,6 +133,8 @@ use std::result::Result as StdResult;
 
 use cargo_metadata::{MetadataCommand, TargetKind};
 
+use crate::output::write_stdout;
+
 /// Sentinel env var set on every nested `cargo build` spawned by
 /// [`expose_bins`].
 ///
@@ -342,16 +344,16 @@ pub fn expose_bins(bin_crate: &str) -> Result<()> {
             // non-fatal build-script messages. Emit one so a genuine
             // cycle isn't hidden behind a silent Ok — the user needs
             // the signal to investigate.
-            println!(
+            write_stdout(&format!(
                 "cargo:warning=rudzio::build::expose_bins: detected a re-entrant \
                  call for `{bin_crate}` while building `{}` (the \
                  `{NESTED_SENTINEL_ENV}` sentinel is set, meaning an enclosing \
                  `expose_bins` invocation spawned this build). Returning Ok \
                  without a nested `cargo build` to prevent runaway recursion. \
                  If you did not expect this, look for a build-script cycle \
-                 where two crates' `expose_bins` calls trigger one another.",
+                 where two crates' `expose_bins` calls trigger one another.\n",
                 env.pkg_name
-            );
+            ));
             return Ok(());
         }
     }
@@ -434,21 +436,21 @@ pub fn expose_bins(bin_crate: &str) -> Result<()> {
                 bin_path.display()
             )));
         }
-        println!(
-            "cargo:rustc-env=CARGO_BIN_EXE_{}={}",
+        write_stdout(&format!(
+            "cargo:rustc-env=CARGO_BIN_EXE_{}={}\n",
             target.name,
             bin_path.display()
-        );
+        ));
     }
 
-    println!(
-        "cargo:rerun-if-changed={}",
+    write_stdout(&format!(
+        "cargo:rerun-if-changed={}\n",
         pkg.manifest_path.as_std_path().display()
-    );
+    ));
     if let Some(pkg_root) = pkg.manifest_path.as_std_path().parent() {
         let src_dir: PathBuf = pkg_root.join("src");
         if src_dir.exists() {
-            println!("cargo:rerun-if-changed={}", src_dir.display());
+            write_stdout(&format!("cargo:rerun-if-changed={}\n", src_dir.display()));
         }
     }
 
