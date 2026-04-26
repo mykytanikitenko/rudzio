@@ -18,7 +18,7 @@ use std::mem;
 use std::pin::Pin;
 use std::ptr;
 use std::sync::mpsc;
-use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, Mutex, PoisonError};
 use std::task::Poll;
 use std::thread;
 use std::time::Duration;
@@ -68,7 +68,7 @@ impl Signaler {
 
     /// Set the latch and wake any thread parked in [`Self::wait`].
     fn signal(&self) {
-        let mut guard = self.flag.lock().expect("signaler flag poisoned");
+        let mut guard = self.flag.lock().unwrap_or_else(PoisonError::into_inner);
         *guard = true;
         self.condvar.notify_one();
     }
@@ -76,9 +76,12 @@ impl Signaler {
     /// Block until [`Self::signal`] is observed, clearing the latch
     /// before returning so the next wait can be re-armed.
     fn wait(&self) {
-        let mut guard = self.flag.lock().expect("signaler flag poisoned");
+        let mut guard = self.flag.lock().unwrap_or_else(PoisonError::into_inner);
         while !*guard {
-            guard = self.condvar.wait(guard).expect("signaler condvar poisoned");
+            guard = self
+                .condvar
+                .wait(guard)
+                .unwrap_or_else(PoisonError::into_inner);
         }
         *guard = false;
     }
@@ -155,11 +158,17 @@ impl Runtime {
 
     /// Spawn `task` onto the executor; `TaskStorage` is leaked per spawn so
     /// it outlives the task. Acceptable because test processes are short.
+    ///
+    /// `TaskStorage::spawn` only returns `Err(SpawnError::Busy)` when the
+    /// storage already holds a task; the storage we just leaked is fresh,
+    /// so the `Err` arm is unreachable. If embassy's contract ever changes
+    /// the spawn becomes a no-op and `block_on` surfaces as a `--run-timeout`
+    /// — preferable to a panic.
     fn spawn_erased(&self, task: ErasedTask) {
         let storage: &'static TaskStorage<ErasedTask> = Box::leak(Box::new(TaskStorage::new()));
-        let token = TaskStorage::spawn(storage, || task)
-            .expect("freshly-leaked TaskStorage cannot already be occupied");
-        self.spawner.spawn(token);
+        if let Ok(token) = TaskStorage::spawn(storage, || task) {
+            self.spawner.spawn(token);
+        }
     }
 }
 
@@ -285,9 +294,9 @@ where
         let _unused = tx.send(fut.await);
     });
     let storage: &'static TaskStorage<ErasedTask> = Box::leak(Box::new(TaskStorage::new()));
-    let token = TaskStorage::spawn(storage, || erased)
-        .expect("freshly-leaked TaskStorage cannot already be occupied");
-    spawner.spawn(token);
+    if let Ok(token) = TaskStorage::spawn(storage, || erased) {
+        spawner.spawn(token);
+    }
     poll_channel(rx)
 }
 
@@ -307,9 +316,9 @@ where
         let _unused = tx.send(wrapped_fut.await);
     });
     let storage: &'static TaskStorage<ErasedTask> = Box::leak(Box::new(TaskStorage::new()));
-    let token = TaskStorage::spawn(storage, || erased)
-        .expect("freshly-leaked TaskStorage cannot already be occupied");
-    spawner.spawn(token);
+    if let Ok(token) = TaskStorage::spawn(storage, || erased) {
+        spawner.spawn(token);
+    }
     async move {
         match rx.recv() {
             Ok(wrapped) => Ok(wrapped.take()),
