@@ -47,6 +47,10 @@ pub struct Drawer {
     thread_to_test: HashMap<ThreadId, TestId>,
     last_live_rows: usize,
     summary: Summary,
+    /// Test-only override for the terminal size queries. Production
+    /// uses `None`, falling through to the ioctl-driven
+    /// [`terminal_width`] / [`terminal_height`].
+    size_override: Option<(usize, usize)>,
 }
 
 #[derive(Debug)]
@@ -132,7 +136,24 @@ impl Drawer {
             thread_to_test: HashMap::new(),
             last_live_rows: 0,
             summary: Summary::default(),
+            size_override: None,
         }
+    }
+
+    /// Force the drawer to render against a fixed terminal size,
+    /// bypassing the ioctl probe. Hidden from the public API surface
+    /// — only the in-tree integration tests use this to pin the
+    /// "row never wraps" invariant against synthetic widths.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_size_override(mut self, cols: usize, height: usize) -> Self {
+        self.size_override = Some((cols, height));
+        self
+    }
+
+    fn render_size(&self) -> (usize, usize) {
+        self.size_override
+            .unwrap_or_else(|| (terminal_width(), terminal_height()))
     }
 
     /// Main loop: `select!` over all input channels plus a redraw
@@ -619,15 +640,16 @@ impl Drawer {
             let Some(slot) = self.slots.get(thread) else {
                 continue;
             };
+            let (cols, rows_cap) = self.render_size();
             let (status_line, output_lines) = if let Some(lifecycle) = slot.lifecycle {
                 (
-                    lifecycle_line(slot.runtime_name, &lifecycle, self.color),
+                    lifecycle_line(slot.runtime_name, &lifecycle, self.color, cols),
                     Vec::new(),
                 )
             } else if let Some(state) = slot.current.and_then(|id| self.tests.get(&id)) {
                 (
-                    running_line(slot.runtime_name, state, self.color),
-                    running_output_lines(state, self.color),
+                    running_line(slot.runtime_name, state, self.color, cols),
+                    running_output_lines(state, self.color, cols, rows_cap),
                 )
             } else {
                 continue;
@@ -1065,7 +1087,13 @@ fn append_complete_lines(dst: &mut Vec<String>, bytes: &[u8]) {
 
 const RUNTIME_PREFIX_WIDTH: usize = 14;
 
-fn running_line(runtime: &str, state: &TestState, color: ColorPolicy) -> String {
+/// Build the live-region status row for a running test. Public for
+/// in-tree integration tests that want to pin the "row never wraps"
+/// invariant against synthetic widths; production callers go through
+/// the `Drawer` which queries the terminal via [`terminal_width`].
+#[doc(hidden)]
+#[must_use]
+pub fn running_line(runtime: &str, state: &TestState, color: ColorPolicy, cols: usize) -> String {
     let prefix = format!("{runtime:<RUNTIME_PREFIX_WIDTH$}");
     let label = match state.kind {
         TestStateKind::Running => StatusLabel::Run,
@@ -1077,18 +1105,20 @@ fn running_line(runtime: &str, state: &TestState, color: ColorPolicy) -> String 
         TestStateKind::Running => format!("<{elapsed:.2?}>"),
         TestStateKind::Bench { done, total } => format!("<{done}/{total}, {elapsed:.2?}>"),
     };
-    let cols = terminal_width();
-    // Clip `display` so the rendered row stays inside the terminal
-    // width — otherwise the row wraps to a second viewport row, the
-    // tracked `last_live_rows` undercounts, and the cursor-up clear
-    // strands the wrap-overflow row in scrollback. We compute the
-    // budget from the terminal width minus the fixed-width pieces
-    // (prefix, tag, trailing, pad) and clip with an `…` suffix.
+    // Clip `display` so the rendered row stays *strictly* inside
+    // `cols` (we leave 1 col slack at the right edge): a row that
+    // ends exactly at `cols` chars can still wrap on terminals with
+    // DECAWM (auto-wrap) on, because the cursor sits "in" the right
+    // margin and the implicit newline lands one row down. The
+    // tracked `last_live_rows` would then undercount by 1 and the
+    // cursor-up clear would strand the wrap-overflow row in the
+    // user's scrollback as a stale `[RUN]` stripe.
     let display = {
         let raw = qualified_test_name(state.module_path, state.test_name);
         let prefix_visible = prefix.chars().count();
         let trailing_visible = trailing.chars().count();
         let budget = cols
+            .saturating_sub(1) // 1 col of right-edge slack
             .saturating_sub(prefix_visible)
             .saturating_sub(STATUS_TAG_WIDTH)
             .saturating_sub(1) // space between tag and display
@@ -1101,7 +1131,7 @@ fn running_line(runtime: &str, state: &TestState, color: ColorPolicy) -> String 
         pad = " ".repeat(STATUS_TAG_WIDTH),
     );
     let lhs_rendered = format!("{prefix}{tag} {display}");
-    render_line(&lhs_naked, &lhs_rendered, &trailing, cols)
+    render_line(&lhs_naked, &lhs_rendered, &trailing, cols.saturating_sub(1).max(1))
 }
 
 /// Number of viewport rows reserved for everything other than a
@@ -1125,18 +1155,25 @@ const LIVE_REGION_RESERVED_ROWS: usize = 4;
 /// stops matching the actual viewport rows occupied by the paint —
 /// the overflow scrolls permanently into scrollback and leaves stale
 /// stripes in the user's scroll history.
-fn running_output_lines(state: &TestState, color: ColorPolicy) -> Vec<String> {
+#[doc(hidden)]
+#[must_use]
+pub fn running_output_lines(
+    state: &TestState,
+    color: ColorPolicy,
+    cols: usize,
+    height: usize,
+) -> Vec<String> {
     if state.recent_output.is_empty() {
         return Vec::new();
     }
-    let cap_rows = terminal_height()
-        .saturating_sub(LIVE_REGION_RESERVED_ROWS)
-        .max(1);
-    let cols = terminal_width();
+    let cap_rows = height.saturating_sub(LIVE_REGION_RESERVED_ROWS).max(1);
     let start = state.recent_output.len().saturating_sub(cap_rows);
+    // 1 col of right-edge slack — same DECAWM defence as
+    // `running_line`'s display clip.
+    let line_budget = cols.saturating_sub(1).max(1);
     state.recent_output[start..]
         .iter()
-        .map(|line| color.dim(&clip_to_cols(line, cols)))
+        .map(|line| color.dim(&clip_to_cols(line, line_budget)))
         .collect()
 }
 
@@ -1158,25 +1195,42 @@ fn clip_to_cols(s: &str, cols: usize) -> String {
     out
 }
 
-fn lifecycle_line(runtime: &str, lifecycle: &SlotLifecycle, color: ColorPolicy) -> String {
+fn lifecycle_line(
+    runtime: &str,
+    lifecycle: &SlotLifecycle,
+    color: ColorPolicy,
+    cols: usize,
+) -> String {
     let prefix = format!("{runtime:<RUNTIME_PREFIX_WIDTH$}");
     let tag = render_status_tag(StatusLabel::Run, color);
     let phase_word = match lifecycle.kind {
         LifecyclePhase::Setup => "setup",
         LifecyclePhase::Teardown => "teardown",
     };
-    let display = format!(
+    let raw_display = format!(
         "{phase_word} {}",
         crate::runner::normalize_module_path(lifecycle.suite)
     );
     let elapsed = lifecycle.started_at.elapsed();
     let trailing = format!("<{elapsed:.2?}>");
+    let display = {
+        let prefix_visible = prefix.chars().count();
+        let trailing_visible = trailing.chars().count();
+        let budget = cols
+            .saturating_sub(1) // DECAWM right-edge slack
+            .saturating_sub(prefix_visible)
+            .saturating_sub(STATUS_TAG_WIDTH)
+            .saturating_sub(1)
+            .saturating_sub(MIN_TRAILING_PAD)
+            .saturating_sub(trailing_visible);
+        clip_to_cols(&raw_display, budget)
+    };
     let lhs_naked = format!(
         "{prefix}{pad} {display}",
         pad = " ".repeat(STATUS_TAG_WIDTH),
     );
     let lhs_rendered = format!("{prefix}{tag} {display}");
-    render_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width())
+    render_line(&lhs_naked, &lhs_rendered, &trailing, cols.saturating_sub(1).max(1))
 }
 
 /// Spawn the drawer thread. Returns the join handle; the caller

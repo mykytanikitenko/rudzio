@@ -32,7 +32,7 @@ toml_edit = { workspace = true }
 rudzio = { path = "..", features = ["common", "runtime-tokio-multi-thread"] }
 
 [dev-dependencies]
-tempfile = "=3.10.1"
+tempfile = "=3.27.0"
 
 # This crate is a pragmatic migration CLI, not library code. The
 # workspace lint set is inherited in spirit — same restriction and

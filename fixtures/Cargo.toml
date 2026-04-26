@@ -29,7 +29,7 @@ trybuild = { workspace = true }
 # Integration tests drive child processes and deliver Unix signals to them
 # to exercise the runner's SIGINT/SIGTERM handling.
 [target.'cfg(unix)'.dev-dependencies]
-libc = "=0.2.185"
+libc = "=0.2.186"
 
 # Rudzio tests itself: one `#[rudzio::main]` collects every `#[rudzio::test]`
 # across the whole test binary (both integration scenarios and trybuild

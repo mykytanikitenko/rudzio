@@ -128,8 +128,9 @@ impl Runtime {
     /// it outlives the task. Acceptable because test processes are short.
     fn spawn_erased(&self, task: ErasedTask) {
         let storage: &'static TaskStorage<ErasedTask> = Box::leak(Box::new(TaskStorage::new()));
-        let token = TaskStorage::spawn(storage, || task);
-        self.spawner.must_spawn(token);
+        let token = TaskStorage::spawn(storage, || task)
+            .expect("freshly-leaked TaskStorage cannot already be occupied");
+        self.spawner.spawn(token);
     }
 
     /// Drive the executor until `done` returns `Some`, then return its value.
@@ -274,8 +275,9 @@ where
         let _unused = tx.send(fut.await);
     });
     let storage: &'static TaskStorage<ErasedTask> = Box::leak(Box::new(TaskStorage::new()));
-    let token = TaskStorage::spawn(storage, || erased);
-    spawner.must_spawn(token);
+    let token = TaskStorage::spawn(storage, || erased)
+        .expect("freshly-leaked TaskStorage cannot already be occupied");
+    spawner.spawn(token);
     poll_channel(rx)
 }
 
@@ -295,8 +297,9 @@ where
         let _unused = tx.send(wrapped_fut.await);
     });
     let storage: &'static TaskStorage<ErasedTask> = Box::leak(Box::new(TaskStorage::new()));
-    let token = TaskStorage::spawn(storage, || erased);
-    spawner.must_spawn(token);
+    let token = TaskStorage::spawn(storage, || erased)
+        .expect("freshly-leaked TaskStorage cannot already be occupied");
+    spawner.spawn(token);
     async move {
         match rx.recv() {
             Ok(wrapped) => Ok(wrapped.take()),

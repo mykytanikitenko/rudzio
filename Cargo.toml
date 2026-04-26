@@ -115,29 +115,29 @@ rudzio-macro-internals = { version = "0.1.0", path = "macro-internals" }
 
 # External crates (pinned to exact versions for reproducible builds)
 anyhow = "=1.0.102"
-cargo_metadata = "=0.19.2"
+cargo_metadata = "=0.23.1"
 compio-runtime = "=0.11.0"
 compio-driver = "=0.11.4"
 crossbeam-channel = "=0.5.15"
-libc = "=0.2.185"
+libc = "=0.2.186"
 signal-hook = "=0.4.4"
-embassy-executor = { version = "=0.7.0", features = ["arch-std"] }
+embassy-executor = { version = "=0.10.0", features = ["platform-std"] }
 futures-executor = "=0.3.32"
 futures-timer = "=3.0.3"
 futures-util = "=0.3.32"
-ignore = "=0.4.23"
-miette = { version = "=7.5.0", features = ["fancy-no-backtrace"] }
+ignore = "=0.4.25"
+miette = { version = "=7.6.0", features = ["fancy-no-backtrace"] }
 prettyplease = "=0.2.37"
 thiserror = "=2.0.18"
 proc-macro2 = "=1.0.106"
 quote = "=1.0.45"
 send_wrapper = "=0.6.0"
 syn = "=2.0.117"
-toml_edit = "=0.22.22"
+toml_edit = "=0.25.11"
 tokio = { version = "=1.52.1", features = ["rt", "macros", "time"] }
 tokio-util = { version = "=0.7.18", features = ["rt"] }
 trybuild = "=1.0.116"
-linkme = "=0.3.31"
+linkme = "=0.3.36"
 
 # ===========================================================================
 # Rust compiler lints

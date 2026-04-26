@@ -284,7 +284,7 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
                 })?;
 
         members.push(MemberPlan {
-            package_name: pkg.name.clone(),
+            package_name: pkg.name.to_string(),
             manifest_dir: manifest_dir_std,
             test_files,
             bin_names,
