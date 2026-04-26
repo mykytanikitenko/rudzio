@@ -4,16 +4,19 @@
 
 use proc_macro::TokenStream;
 
+use proc_macro2::Span;
+use proc_macro2::TokenStream as TokenStream2;
 use rudzio_macro_internals::args::MainArgs;
 use rudzio_macro_internals::suite_codegen::expand_suite;
 
+#[inline]
 #[proc_macro_attribute]
 pub fn main(args: TokenStream, input: TokenStream) -> TokenStream {
     if !args.is_empty() {
-        let span = proc_macro2::TokenStream::from(args)
+        let span = TokenStream2::from(args)
             .into_iter()
             .next()
-            .map_or_else(proc_macro2::Span::call_site, |t| t.span());
+            .map_or_else(Span::call_site, |token| token.span());
         return syn::Error::new(
             span,
             "`#[rudzio::main]` no longer accepts inline configuration; use \
@@ -26,8 +29,8 @@ pub fn main(args: TokenStream, input: TokenStream) -> TokenStream {
     }
 
     let _unused: syn::ItemFn = match syn::parse(input) {
-        Ok(f) => f,
-        Err(e) => return e.to_compile_error().into(),
+        Ok(func) => func,
+        Err(err) => return err.to_compile_error().into(),
     };
     quote::quote! {
         fn main() {
@@ -40,24 +43,26 @@ pub fn main(args: TokenStream, input: TokenStream) -> TokenStream {
     .into()
 }
 
+#[inline]
 #[proc_macro_attribute]
 pub fn suite(args: TokenStream, input: TokenStream) -> TokenStream {
-    let args: MainArgs = match syn::parse(args) {
-        Ok(args) => args,
-        Err(e) => return e.to_compile_error().into(),
+    let parsed_args: MainArgs = match syn::parse(args) {
+        Ok(parsed) => parsed,
+        Err(err) => return err.to_compile_error().into(),
     };
 
     let input_mod: syn::ItemMod = match syn::parse(input) {
-        Ok(m) => m,
-        Err(e) => return e.to_compile_error().into(),
+        Ok(module) => module,
+        Err(err) => return err.to_compile_error().into(),
     };
 
-    match expand_suite(args, input_mod) {
-        Ok(ts) => ts.into(),
-        Err(e) => e.to_compile_error().into(),
+    match expand_suite(parsed_args, input_mod) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
     }
 }
 
+#[inline]
 #[proc_macro_attribute]
 pub fn test(_args: TokenStream, input: TokenStream) -> TokenStream {
     input
