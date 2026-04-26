@@ -422,20 +422,24 @@ fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream
         #[::rudzio::linkme::distributed_slice(::rudzio::token::TEST_TOKENS)]
         #[linkme(crate = ::rudzio::linkme)]
         #[doc(hidden)]
-        static #token_static_ident: ::rudzio::token::TestToken = ::rudzio::token::TestToken {
-            name: #test_name_str,
-            module_path: ::core::module_path!(),
-            ignored: #ignored,
-            ignore_reason: #ignore_reason,
-            has_benchmark: #has_benchmark,
-            file: ::std::file!(),
-            line: #source_line,
-            runtime_group_key: ::rudzio::suite::RuntimeGroupKey(
-                ::rudzio::suite::fnv1a64(#group_key_source),
+        static #token_static_ident: ::rudzio::token::TestToken = ::rudzio::token::TestToken::new(
+            ::rudzio::token::TestTokenSource::new(
+                ::std::file!(),
+                #source_line,
+                ::core::module_path!(),
+                #test_name_str,
             ),
-            runtime_group_owner: &#owner_static,
-            run_test: #run_test_fn,
-        };
+            ::rudzio::token::TestTokenAttrs::new(
+                #has_benchmark,
+                #ignore_reason,
+                #ignored,
+            ),
+            ::rudzio::token::TestTokenDispatch::new(
+                #run_test_fn,
+                ::rudzio::suite::RuntimeGroupKey(::rudzio::suite::fnv1a64(#group_key_source)),
+                &#owner_static,
+            ),
+        );
     };
 
     Ok((helper_item, token_static))

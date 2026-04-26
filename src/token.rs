@@ -18,8 +18,23 @@ use crate::suite::{RuntimeGroupKey, RuntimeGroupOwner, TestRunFn};
 /// pointers to its concrete runtime and suite; the macro guarantees the
 /// pointed-to types match the owner's `group_key`.
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub struct TestToken {
-    pub name: &'static str,
+    /// Source file path, used to sort tests into stable source order.
+    pub file: &'static str,
+    /// `true` when the test was declared with
+    /// `#[rudzio::test(benchmark = ...)]`. Runner-level filter: in
+    /// [`crate::config::BenchMode::Skip`] mode the runner ignores these
+    /// tests before dispatch; in [`crate::config::BenchMode::Full`] mode
+    /// the dispatch fn runs them through their strategy.
+    pub has_benchmark: bool,
+    /// Reason string supplied via `#[ignore = "…"]`; empty when none.
+    pub ignore_reason: &'static str,
+    /// `true` when the test was declared with `#[ignore]` or
+    /// `#[ignore = "…"]`.
+    pub ignored: bool,
+    /// Source line number, used to sort tests into stable source order.
+    pub line: u32,
     /// Colon-delimited module path from the test's defining crate root to
     /// the module that contains the `#[rudzio::test]` function (the value
     /// of `::core::module_path!()` at the expansion site). The runner
@@ -32,18 +47,12 @@ pub struct TestToken {
     /// that same display form — so any fragment a user can copy out of
     /// the runner's output is a valid filter.
     pub module_path: &'static str,
-    pub ignored: bool,
-    pub ignore_reason: &'static str,
-    /// `true` when the test was declared with
-    /// `#[rudzio::test(benchmark = ...)]`. Runner-level filter: in
-    /// [`crate::config::BenchMode::Skip`] mode the runner ignores these
-    /// tests before dispatch; in [`crate::config::BenchMode::Full`] mode
-    /// the dispatch fn runs them through their strategy.
-    pub has_benchmark: bool,
-    /// Source file path, used to sort tests into stable source order.
-    pub file: &'static str,
-    /// Source line number, used to sort tests into stable source order.
-    pub line: u32,
+    /// Source-level test function name (the `fn` identifier, not the
+    /// fully-qualified path). Joined with [`Self::module_path`] to form
+    /// the display label.
+    pub name: &'static str,
+    /// Per-test dispatch fn — see [`TestRunFn`] for the safety contract.
+    pub run_test: TestRunFn,
     /// Compile-time hash of `(runtime_path, suite_path)`. Tokens sharing
     /// this key run on one shared runtime + suite.
     pub runtime_group_key: RuntimeGroupKey,
@@ -54,11 +63,132 @@ pub struct TestToken {
     /// [`Runtime::name`](crate::runtime::Runtime::name), available only
     /// after the group thread constructs the runtime instance.
     pub runtime_group_owner: &'static dyn RuntimeGroupOwner,
-    /// Per-test dispatch fn — see [`TestRunFn`] for the safety contract.
+}
+
+/// Source-location metadata block — file, line, module path, and test
+/// fn name. Bundled so [`TestToken::new`] takes one struct instead of
+/// four positional args, sidestepping `clippy::too_many_arguments`.
+#[derive(Clone, Copy, Debug)]
+#[doc(hidden)]
+#[non_exhaustive]
+pub struct TestTokenSource {
+    /// See [`TestToken::file`].
+    pub file: &'static str,
+    /// See [`TestToken::line`].
+    pub line: u32,
+    /// See [`TestToken::module_path`].
+    pub module_path: &'static str,
+    /// See [`TestToken::name`].
+    pub name: &'static str,
+}
+
+impl TestTokenSource {
+    /// Pack the four source-location fields. Macro-only.
+    #[doc(hidden)]
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        file: &'static str,
+        line: u32,
+        module_path: &'static str,
+        name: &'static str,
+    ) -> Self {
+        Self { file, line, module_path, name }
+    }
+}
+
+/// `#[ignore]` / `#[rudzio::test(benchmark = …)]` attributes block.
+#[derive(Clone, Copy, Debug)]
+#[doc(hidden)]
+#[non_exhaustive]
+pub struct TestTokenAttrs {
+    /// See [`TestToken::has_benchmark`].
+    pub has_benchmark: bool,
+    /// See [`TestToken::ignore_reason`].
+    pub ignore_reason: &'static str,
+    /// See [`TestToken::ignored`].
+    pub ignored: bool,
+}
+
+impl TestTokenAttrs {
+    /// Pack the three attribute-derived fields. Macro-only.
+    #[doc(hidden)]
+    #[inline]
+    #[must_use]
+    pub const fn new(has_benchmark: bool, ignore_reason: &'static str, ignored: bool) -> Self {
+        Self { has_benchmark, ignore_reason, ignored }
+    }
+}
+
+/// Runtime-group dispatch wiring — the `(R, S)` group key, its owner,
+/// and the per-test dispatch fn pointer.
+#[derive(Clone, Copy)]
+#[doc(hidden)]
+#[non_exhaustive]
+pub struct TestTokenDispatch {
+    /// See [`TestToken::run_test`].
     pub run_test: TestRunFn,
+    /// See [`TestToken::runtime_group_key`].
+    pub runtime_group_key: RuntimeGroupKey,
+    /// See [`TestToken::runtime_group_owner`].
+    pub runtime_group_owner: &'static dyn RuntimeGroupOwner,
+}
+
+impl TestTokenDispatch {
+    /// Pack the three dispatch fields. Macro-only.
+    #[doc(hidden)]
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        run_test: TestRunFn,
+        runtime_group_key: RuntimeGroupKey,
+        runtime_group_owner: &'static dyn RuntimeGroupOwner,
+    ) -> Self {
+        Self { run_test, runtime_group_key, runtime_group_owner }
+    }
+}
+
+impl fmt::Debug for TestTokenDispatch {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TestTokenDispatch")
+            .field("runtime_group_key", &self.runtime_group_key)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TestToken {
+    /// Construct a `TestToken` from its three sub-bundles.
+    /// Macro-generated code calls this so the struct can stay
+    /// `#[non_exhaustive]`.
+    #[doc(hidden)]
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        source: TestTokenSource,
+        attrs: TestTokenAttrs,
+        dispatch: TestTokenDispatch,
+    ) -> Self {
+        let TestTokenSource { file, line, module_path, name } = source;
+        let TestTokenAttrs { has_benchmark, ignore_reason, ignored } = attrs;
+        let TestTokenDispatch { run_test, runtime_group_key, runtime_group_owner } = dispatch;
+        Self {
+            file,
+            has_benchmark,
+            ignore_reason,
+            ignored,
+            line,
+            module_path,
+            name,
+            run_test,
+            runtime_group_key,
+            runtime_group_owner,
+        }
+    }
 }
 
 impl fmt::Debug for TestToken {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TestToken")
             .field("name", &self.name)
