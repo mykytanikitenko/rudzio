@@ -87,7 +87,14 @@ where
         Self: Sized;
 
     /// Tear down the shared state. Called after all tests in the group.
+    ///
+    /// `cancel` is a per-phase cancellation token (a child of the
+    /// runner's root token). The runner cancels it on either the
+    /// suite-teardown timeout or a parent cancel (run-timeout, SIGINT).
+    /// Cooperative impls should poll it to bail out promptly instead of
+    /// running to completion past the timeout.
     fn teardown(
         self,
+        cancel: CancellationToken,
     ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'suite_context;
 }

@@ -124,7 +124,7 @@ where
     type TeardownError = Infallible;
 
     #[inline]
-    async fn teardown(self) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         self.cancel.cancel();
         Ok(())
     }

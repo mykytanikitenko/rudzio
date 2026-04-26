@@ -2,16 +2,31 @@ use syn::{Attribute, Expr, ItemFn};
 
 use crate::transform::is_test_attr;
 
-/// Extract the `benchmark = <expr>` argument from a `#[rudzio::test(...)]`
-/// attribute, if one is present.
+/// Parsed contents of a `#[rudzio::test(...)]` attribute.
+///
+/// All fields are `None` / `None` when the bare attribute form is used
+/// (`#[rudzio::test]` with no arguments). Each `*_secs` slot is a
+/// per-test override of the matching CLI default (`--test-timeout`,
+/// `--test-setup-timeout`, `--test-teardown-timeout`); resolution is
+/// `attr.or(config_default)` at runtime.
+#[derive(Debug, Default)]
+pub struct TestAttrArgs {
+    pub benchmark: Option<Expr>,
+    pub timeout_secs: Option<u64>,
+    pub setup_timeout_secs: Option<u64>,
+    pub teardown_timeout_secs: Option<u64>,
+}
+
+/// Parse every `#[rudzio::test(...)]` attribute on `func` into a single
+/// [`TestAttrArgs`].
 ///
 /// The bare `#[rudzio::test]` form (no parens / no arguments) returns
-/// `Ok(None)`. A `#[rudzio::test(benchmark = expr)]` form returns
-/// `Ok(Some(expr))`. Unknown keywords or malformed attribute bodies
-/// surface as `Err(syn::Error)` so the compiler points straight at the
-/// offending token instead of the macro losing the signal silently.
-pub fn extract_benchmark_expr(func: &ItemFn) -> syn::Result<Option<Expr>> {
-    let mut found: Option<Expr> = None;
+/// the default-empty struct. Unknown keywords or malformed attribute
+/// bodies surface as `Err(syn::Error)` so the compiler points straight
+/// at the offending token instead of the macro losing the signal
+/// silently.
+pub fn extract_test_attr_args(func: &ItemFn) -> syn::Result<TestAttrArgs> {
+    let mut args = TestAttrArgs::default();
     for attr in &func.attrs {
         if !is_test_attr(attr) {
             continue;
@@ -20,22 +35,46 @@ pub fn extract_benchmark_expr(func: &ItemFn) -> syn::Result<Option<Expr>> {
         if matches!(attr.meta, syn::Meta::Path(_)) {
             continue;
         }
-        parse_test_attr_args(attr, &mut found)?;
+        parse_test_attr_args(attr, &mut args)?;
     }
-    Ok(found)
+    Ok(args)
 }
 
-fn parse_test_attr_args(attr: &Attribute, found: &mut Option<Expr>) -> syn::Result<()> {
+/// Back-compat thin wrapper: callers that only care about the
+/// `benchmark = ...` slot can keep using this without unpacking the
+/// full struct.
+pub fn extract_benchmark_expr(func: &ItemFn) -> syn::Result<Option<Expr>> {
+    extract_test_attr_args(func).map(|a| a.benchmark)
+}
+
+fn parse_test_attr_args(attr: &Attribute, args: &mut TestAttrArgs) -> syn::Result<()> {
     attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("benchmark") {
             let value = meta.value()?;
             let expr: Expr = value.parse()?;
-            *found = Some(expr);
+            args.benchmark = Some(expr);
+            Ok(())
+        } else if meta.path.is_ident("timeout") {
+            let value = meta.value()?;
+            let lit: syn::LitInt = value.parse()?;
+            args.timeout_secs = Some(lit.base10_parse::<u64>()?);
+            Ok(())
+        } else if meta.path.is_ident("setup_timeout") {
+            let value = meta.value()?;
+            let lit: syn::LitInt = value.parse()?;
+            args.setup_timeout_secs = Some(lit.base10_parse::<u64>()?);
+            Ok(())
+        } else if meta.path.is_ident("teardown_timeout") {
+            let value = meta.value()?;
+            let lit: syn::LitInt = value.parse()?;
+            args.teardown_timeout_secs = Some(lit.base10_parse::<u64>()?);
             Ok(())
         } else {
             Err(meta.error(
                 "unknown argument to `#[rudzio::test]`; \
-                 expected `benchmark = <strategy-expression>`",
+                 expected one of `benchmark = <strategy-expression>`, \
+                 `timeout = <secs>`, `setup_timeout = <secs>`, \
+                 `teardown_timeout = <secs>`",
             ))
         }
     })

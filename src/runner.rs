@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::env;
 use std::io::{self, IsTerminal as _, Write as _};
 use std::process;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -113,7 +114,7 @@ fn use_color(mode: ColorMode) -> bool {
     match mode {
         ColorMode::Always => true,
         ColorMode::Never => false,
-        ColorMode::Auto => std::env::var_os("NO_COLOR").is_none() && io::stdout().is_terminal(),
+        ColorMode::Auto => env::var_os("NO_COLOR").is_none() && io::stdout().is_terminal(),
     }
 }
 
@@ -672,6 +673,7 @@ impl SuiteReporter for ModeReporter {
                     TeardownResult::Ok => StatusLabel::Ok,
                     TeardownResult::Err(_) => StatusLabel::Fail,
                     TeardownResult::Panicked(_) => StatusLabel::Panic,
+                    TeardownResult::TimedOut => StatusLabel::Timeout,
                 };
                 let (tag_rendered, tag_visible) = status_tag(label, p.colored);
                 let display = format!("teardown {suite}");
@@ -688,6 +690,9 @@ impl SuiteReporter for ModeReporter {
                     }
                     TeardownResult::Panicked(msg) => {
                         println!("  {}", red(&format!("panic: {msg}"), p.colored));
+                    }
+                    TeardownResult::TimedOut => {
+                        println!("  {}", red("timeout: teardown timed out", p.colored));
                     }
                 }
             }
@@ -711,6 +716,18 @@ impl SuiteReporter for ModeReporter {
                     guard.push(FailureInfo {
                         name: "<suite teardown>",
                         message: format!("teardown {suite} [{runtime_name}]: panic: {msg}"),
+                    });
+                }
+                TeardownResult::TimedOut => {
+                    let mut guard = p
+                        .failures
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    guard.push(FailureInfo {
+                        name: "<suite teardown>",
+                        message: format!(
+                            "teardown {suite} [{runtime_name}]: timeout: teardown timed out"
+                        ),
                     });
                 }
             }
@@ -741,6 +758,7 @@ impl SuiteReporter for ModeReporter {
                     TeardownResult::Ok => return,
                     TeardownResult::Err(_) => StatusLabel::Fail,
                     TeardownResult::Panicked(_) => StatusLabel::Panic,
+                    TeardownResult::TimedOut => StatusLabel::Timeout,
                 };
                 let (tag_rendered, tag_visible) = status_tag(label, p.colored);
                 let lhs_display = format!("teardown {display}");
@@ -757,6 +775,9 @@ impl SuiteReporter for ModeReporter {
                     }
                     TeardownResult::Panicked(msg) => {
                         println!("  {}", red(&format!("panic: {msg}"), p.colored));
+                    }
+                    TeardownResult::TimedOut => {
+                        println!("  {}", red("timeout: teardown timed out", p.colored));
                     }
                 }
             }
@@ -780,6 +801,18 @@ impl SuiteReporter for ModeReporter {
                     guard.push(FailureInfo {
                         name: token.name,
                         message: format!("test teardown panicked [{runtime_name}]: {msg}"),
+                    });
+                }
+                TeardownResult::TimedOut => {
+                    let mut guard = p
+                        .failures
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    guard.push(FailureInfo {
+                        name: token.name,
+                        message: format!(
+                            "test teardown timed out [{runtime_name}]: teardown timed out"
+                        ),
                     });
                 }
             }
@@ -812,6 +845,18 @@ impl SuiteReporter for ModeReporter {
 /// `cargo_meta!()` at the user's crate site so the `env!(...)` values
 /// belong to that crate, not rudzio).
 pub fn run(cargo: crate::config::CargoMeta) -> ! {
+    // Default `RUST_BACKTRACE=full` (and `RUST_LIB_BACKTRACE`) **only
+    // when the user hasn't set them**. Backtraces are essential for
+    // diagnosing panics in async test bodies — the libtest harness
+    // defaults to "short" but our drawer + capture pipeline often
+    // rewrites the panic line such that the short-backtrace heuristic
+    // (look-for-test-fn-name) misses, leaving the user with two lines
+    // of "note: run with `RUST_BACKTRACE=...`". Set both vars so the
+    // value applies to direct panics and to library code (e.g. tokio's
+    // worker-thread panics) alike. Skip the override entirely when the
+    // user has expressed any preference, including `RUST_BACKTRACE=0`.
+    enable_full_backtrace_default();
+
     let config = Config::parse(cargo);
 
     // --help / -h: print USAGE to real stdout and exit before the
@@ -1012,7 +1057,43 @@ pub fn run(cargo: crate::config::CargoMeta) -> ! {
     // the guard is a no-op.
     drop(capture_guard);
 
+    // Background-thread panic safety net: if the panic hook caught a
+    // panic that no test outcome accounts for (e.g. user setup spawned
+    // a thread that panicked, then the future returned Ok), surface
+    // it. Otherwise a hung crypto-provider init or similar would
+    // produce a "test result: ok" that silently lies. Done after the
+    // capture guard drop so the warning lands on the real terminal,
+    // never inside the live region.
+    let bg_panics = output::panic_hook::unattributed_panic_count();
+    if bg_panics > 0 && total.is_success() {
+        eprintln!(
+            "rudzio: {bg_panics} background-thread panic(s) detected outside any test boundary; \
+             marking run as FAILED. Re-run with RUST_BACKTRACE=full for the panic location."
+        );
+        process::exit(1);
+    }
+
     process::exit(total.exit_code())
+}
+
+/// Set `RUST_BACKTRACE=full` and `RUST_LIB_BACKTRACE=full` if neither
+/// is already in the env, so panic messages always carry an actionable
+/// backtrace under the rudzio runner. When the binary is launched
+/// directly (no rudzio runner), this fn is never called and stdlib's
+/// normal env-var lookup applies.
+fn enable_full_backtrace_default() {
+    // SAFETY: rudzio's entry point runs before any test threads spawn,
+    // so no other thread is mutating the environment concurrently.
+    // `env::set_var` is sound under that single-threaded invariant.
+    #[allow(unsafe_code)]
+    unsafe {
+        if env::var_os("RUST_BACKTRACE").is_none() {
+            env::set_var("RUST_BACKTRACE", "full");
+        }
+        if env::var_os("RUST_LIB_BACKTRACE").is_none() {
+            env::set_var("RUST_LIB_BACKTRACE", "full");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

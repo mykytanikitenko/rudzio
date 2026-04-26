@@ -781,6 +781,266 @@ mod tests {
     }
 
     #[rudzio::test]
+    fn suite_setup_timeout_cancels_every_test(_ctx: &Test) -> anyhow::Result<()> {
+        // `--suite-setup-timeout=1` fires while suite setup hangs; every
+        // queued test reports as cancelled and the binary exits non-zero.
+        let out = run_serial_with_args(
+            env!("CARGO_BIN_EXE_suite_setup_timeout_tokio_mt"),
+            &["--suite-setup-timeout=1"],
+        );
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(1),
+            "expected exit 1, output:\n{log}"
+        );
+        anyhow::ensure!(
+            log.contains("setup timed out"),
+            "expected setup-timeout diagnostic, output:\n{log}"
+        );
+        anyhow::ensure!(
+            log.contains("[CANCEL]") && log.contains("never_runs"),
+            "queued test must report cancelled, output:\n{log}"
+        );
+        anyhow::ensure!(
+            !log.contains("hanging_suite_setup_unreached_marker"),
+            "setup body must not run to completion, output:\n{log}"
+        );
+        anyhow::ensure!(
+            !log.contains("teardown_must_not_run_marker"),
+            "suite teardown must not run when setup never finished, output:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn suite_teardown_timeout_is_reported(_ctx: &Test) -> anyhow::Result<()> {
+        // Body passes; `--suite-teardown-timeout=1` fires; the lifecycle
+        // line for teardown carries the `[TIMEOUT]` tag and the run is
+        // failed via `teardown_failures`.
+        let out = run_serial_with_args(
+            env!("CARGO_BIN_EXE_suite_teardown_timeout_tokio_mt"),
+            &["--suite-teardown-timeout=1"],
+        );
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(1),
+            "expected exit 1, output:\n{log}"
+        );
+        anyhow::ensure!(
+            log.contains("[TIMEOUT]") && log.contains("teardown"),
+            "expected [TIMEOUT] teardown line, output:\n{log}"
+        );
+        anyhow::ensure!(
+            !log.contains("hanging_suite_teardown_unreached_marker"),
+            "teardown future must be dropped, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
+        anyhow::ensure!(log.contains("1 teardown failed"), "output:\n{log}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn test_setup_timeout_marks_test_as_setup_failed(_ctx: &Test) -> anyhow::Result<()> {
+        // `--test-setup-timeout=1` fires while `Suite::context` hangs.
+        // Test outcome is `[SETUP]` (per-test setup failed), per-test
+        // teardown does NOT run because no context was constructed.
+        let out = run_serial_with_args(
+            env!("CARGO_BIN_EXE_test_setup_timeout_tokio_mt"),
+            &["--test-setup-timeout=1"],
+        );
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(1),
+            "expected exit 1, output:\n{log}"
+        );
+        anyhow::ensure!(
+            log.contains("[SETUP]") && log.contains("body_never_runs"),
+            "expected [SETUP] outcome, output:\n{log}"
+        );
+        anyhow::ensure!(
+            log.contains("setup timed out"),
+            "expected setup-timeout diagnostic, output:\n{log}"
+        );
+        anyhow::ensure!(
+            !log.contains("test_teardown_must_not_run_marker"),
+            "per-test teardown must skip when context never built, output:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn test_teardown_timeout_is_reported_per_test(_ctx: &Test) -> anyhow::Result<()> {
+        // `--test-teardown-timeout=1` fires while `Test::teardown` hangs.
+        // Body passes; teardown line shows `[TIMEOUT]` and contributes
+        // to teardown_failures.
+        let out = run_serial_with_args(
+            env!("CARGO_BIN_EXE_test_teardown_timeout_tokio_mt"),
+            &["--test-teardown-timeout=1"],
+        );
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(1),
+            "expected exit 1, output:\n{log}"
+        );
+        anyhow::ensure!(
+            log.contains("[TIMEOUT]") && log.contains("teardown"),
+            "expected [TIMEOUT] teardown line, output:\n{log}"
+        );
+        anyhow::ensure!(
+            !log.contains("hanging_test_teardown_unreached_marker"),
+            "teardown future must be dropped, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
+        anyhow::ensure!(log.contains("1 teardown failed"), "output:\n{log}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn per_test_attr_body_timeout_overrides_default(_ctx: &Test) -> anyhow::Result<()> {
+        // No CLI timeouts. The annotated test (`#[rudzio::test(timeout = 1)]`)
+        // times out via attribute alone; sibling test stays unbounded.
+        let out = run_serial_with_args(
+            env!("CARGO_BIN_EXE_per_test_attr_body_timeout_tokio_mt"),
+            &[],
+        );
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(1),
+            "expected exit 1 from attribute-driven body timeout, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("[TIMEOUT]"), "output:\n{log}");
+        anyhow::ensure!(
+            log.contains("attr_body_times_out"),
+            "expected attr-targeted test name, output:\n{log}"
+        );
+        anyhow::ensure!(
+            log.contains("unbounded_sibling_marker"),
+            "sibling test must run unbounded, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("1 timed out"), "output:\n{log}");
+        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn per_test_attr_setup_timeout_overrides_default(_ctx: &Test) -> anyhow::Result<()> {
+        // No CLI timeouts. Setup phase times out only because of the
+        // attribute override on this test.
+        let out = run_serial_with_args(
+            env!("CARGO_BIN_EXE_per_test_attr_setup_timeout_tokio_mt"),
+            &[],
+        );
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(1),
+            "expected exit 1, output:\n{log}"
+        );
+        anyhow::ensure!(
+            log.contains("[SETUP]") && log.contains("attr_setup_times_out"),
+            "expected [SETUP] outcome on the targeted test, output:\n{log}"
+        );
+        anyhow::ensure!(
+            log.contains("setup timed out"),
+            "expected setup-timeout diagnostic, output:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn per_test_attr_teardown_timeout_overrides_default(_ctx: &Test) -> anyhow::Result<()> {
+        // No CLI timeouts. Teardown phase times out only because of the
+        // attribute override on this test. Body still passes.
+        let out = run_serial_with_args(
+            env!("CARGO_BIN_EXE_per_test_attr_teardown_timeout_tokio_mt"),
+            &[],
+        );
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(1),
+            "expected exit 1, output:\n{log}"
+        );
+        anyhow::ensure!(
+            log.contains("[TIMEOUT]") && log.contains("teardown"),
+            "expected [TIMEOUT] teardown line, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
+        anyhow::ensure!(log.contains("1 teardown failed"), "output:\n{log}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn bg_thread_panic_during_setup_flips_exit_code(_ctx: &Test) -> anyhow::Result<()> {
+        // Real-world repro: rustls / aws-smithy spawn a thread that
+        // panics during crypto-provider init while the main setup
+        // future returns Ok. Without the panic-hook safety net the
+        // binary exits 0 and the summary lies. With it, the runner
+        // detects the unattributed panic, prints a warning, and exits
+        // 1.
+        let out = run_serial(env!("CARGO_BIN_EXE_bg_thread_panic_in_setup_tokio_mt"));
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(1),
+            "expected exit 1 from bg-panic safety net, output:\n{log}"
+        );
+        anyhow::ensure!(
+            log.contains("simulated_bg_thread_panic_during_setup"),
+            "user's panic message must appear, output:\n{log}"
+        );
+        anyhow::ensure!(
+            log.contains("background-thread panic"),
+            "expected rudzio safety-net diagnostic, output:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn rudzio_runner_sets_full_backtrace_when_unset(_ctx: &Test) -> anyhow::Result<()> {
+        // Run the bg-panic fixture WITHOUT pre-setting RUST_BACKTRACE
+        // and assert the panic output carries a frame from the user's
+        // panic site (the `panic!` line in the fixture). The "full"
+        // backtrace mode is what produces frame-by-frame output that
+        // includes user code; "short" mode would clip everything below
+        // `__rust_end_short_backtrace` (which is where the rudzio entry
+        // sits, i.e. the user frame would be hidden).
+        use std::process::Command;
+        let out = Command::new(env!("CARGO_BIN_EXE_bg_thread_panic_in_setup_tokio_mt"))
+            .args(["--plain"])
+            .env_remove("RUST_BACKTRACE")
+            .env_remove("RUST_LIB_BACKTRACE")
+            .output()?;
+        let log = log_of(&out);
+        anyhow::ensure!(
+            log.contains("bg_thread_panic_in_setup_tokio_mt.rs"),
+            "full backtrace must include the user's panic site, output:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn rudzio_runner_respects_user_backtrace_choice(_ctx: &Test) -> anyhow::Result<()> {
+        // When the user explicitly disables backtrace, the runner must
+        // not silently override it. Pass `RUST_BACKTRACE=0` and
+        // verify the backtrace frames are absent. The panic line
+        // itself still prints (default hook always emits it).
+        use std::process::Command;
+        let out = Command::new(env!("CARGO_BIN_EXE_bg_thread_panic_in_setup_tokio_mt"))
+            .args(["--plain"])
+            .env("RUST_BACKTRACE", "0")
+            .env("RUST_LIB_BACKTRACE", "0")
+            .output()?;
+        let log = log_of(&out);
+        anyhow::ensure!(
+            log.contains("simulated_bg_thread_panic_during_setup"),
+            "panic line must still print, output:\n{log}"
+        );
+        anyhow::ensure!(
+            !log.contains("stack backtrace:"),
+            "user's RUST_BACKTRACE=0 must be respected, got backtrace anyway:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
     fn gradual_cancellation_waits_for_tracked_tasks(_ctx: &Test) -> anyhow::Result<()> {
         // The tracked background task prints its cleanup marker only when the
         // runner's suite teardown drains the TaskTracker after root cancel.

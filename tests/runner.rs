@@ -408,6 +408,119 @@ mod config_parser {
         anyhow::ensure!(c.bench_mode == rudzio::BenchMode::Skip);
         Ok(())
     }
+
+    /// A8. `--suite-setup-timeout=N` populates the new field with N
+    /// whole seconds. Both the equals form and the split form work, in
+    /// keeping with every other timeout flag.
+    #[rudzio::test]
+    fn parses_suite_setup_timeout_flag(_ctx: &Test) -> anyhow::Result<()> {
+        let equals = Config::from_argv_and_env(
+            argv(&["--suite-setup-timeout=12"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            equals.suite_setup_timeout == Some(std::time::Duration::from_secs(12)),
+            "equals form: got {:?}",
+            equals.suite_setup_timeout
+        );
+        let split = Config::from_argv_and_env(
+            argv(&["--suite-setup-timeout", "7"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            split.suite_setup_timeout == Some(std::time::Duration::from_secs(7)),
+            "split form: got {:?}",
+            split.suite_setup_timeout
+        );
+        Ok(())
+    }
+
+    /// A9. `--suite-teardown-timeout=N` mirrors A8 for the suite teardown
+    /// phase. Same dual-form parsing.
+    #[rudzio::test]
+    fn parses_suite_teardown_timeout_flag(_ctx: &Test) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(
+            argv(&["--suite-teardown-timeout=4"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            c.suite_teardown_timeout == Some(std::time::Duration::from_secs(4)),
+            "got {:?}",
+            c.suite_teardown_timeout
+        );
+        Ok(())
+    }
+
+    /// A10. `--test-setup-timeout=N` populates the per-test setup
+    /// default. The runtime-side resolution lets a per-test attribute
+    /// override this; the parser just records the default.
+    #[rudzio::test]
+    fn parses_test_setup_timeout_flag(_ctx: &Test) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(
+            argv(&["--test-setup-timeout=3"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            c.test_setup_timeout == Some(std::time::Duration::from_secs(3)),
+            "got {:?}",
+            c.test_setup_timeout
+        );
+        Ok(())
+    }
+
+    /// A11. `--test-teardown-timeout=N` mirrors A10 for the per-test
+    /// teardown phase.
+    #[rudzio::test]
+    fn parses_test_teardown_timeout_flag(_ctx: &Test) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(
+            argv(&["--test-teardown-timeout=9"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            c.test_teardown_timeout == Some(std::time::Duration::from_secs(9)),
+            "got {:?}",
+            c.test_teardown_timeout
+        );
+        Ok(())
+    }
+
+    /// A12. A non-numeric value falls through to `unparsed` (the same
+    /// degradation mode the existing `--test-timeout` and `--run-timeout`
+    /// follow). The field stays `None`.
+    #[rudzio::test]
+    fn unrecognised_phase_timeout_value_falls_through_to_unparsed(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(
+            argv(&["--suite-setup-timeout=banana"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            c.suite_setup_timeout.is_none(),
+            "non-numeric must not populate field, got {:?}",
+            c.suite_setup_timeout
+        );
+        Ok(())
+    }
+
+    /// A13. With no flags, every phase timeout defaults to `None` so
+    /// the wrapper degrades to "no per-phase budget" — matching today's
+    /// unbounded behaviour.
+    #[rudzio::test]
+    fn defaults_are_none_for_all_phase_timeouts(_ctx: &Test) -> anyhow::Result<()> {
+        let c = Config::from_argv_and_env(argv(&[]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(c.suite_setup_timeout.is_none());
+        anyhow::ensure!(c.suite_teardown_timeout.is_none());
+        anyhow::ensure!(c.test_setup_timeout.is_none());
+        anyhow::ensure!(c.test_teardown_timeout.is_none());
+        Ok(())
+    }
 }
 
 /// Strategy-level smoke tests dogfooded across every runtime rudzio

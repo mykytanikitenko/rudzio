@@ -3,7 +3,7 @@ use quote::{format_ident, quote};
 use syn::{Ident, Item, ItemFn, ItemMod, Path};
 
 use crate::args::{MainArgs, RuntimeConfig};
-use crate::codegen::{extract_benchmark_expr, extract_ignore_reason};
+use crate::codegen::{extract_ignore_reason, extract_test_attr_args};
 use crate::transform::{
     CtxKind, classify_ctx_param, has_test_attr, is_async_fn, is_test_attr, transform_test_signature,
 };
@@ -216,22 +216,23 @@ fn generate_per_config(
 
                         reporter.report_suite_setup_started(runtime_name, suite_label);
                         let __rudzio_setup_start = ::std::time::Instant::now();
-                        // catch_unwind around the user's `Suite::setup` so a
-                        // panic doesn't unwind through the runtime thread —
-                        // the runner's join handler would catch it as a
-                        // generic "runtime thread panicked" with no link to
-                        // the actual suite. Catching here surfaces the
-                        // panic message in the same lifecycle line that an
-                        // Err produces.
-                        let __rudzio_setup_outcome =
-                            ::std::panic::AssertUnwindSafe(<
+                        // Per-phase token: child of root, so root cancellation
+                        // (run-timeout, SIGINT) still propagates here. The
+                        // wrapper cancels this token if `--suite-setup-timeout`
+                        // fires, dropping the in-flight setup and signalling
+                        // any cooperative tasks the user spawned through it.
+                        let __rudzio_suite_setup_phase_token = req.root_token.child_token();
+                        let __rudzio_setup_phase = ::rudzio::suite::run_phase_with_timeout_and_cancel(
+                            <
                                 #suite_base::<'_, #runtime_type> as ::rudzio::context::Suite<'_, #runtime_type>
-                            >::setup(&rt, req.root_token.clone(), req.config))
-                                .catch_unwind()
-                                .await;
+                            >::setup(&rt, __rudzio_suite_setup_phase_token.clone(), req.config),
+                            req.config.suite_setup_timeout,
+                            __rudzio_suite_setup_phase_token,
+                            |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(&rt, dur),
+                        ).await;
                         let __rudzio_setup_elapsed = __rudzio_setup_start.elapsed();
-                        let suite = match __rudzio_setup_outcome {
-                            ::std::result::Result::Ok(::std::result::Result::Ok(s)) => {
+                        let suite = match __rudzio_setup_phase {
+                            ::rudzio::suite::PhaseOutcome::Completed(::std::result::Result::Ok(s)) => {
                                 reporter.report_suite_setup_finished(
                                     runtime_name,
                                     suite_label,
@@ -240,7 +241,7 @@ fn generate_per_config(
                                 );
                                 s
                             }
-                            ::std::result::Result::Ok(::std::result::Result::Err(e)) => {
+                            ::rudzio::suite::PhaseOutcome::Completed(::std::result::Result::Err(e)) => {
                                 let __rudzio_err_msg = ::std::format!("{}", e);
                                 reporter.report_suite_setup_finished(
                                     runtime_name,
@@ -258,16 +259,53 @@ fn generate_per_config(
                                 }
                                 return summary;
                             }
-                            ::std::result::Result::Err(payload) => {
-                                let __rudzio_panic_msg = ::std::format!(
-                                    "panic: {}",
-                                    ::rudzio::suite::panic_payload_message(&*payload),
-                                );
+                            ::rudzio::suite::PhaseOutcome::Panicked(msg) => {
+                                let __rudzio_panic_msg = ::std::format!("panic: {}", msg);
                                 reporter.report_suite_setup_finished(
                                     runtime_name,
                                     suite_label,
                                     __rudzio_setup_elapsed,
                                     ::core::option::Option::Some(&__rudzio_panic_msg),
+                                );
+                                for tok in active.iter() {
+                                    reporter.report_outcome(
+                                        *tok,
+                                        runtime_name,
+                                        ::rudzio::suite::TestOutcome::Cancelled,
+                                    );
+                                    summary.cancelled += 1;
+                                }
+                                return summary;
+                            }
+                            ::rudzio::suite::PhaseOutcome::TimedOut => {
+                                let __rudzio_timeout_msg = ::std::string::String::from(
+                                    "setup timed out",
+                                );
+                                reporter.report_suite_setup_finished(
+                                    runtime_name,
+                                    suite_label,
+                                    __rudzio_setup_elapsed,
+                                    ::core::option::Option::Some(&__rudzio_timeout_msg),
+                                );
+                                for tok in active.iter() {
+                                    reporter.report_outcome(
+                                        *tok,
+                                        runtime_name,
+                                        ::rudzio::suite::TestOutcome::Cancelled,
+                                    );
+                                    summary.cancelled += 1;
+                                }
+                                return summary;
+                            }
+                            ::rudzio::suite::PhaseOutcome::Cancelled => {
+                                // Root token cancelled (run-timeout / SIGINT)
+                                // — every active test reports cancelled and
+                                // we skip teardown (setup never finished).
+                                reporter.report_suite_setup_finished(
+                                    runtime_name,
+                                    suite_label,
+                                    __rudzio_setup_elapsed,
+                                    ::core::option::Option::Some("setup cancelled"),
                                 );
                                 for tok in active.iter() {
                                     reporter.report_outcome(
@@ -378,23 +416,40 @@ fn generate_per_config(
 
                         reporter.report_suite_teardown_started(runtime_name, suite_label);
                         let __rudzio_teardown_start = ::std::time::Instant::now();
-                        let __rudzio_teardown_outcome =
-                            ::std::panic::AssertUnwindSafe(suite.teardown())
-                                .catch_unwind()
-                                .await;
+                        // Fresh, unparented phase token. Cleanup must run
+                        // to completion regardless of run-timeout / SIGINT
+                        // — same guarantee as before the wrapper existed.
+                        // Only the per-suite-teardown timeout can
+                        // short-circuit it.
+                        let __rudzio_suite_teardown_phase_token =
+                            ::rudzio::tokio_util::sync::CancellationToken::new();
+                        let __rudzio_teardown_phase = ::rudzio::suite::run_phase_with_timeout_and_cancel(
+                            suite.teardown(__rudzio_suite_teardown_phase_token.clone()),
+                            req.config.suite_teardown_timeout,
+                            __rudzio_suite_teardown_phase_token,
+                            |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(&rt, dur),
+                        ).await;
                         let __rudzio_teardown_elapsed = __rudzio_teardown_start.elapsed();
-                        let __rudzio_teardown_result = match __rudzio_teardown_outcome {
-                            ::std::result::Result::Ok(::std::result::Result::Ok(())) => {
+                        let __rudzio_teardown_result = match __rudzio_teardown_phase {
+                            ::rudzio::suite::PhaseOutcome::Completed(::std::result::Result::Ok(())) => {
                                 ::rudzio::suite::TeardownResult::Ok
                             }
-                            ::std::result::Result::Ok(::std::result::Result::Err(e)) => {
+                            ::rudzio::suite::PhaseOutcome::Completed(::std::result::Result::Err(e)) => {
                                 summary.teardown_failures += 1;
                                 ::rudzio::suite::TeardownResult::Err(::std::format!("{}", e))
                             }
-                            ::std::result::Result::Err(payload) => {
+                            ::rudzio::suite::PhaseOutcome::Panicked(msg) => {
                                 summary.teardown_failures += 1;
-                                ::rudzio::suite::TeardownResult::Panicked(
-                                    ::rudzio::suite::panic_payload_message(&*payload),
+                                ::rudzio::suite::TeardownResult::Panicked(msg)
+                            }
+                            ::rudzio::suite::PhaseOutcome::TimedOut => {
+                                summary.teardown_failures += 1;
+                                ::rudzio::suite::TeardownResult::TimedOut
+                            }
+                            ::rudzio::suite::PhaseOutcome::Cancelled => {
+                                summary.teardown_failures += 1;
+                                ::rudzio::suite::TeardownResult::Err(
+                                    ::std::string::String::from("teardown cancelled"),
                                 )
                             }
                         };
@@ -419,8 +474,24 @@ fn generate_per_config(
         let test_name = &test.sig.ident;
         let test_name_str = test_name.to_string();
         let (ignored, ignore_reason) = extract_ignore_reason(test);
-        let benchmark = extract_benchmark_expr(test)?;
+        let attr_args = extract_test_attr_args(test)?;
+        let benchmark = attr_args.benchmark;
         let has_benchmark = benchmark.is_some();
+        // Per-test attribute overrides emitted as `Option<u64>` constants;
+        // the runtime-side resolver computes
+        // `override.map(Duration::from_secs).or(config.<phase>_timeout)`.
+        let attr_test_timeout_secs = match attr_args.timeout_secs {
+            Some(n) => quote! { ::core::option::Option::Some(#n) },
+            None => quote! { ::core::option::Option::None },
+        };
+        let attr_setup_timeout_secs = match attr_args.setup_timeout_secs {
+            Some(n) => quote! { ::core::option::Option::Some(#n) },
+            None => quote! { ::core::option::Option::None },
+        };
+        let attr_teardown_timeout_secs = match attr_args.teardown_timeout_secs {
+            Some(n) => quote! { ::core::option::Option::Some(#n) },
+            None => quote! { ::core::option::Option::None },
+        };
         // `proc_macro2::Span::start().line` is available on stable and returns
         // line tracking from the compiler in proc-macro context and from
         // proc-macro2's own tracking (e.g. `syn::parse_str`) in regular
@@ -607,6 +678,28 @@ fn generate_per_config(
                     let config: &'s ::rudzio::config::Config =
                         ::rudzio::runtime::Runtime::config(rt);
 
+                    // Per-test attribute overrides (None when the bare
+                    // `#[rudzio::test]` form is used). Resolution wins
+                    // attr → config default → unbounded.
+                    const __RUDZIO_OVERRIDE_TEST_TIMEOUT_SECS:
+                        ::core::option::Option<u64> = #attr_test_timeout_secs;
+                    const __RUDZIO_OVERRIDE_SETUP_TIMEOUT_SECS:
+                        ::core::option::Option<u64> = #attr_setup_timeout_secs;
+                    const __RUDZIO_OVERRIDE_TEARDOWN_TIMEOUT_SECS:
+                        ::core::option::Option<u64> = #attr_teardown_timeout_secs;
+                    let test_timeout: ::std::option::Option<::std::time::Duration> =
+                        __RUDZIO_OVERRIDE_TEST_TIMEOUT_SECS
+                            .map(::std::time::Duration::from_secs)
+                            .or(test_timeout);
+                    let __rudzio_setup_timeout: ::std::option::Option<::std::time::Duration> =
+                        __RUDZIO_OVERRIDE_SETUP_TIMEOUT_SECS
+                            .map(::std::time::Duration::from_secs)
+                            .or(config.test_setup_timeout);
+                    let __rudzio_teardown_timeout: ::std::option::Option<::std::time::Duration> =
+                        __RUDZIO_OVERRIDE_TEARDOWN_TIMEOUT_SECS
+                            .map(::std::time::Duration::from_secs)
+                            .or(config.test_teardown_timeout);
+
                     // Allocate a per-dispatch TestId, register it in the
                     // panic hook's thread-local, and announce the test to
                     // the drawer. Paired with the `TestCompleted` emit
@@ -639,31 +732,38 @@ fn generate_per_config(
                     let __rudzio_hardlimit_guard = config.acquire_hardlimit_permit();
 
                     let outcome = 'run: {
-                        // catch_unwind around `Suite::context` so a
-                        // panic in per-test setup becomes a clean
-                        // SetupFailed outcome with the panic message,
-                        // instead of unwinding through the runtime
-                        // thread and producing a generic "thread
-                        // panicked" diagnostic.
-                        let __rudzio_ctx_outcome = ::std::panic::AssertUnwindSafe(
-                            suite.context(per_test_token.clone(), config),
-                        )
-                            .catch_unwind()
-                            .await;
-                        #ctx_binding = match __rudzio_ctx_outcome {
-                            ::std::result::Result::Ok(::std::result::Result::Ok(c)) => c,
-                            ::std::result::Result::Ok(::std::result::Result::Err(e)) => {
+                        // Per-test setup wrapped in the canonical phase
+                        // helper: handles cancellation propagation, panic
+                        // catching, and the per-test-setup timeout.
+                        let __rudzio_ctx_phase =
+                            ::rudzio::suite::run_phase_with_timeout_and_cancel(
+                                suite.context(per_test_token.clone(), config),
+                                __rudzio_setup_timeout,
+                                per_test_token.clone(),
+                                |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
+                            ).await;
+                        #ctx_binding = match __rudzio_ctx_phase {
+                            ::rudzio::suite::PhaseOutcome::Completed(::std::result::Result::Ok(c)) => c,
+                            ::rudzio::suite::PhaseOutcome::Completed(::std::result::Result::Err(e)) => {
                                 break 'run ::rudzio::suite::TestOutcome::SetupFailed {
                                     elapsed: start.elapsed(),
                                     message: ::std::format!("{}", e),
                                 };
                             }
-                            ::std::result::Result::Err(payload) => {
+                            ::rudzio::suite::PhaseOutcome::Panicked(msg) => {
                                 break 'run ::rudzio::suite::TestOutcome::SetupFailed {
                                     elapsed: start.elapsed(),
-                                    message: ::std::format!(
-                                        "panic: {}",
-                                        ::rudzio::suite::panic_payload_message(&*payload),
+                                    message: ::std::format!("panic: {}", msg),
+                                };
+                            }
+                            ::rudzio::suite::PhaseOutcome::Cancelled => {
+                                break 'run ::rudzio::suite::TestOutcome::Cancelled;
+                            }
+                            ::rudzio::suite::PhaseOutcome::TimedOut => {
+                                break 'run ::rudzio::suite::TestOutcome::SetupFailed {
+                                    elapsed: start.elapsed(),
+                                    message: ::std::string::String::from(
+                                        "setup timed out",
                                     ),
                                 };
                             }
@@ -676,26 +776,38 @@ fn generate_per_config(
                             start.elapsed(),
                         );
 
-                        // Per-test teardown — already wrapped in
-                        // catch_unwind. Failures route through the
-                        // structured reporter method (no
-                        // `report_warning` escape hatch) so they show
-                        // up as a [FAIL] line attributed to the test
-                        // and contribute to teardown_failures.
-                        let __rudzio_test_teardown_result = match
-                            ::std::panic::AssertUnwindSafe(ctx.teardown())
-                                .catch_unwind()
-                                .await
-                        {
-                            ::std::result::Result::Ok(::std::result::Result::Ok(())) => {
+                        // Per-test teardown wrapped in the phase helper
+                        // with a FRESH unparented token. Cleanup must run
+                        // to completion regardless of run-timeout / SIGINT
+                        // — that's the same guarantee we had before the
+                        // wrapper existed. Only the per-test-teardown
+                        // timeout (or the user cancelling the token they
+                        // received) can short-circuit it.
+                        let __rudzio_teardown_phase_token =
+                            ::rudzio::tokio_util::sync::CancellationToken::new();
+                        let __rudzio_teardown_phase =
+                            ::rudzio::suite::run_phase_with_timeout_and_cancel(
+                                ctx.teardown(__rudzio_teardown_phase_token.clone()),
+                                __rudzio_teardown_timeout,
+                                __rudzio_teardown_phase_token,
+                                |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
+                            ).await;
+                        let __rudzio_test_teardown_result = match __rudzio_teardown_phase {
+                            ::rudzio::suite::PhaseOutcome::Completed(::std::result::Result::Ok(())) => {
                                 ::rudzio::suite::TeardownResult::Ok
                             }
-                            ::std::result::Result::Ok(::std::result::Result::Err(e)) => {
+                            ::rudzio::suite::PhaseOutcome::Completed(::std::result::Result::Err(e)) => {
                                 ::rudzio::suite::TeardownResult::Err(::std::format!("{}", e))
                             }
-                            ::std::result::Result::Err(payload) => {
-                                ::rudzio::suite::TeardownResult::Panicked(
-                                    ::rudzio::suite::panic_payload_message(&*payload),
+                            ::rudzio::suite::PhaseOutcome::Panicked(msg) => {
+                                ::rudzio::suite::TeardownResult::Panicked(msg)
+                            }
+                            ::rudzio::suite::PhaseOutcome::TimedOut => {
+                                ::rudzio::suite::TeardownResult::TimedOut
+                            }
+                            ::rudzio::suite::PhaseOutcome::Cancelled => {
+                                ::rudzio::suite::TeardownResult::Err(
+                                    ::std::string::String::from("teardown cancelled"),
                                 )
                             }
                         };

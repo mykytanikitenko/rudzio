@@ -148,6 +148,12 @@ impl Drop for CaptureGuard {
 /// isn't Unix.
 pub fn init(config: &Config) -> io::Result<CaptureGuard> {
     if matches!(config.output_mode, crate::config::OutputMode::Plain) {
+        // Install the panic hook even in plain mode — without it, a
+        // panic on a background thread spawned by user setup wouldn't
+        // bump the unattributed-panic counter and the runner's
+        // end-of-run safety net would silently miss it. Plain mode
+        // doesn't capture stdio, so pass `None` for the FD restore.
+        panic_hook::install(None);
         return Ok(CaptureGuard::plain());
     }
     #[cfg(unix)]
@@ -200,7 +206,7 @@ fn init_unix(config: &Config) -> io::Result<CaptureGuard> {
     let drawer_handle = render::spawn_drawer(drawer)?;
 
     let saved = Arc::new(capture.saved);
-    panic_hook::install(Arc::clone(&saved));
+    panic_hook::install(Some(Arc::clone(&saved)));
 
     Ok(CaptureGuard {
         saved,
