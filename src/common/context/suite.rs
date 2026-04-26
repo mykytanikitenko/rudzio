@@ -4,6 +4,7 @@ use std::fmt;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
+use crate::config::Config;
 use crate::context;
 use crate::runtime::{JoinError, Runtime};
 
@@ -113,7 +114,7 @@ where
     fn context<'test_context>(
         &'test_context self,
         cancel: CancellationToken,
-        config: &'test_context crate::config::Config,
+        config: &'test_context Config,
     ) -> impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>> + Send + 'test_context
     {
         // Use the per-test token the runner supplies directly — it is already
@@ -127,7 +128,7 @@ where
     async fn setup(
         rt: &'suite_context R,
         cancel: CancellationToken,
-        _config: &'suite_context crate::config::Config,
+        _config: &'suite_context Config,
     ) -> Result<Self, Self::SetupError> {
         // Root cancel is a child of the runner's token so that run-level
         // cancellation (timeout, SIGINT, SIGTERM) propagates to every test.

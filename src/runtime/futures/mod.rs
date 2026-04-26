@@ -5,12 +5,12 @@
 //! the main future via `LocalPool::run_until`. `sleep` uses
 //! [`futures_timer::Delay`].
 
+/// Internal wiring for the `futures::executor::ThreadPool` backend.
+mod runtime;
+
 use std::io::Result as IoResult;
 
 use crate::config::Config;
-
-/// Internal wiring for the `futures::executor::ThreadPool` backend.
-mod runtime;
 
 pub use runtime::ThreadPool;
 

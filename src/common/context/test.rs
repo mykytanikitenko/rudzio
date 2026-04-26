@@ -14,12 +14,12 @@ where
 {
     /// Child cancellation token scoped to this test.
     cancel: CancellationToken,
+    /// Resolved CLI/env configuration, handed down from the suite.
+    config: &'test_context Config,
     /// Borrow of the async runtime driving the test.
     rt: &'test_context R,
     /// Shared task tracker inherited from the suite context.
     tracker: TaskTracker,
-    /// Resolved CLI/env configuration, handed down from the suite.
-    config: &'test_context Config,
 }
 
 impl<'test_context, R> Test<'test_context, R>

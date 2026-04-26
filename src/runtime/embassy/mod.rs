@@ -5,12 +5,12 @@
 //! as embassy tasks via a `Spawner` and results are communicated back through
 //! `std::sync::mpsc` channels.
 
+/// Embassy backend wired to a dedicated thread.
+mod runtime;
+
 use std::io::Result as IoResult;
 
 use crate::config::Config;
-
-/// Embassy backend wired to a dedicated thread.
-mod runtime;
 
 pub use runtime::Runtime;
 
