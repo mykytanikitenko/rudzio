@@ -780,12 +780,14 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
                 drop(self.terminal.write_all(b"\n"));
             }
         }
-        let failed_total = self.summary.failed
-            + self.summary.panicked
-            + self.summary.timed_out
-            + self.summary.hung
-            + self.summary.cancelled
-            + self.summary.teardown_failures;
+        let failed_total = self
+            .summary
+            .failed
+            .saturating_add(self.summary.panicked)
+            .saturating_add(self.summary.timed_out)
+            .saturating_add(self.summary.hung)
+            .saturating_add(self.summary.cancelled)
+            .saturating_add(self.summary.teardown_failures);
         let overall = if failed_total == 0 {
             self.color.green("ok")
         } else {
@@ -1049,7 +1051,12 @@ fn render_line(lhs_naked: &str, lhs_rendered: &str, trailing: &str, term_cols: u
         .saturating_sub(lhs_visible)
         .saturating_sub(trailing_visible)
         .max(MIN_TRAILING_PAD);
-    let mut out = String::with_capacity(lhs_rendered.len() + pad + trailing.len());
+    let mut out = String::with_capacity(
+        lhs_rendered
+            .len()
+            .saturating_add(pad)
+            .saturating_add(trailing.len()),
+    );
     out.push_str(lhs_rendered);
     for _ in 0..pad {
         out.push(' ');
@@ -1276,11 +1283,13 @@ pub fn bench_progress_trailing(
 ) -> String {
     let pct = snap.done.saturating_mul(100).checked_div(snap.total).unwrap_or(0);
     let bar = bar_render(snap.done, snap.total, 10);
-    let cov_finite = snap.cov.is_finite();
-    if cols >= 100 && cov_finite {
-        let cov_pct = snap.cov * 100.0_f32;
+    if let Some(cov_permille) = snap.cov_permille.filter(|_| cols >= 100) {
+        // cov_permille = cov × 1000; we render cov × 100 with one
+        // decimal, i.e. cov_permille / 10 . cov_permille % 10.
+        let cov_int = cov_permille.checked_div(10_u16).unwrap_or(0);
+        let cov_frac = cov_permille.checked_rem(10_u16).unwrap_or(0);
         return format!(
-            "<{bar} {pct}% {}/{}  p50={p50:.0?}  p95={p95:.0?}  cov={cov_pct:.1}%>",
+            "<{bar} {pct}% {}/{}  p50={p50:.0?}  p95={p95:.0?}  cov={cov_int}.{cov_frac}%>",
             snap.done,
             snap.total,
             p50 = snap.p50,
@@ -1448,15 +1457,19 @@ pub fn bench_histogram_lines(
             .checked_div(bars_width)
             .unwrap_or(0)
             .min(HISTOGRAM_BUCKETS.saturating_sub(1));
-        let count = snap.histogram[bin];
+        let count = snap.histogram.get(bin).copied().unwrap_or(0);
         if count == 0 {
             bars.push(' ');
         } else {
-            let level_u32 = (count.saturating_mul(8) / max_count.max(1))
+            let level_u32 = count
+                .saturating_mul(8)
+                .checked_div(max_count.max(1))
+                .unwrap_or(0)
                 .min(8)
                 .saturating_sub(1);
             let level = usize::try_from(level_u32).unwrap_or(0_usize);
-            bars.push(levels[level.min(7)]);
+            let glyph = levels.get(level.min(7)).copied().unwrap_or(' ');
+            bars.push(glyph);
         }
     }
     let bars_line_raw = format!("{:width$}{bars}", "", width = indent_width);

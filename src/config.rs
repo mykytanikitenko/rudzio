@@ -919,7 +919,7 @@ fn parse_argv(argv: &[String]) -> ParsedArgs {
 
     let mut i = 0_usize;
     while i < argv.len() {
-        let arg = argv[i].clone();
+        let Some(arg) = argv.get(i).cloned() else { break };
         let consumed = handle_concurrency_flag(&mut state, &arg, argv, &mut i)
             || handle_presentation_flag(&mut state, &arg, argv, &mut i)
             || handle_timeout_flag(&mut state, &arg, argv, &mut i)

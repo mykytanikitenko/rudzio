@@ -49,7 +49,7 @@ const fn fake_snapshot(done: usize, total: usize) -> ProgressSnapshot {
         done,
         total,
         rudzio::bench::BenchStats::new(
-            0.043,
+            Some(43_u16),
             histogram,
             Duration::from_micros(50),
             Duration::from_micros(5),

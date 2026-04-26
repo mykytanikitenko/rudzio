@@ -82,7 +82,7 @@ impl HardLimit {
         let mut state = inner.state.lock().unwrap_or_else(PoisonError::into_inner);
 
         if state.available > 0 {
-            state.available -= 1;
+            state.available = state.available.saturating_sub(1);
             return HardLimitGuard { owner: Some(self) };
         }
 
@@ -91,7 +91,7 @@ impl HardLimit {
             .cvar
             .wait_while(state, |waiting| waiting.available == 0)
             .unwrap_or_else(PoisonError::into_inner);
-        woken_state.available -= 1;
+        woken_state.available = woken_state.available.saturating_sub(1);
         drop(woken_state);
         let parked = parked_at.elapsed();
 
@@ -169,7 +169,7 @@ impl Drop for HardLimitGuard<'_> {
         let Some(owner) = self.owner else { return };
         let Some(inner) = &owner.inner else { return };
         let mut state = inner.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.available += 1;
+        state.available = state.available.saturating_add(1);
         drop(state);
         inner.cvar.notify_one();
     }

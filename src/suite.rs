@@ -634,15 +634,17 @@ pub fn fill_elapsed(outcome: TestOutcome, elapsed: Duration) -> TestOutcome {
 #[must_use]
 #[inline]
 pub const fn fnv1a64(text: &str) -> u64 {
-    let bytes = text.as_bytes();
+    let mut bytes = text.as_bytes();
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut i = 0;
-    while i < bytes.len() {
+    // Iterate via slice-pattern split (`split_first` is the runtime
+    // analogue) — const-stable, no raw indexing, so `indexing_slicing`
+    // doesn't fire while the function remains a `const fn`.
+    while let [first, rest @ ..] = bytes {
         // Widen byte→u64 bit-by-bit in const context. `From` isn't yet
         // const-stable for `u8 → u64`, and `from_*_bytes` trips the
         // restriction lints — so we test each bit and OR it into a
         // u64 accumulator with u64-typed literals.
-        let byte = bytes[i];
+        let byte = *first;
         let mut widened: u64 = 0;
         if byte & 0b0000_0001 != 0 { widened |= 0x01; }
         if byte & 0b0000_0010 != 0 { widened |= 0x02; }
@@ -654,7 +656,7 @@ pub const fn fnv1a64(text: &str) -> u64 {
         if byte & 0b1000_0000 != 0 { widened |= 0x80; }
         hash ^= widened;
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        i += 1;
+        bytes = rest;
     }
     hash
 }

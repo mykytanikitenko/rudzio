@@ -41,10 +41,12 @@ pub const HISTOGRAM_BUCKETS: usize = 32;
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct ProgressSnapshot {
-    /// Coefficient of variation (σ / mean) of the successful samples.
-    /// `f32::NAN` when fewer than two samples are available; renderers
-    /// must guard with `is_finite()`.
-    pub cov: f32,
+    /// Coefficient of variation (σ / mean) carried as parts-per-thousand
+    /// (e.g. `Some(43)` means cov ≈ 0.043). `None` when fewer than two
+    /// samples are available or the mean is zero. Integer-encoded so the
+    /// renderer can format `xx.x%` purely in integer math, sidestepping
+    /// `float_arithmetic` everywhere downstream.
+    pub cov_permille: Option<u16>,
     /// Iterations completed so far (success + failure + panic).
     pub done: usize,
     /// Pre-binned histogram: 32 linear buckets over `[min, max]`.
@@ -70,8 +72,8 @@ pub struct ProgressSnapshot {
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct BenchStats {
-    /// See [`ProgressSnapshot::cov`].
-    pub cov: f32,
+    /// See [`ProgressSnapshot::cov_permille`].
+    pub cov_permille: Option<u16>,
     /// See [`ProgressSnapshot::histogram`].
     pub histogram: [u32; HISTOGRAM_BUCKETS],
     /// See [`ProgressSnapshot::max`].
@@ -89,14 +91,14 @@ impl BenchStats {
     #[inline]
     #[must_use]
     pub const fn new(
-        cov: f32,
+        cov_permille: Option<u16>,
         histogram: [u32; HISTOGRAM_BUCKETS],
         max: Duration,
         min: Duration,
         p50: Duration,
         p95: Duration,
     ) -> Self {
-        Self { cov, histogram, max, min, p50, p95 }
+        Self { cov_permille, histogram, max, min, p50, p95 }
     }
 }
 
@@ -181,8 +183,8 @@ impl ProgressSnapshot {
         let mut sorted: Vec<Duration> = samples.to_vec();
         sorted.sort_unstable();
         let n = sorted.len();
-        let min = sorted[0];
-        let max = sorted[n.saturating_sub(1)];
+        let min = sorted.first().copied().unwrap_or(Duration::ZERO);
+        let max = sorted.last().copied().unwrap_or(Duration::ZERO);
 
         // Nearest-rank percentile in integer math: rank = ceil(p * n) - 1,
         // expressed as ceil(permille * n / 1000) - 1 with permille = p * 1000.
@@ -192,26 +194,26 @@ impl ProgressSnapshot {
             let numerator = permille_u128
                 .saturating_mul(n_u128)
                 .saturating_add(999_u128);
-            let ceiling = numerator / 1000_u128;
+            let ceiling = numerator.checked_div(1000_u128).unwrap_or(0);
             usize::try_from(ceiling.saturating_sub(1_u128))
                 .unwrap_or(usize::MAX)
                 .min(n.saturating_sub(1))
         };
-        let p50 = sorted[rank(500_u32)];
-        let p95 = sorted[rank(950_u32)];
+        let p50 = sorted.get(rank(500_u32)).copied().unwrap_or(Duration::ZERO);
+        let p95 = sorted.get(rank(950_u32)).copied().unwrap_or(Duration::ZERO);
 
         // Coefficient of variation σ/mean computed entirely in integer
         // domain via the shortcut formula
         //   cov² = (n·Σx² − (Σx)²) / (Σx)²
-        // and exposed as f32 by going through `f32::from(u16)`. We carry
-        // milli-unit precision (cov×1000) which is well within the 0.1%
-        // display rounding the renderer uses. NaN when n<2 or mean=0.
-        let cov = if n < 2 {
-            f32::NAN
+        // and carried as parts-per-thousand (cov × 1000) in a u16. We
+        // never widen to floats — the renderer formats `xx.x%` directly
+        // out of the permille integer. `None` when n < 2 or mean = 0.
+        let cov_permille = if n < 2 {
+            None
         } else {
             let total_nanos: u128 = sorted.iter().map(Duration::as_nanos).sum();
             if total_nanos == 0_u128 {
-                f32::NAN
+                None
             } else {
                 let sum_sq: u128 = sorted
                     .iter()
@@ -228,8 +230,7 @@ impl ProgressSnapshot {
                     .checked_div(total_sq)
                     .unwrap_or(0_u128);
                 let cov_milli_u128 = cov_milli_sq.isqrt();
-                let cov_milli_u16 = u16::try_from(cov_milli_u128).unwrap_or(u16::MAX);
-                f32::from(cov_milli_u16) / 1000.0_f32
+                Some(u16::try_from(cov_milli_u128).unwrap_or(u16::MAX))
             }
         };
 
@@ -242,14 +243,16 @@ impl ProgressSnapshot {
         let bucket_span = span.div_ceil(buckets_u128).max(1);
         for sample in &sorted {
             let offset = sample.as_nanos().saturating_sub(min_ns);
-            let idx = usize::try_from(offset / bucket_span)
+            let idx = usize::try_from(offset.checked_div(bucket_span).unwrap_or(0))
                 .unwrap_or(usize::MAX)
                 .min(HISTOGRAM_BUCKETS.saturating_sub(1));
-            histogram[idx] = histogram[idx].saturating_add(1);
+            if let Some(slot) = histogram.get_mut(idx) {
+                *slot = slot.saturating_add(1);
+            }
         }
 
         Self {
-            cov,
+            cov_permille,
             done,
             histogram,
             max,
@@ -274,7 +277,7 @@ impl ProgressSnapshot {
             p95: Duration::ZERO,
             min: Duration::ZERO,
             max: Duration::ZERO,
-            cov: f32::NAN,
+            cov_permille: None,
             histogram: [0_u32; HISTOGRAM_BUCKETS],
         }
     }
@@ -286,9 +289,9 @@ impl ProgressSnapshot {
     #[inline]
     #[must_use]
     pub const fn new(done: usize, total: usize, stats: BenchStats) -> Self {
-        let BenchStats { cov, histogram, max, min, p50, p95 } = stats;
+        let BenchStats { cov_permille, histogram, max, min, p50, p95 } = stats;
         Self {
-            cov,
+            cov_permille,
             done,
             histogram,
             max,
@@ -322,10 +325,12 @@ impl Report {
         let mut counts = vec![0_usize; buckets];
         for sample in &self.samples {
             let offset = sample.as_nanos().saturating_sub(min_ns);
-            let idx = usize::try_from(offset / bucket_span)
+            let idx = usize::try_from(offset.checked_div(bucket_span).unwrap_or(0))
                 .unwrap_or(usize::MAX)
                 .min(buckets.saturating_sub(1));
-            counts[idx] = counts[idx].saturating_add(1);
+            if let Some(slot) = counts.get_mut(idx) {
+                *slot = slot.saturating_add(1);
+            }
         }
         let max_count = counts.iter().copied().max().unwrap_or(1).max(1);
 
@@ -334,12 +339,17 @@ impl Report {
             let lo_idx = u128::try_from(i).unwrap_or(u128::MAX);
             let hi_idx = u128::try_from(i.saturating_add(1)).unwrap_or(u128::MAX);
             let lo = Duration::from_nanos(
-                u64::try_from(min_ns + lo_idx * bucket_span).unwrap_or(u64::MAX),
+                u64::try_from(min_ns.saturating_add(lo_idx.saturating_mul(bucket_span)))
+                    .unwrap_or(u64::MAX),
             );
             let hi = Duration::from_nanos(
-                u64::try_from(min_ns + hi_idx * bucket_span).unwrap_or(u64::MAX),
+                u64::try_from(min_ns.saturating_add(hi_idx.saturating_mul(bucket_span)))
+                    .unwrap_or(u64::MAX),
             );
-            let bar_len = (count * width) / max_count;
+            let bar_len = count
+                .saturating_mul(width)
+                .checked_div(max_count)
+                .unwrap_or(0);
             let bar = "#".repeat(bar_len);
             let _write_ret: Result<(), fmt::Error> = writeln!(
                 out,
@@ -353,12 +363,15 @@ impl Report {
     /// relative spread (1.0 = σ equals the mean — very noisy). `None`
     /// when mean is zero or σ is unavailable.
     ///
-    /// Computed in integer domain — `cov × 10⁶` is carried as a u32 and
-    /// scaled back at the boundary via `f64::from(u32)`, sidestepping
-    /// `as_conversions` while preserving 1e-6 absolute precision.
+    /// Returned as `cov × 10⁶` packed into a u32 — keeps the math
+    /// purely integer (no `float_arithmetic` lint exposure) while
+    /// preserving 1e-6 absolute precision. Callers that want a
+    /// floating-point view can scale at the print boundary; callers
+    /// that just want to format `xx.xxx` can split into integer +
+    /// fractional parts in u32 arithmetic.
     #[must_use]
     #[inline]
-    pub fn coefficient_of_variation(&self) -> Option<f64> {
+    pub fn coefficient_of_variation_micro(&self) -> Option<u32> {
         let mean = self.mean()?.as_nanos();
         let sd = self.std_dev()?.as_nanos();
         if mean == 0_u128 {
@@ -368,8 +381,7 @@ impl Report {
             .saturating_mul(1_000_000_u128)
             .checked_div(mean)
             .unwrap_or(0_u128);
-        let cov_micro = u32::try_from(cov_micro_u128).unwrap_or(u32::MAX);
-        Some(f64::from(cov_micro) / 1_000_000.0_f64)
+        Some(u32::try_from(cov_micro_u128).unwrap_or(u32::MAX))
     }
 
     /// Multi-line detailed statistics block — intended for rendering
@@ -404,9 +416,21 @@ impl Report {
             writeln!(out, "  samples:           {n}");
         let _wallclock_ret: Result<(), fmt::Error> =
             writeln!(out, "  wall-clock:        {:.2?}", self.total_elapsed);
-        if let Some(throughput) = self.throughput_per_sec() {
-            let _throughput_ret: Result<(), fmt::Error> =
-                writeln!(out, "  throughput:        {throughput:.2} iter/s");
+        if let Some(throughput_milli) = self.throughput_milli_per_sec() {
+            // throughput_milli = iter/s × 1000; render `xxxx.yy iter/s`
+            // by splitting into integer (÷1000) and centi-fractional
+            // (÷10 % 100) parts — matches the previous `{throughput:.2}`
+            // formatting without going through f64.
+            let int_part = throughput_milli.checked_div(1_000_u32).unwrap_or(0);
+            let centi_part = throughput_milli
+                .checked_div(10_u32)
+                .unwrap_or(0)
+                .checked_rem(100_u32)
+                .unwrap_or(0);
+            let _throughput_ret: Result<(), fmt::Error> = writeln!(
+                out,
+                "  throughput:        {int_part}.{centi_part:02} iter/s"
+            );
         }
         if let (Some(min), Some(max)) = (self.min(), self.max()) {
             let _minmax_ret: Result<(), fmt::Error> =
@@ -432,9 +456,19 @@ impl Report {
             let _mad_ret: Result<(), fmt::Error> =
                 writeln!(out, "  MAD:               {mad:.2?}");
         }
-        if let Some(cv) = self.coefficient_of_variation() {
+        if let Some(cv_micro) = self.coefficient_of_variation_micro() {
+            // cv_micro carries cov × 10⁶; we render `xxxx.yyy` (3 decimals)
+            // by splitting into integer (÷10⁶) and milli-fractional
+            // (÷10³ % 10³) parts — purely integer math, no f64.
+            let cv_int = cv_micro.checked_div(1_000_000_u32).unwrap_or(0);
+            let cv_milli_part = cv_micro
+                .checked_div(1_000_u32)
+                .unwrap_or(0)
+                .checked_rem(1_000_u32)
+                .unwrap_or(0);
+            let cv_text = format!("{cv_int}.{cv_milli_part:03}");
             let _cv_ret: Result<(), fmt::Error> =
-                writeln!(out, "  coeff of variation:{cv:>8.3}");
+                writeln!(out, "  coeff of variation:{cv_text:>8}");
         }
         if let Some(iqr) = self.iqr() {
             let _iqr_ret: Result<(), fmt::Error> =
@@ -445,19 +479,19 @@ impl Report {
                 writeln!(out, "  outliers (>3σ):    {outliers}");
         }
         out.push_str("  percentiles:\n");
-        for (percentile, label) in [
-            (0.01_f64, "p1"),
-            (0.05_f64, "p5"),
-            (0.10_f64, "p10"),
-            (0.25_f64, "p25"),
-            (0.50_f64, "p50"),
-            (0.75_f64, "p75"),
-            (0.90_f64, "p90"),
-            (0.95_f64, "p95"),
-            (0.99_f64, "p99"),
-            (0.999_f64, "p99.9"),
+        for (permille, label) in [
+            (10_u32, "p1"),
+            (50_u32, "p5"),
+            (100_u32, "p10"),
+            (250_u32, "p25"),
+            (500_u32, "p50"),
+            (750_u32, "p75"),
+            (900_u32, "p90"),
+            (950_u32, "p95"),
+            (990_u32, "p99"),
+            (999_u32, "p99.9"),
         ] {
-            if let Some(value) = self.percentile(percentile) {
+            if let Some(value) = self.percentile_permille(permille) {
                 let _percentile_ret: Result<(), fmt::Error> =
                     writeln!(out, "    {label:>6}:         {value:.2?}");
             }
@@ -478,8 +512,8 @@ impl Report {
     #[must_use]
     #[inline]
     pub fn iqr(&self) -> Option<Duration> {
-        let p25 = self.percentile(0.25)?;
-        let p75 = self.percentile(0.75)?;
+        let p25 = self.percentile_permille(250_u32)?;
+        let p75 = self.percentile_permille(750_u32)?;
         Some(p75.saturating_sub(p25))
     }
 
@@ -506,9 +540,10 @@ impl Report {
             .map(|sample| sample.as_nanos().abs_diff(median_ns))
             .collect();
         deviations.sort_unstable();
-        let mid = deviations.len() / 2;
+        let mid = deviations.len().checked_div(2).unwrap_or(0);
+        let mid_value = deviations.get(mid).copied().unwrap_or(0_u128);
         Some(Duration::from_nanos(
-            u64::try_from(deviations[mid]).unwrap_or(u64::MAX),
+            u64::try_from(mid_value).unwrap_or(u64::MAX),
         ))
     }
 
@@ -530,7 +565,7 @@ impl Report {
         }
         let total_nanos: u128 = self.samples.iter().map(Duration::as_nanos).sum();
         let n_u128 = u128::try_from(self.samples.len()).unwrap_or(u128::MAX);
-        let mean_nanos = total_nanos / n_u128;
+        let mean_nanos = total_nanos.checked_div(n_u128).unwrap_or(0);
         Some(Duration::from_nanos(
             u64::try_from(mean_nanos).unwrap_or(u64::MAX),
         ))
@@ -540,7 +575,7 @@ impl Report {
     #[inline]
     #[must_use]
     pub fn median(&self) -> Option<Duration> {
-        self.percentile(0.5)
+        self.percentile_permille(500_u32)
     }
 
     /// Smallest successful-iteration duration, or `None` if every iteration
@@ -584,45 +619,36 @@ impl Report {
         )
     }
 
-    /// Sample at the `p`-th percentile (`0.0..=1.0`, nearest-rank) or
-    /// `None` when there are no successful samples.
+    /// Permille-indexed nearest-rank percentile — `permille = 500`
+    /// returns the median, `permille = 999` the p99.9. Saturates on
+    /// `permille > 1000`. `None` when the run has no successful
+    /// samples.
     ///
-    /// `percentile(0.5)` is the median; `percentile(0.99)` is the p99.
-    /// Returns `None` when `p` is outside `[0.0, 1.0]`.
+    /// Integer-only API — sidesteps `float_arithmetic`. Callers that
+    /// have an `f64` quantile must convert at the boundary
+    /// (`(p * 1000.0).round() as u32`); the conversion is the caller's
+    /// problem because the cleanest framing is to keep this surface
+    /// integer-typed end-to-end. Use `percentile_permille(500)` for
+    /// median, `(950)` for p95, `(999)` for p99.9, and so on.
     #[must_use]
     #[inline]
-    pub fn percentile(&self, percentile: f64) -> Option<Duration> {
-        if !(0.0_f64..=1.0_f64).contains(&percentile) || self.samples.is_empty() {
+    pub fn percentile_permille(&self, permille: u32) -> Option<Duration> {
+        if self.samples.is_empty() {
             return None;
         }
         let mut sorted = self.samples.clone();
         sorted.sort_unstable();
-        // Discretise the f64 input to permille (×1000) via bisection in
-        // f64 domain — `f64::from(u32)` is lossless and avoids any `as`.
-        // Permille granularity is well below any practical benchmark
-        // sample-size resolution.
-        let mut lo = 0_u32;
-        let mut hi = 1000_u32;
-        while lo < hi {
-            let mid = u32::midpoint(lo, hi);
-            let mid_f64 = f64::from(mid) / 1000.0_f64;
-            if mid_f64 < percentile {
-                lo = mid + 1_u32;
-            } else {
-                hi = mid;
-            }
-        }
-        let permille_u128 = u128::from(lo);
+        let permille_u128 = u128::from(permille.min(1000_u32));
         let n_u128 = u128::try_from(sorted.len()).unwrap_or(u128::MAX);
         // Nearest-rank: rank = ceil(permille · n / 1000) − 1, clamped.
         let numerator = permille_u128
             .saturating_mul(n_u128)
             .saturating_add(999_u128);
-        let ceiling = numerator / 1000_u128;
+        let ceiling = numerator.checked_div(1000_u128).unwrap_or(0);
         let rank = usize::try_from(ceiling.saturating_sub(1_u128))
             .unwrap_or(usize::MAX)
             .min(sorted.len().saturating_sub(1));
-        Some(sorted[rank])
+        sorted.get(rank).copied()
     }
 
     /// Range: max - min. `None` when there are no samples.
@@ -661,7 +687,7 @@ impl Report {
         let total_sq = total_nanos.saturating_mul(total_nanos);
         let var_times_n_sq = n_sum_sq.saturating_sub(total_sq);
         let sd_times_n = var_times_n_sq.isqrt();
-        let sd_nanos = sd_times_n / n_u128;
+        let sd_nanos = sd_times_n.checked_div(n_u128).unwrap_or(0);
         Some(Duration::from_nanos(
             u64::try_from(sd_nanos).unwrap_or(u64::MAX),
         ))
@@ -679,33 +705,35 @@ impl Report {
             "min {:.2?}, p50 {:.2?}, p95 {:.2?}, max {:.2?} ({n} samples)",
             self.min().unwrap_or_default(),
             self.median().unwrap_or_default(),
-            self.percentile(0.95).unwrap_or_default(),
+            self.percentile_permille(950_u32).unwrap_or_default(),
             self.max().unwrap_or_default(),
         )
     }
 
-    /// Throughput in successful iterations per second, derived from
-    /// sample count and [`Self::total_elapsed`]. For
-    /// [`strategy::Concurrent`] this reflects *real* throughput
-    /// (wall-clock) rather than per-iteration latency, which matters
-    /// when comparing strategies.
+    /// Throughput in successful iterations per second × 1000 (i.e.
+    /// milli-iterations per second). Returns the integer-encoded form so
+    /// callers can format `xxx.yyy iter/s` without crossing the
+    /// `float_arithmetic` line.
+    ///
+    /// `None` when the run hasn't completed (`total_elapsed == 0`) or no
+    /// successful samples landed. The u32 representation caps at
+    /// ≈ 4.29 M iter/s × 1000 = 4.29 G milli-iter/s — well above any
+    /// real benchmark.
     ///
     /// [`strategy::Concurrent`]: crate::bench::strategy::Concurrent
     #[must_use]
     #[inline]
-    pub fn throughput_per_sec(&self) -> Option<f64> {
+    pub fn throughput_milli_per_sec(&self) -> Option<u32> {
         let elapsed_nanos = self.total_elapsed.as_nanos();
         if elapsed_nanos == 0_u128 || self.samples.is_empty() {
             return None;
         }
-        // throughput × 1000 = samples × 10^12 / elapsed_nanos. Carrying
-        // milli-units lets us emit f64 via `f64::from(u32)`, capping at
-        // ~4.29M iter/s — well above any real benchmark.
+        // throughput × 1000 = samples × 10^12 / elapsed_nanos.
         let samples_u128 = u128::try_from(self.samples.len()).unwrap_or(u128::MAX);
         let throughput_milli = samples_u128
             .saturating_mul(1_000_000_000_000_u128)
-            / elapsed_nanos;
-        let throughput_milli_u32 = u32::try_from(throughput_milli).unwrap_or(u32::MAX);
-        Some(f64::from(throughput_milli_u32) / 1000.0_f64)
+            .checked_div(elapsed_nanos)
+            .unwrap_or(0_u128);
+        Some(u32::try_from(throughput_milli).unwrap_or(u32::MAX))
     }
 }

@@ -894,23 +894,23 @@ mod bench_strategies {
         anyhow::ensure!(report.max().is_none());
         anyhow::ensure!(report.mean().is_none());
         anyhow::ensure!(report.median().is_none());
-        anyhow::ensure!(report.percentile(0.5).is_none());
+        anyhow::ensure!(report.percentile_permille(500_u32).is_none());
         anyhow::ensure!(report.ascii_histogram(8, 20).is_empty());
         Ok(())
     }
 
     #[rudzio::test]
-    async fn percentile_rejects_out_of_range(_ctx: &Test) -> anyhow::Result<()> {
+    async fn percentile_clamps_high_permille(_ctx: &Test) -> anyhow::Result<()> {
         let report = Sequential::new(3)
             .run(
                 || async { Ok::<(), rudzio::test_case::BoxError>(()) },
                 |_| {},
             )
             .await;
-        anyhow::ensure!(report.percentile(-0.1).is_none());
-        anyhow::ensure!(report.percentile(1.01).is_none());
-        anyhow::ensure!(report.percentile(0.0).is_some());
-        anyhow::ensure!(report.percentile(1.0).is_some());
+        // permille saturates at 1000; well-defined for any non-empty run.
+        anyhow::ensure!(report.percentile_permille(0_u32).is_some());
+        anyhow::ensure!(report.percentile_permille(1000_u32).is_some());
+        anyhow::ensure!(report.percentile_permille(2000_u32).is_some());
         Ok(())
     }
 

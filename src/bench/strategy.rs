@@ -48,7 +48,7 @@ impl Strategy for Sequential {
         P: FnMut(ProgressSnapshot),
     {
         let iterations = self.0;
-        let stride = (iterations / 100).max(1);
+        let stride = iterations.checked_div(100).unwrap_or(0).max(1);
         let mut samples = Vec::with_capacity(iterations);
         let mut failures = Vec::new();
         let mut panics: usize = 0;
@@ -66,7 +66,7 @@ impl Strategy for Sequential {
                 Err(_payload) => panics = panics.saturating_add(1),
             }
             let done = idx.saturating_add(1);
-            if done % stride == 0 || done == iterations {
+            if done.checked_rem(stride).is_some_and(|rem| rem == 0) || done == iterations {
                 on_progress(ProgressSnapshot::from_samples(
                     &samples, done, iterations,
                 ));
@@ -116,7 +116,7 @@ impl Strategy for Concurrent {
         P: FnMut(ProgressSnapshot),
     {
         let iterations = self.0;
-        let stride = (iterations / 100).max(1);
+        let stride = iterations.checked_div(100).unwrap_or(0).max(1);
         let start = Instant::now();
         // body() is `FnMut`; we call it sequentially up front, then
         // drive the resulting futures via `FuturesUnordered` so we can

@@ -964,7 +964,12 @@ fn render_status_line(
         .saturating_sub(lhs_visible)
         .saturating_sub(trailing_visible)
         .max(MIN_TRAILING_PAD);
-    let mut out = String::with_capacity(lhs_rendered.len() + pad + trailing.len());
+    let mut out = String::with_capacity(
+        lhs_rendered
+            .len()
+            .saturating_add(pad)
+            .saturating_add(trailing.len()),
+    );
     out.push_str(lhs_rendered);
     for _ in 0..pad {
         out.push(' ');
@@ -1141,20 +1146,21 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
     let total = thread::scope(|scope| {
         let handles: Vec<_> = groups
             .into_values()
-            .map(|mut group_tokens| {
+            .filter_map(|mut group_tokens| {
                 group_tokens.sort_by_key(|token| (token.file, token.line));
-                let owner: &'static dyn RuntimeGroupOwner = group_tokens[0].runtime_group_owner;
+                let owner: &'static dyn RuntimeGroupOwner =
+                    group_tokens.first()?.runtime_group_owner;
                 let req_root = root_token.child_token();
                 let config_ref = &config;
                 let reporter_ref = &reporter;
-                scope.spawn(move || {
+                Some(scope.spawn(move || {
                     let req = SuiteRunRequest {
                         tokens: &group_tokens,
                         config: config_ref,
                         root_token: req_root,
                     };
                     owner.run_group(req, reporter_ref)
-                })
+                }))
             })
             .collect();
 
