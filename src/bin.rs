@@ -70,10 +70,10 @@ impl Error for BinNotFound {}
 #[doc(hidden)]
 #[inline]
 pub fn __resolve_at_runtime(bin_name: &str) -> Result<PathBuf, BinNotFound> {
-    let current = env::current_exe().map_err(|e| BinNotFound {
+    let current = env::current_exe().map_err(|err| BinNotFound {
         message: format!(
             "rudzio::bin!(\"{bin_name}\"): failed to read \
-             `std::env::current_exe()`: {e}. Cargo's test runner normally \
+             `std::env::current_exe()`: {err}. Cargo's test runner normally \
              makes this reliable, so something unusual is going on with the \
              process environment."
         ),

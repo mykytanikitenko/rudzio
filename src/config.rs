@@ -104,8 +104,8 @@ impl OutputMode {
     #[must_use]
     #[inline]
     pub fn resolve(explicit: Option<Self>, env: &BTreeMap<String, String>) -> Self {
-        if let Some(m) = explicit {
-            return m;
+        if let Some(mode) = explicit {
+            return mode;
         }
         if io::stdout().is_terminal() && !env.contains_key("CI") {
             Self::Live
@@ -335,11 +335,11 @@ impl Config {
             Explicit(NonZeroUsize),
         }
 
-        fn classify_hardlimit(s: &str) -> Option<HardlimitArg> {
-            match s {
+        fn classify_hardlimit(text: &str) -> Option<HardlimitArg> {
+            match text {
                 "none" => Some(HardlimitArg::Disabled),
                 "threads" => Some(HardlimitArg::Threads),
-                _ => s
+                _ => text
                     .parse::<usize>()
                     .ok()
                     .and_then(NonZeroUsize::new)
@@ -414,13 +414,13 @@ impl Config {
                     concurrency_limit = Some(n);
                 }
             } else if let Some(rest) = arg.strip_prefix("--threads-parallel-hardlimit=") {
-                if let Some(h) = classify_hardlimit(rest) {
-                    hardlimit_arg = h;
+                if let Some(parsed) = classify_hardlimit(rest) {
+                    hardlimit_arg = parsed;
                 }
             } else if arg == "--threads-parallel-hardlimit" {
                 i += 1;
-                if let Some(h) = argv.get(i).and_then(|next| classify_hardlimit(next)) {
-                    hardlimit_arg = h;
+                if let Some(parsed) = argv.get(i).and_then(|next| classify_hardlimit(next)) {
+                    hardlimit_arg = parsed;
                 }
             } else if let Some(rest) = arg.strip_prefix("--color=") {
                 color = match rest {
@@ -445,7 +445,7 @@ impl Config {
                 };
             } else if arg == "--format" {
                 i += 1;
-                if argv.get(i).is_some_and(|s| s == "terse") {
+                if argv.get(i).is_some_and(|val| val == "terse") {
                     format = Format::Terse;
                 }
             } else if arg == "--ignored" {
@@ -600,8 +600,8 @@ impl Config {
         let threads = threads
             .or_else(|| {
                 env.get("RUST_TEST_THREADS")
-                    .and_then(|v| v.parse::<usize>().ok())
-                    .filter(|n| *n > 0)
+                    .and_then(|val| val.parse::<usize>().ok())
+                    .filter(|count| *count > 0)
             })
             .unwrap_or_else(|| thread::available_parallelism().map_or(1, NonZeroUsize::get));
 
@@ -687,7 +687,7 @@ ARGUMENTS:
 
 OPTIONS:
     --skip <SUBSTRING>          Exclude tests whose name contains <SUBSTRING>.
-                                Repeatable — accumulates across occurrences.
+                                Repeatable \u{2014} accumulates across occurrences.
     --ignored                   Only run tests marked #[ignore].
     --include-ignored           Run every test, ignored or not.
     --bench                     Dispatch #[rudzio::test(benchmark=...)] tests
@@ -747,5 +747,5 @@ EXIT STATUS:
     2   runner setup error (output capture init, etc.).
 
 Unknown flags are preserved in Config::unparsed for downstream parsing
-by custom runtimes or test helpers — they do not produce an error.
+by custom runtimes or test helpers \u{2014} they do not produce an error.
 ";

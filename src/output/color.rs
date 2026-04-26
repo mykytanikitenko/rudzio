@@ -52,51 +52,51 @@ impl ColorPolicy {
         self.use_color
     }
 
-    /// Wrap `s` in red (`\x1b[31m`). Returns `s` unchanged when
+    /// Wrap `text` in red (`\x1b[31m`). Returns `text` unchanged when
     /// colour is off.
     #[must_use]
     #[inline]
-    pub fn red(self, s: &str) -> String {
-        self.wrap(s, "31")
+    pub fn red(self, text: &str) -> String {
+        self.wrap(text, "31")
     }
 
-    /// Wrap `s` in green (`\x1b[32m`). Returns `s` unchanged when
+    /// Wrap `text` in green (`\x1b[32m`). Returns `text` unchanged when
     /// colour is off.
     #[must_use]
     #[inline]
-    pub fn green(self, s: &str) -> String {
-        self.wrap(s, "32")
+    pub fn green(self, text: &str) -> String {
+        self.wrap(text, "32")
     }
 
-    /// Wrap `s` in yellow (`\x1b[33m`). Returns `s` unchanged when
+    /// Wrap `text` in yellow (`\x1b[33m`). Returns `text` unchanged when
     /// colour is off.
     #[must_use]
     #[inline]
-    pub fn yellow(self, s: &str) -> String {
-        self.wrap(s, "33")
+    pub fn yellow(self, text: &str) -> String {
+        self.wrap(text, "33")
     }
 
-    /// Wrap `s` in dim / faint (`\x1b[2m`). Returns `s` unchanged when
+    /// Wrap `text` in dim / faint (`\x1b[2m`). Returns `text` unchanged when
     /// colour is off.
     #[must_use]
     #[inline]
-    pub fn dim(self, s: &str) -> String {
-        self.wrap(s, "2")
+    pub fn dim(self, text: &str) -> String {
+        self.wrap(text, "2")
     }
 
-    /// Wrap `s` in bold (`\x1b[1m`). Returns `s` unchanged when
+    /// Wrap `text` in bold (`\x1b[1m`). Returns `text` unchanged when
     /// colour is off.
     #[must_use]
     #[inline]
-    pub fn bold(self, s: &str) -> String {
-        self.wrap(s, "1")
+    pub fn bold(self, text: &str) -> String {
+        self.wrap(text, "1")
     }
 
-    fn wrap(self, s: &str, code: &str) -> String {
+    fn wrap(self, text: &str, code: &str) -> String {
         if self.use_color {
-            format!("\x1b[{code}m{s}\x1b[0m")
+            format!("\x1b[{code}m{text}\x1b[0m")
         } else {
-            s.to_owned()
+            text.to_owned()
         }
     }
 }

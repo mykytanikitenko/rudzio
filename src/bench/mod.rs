@@ -107,8 +107,8 @@ impl BenchProgressSnapshot {
             clippy::cast_sign_loss,
             reason = "Benchmark rank approximation; absolute precision not required."
         )]
-        let rank = |p: f64| -> usize {
-            ((p * n as f64).ceil() as usize)
+        let rank = |percentile: f64| -> usize {
+            ((percentile * n as f64).ceil() as usize)
                 .saturating_sub(1)
                 .min(n.saturating_sub(1))
         };
@@ -132,9 +132,9 @@ impl BenchProgressSnapshot {
                 } else {
                     let variance = sorted
                         .iter()
-                        .map(|s| {
-                            let d = s.as_nanos() as f64 - mean;
-                            d * d
+                        .map(|sample| {
+                            let diff = sample.as_nanos() as f64 - mean;
+                            diff * diff
                         })
                         .sum::<f64>()
                         / n as f64;
@@ -153,8 +153,8 @@ impl BenchProgressSnapshot {
             reason = "HISTOGRAM_BUCKETS fits in u128; bucket index always < HISTOGRAM_BUCKETS."
         )]
         let bucket_span = span.div_ceil(HISTOGRAM_BUCKETS as u128).max(1);
-        for s in &sorted {
-            let offset = s.as_nanos().saturating_sub(min_ns);
+        for sample in &sorted {
+            let offset = sample.as_nanos().saturating_sub(min_ns);
             #[expect(
                 clippy::cast_possible_truncation,
                 reason = "Index clamped to HISTOGRAM_BUCKETS - 1 below."
@@ -248,8 +248,8 @@ impl BenchReport {
     /// Returns `None` when `p` is outside `[0.0, 1.0]`.
     #[must_use]
     #[inline]
-    pub fn percentile(&self, p: f64) -> Option<Duration> {
-        if !(0.0..=1.0).contains(&p) || self.samples.is_empty() {
+    pub fn percentile(&self, percentile: f64) -> Option<Duration> {
+        if !(0.0..=1.0).contains(&percentile) || self.samples.is_empty() {
             return None;
         }
         let mut sorted = self.samples.clone();
@@ -261,7 +261,7 @@ impl BenchReport {
             clippy::cast_sign_loss,
             reason = "Benchmark rank approximation; absolute precision not required."
         )]
-        let rank = ((p * sorted.len() as f64).ceil() as usize)
+        let rank = ((percentile * sorted.len() as f64).ceil() as usize)
             .saturating_sub(1)
             .min(sorted.len().saturating_sub(1));
         Some(sorted[rank])
@@ -313,9 +313,9 @@ impl BenchReport {
             let variance: f64 = self
                 .samples
                 .iter()
-                .map(|s| {
-                    let d = s.as_nanos() as f64 - mean;
-                    d * d
+                .map(|sample| {
+                    let diff = sample.as_nanos() as f64 - mean;
+                    diff * diff
                 })
                 .sum::<f64>()
                 / n;
@@ -336,7 +336,7 @@ impl BenchReport {
         let mut deviations: Vec<u128> = self
             .samples
             .iter()
-            .map(|s| s.as_nanos().abs_diff(median_ns))
+            .map(|sample| sample.as_nanos().abs_diff(median_ns))
             .collect();
         deviations.sort_unstable();
         let mid = deviations.len() / 2;
@@ -409,7 +409,7 @@ impl BenchReport {
     /// (default `k = 3`). `None` when σ is unavailable.
     #[must_use]
     #[inline]
-    pub fn outlier_count(&self, k: f64) -> Option<usize> {
+    pub fn outlier_count(&self, sigma_multiplier: f64) -> Option<usize> {
         let mean_ns = self.mean()?.as_nanos();
         let sd_ns = self.std_dev()?.as_nanos();
         #[expect(
@@ -419,11 +419,11 @@ impl BenchReport {
             reason = "Benchmark statistics; precision loss well within measurement noise."
         )]
         {
-            let threshold = (sd_ns as f64 * k) as u128;
+            let threshold = (sd_ns as f64 * sigma_multiplier) as u128;
             Some(
                 self.samples
                     .iter()
-                    .filter(|s| s.as_nanos().abs_diff(mean_ns) > threshold)
+                    .filter(|sample| sample.as_nanos().abs_diff(mean_ns) > threshold)
                     .count(),
             )
         }
@@ -460,20 +460,20 @@ impl BenchReport {
             "  wall-clock:        {:.2?}\n",
             self.total_elapsed
         ));
-        if let Some(t) = self.throughput_per_sec() {
-            out.push_str(&format!("  throughput:        {t:.2} iter/s\n"));
+        if let Some(throughput) = self.throughput_per_sec() {
+            out.push_str(&format!("  throughput:        {throughput:.2} iter/s\n"));
         }
         if let (Some(min), Some(max)) = (self.min(), self.max()) {
             out.push_str(&format!("  min / max:         {min:.2?} / {max:.2?}\n"));
         }
-        if let Some(r) = self.range() {
-            out.push_str(&format!("  range:             {r:.2?}\n"));
+        if let Some(range) = self.range() {
+            out.push_str(&format!("  range:             {range:.2?}\n"));
         }
-        if let Some(m) = self.mean() {
-            out.push_str(&format!("  mean:              {m:.2?}\n"));
+        if let Some(mean) = self.mean() {
+            out.push_str(&format!("  mean:              {mean:.2?}\n"));
         }
-        if let Some(m) = self.median() {
-            out.push_str(&format!("  median:            {m:.2?}\n"));
+        if let Some(median) = self.median() {
+            out.push_str(&format!("  median:            {median:.2?}\n"));
         }
         if let Some(sd) = self.std_dev() {
             out.push_str(&format!("  std dev:           {sd:.2?}\n"));
@@ -491,7 +491,7 @@ impl BenchReport {
             out.push_str(&format!("  outliers (>3σ):    {outliers}\n"));
         }
         out.push_str("  percentiles:\n");
-        for (p, label) in [
+        for (percentile, label) in [
             (0.01, "p1"),
             (0.05, "p5"),
             (0.10, "p10"),
@@ -503,12 +503,12 @@ impl BenchReport {
             (0.99, "p99"),
             (0.999, "p99.9"),
         ] {
-            if let Some(v) = self.percentile(p) {
-                out.push_str(&format!("    {label:>6}:         {v:.2?}\n"));
+            if let Some(value) = self.percentile(percentile) {
+                out.push_str(&format!("    {label:>6}:         {value:.2?}\n"));
             }
         }
         if !self.failures.is_empty() {
-            out.push_str(&format!("  failed iterations: {}\n", self.failures.len(),));
+            out.push_str(&format!("  failed iterations: {}\n", self.failures.len()));
         }
         if self.panics > 0 {
             out.push_str(&format!("  panicked iterations: {}\n", self.panics));
@@ -534,8 +534,8 @@ impl BenchReport {
         let bucket_span = span.div_ceil(buckets as u128).max(1);
 
         let mut counts = vec![0_usize; buckets];
-        for s in &self.samples {
-            let offset = s.as_nanos().saturating_sub(min_ns);
+        for sample in &self.samples {
+            let offset = sample.as_nanos().saturating_sub(min_ns);
             let idx = ((offset / bucket_span) as usize).min(buckets.saturating_sub(1));
             counts[idx] = counts[idx].saturating_add(1);
         }

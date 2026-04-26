@@ -43,17 +43,17 @@ impl Strategy for Sequential {
         let start = Instant::now();
         // Iter 0: paint [BENCH] tag immediately, before any sample lands.
         on_progress(BenchProgressSnapshot::initial(iterations));
-        for i in 0..iterations {
+        for idx in 0..iterations {
             let fut = body();
             let iter_start = Instant::now();
             let result = AssertUnwindSafe(fut).catch_unwind().await;
             let iter_elapsed = iter_start.elapsed();
             match result {
                 Ok(Ok(())) => samples.push(iter_elapsed),
-                Ok(Err(e)) => failures.push(e.to_string()),
+                Ok(Err(err)) => failures.push(err.to_string()),
                 Err(_payload) => panics = panics.saturating_add(1),
             }
-            let done = i.saturating_add(1);
+            let done = idx.saturating_add(1);
             if done % stride == 0 || done == iterations {
                 on_progress(BenchProgressSnapshot::from_samples(
                     &samples, done, iterations,
@@ -120,11 +120,11 @@ impl Strategy for Concurrent {
         while let Some((iter_elapsed, result)) = in_flight.next().await {
             match result {
                 Ok(Ok(())) => samples.push(iter_elapsed),
-                Ok(Err(e)) => failures.push(e.to_string()),
+                Ok(Err(err)) => failures.push(err.to_string()),
                 Err(_payload) => panics = panics.saturating_add(1),
             }
             done = done.saturating_add(1);
-            if done % stride == 0 || done == iterations {
+            if done.is_multiple_of(stride) || done == iterations {
                 on_progress(BenchProgressSnapshot::from_samples(
                     &samples, done, iterations,
                 ));

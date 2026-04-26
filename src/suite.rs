@@ -39,8 +39,8 @@ use crate::token::TestToken;
 #[doc(hidden)]
 #[must_use]
 #[inline]
-pub const fn fnv1a64(s: &str) -> u64 {
-    let bytes = s.as_bytes();
+pub const fn fnv1a64(text: &str) -> u64 {
+    let bytes = text.as_bytes();
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     let mut i = 0;
     while i < bytes.len() {
@@ -138,10 +138,10 @@ pub enum TeardownResult {
 #[must_use]
 #[inline]
 pub fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
-    if let Some(s) = payload.downcast_ref::<&'static str>() {
-        (*s).to_owned()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
+    if let Some(text) = payload.downcast_ref::<&'static str>() {
+        (*text).to_owned()
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
     } else {
         "panic with non-string payload".to_owned()
     }
@@ -456,9 +456,9 @@ where
         PhaseOutcome::Completed(Ok(())) => TestOutcome::Passed {
             elapsed: Duration::ZERO,
         },
-        PhaseOutcome::Completed(Err(e)) => TestOutcome::Failed {
+        PhaseOutcome::Completed(Err(err)) => TestOutcome::Failed {
             elapsed: Duration::ZERO,
-            message: e.to_string(),
+            message: err.to_string(),
         },
         PhaseOutcome::Panicked(_) => TestOutcome::Panicked {
             elapsed: Duration::ZERO,

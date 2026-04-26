@@ -101,17 +101,17 @@ impl TestSummary {
 
 impl From<SuiteSummary> for TestSummary {
     #[inline]
-    fn from(s: SuiteSummary) -> Self {
+    fn from(summary: SuiteSummary) -> Self {
         Self {
-            cancelled: s.cancelled,
-            failed: s.failed,
-            hung: s.hung,
-            ignored: s.ignored,
-            panicked: s.panicked,
-            passed: s.passed,
-            timed_out: s.timed_out,
-            total: s.total,
-            teardown_failures: s.teardown_failures,
+            cancelled: summary.cancelled,
+            failed: summary.failed,
+            hung: summary.hung,
+            ignored: summary.ignored,
+            panicked: summary.panicked,
+            passed: summary.passed,
+            timed_out: summary.timed_out,
+            total: summary.total,
+            teardown_failures: summary.teardown_failures,
         }
     }
 }
@@ -129,25 +129,25 @@ fn use_color(mode: ColorMode) -> bool {
     }
 }
 
-fn paint(s: &str, code: &str, colored: bool) -> String {
+fn paint(text: &str, code: &str, colored: bool) -> String {
     if colored {
-        format!("\x1b[{code}m{s}\x1b[0m")
+        format!("\x1b[{code}m{text}\x1b[0m")
     } else {
-        s.to_owned()
+        text.to_owned()
     }
 }
 
-fn green(s: &str, c: bool) -> String {
-    paint(s, "32", c)
+fn green(text: &str, colored: bool) -> String {
+    paint(text, "32", colored)
 }
-fn red(s: &str, c: bool) -> String {
-    paint(s, "31", c)
+fn red(text: &str, colored: bool) -> String {
+    paint(text, "31", colored)
 }
-fn yellow(s: &str, c: bool) -> String {
-    paint(s, "33", c)
+fn yellow(text: &str, colored: bool) -> String {
+    paint(text, "33", colored)
 }
-fn bold(s: &str, c: bool) -> String {
-    paint(s, "1", c)
+fn bold(text: &str, colored: bool) -> String {
+    paint(text, "1", colored)
 }
 
 // ---------------------------------------------------------------------------
@@ -331,8 +331,8 @@ fn render_status_line(
     out
 }
 
-fn format_elapsed(d: Duration) -> String {
-    format!("{d:.2?}")
+fn format_elapsed(elapsed: Duration) -> String {
+    format!("{elapsed:.2?}")
 }
 
 // ---------------------------------------------------------------------------
@@ -397,14 +397,14 @@ impl ModeReporter {
 
 impl SuiteReporter for ModeReporter {
     fn report_ignored(&self, token: &'static TestToken, runtime_name: &'static str) {
-        if let Some(p) = &self.plain {
-            match p.fmt {
+        if let Some(plain) = &self.plain {
+            match plain.fmt {
                 Format::Terse => {
-                    print!("{}", yellow("i", p.colored));
+                    print!("{}", yellow("i", plain.colored));
                     let _flush = io::stdout().flush();
                 }
                 Format::Pretty => {
-                    let (tag_rendered, tag_visible) = status_tag(StatusLabel::Ignore, p.colored);
+                    let (tag_rendered, tag_visible) = status_tag(StatusLabel::Ignore, plain.colored);
                     let display = qualified_test_name(token.module_path, token.name);
                     let trailing = if token.ignore_reason.is_empty() {
                         runtime_only_info(runtime_name)
@@ -429,14 +429,14 @@ impl SuiteReporter for ModeReporter {
     }
 
     fn report_cancelled(&self, token: &'static TestToken, runtime_name: &'static str) {
-        if let Some(p) = &self.plain {
-            match p.fmt {
+        if let Some(plain) = &self.plain {
+            match plain.fmt {
                 Format::Terse => {
-                    print!("{}", yellow("c", p.colored));
+                    print!("{}", yellow("c", plain.colored));
                     let _flush = io::stdout().flush();
                 }
                 Format::Pretty => {
-                    let (tag_rendered, tag_visible) = status_tag(StatusLabel::Cancel, p.colored);
+                    let (tag_rendered, tag_visible) = status_tag(StatusLabel::Cancel, plain.colored);
                     let display = qualified_test_name(token.module_path, token.name);
                     let lhs_naked = format!("{:width$} {display}", "", width = tag_visible);
                     let lhs_rendered = format!("{tag_rendered} {display}");
@@ -462,35 +462,35 @@ impl SuiteReporter for ModeReporter {
         runtime_name: &'static str,
         outcome: TestOutcome,
     ) {
-        let Some(p) = &self.plain else {
+        let Some(plain) = &self.plain else {
             // Live mode: macro-generated dispatch already emitted
             // TestCompleted with the full outcome; nothing to do.
             return;
         };
-        match p.fmt {
+        match plain.fmt {
             Format::Terse => {
-                let ch = match &outcome {
+                let glyph = match &outcome {
                     TestOutcome::Passed { .. } => ".".to_owned(),
                     TestOutcome::Failed { .. }
                     | TestOutcome::Panicked { .. }
                     | TestOutcome::SetupFailed { .. }
                     | TestOutcome::TimedOut
-                    | TestOutcome::Hung { .. } => red("F", p.colored),
-                    TestOutcome::Cancelled => yellow("c", p.colored),
+                    | TestOutcome::Hung { .. } => red("F", plain.colored),
+                    TestOutcome::Cancelled => yellow("c", plain.colored),
                     TestOutcome::Benched { report, .. } => {
                         if report.is_success() {
                             "b".to_owned()
                         } else {
-                            red("B", p.colored)
+                            red("B", plain.colored)
                         }
                     }
                 };
-                print!("{ch}");
+                print!("{glyph}");
                 let _flush = io::stdout().flush();
             }
             Format::Pretty => {
                 let label = StatusLabel::from_outcome(&outcome);
-                let (tag_rendered, tag_visible) = status_tag(label, p.colored);
+                let (tag_rendered, tag_visible) = status_tag(label, plain.colored);
                 let display = qualified_test_name(token.module_path, token.name);
                 let trailing = trailing_info(&outcome, runtime_name);
                 let lhs_naked = format!("{:width$} {display}", "", width = tag_visible);
@@ -533,7 +533,7 @@ impl SuiteReporter for ModeReporter {
                                     | StatusLabel::Timeout
                                     | StatusLabel::Cancel
                             ) {
-                                red(&body, p.colored)
+                                red(&body, plain.colored)
                             } else {
                                 body
                             };
@@ -547,7 +547,7 @@ impl SuiteReporter for ModeReporter {
 
         match outcome {
             TestOutcome::Failed { message, .. } => {
-                let mut guard = p
+                let mut guard = plain
                     .failures
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner);
@@ -557,7 +557,7 @@ impl SuiteReporter for ModeReporter {
                 });
             }
             TestOutcome::SetupFailed { message, .. } => {
-                let mut guard = p
+                let mut guard = plain
                     .failures
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner);
@@ -567,7 +567,7 @@ impl SuiteReporter for ModeReporter {
                 });
             }
             TestOutcome::Benched { report, .. } if !report.is_success() => {
-                let mut guard = p
+                let mut guard = plain
                     .failures
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner);
@@ -592,8 +592,8 @@ impl SuiteReporter for ModeReporter {
     }
 
     fn report_suite_setup_started(&self, runtime_name: &'static str, suite: &'static str) {
-        if let Some(p) = &self.plain {
-            if matches!(p.fmt, Format::Pretty) {
+        if let Some(plain) = &self.plain {
+            if matches!(plain.fmt, Format::Pretty) {
                 let suite = normalize_module_path(suite);
                 println!("setup    {suite} ... started <{runtime_name}>");
             }
@@ -614,8 +614,8 @@ impl SuiteReporter for ModeReporter {
         elapsed: Duration,
         error: Option<&str>,
     ) {
-        if let Some(p) = &self.plain {
-            if matches!(p.fmt, Format::Pretty) {
+        if let Some(plain) = &self.plain {
+            if matches!(plain.fmt, Format::Pretty) {
                 // Suite-level setup failure: render as [FAIL]. The
                 // [SETUP] tag is reserved for per-test
                 // SetupFailed outcomes, where it visually
@@ -626,7 +626,7 @@ impl SuiteReporter for ModeReporter {
                 } else {
                     StatusLabel::Ok
                 };
-                let (tag_rendered, tag_visible) = status_tag(label, p.colored);
+                let (tag_rendered, tag_visible) = status_tag(label, plain.colored);
                 let display = format!("setup {}", normalize_module_path(suite));
                 let trailing = format!("<{runtime_name}, {}>", format_elapsed(elapsed));
                 let lhs_naked = format!("{:width$} {display}", "", width = tag_visible);
@@ -635,11 +635,11 @@ impl SuiteReporter for ModeReporter {
                     render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
                 println!("{line}");
                 if let Some(msg) = error {
-                    println!("  {}", red(&format!("error: {msg}"), p.colored));
+                    println!("  {}", red(&format!("error: {msg}"), plain.colored));
                 }
             }
             if let Some(msg) = error {
-                let mut guard = p
+                let mut guard = plain
                     .failures
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner);
@@ -663,8 +663,8 @@ impl SuiteReporter for ModeReporter {
     }
 
     fn report_suite_teardown_started(&self, runtime_name: &'static str, suite: &'static str) {
-        if let Some(p) = &self.plain {
-            if matches!(p.fmt, Format::Pretty) {
+        if let Some(plain) = &self.plain {
+            if matches!(plain.fmt, Format::Pretty) {
                 let suite = normalize_module_path(suite);
                 println!("teardown {suite} ... started <{runtime_name}>");
             }
@@ -685,9 +685,9 @@ impl SuiteReporter for ModeReporter {
         elapsed: Duration,
         result: TeardownResult,
     ) {
-        if let Some(p) = &self.plain {
+        if let Some(plain) = &self.plain {
             let suite_disp = normalize_module_path(suite);
-            if matches!(p.fmt, Format::Pretty) {
+            if matches!(plain.fmt, Format::Pretty) {
                 let label = match result {
                     TeardownResult::Ok => StatusLabel::Ok,
                     TeardownResult::Err(_) => StatusLabel::Fail,
@@ -695,7 +695,7 @@ impl SuiteReporter for ModeReporter {
                     TeardownResult::TimedOut => StatusLabel::Timeout,
                     TeardownResult::Hung => StatusLabel::Hang,
                 };
-                let (tag_rendered, tag_visible) = status_tag(label, p.colored);
+                let (tag_rendered, tag_visible) = status_tag(label, plain.colored);
                 let display = format!("teardown {suite_disp}");
                 let trailing = format!("<{runtime_name}, {}>", format_elapsed(elapsed));
                 let lhs_naked = format!("{:width$} {display}", "", width = tag_visible);
@@ -706,18 +706,18 @@ impl SuiteReporter for ModeReporter {
                 match &result {
                     TeardownResult::Ok => {}
                     TeardownResult::Err(msg) => {
-                        println!("  {}", red(&format!("error: {msg}"), p.colored));
+                        println!("  {}", red(&format!("error: {msg}"), plain.colored));
                     }
                     TeardownResult::Panicked(msg) => {
-                        println!("  {}", red(&format!("panic: {msg}"), p.colored));
+                        println!("  {}", red(&format!("panic: {msg}"), plain.colored));
                     }
                     TeardownResult::TimedOut => {
-                        println!("  {}", red("timeout: teardown timed out", p.colored));
+                        println!("  {}", red("timeout: teardown timed out", plain.colored));
                     }
                     TeardownResult::Hung => {
                         println!(
                             "  {}",
-                            red("hang: teardown hung; abort signal sent", p.colored)
+                            red("hang: teardown hung; abort signal sent", plain.colored)
                         );
                     }
                 }
@@ -725,7 +725,7 @@ impl SuiteReporter for ModeReporter {
             match result {
                 TeardownResult::Ok => {}
                 TeardownResult::Err(msg) => {
-                    let mut guard = p
+                    let mut guard = plain
                         .failures
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner);
@@ -735,7 +735,7 @@ impl SuiteReporter for ModeReporter {
                     });
                 }
                 TeardownResult::Panicked(msg) => {
-                    let mut guard = p
+                    let mut guard = plain
                         .failures
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner);
@@ -745,7 +745,7 @@ impl SuiteReporter for ModeReporter {
                     });
                 }
                 TeardownResult::TimedOut => {
-                    let mut guard = p
+                    let mut guard = plain
                         .failures
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner);
@@ -757,7 +757,7 @@ impl SuiteReporter for ModeReporter {
                     });
                 }
                 TeardownResult::Hung => {
-                    let mut guard = p
+                    let mut guard = plain
                         .failures
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner);
@@ -789,9 +789,9 @@ impl SuiteReporter for ModeReporter {
         if !matches!(result, TeardownResult::Ok) {
             let _prev = self.test_teardown_failures.fetch_add(1, Ordering::Relaxed);
         }
-        if let Some(p) = &self.plain {
+        if let Some(plain) = &self.plain {
             let display = qualified_test_name(token.module_path, token.name);
-            if matches!(p.fmt, Format::Pretty) {
+            if matches!(plain.fmt, Format::Pretty) {
                 let label = match result {
                     TeardownResult::Ok => return,
                     TeardownResult::Err(_) => StatusLabel::Fail,
@@ -799,7 +799,7 @@ impl SuiteReporter for ModeReporter {
                     TeardownResult::TimedOut => StatusLabel::Timeout,
                     TeardownResult::Hung => StatusLabel::Hang,
                 };
-                let (tag_rendered, tag_visible) = status_tag(label, p.colored);
+                let (tag_rendered, tag_visible) = status_tag(label, plain.colored);
                 let lhs_display = format!("teardown {display}");
                 let trailing = format!("<{runtime_name}>");
                 let lhs_naked = format!("{:width$} {lhs_display}", "", width = tag_visible);
@@ -810,18 +810,18 @@ impl SuiteReporter for ModeReporter {
                 match &result {
                     TeardownResult::Ok => {}
                     TeardownResult::Err(msg) => {
-                        println!("  {}", red(&format!("error: {msg}"), p.colored));
+                        println!("  {}", red(&format!("error: {msg}"), plain.colored));
                     }
                     TeardownResult::Panicked(msg) => {
-                        println!("  {}", red(&format!("panic: {msg}"), p.colored));
+                        println!("  {}", red(&format!("panic: {msg}"), plain.colored));
                     }
                     TeardownResult::TimedOut => {
-                        println!("  {}", red("timeout: teardown timed out", p.colored));
+                        println!("  {}", red("timeout: teardown timed out", plain.colored));
                     }
                     TeardownResult::Hung => {
                         println!(
                             "  {}",
-                            red("hang: teardown hung; abort signal sent", p.colored)
+                            red("hang: teardown hung; abort signal sent", plain.colored)
                         );
                     }
                 }
@@ -829,7 +829,7 @@ impl SuiteReporter for ModeReporter {
             match result {
                 TeardownResult::Ok => {}
                 TeardownResult::Err(msg) => {
-                    let mut guard = p
+                    let mut guard = plain
                         .failures
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner);
@@ -839,7 +839,7 @@ impl SuiteReporter for ModeReporter {
                     });
                 }
                 TeardownResult::Panicked(msg) => {
-                    let mut guard = p
+                    let mut guard = plain
                         .failures
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner);
@@ -849,7 +849,7 @@ impl SuiteReporter for ModeReporter {
                     });
                 }
                 TeardownResult::TimedOut => {
-                    let mut guard = p
+                    let mut guard = plain
                         .failures
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner);
@@ -861,7 +861,7 @@ impl SuiteReporter for ModeReporter {
                     });
                 }
                 TeardownResult::Hung => {
-                    let mut guard = p
+                    let mut guard = plain
                         .failures
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner);
@@ -967,8 +967,8 @@ pub fn token_passes_filters(
     skip_filters: &[String],
     run_ignored: RunIgnoredMode,
 ) -> bool {
-    if let Some(f) = filter
-        && !qualified_name.contains(f) {
+    if let Some(needle) = filter
+        && !qualified_name.contains(needle) {
             return false;
         }
     for skip in skip_filters {
@@ -1029,9 +1029,9 @@ pub fn run(cargo: CargoMeta) -> ! {
     // and the reporter below prints directly. In Live mode returns
     // the real drawer-driving guard.
     let capture_guard = match output::init(&config) {
-        Ok(g) => g,
-        Err(e) => {
-            eprintln!("rudzio: failed to initialise output capture: {e}");
+        Ok(guard) => guard,
+        Err(err) => {
+            eprintln!("rudzio: failed to initialise output capture: {err}");
             process::exit(2);
         }
     };
@@ -1041,11 +1041,11 @@ pub fn run(cargo: CargoMeta) -> ! {
     let filtered_tokens: Vec<&'static TestToken> = all_tokens
         .iter()
         .copied()
-        .filter(|t| {
-            let qualified = qualified_test_name(t.module_path, t.name);
+        .filter(|token| {
+            let qualified = qualified_test_name(token.module_path, token.name);
             token_passes_filters(
                 &qualified,
-                t.ignored,
+                token.ignored,
                 config.filter.as_deref(),
                 &config.skip_filters,
                 config.run_ignored,
@@ -1143,7 +1143,7 @@ pub fn run(cargo: CargoMeta) -> ! {
         let handles: Vec<_> = groups
             .into_values()
             .map(|mut group_tokens| {
-                group_tokens.sort_by_key(|t| (t.file, t.line));
+                group_tokens.sort_by_key(|token| (token.file, token.line));
                 let owner: &'static dyn RuntimeGroupOwner = group_tokens[0].runtime_group_owner;
                 let req_root = root_token.child_token();
                 let config_ref = &config;
@@ -1191,23 +1191,23 @@ pub fn run(cargo: CargoMeta) -> ! {
 
     // Plain-mode summary rendering. Live mode lets the drawer handle
     // it during its shutdown path.
-    if let Some(p) = &reporter.plain {
-        if p.fmt == Format::Terse && total_count > 0 {
+    if let Some(plain) = &reporter.plain {
+        if plain.fmt == Format::Terse && total_count > 0 {
             println!();
         }
-        let guard = p
+        let guard = plain
             .failures
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if !guard.is_empty() {
             println!("\nfailures:\n");
-            for f in guard.iter() {
-                println!("---- {} ----", f.name);
-                println!("{}\n", f.message);
+            for failure in guard.iter() {
+                println!("---- {} ----", failure.name);
+                println!("{}\n", failure.message);
             }
             println!("failures:");
-            for f in guard.iter() {
-                println!("    {}", f.name);
+            for failure in guard.iter() {
+                println!("    {}", failure.name);
             }
             println!();
         }
@@ -1290,7 +1290,7 @@ fn install_signal_handler(token: CancellationToken) {
     use signal_hook::iterator::Signals;
 
     let mut signals = match Signals::new([SIGINT, SIGTERM]) {
-        Ok(s) => s,
+        Ok(handle) => handle,
         Err(err) => {
             eprintln!("warning: failed to install signal handler: {err}");
             return;

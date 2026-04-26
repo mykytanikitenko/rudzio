@@ -64,7 +64,7 @@ impl HardLimit {
                 cvar: Condvar::new(),
                 max,
             }),
-            sink: Box::new(|s| println!("{s}")),
+            sink: Box::new(|msg| println!("{msg}")),
         }
     }
 
@@ -115,7 +115,7 @@ impl HardLimit {
         let parked_at = Instant::now();
         let mut state = inner
             .cvar
-            .wait_while(state, |s| s.available == 0)
+            .wait_while(state, |inner| inner.available == 0)
             .unwrap_or_else(PoisonError::into_inner);
         state.available -= 1;
         drop(state);

@@ -104,9 +104,9 @@ pub fn init() -> io::Result<Capture> {
     let saved_stdout = dup(libc::STDOUT_FILENO)?;
     let saved_stderr = match dup(libc::STDERR_FILENO) {
         Ok(fd) => fd,
-        Err(e) => {
+        Err(err) => {
             close(saved_stdout);
-            return Err(e);
+            return Err(err);
         }
     };
     // Third dup: the drawer needs an FD to write the live region to
@@ -114,10 +114,10 @@ pub fn init() -> io::Result<Capture> {
     // close the other's FD.
     let drawer_terminal_fd = match dup(libc::STDOUT_FILENO) {
         Ok(fd) => fd,
-        Err(e) => {
+        Err(err) => {
             close(saved_stdout);
             close(saved_stderr);
-            return Err(e);
+            return Err(err);
         }
     };
     // SAFETY: drawer_terminal_fd was just returned by libc::dup and
@@ -125,21 +125,21 @@ pub fn init() -> io::Result<Capture> {
     let drawer_terminal = unsafe { OwnedFd::from_raw_fd(drawer_terminal_fd) };
 
     let (stdout_read, stdout_write) = match pipe() {
-        Ok(p) => p,
-        Err(e) => {
+        Ok(pair) => pair,
+        Err(err) => {
             close(saved_stdout);
             close(saved_stderr);
-            return Err(e);
+            return Err(err);
         }
     };
     let (stderr_read, stderr_write) = match pipe() {
-        Ok(p) => p,
-        Err(e) => {
+        Ok(pair) => pair,
+        Err(err) => {
             close(saved_stdout);
             close(saved_stderr);
             drop(stdout_read);
             drop(stdout_write);
-            return Err(e);
+            return Err(err);
         }
     };
 
@@ -149,17 +149,17 @@ pub fn init() -> io::Result<Capture> {
 
     // Install the write ends over FDs 1 and 2. `dup2` closes whatever
     // was at the target FD before duplicating — that's what we want.
-    if let Err(e) = dup2(stdout_write.as_raw_fd(), libc::STDOUT_FILENO) {
+    if let Err(err) = dup2(stdout_write.as_raw_fd(), libc::STDOUT_FILENO) {
         close(saved_stdout);
         close(saved_stderr);
-        return Err(e);
+        return Err(err);
     }
-    if let Err(e) = dup2(stderr_write.as_raw_fd(), libc::STDERR_FILENO) {
+    if let Err(err) = dup2(stderr_write.as_raw_fd(), libc::STDERR_FILENO) {
         // Try to roll back FD 1 before reporting.
         let _unused = dup2(saved_stdout, libc::STDOUT_FILENO);
         close(saved_stdout);
         close(saved_stderr);
-        return Err(e);
+        return Err(err);
     }
 
     // The original write-end FDs are redundant now that FDs 1 and 2
@@ -190,8 +190,8 @@ fn dup(fd: RawFd) -> io::Result<RawFd> {
 fn dup2(src: RawFd, dst: RawFd) -> io::Result<()> {
     // SAFETY: libc::dup2 with valid src+dst FDs is defined; the kernel
     // atomically closes dst (if open) and duplicates src into it.
-    let r = unsafe { libc::dup2(src, dst) };
-    if r == -1 {
+    let ret = unsafe { libc::dup2(src, dst) };
+    if ret == -1 {
         Err(io::Error::last_os_error())
     } else {
         Ok(())
@@ -210,8 +210,8 @@ fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0_i32; 2];
     // SAFETY: libc::pipe writes two FDs into the provided 2-element
     // array, or returns -1 on error.
-    let r = unsafe { libc::pipe(fds.as_mut_ptr()) };
-    if r == -1 {
+    let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    if ret == -1 {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: both FDs were just produced by libc::pipe and have no
@@ -226,8 +226,8 @@ fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 fn set_pipe_size(fd: RawFd, size: libc::c_int) -> io::Result<()> {
     // SAFETY: F_SETPIPE_SZ is a Linux fcntl command accepting an int.
     // Returns -1 on error which we convert to io::Error.
-    let r = unsafe { libc::fcntl(fd, libc::F_SETPIPE_SZ, size) };
-    if r == -1 {
+    let ret = unsafe { libc::fcntl(fd, libc::F_SETPIPE_SZ, size) };
+    if ret == -1 {
         Err(io::Error::last_os_error())
     } else {
         Ok(())

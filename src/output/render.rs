@@ -525,7 +525,7 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
             self.thread_to_test
                 .values()
                 .copied()
-                .min_by_key(|id| self.tests.get(id).map(|s| s.started_at))
+                .min_by_key(|id| self.tests.get(id).map(|state| state.started_at))
         };
         if let Some(id) = chosen
             && let Some(state) = self.tests.get_mut(&id) {
@@ -711,7 +711,7 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
         let total_elapsed = self
             .summary
             .started_at
-            .map_or(Duration::ZERO, |t| t.elapsed());
+            .map_or(Duration::ZERO, |start| start.elapsed());
         if !self.summary.failures.is_empty() {
             let _unused = self.terminal.write_all(b"\nfailures:\n\n");
             for fr in &self.summary.failures {
@@ -918,7 +918,7 @@ fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
         TestOutcome::Benched { elapsed, report } => {
             let median = report
                 .median()
-                .map(|m| format!(", p50 {m:.2?}"))
+                .map(|median| format!(", p50 {median:.2?}"))
                 .unwrap_or_default();
             format!(
                 "<{runtime_name}, {elapsed:.2?}, {}{median}>",
@@ -1047,11 +1047,11 @@ fn emit_plain_lines(
 ) {
     for line in split_lines(bytes) {
         let formatted = format!("  {line}\n");
-        let s = match stream {
+        let styled = match stream {
             StdStream::Stdout => formatted,
             StdStream::Stderr => color.red(&formatted),
         };
-        let _unused = terminal.write_all(s.as_bytes());
+        let _unused = terminal.write_all(styled.as_bytes());
     }
 }
 
@@ -1059,14 +1059,14 @@ fn split_lines(bytes: &[u8]) -> impl Iterator<Item = &str> {
     str::from_utf8(bytes)
         .unwrap_or("")
         .split('\n')
-        .filter(|l| !l.is_empty())
+        .filter(|line| !line.is_empty())
 }
 
 fn update_last_line(dst: &mut String, bytes: &[u8]) {
-    let Ok(s) = str::from_utf8(bytes) else {
+    let Ok(text) = str::from_utf8(bytes) else {
         return;
     };
-    for line in s.split('\n') {
+    for line in text.split('\n') {
         if !line.is_empty() {
             dst.clear();
             let truncated = if line.len() > HINT_MAX_WIDTH {
@@ -1083,10 +1083,10 @@ fn update_last_line(dst: &mut String, bytes: &[u8]) {
 /// first. Used to maintain `TestState::recent_output` for the live
 /// streaming of test stdio under the running status row.
 fn append_complete_lines(dst: &mut Vec<String>, bytes: &[u8]) {
-    let Ok(s) = str::from_utf8(bytes) else {
+    let Ok(text) = str::from_utf8(bytes) else {
         return;
     };
-    for line in s.split('\n') {
+    for line in text.split('\n') {
         if !line.is_empty() {
             dst.push(line.to_owned());
         }
@@ -1356,16 +1356,16 @@ pub fn bench_histogram_lines(
 /// so the user can see the line was cut. `s` is expected to be raw
 /// (no embedded ANSI escapes) — colour wrapping happens by the
 /// caller after the clip.
-fn clip_to_cols(s: &str, cols: usize) -> String {
+fn clip_to_cols(text: &str, cols: usize) -> String {
     if cols == 0 {
         return String::new();
     }
-    let count = s.chars().count();
+    let count = text.chars().count();
     if count <= cols {
-        return s.to_owned();
+        return text.to_owned();
     }
     let take = cols.saturating_sub(1);
-    let mut out: String = s.chars().take(take).collect();
+    let mut out: String = text.chars().take(take).collect();
     out.push('\u{2026}');
     out
 }

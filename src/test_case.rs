@@ -21,8 +21,8 @@ impl error::Error for DisplayError {}
 
 /// Convert any `Display` error into a [`BoxError`].
 #[inline]
-pub fn box_error<E: fmt::Display>(e: E) -> BoxError {
-    Box::new(DisplayError(format!("{e:#}")))
+pub fn box_error<E: fmt::Display>(err: E) -> BoxError {
+    Box::new(DisplayError(format!("{err:#}")))
 }
 
 /// Bridge trait the test macro uses to accept every shape of test-body

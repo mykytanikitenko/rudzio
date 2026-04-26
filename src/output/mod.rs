@@ -124,8 +124,8 @@ impl Drop for CaptureGuard {
         if let Some(tx) = self.shutdown_tx.take() {
             drop(tx);
         }
-        if let Some(h) = self.drawer.take() {
-            let _unused = h.join();
+        if let Some(handle) = self.drawer.take() {
+            let _unused = handle.join();
         }
         // Step 2 — restore FDs. Idempotent with the panic hook's
         // restore path; whichever runs first wins.
@@ -135,11 +135,11 @@ impl Drop for CaptureGuard {
         // write ends in FDs 1/2 were replaced by dup2(saved, 1|2) in
         // the restore call above, so the original write end of each
         // pipe has no more referents and the readers see EOF.
-        if let Some(h) = self.reader_stdout.take() {
-            let _unused = h.join();
+        if let Some(handle) = self.reader_stdout.take() {
+            let _unused = handle.join();
         }
-        if let Some(h) = self.reader_stderr.take() {
-            let _unused = h.join();
+        if let Some(handle) = self.reader_stderr.take() {
+            let _unused = handle.join();
         }
     }
 }

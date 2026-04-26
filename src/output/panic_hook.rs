@@ -66,7 +66,7 @@ thread_local! {
 /// clear. Cheap — a thread-local `Cell::set`.
 #[inline]
 pub fn set_current_test(id: Option<TestId>) {
-    CURRENT_TEST_ID.with(|c| c.set(id));
+    CURRENT_TEST_ID.with(|cell| cell.set(id));
 }
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);

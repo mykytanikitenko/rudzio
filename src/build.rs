@@ -250,12 +250,12 @@ pub fn expose_bins(bin_crate: &str) -> Result<()> {
     let metadata = MetadataCommand::new()
         .current_dir(&env.manifest_dir)
         .exec()
-        .map_err(|e| Error::with_source("`cargo metadata` failed", e))?;
+        .map_err(|err| Error::with_source("`cargo metadata` failed", err))?;
 
     let pkg = metadata
         .packages
         .iter()
-        .find(|p| p.name.as_str() == bin_crate)
+        .find(|pkg| pkg.name.as_str() == bin_crate)
         .ok_or_else(|| {
             Error::new(format!(
                 "`cargo metadata` did not list a package named `{bin_crate}`. \
@@ -267,7 +267,7 @@ pub fn expose_bins(bin_crate: &str) -> Result<()> {
     let bin_targets: Vec<&cargo_metadata::Target> = pkg
         .targets
         .iter()
-        .filter(|t| t.kind.iter().any(|k| matches!(k, TargetKind::Bin)))
+        .filter(|target| target.kind.iter().any(|kind| matches!(kind, TargetKind::Bin)))
         .collect();
     if bin_targets.is_empty() {
         return Err(Error::new(format!(
@@ -297,14 +297,14 @@ pub fn expose_bins(bin_crate: &str) -> Result<()> {
         let _: &mut Command = cmd.arg(flag);
     }
 
-    let status = cmd.status().map_err(|e| {
+    let status = cmd.status().map_err(|err| {
         Error::with_source(
             format!(
                 "failed to spawn nested `cargo build --bins -p {bin_crate}` \
                  (CARGO={:?})",
                 env.cargo
             ),
-            e,
+            err,
         )
     })?;
     if !status.success() {
@@ -450,17 +450,17 @@ pub fn decide_sentinel_action(
 #[inline]
 #[must_use] 
 pub fn sentinel_indicates_nested_call(value: Option<&OsStr>) -> bool {
-    matches!(value, Some(v) if !v.is_empty())
+    matches!(value, Some(val) if !val.is_empty())
 }
 
 fn require_string_env(name: &str) -> Result<String> {
-    env::var(name).map_err(|e| {
+    env::var(name).map_err(|err| {
         Error::with_source(
             format!(
                 "`{name}` env var missing; `expose_bins` must be called from \
                  a cargo-driven build script"
             ),
-            e,
+            err,
         )
     })
 }
