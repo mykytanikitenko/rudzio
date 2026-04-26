@@ -1,10 +1,12 @@
+use rudzio::common::context::Suite;
 use rudzio::common::context::Test;
+use rudzio::runtime::futures::ThreadPool;
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::futures::ThreadPool::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
+        runtime = ThreadPool::new,
+        suite = Suite,
+        test = Test,
     ),
 ])]
 mod tests {
@@ -22,7 +24,7 @@ mod tests {
             .spawn(async { 7_u32 })
             .await
             .map_err(|err| anyhow::anyhow!("spawn failed: {err}"))?;
-        anyhow::ensure!(result == 7);
+        anyhow::ensure!(result == 7_u32, "spawn returned wrong value: {result}");
         Ok(())
     }
 }

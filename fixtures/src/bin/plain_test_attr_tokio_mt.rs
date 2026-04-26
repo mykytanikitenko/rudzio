@@ -2,13 +2,19 @@
 //! attribute — this bin uses the latter, guarding `is_test_attr` against
 //! regressions that accidentally drop the bare form.
 
+use rudzio::common::context::Suite;
 use rudzio::common::context::Test;
+use rudzio::runtime::tokio::Multithread;
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "this fixture exercises the bare #[test] attribute on a body that trivially passes; the framework requires the test fn signature to return anyhow::Result<()>"
+)]
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
+        runtime = Multithread::new,
+        suite = Suite,
+        test = Test,
     ),
 ])]
 mod tests {

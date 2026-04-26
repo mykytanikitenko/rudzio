@@ -15,8 +15,12 @@ use std::sync::{Arc, Barrier, BarrierWaitResult, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use rudzio::Config;
 use rudzio::context;
+use rudzio::runtime::compio::Runtime as CompioRuntime;
+use rudzio::runtime::tokio::Multithread;
 use rudzio::runtime::{JoinError, Runtime};
+use rudzio::tokio_util::sync::CancellationToken;
 
 /// Maximum time the watchdog thread waits before aborting the process.
 const WATCHDOG_TIMEOUT: Duration = Duration::from_secs(5);
@@ -90,7 +94,7 @@ where
 
 impl<'suite_context, R> context::Suite<'suite_context, R> for CrossSuite<'suite_context, R>
 where
-    R: for<'r> Runtime<'r> + Sync,
+    R: for<'rt> Runtime<'rt> + Sync,
 {
     type ContextError = NeverFails;
     type SetupError = NeverFails;
@@ -102,8 +106,8 @@ where
 
     async fn context<'test_context>(
         &'test_context self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
-        _config: &'test_context ::rudzio::Config,
+        _cancel: CancellationToken,
+        _config: &'test_context Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Ok(CrossTest {
             _marker: PhantomData,
@@ -113,8 +117,8 @@ where
 
     async fn setup(
         rt: &'suite_context R,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
-        _config: &'suite_context ::rudzio::Config,
+        _cancel: CancellationToken,
+        _config: &'suite_context Config,
     ) -> Result<Self, Self::SetupError> {
         start_watchdog();
         Ok(Self { rt })
@@ -122,7 +126,7 @@ where
 
     async fn teardown(
         self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
     ) -> Result<(), Self::TeardownError> {
         Ok(())
     }
@@ -136,7 +140,7 @@ where
 
     async fn teardown(
         self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
     ) -> Result<(), Self::TeardownError> {
         Ok(())
     }
@@ -150,6 +154,11 @@ fn shared_barrier() -> Arc<Barrier> {
 
 /// Spawn a one-shot watchdog thread that aborts the process if the
 /// cross-runtime barrier hasn't released within [`WATCHDOG_TIMEOUT`].
+#[expect(
+    clippy::print_stderr,
+    clippy::exit,
+    reason = "this fixture's watchdog must abort the process with a non-zero code if the cross-runtime barrier never releases (the only way to surface a stuck-serialised run from a thread that has no async runtime), and eprintln! is the deliberate channel for the diagnostic line the integration test greps"
+)]
 fn start_watchdog() {
     static WATCHDOG: OnceLock<()> = OnceLock::new();
     let _init: &() = WATCHDOG.get_or_init(|| {
@@ -166,12 +175,12 @@ fn start_watchdog() {
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
+        runtime = Multithread::new,
         suite = CrossSuite,
         test = CrossTest,
     ),
     (
-        runtime = rudzio::runtime::compio::Runtime::new,
+        runtime = CompioRuntime::new,
         suite = CrossSuite,
         test = CrossTest,
     ),

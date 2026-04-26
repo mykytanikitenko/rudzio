@@ -9,14 +9,19 @@
 //! all should execute, and the summary should report 1/1/1 for passed /
 //! failed / panicked with exit code 1.
 
+use rudzio::common::context::Suite;
 use rudzio::common::context::Test;
 use rudzio::runtime::tokio::Multithread;
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "this fixture exercises the sync arm's std::panic::catch_unwind isolation; sync_panics() diverges so its anyhow::Result<()> wrapper is statically unreachable, and the framework requires the test fn signature to return anyhow::Result<()>"
+)]
 #[rudzio::suite([
     (
         runtime = Multithread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
+        suite = Suite,
+        test = Test,
     ),
 ])]
 mod tests {
@@ -35,8 +40,7 @@ mod tests {
     #[rudzio::test]
     #[expect(
         clippy::panic,
-        clippy::unnecessary_wraps,
-        reason = "this fixture exercises the sync arm's std::panic::catch_unwind isolation; the test body must panic to verify the runtime thread isn't killed, and the framework requires the test fn signature to return anyhow::Result<()>"
+        reason = "this fixture exercises the sync arm's std::panic::catch_unwind isolation; the test body must panic to verify the runtime thread isn't killed"
     )]
     fn sync_panics(_ctx: &Test) -> anyhow::Result<()> {
         panic!("intentional sync panic")

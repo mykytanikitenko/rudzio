@@ -9,8 +9,11 @@ use std::error::Error;
 use std::fmt;
 use std::marker::PhantomData;
 
+use rudzio::Config;
 use rudzio::context;
 use rudzio::runtime::Runtime;
+use rudzio::runtime::tokio::Multithread;
+use rudzio::tokio_util::sync::CancellationToken;
 
 /// Error type used to fail suite setup on purpose.
 #[derive(Debug)]
@@ -44,7 +47,7 @@ where
 
 impl<'suite_context, R> context::Suite<'suite_context, R> for FailingSuite<'suite_context, R>
 where
-    R: for<'r> Runtime<'r> + Sync,
+    R: for<'rt> Runtime<'rt> + Sync,
 {
     type ContextError = SetupFailed;
     type SetupError = SetupFailed;
@@ -56,23 +59,23 @@ where
 
     async fn context<'test_context>(
         &'test_context self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
-        _config: &'test_context ::rudzio::Config,
+        _cancel: CancellationToken,
+        _config: &'test_context Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Err(SetupFailed)
     }
 
     async fn setup(
         _rt: &'suite_context R,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
-        _config: &'suite_context ::rudzio::Config,
+        _cancel: CancellationToken,
+        _config: &'suite_context Config,
     ) -> Result<Self, Self::SetupError> {
         Err(SetupFailed)
     }
 
     async fn teardown(
         self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
     ) -> Result<(), Self::TeardownError> {
         Ok(())
     }
@@ -105,15 +108,19 @@ where
 
     async fn teardown(
         self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
     ) -> Result<(), Self::TeardownError> {
         Ok(())
     }
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "this fixture asserts Suite::setup's Err is reported and tests are Cancelled; the never_runs() body trivially returns Ok(()) so its anyhow::Result<()> wrapper is redundant, but the framework requires the test fn signature to return anyhow::Result<()>"
+)]
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
+        runtime = Multithread::new,
         suite = FailingSuite,
         test = NeverBuilt,
     ),

@@ -197,6 +197,10 @@ where
     }
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "this fixture asserts Test::teardown runs even when the body panics; the panicking() test body diverges so its anyhow::Result<()> wrapper is statically unreachable, and the framework requires the test fn signature to return anyhow::Result<()>"
+)]
 #[rudzio::suite([
     (
         runtime = Multithread::new,
@@ -222,8 +226,7 @@ mod tests {
     #[rudzio::test]
     #[expect(
         clippy::panic,
-        clippy::unnecessary_wraps,
-        reason = "this fixture asserts Test::teardown runs even when the body panics; the body must panic to exercise that branch, and the framework requires the test fn signature to return anyhow::Result<()>"
+        reason = "this fixture asserts Test::teardown runs even when the body panics; the body must panic to exercise that branch"
     )]
     fn panicking(ctx: &InvariantsTest) -> anyhow::Result<()> {
         ctx.spawn_tracked_sleep();

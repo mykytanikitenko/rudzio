@@ -62,12 +62,12 @@ pub struct TeardownTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
 {
+    /// Ties the struct to the runtime lifetime without carrying any state.
+    _marker: PhantomData<&'test_context R>,
     /// Cancel token plumbed in from the suite's `context` impl; the test
     /// body races a 30 s sleep against this token so it returns when the
     /// per-test watchdog fires.
     cancel: CancellationToken,
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'test_context R>,
 }
 
 #[rudzio::main]

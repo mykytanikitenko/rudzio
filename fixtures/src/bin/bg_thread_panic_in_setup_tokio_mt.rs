@@ -19,13 +19,27 @@ use std::time::Duration;
 
 use rudzio::context;
 use rudzio::runtime::Runtime;
+use rudzio::runtime::tokio::Multithread;
 use rudzio::tokio_util::sync::CancellationToken;
+use tokio::time::sleep;
 
+/// Suite context exercising the background-thread panic safety net.
 struct BgPanicSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
+    /// Ties the struct to the runtime lifetime without carrying any state.
     _marker: PhantomData<&'suite_context R>,
+}
+
+/// Per-test context with no state; the bg-panic scenario fires entirely
+/// from `Suite::setup`.
+struct TrivialTest<'test_context, R>
+where
+    R: Runtime<'test_context> + Sync,
+{
+    /// Ties the struct to the runtime lifetime without carrying any state.
+    _marker: PhantomData<&'test_context R>,
 }
 
 impl<'suite_context, R> fmt::Debug for BgPanicSuite<'suite_context, R>
@@ -37,9 +51,18 @@ where
     }
 }
 
+impl<'test_context, R> fmt::Debug for TrivialTest<'test_context, R>
+where
+    R: Runtime<'test_context> + Sync,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TrivialTest").finish_non_exhaustive()
+    }
+}
+
 impl<'suite_context, R> context::Suite<'suite_context, R> for BgPanicSuite<'suite_context, R>
 where
-    R: for<'r> Runtime<'r> + Sync,
+    R: for<'rt> Runtime<'rt> + Sync,
 {
     type ContextError = Infallible;
     type SetupError = Infallible;
@@ -68,12 +91,16 @@ where
         // before the panic — the panic happens on a thread we don't
         // own, so our `catch_unwind` around setup never sees it.
         // Without the safety net, the test summary would say `0 failed`.
-        let _join = thread::spawn(|| {
+        #[expect(
+            clippy::panic,
+            reason = "this fixture asserts the runner's background-thread panic safety net detects panics escaping a non-runtime std::thread; the panic must occur off-runtime to exercise that path"
+        )]
+        let _join: thread::JoinHandle<()> = thread::spawn(|| {
             panic!("simulated_bg_thread_panic_during_setup");
         });
         // Brief sleep so the spawned thread reliably panics before the
         // runner reaches its end-of-run bg-panic check.
-        ::tokio::time::sleep(Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(100)).await;
         Ok(Self {
             _marker: PhantomData,
         })
@@ -81,22 +108,6 @@ where
 
     async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
-    }
-}
-
-struct TrivialTest<'test_context, R>
-where
-    R: Runtime<'test_context> + Sync,
-{
-    _marker: PhantomData<&'test_context R>,
-}
-
-impl<'test_context, R> fmt::Debug for TrivialTest<'test_context, R>
-where
-    R: Runtime<'test_context> + Sync,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TrivialTest").finish_non_exhaustive()
     }
 }
 
@@ -113,7 +124,7 @@ where
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
+        runtime = Multithread::new,
         suite = BgPanicSuite,
         test = TrivialTest,
     ),
@@ -122,6 +133,10 @@ mod tests {
     use super::TrivialTest;
 
     #[rudzio::test]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "this fixture asserts the test body completes successfully despite a background-thread panic in Suite::setup; the framework requires the test fn signature to return anyhow::Result<()>"
+    )]
     fn body_passes_despite_bg_panic(_ctx: &TrivialTest) -> anyhow::Result<()> {
         Ok(())
     }
