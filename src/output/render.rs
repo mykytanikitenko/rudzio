@@ -113,6 +113,7 @@ impl Drawer {
     /// order — so the runner doesn't have to know runtime names
     /// up-front.
     #[must_use]
+    #[inline]
     pub fn new(
         lifecycle_rx: Receiver<LifecycleEvent>,
         pipe_rx: Receiver<PipeChunk>,
@@ -146,6 +147,7 @@ impl Drawer {
     /// "row never wraps" invariant against synthetic widths.
     #[doc(hidden)]
     #[must_use]
+    #[inline]
     pub fn with_size_override(mut self, cols: usize, height: usize) -> Self {
         self.size_override = Some((cols, height));
         self
@@ -159,6 +161,7 @@ impl Drawer {
     /// Main loop: `select!` over all input channels plus a redraw
     /// timer until shutdown. On exit, drain pending events, clear
     /// the live region, and print the final summary.
+    #[inline]
     pub fn run(mut self) {
         self.summary.started_at = Some(Instant::now());
         let timer = crossbeam_channel::tick(REDRAW_INTERVAL);
@@ -1136,6 +1139,7 @@ fn bar_render(done: usize, total: usize, width: usize) -> String {
 /// `cov` is silently dropped when non-finite (n < 2 or mean = 0).
 #[doc(hidden)]
 #[must_use]
+#[inline]
 pub fn bench_progress_trailing(
     snap: &crate::bench::BenchProgressSnapshot,
     cols: usize,
@@ -1194,6 +1198,7 @@ pub fn bench_progress_trailing(
 /// the `Drawer` which queries the terminal via [`terminal_width`].
 #[doc(hidden)]
 #[must_use]
+#[inline]
 pub fn running_line(runtime: &str, state: &TestState, color: ColorPolicy, cols: usize) -> String {
     let prefix = format!("{runtime:<RUNTIME_PREFIX_WIDTH$}");
     let label = match state.kind {
@@ -1263,6 +1268,7 @@ const LIVE_REGION_RESERVED_ROWS: usize = 4;
 /// stripes in the user's scroll history.
 #[doc(hidden)]
 #[must_use]
+#[inline]
 pub fn running_output_lines(
     state: &TestState,
     color: ColorPolicy,
@@ -1297,6 +1303,7 @@ pub fn running_output_lines(
 /// strands a wrap-overflow row in scrollback.
 #[doc(hidden)]
 #[must_use]
+#[inline]
 pub fn bench_histogram_lines(
     snap: &crate::bench::BenchProgressSnapshot,
     color: ColorPolicy,
@@ -1411,6 +1418,7 @@ fn lifecycle_line(
 /// Spawn the drawer thread. Returns the join handle; the caller
 /// (the [`crate::output::CaptureGuard`]) is responsible for joining
 /// it during its drop.
+#[inline]
 pub fn spawn_drawer(drawer: Drawer) -> std::io::Result<JoinHandle<()>> {
     thread::Builder::new()
         .name("rudzio-output-drawer".to_owned())

@@ -24,6 +24,7 @@ pub struct TestId(pub u64);
 impl TestId {
     /// Allocate the next process-unique id. Wait-free.
     #[must_use]
+    #[inline]
     pub fn next() -> Self {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(1);

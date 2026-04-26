@@ -61,6 +61,7 @@ static LIFECYCLE_SENDER: OnceLock<Sender<LifecycleEvent>> = OnceLock::new();
 /// Send a lifecycle event on the global channel. No-op when capture
 /// isn't initialised (e.g. on Windows, or when init failed). Never
 /// blocks — the channel is unbounded.
+#[inline]
 pub fn send_lifecycle(event: LifecycleEvent) {
     if let Some(tx) = LIFECYCLE_SENDER.get() {
         let _unused = tx.send(event);
@@ -113,6 +114,7 @@ impl CaptureGuard {
 
 #[cfg(unix)]
 impl Drop for CaptureGuard {
+    #[inline]
     fn drop(&mut self) {
         // Step 1 — stop the drawer. Closing the shutdown channel
         // makes its `select!` arm return Err; it then drains pending
@@ -146,6 +148,7 @@ impl Drop for CaptureGuard {
 /// selected (the runner's reporter prints cargo-test-style lines
 /// itself — the drawer is unnecessary overhead) or when the target
 /// isn't Unix.
+#[inline]
 pub fn init(config: &Config) -> io::Result<CaptureGuard> {
     if matches!(config.output_mode, crate::config::OutputMode::Plain) {
         // Install the panic hook even in plain mode — without it, a

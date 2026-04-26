@@ -53,6 +53,7 @@ impl HardLimit {
     /// `n` concurrent permits; additional acquirers park until one is
     /// released.
     #[must_use]
+    #[inline]
     pub fn new(limit: Option<NonZeroUsize>) -> Self {
         Self {
             inner: limit.map(|max| Inner {
@@ -73,6 +74,7 @@ impl HardLimit {
     /// constructor [`HardLimit::new`] is the only stable surface for
     /// downstream users.
     #[doc(hidden)]
+    #[inline]
     pub fn with_sink(
         limit: Option<NonZeroUsize>,
         sink: impl Fn(&str) + Send + Sync + 'static,
@@ -96,6 +98,7 @@ impl HardLimit {
     /// A notice is emitted to the sink (stdout in production) **only if
     /// the thread actually parked** on the Condvar — never on the
     /// fast-path. The emitted line carries the measured parking duration.
+    #[inline]
     pub fn acquire(&self) -> HardLimitGuard<'_> {
         let Some(inner) = &self.inner else {
             return HardLimitGuard { owner: None };
@@ -128,6 +131,7 @@ impl HardLimit {
 }
 
 impl std::fmt::Debug for HardLimit {
+    #[inline]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.inner {
             None => f
@@ -143,6 +147,7 @@ impl std::fmt::Debug for HardLimit {
 }
 
 impl Drop for HardLimitGuard<'_> {
+    #[inline]
     fn drop(&mut self) {
         let Some(owner) = self.owner else { return };
         let Some(inner) = &owner.inner else { return };

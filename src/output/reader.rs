@@ -27,6 +27,7 @@ const READ_BUF_SIZE: usize = 16 * 1024;
 /// Spawn a reader thread for one pipe. The thread takes ownership of
 /// `fd` and exits when `read` returns 0 (writer end closed) or the
 /// drawer hangs up the receiver.
+#[inline]
 pub fn spawn(fd: OwnedFd, stream: StdStream, tx: Sender<PipeChunk>) -> io::Result<JoinHandle<()>> {
     let name = match stream {
         StdStream::Stdout => "rudzio-output-reader-stdout",

@@ -35,6 +35,7 @@ use crate::token::TestToken;
 /// any runtime registry.
 #[doc(hidden)]
 #[must_use]
+#[inline]
 pub const fn fnv1a64(s: &str) -> u64 {
     let bytes = s.as_bytes();
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -132,6 +133,7 @@ pub enum TeardownResult {
 /// as a generic placeholder so the user still sees that *something*
 /// panicked rather than getting nothing.
 #[must_use]
+#[inline]
 pub fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&'static str>() {
         (*s).to_owned()
@@ -355,6 +357,7 @@ pub enum PhaseOutcome<T> {
 /// own timer (`tokio::time::sleep`, `compio::time::sleep`, …) without
 /// the wrapper depending on any one runtime crate.
 #[doc(hidden)]
+#[inline]
 pub async fn run_phase_with_timeout_and_cancel<F, T, S>(
     phase_fut: F,
     phase_timeout: Option<Duration>,
@@ -426,6 +429,7 @@ where
 /// calling thread, never spawned, so single-threaded runtimes (and `!Send`
 /// test bodies on them) work too.
 #[doc(hidden)]
+#[inline]
 pub async fn run_test_with_timeout_and_cancel<F, S>(
     test_fut: F,
     test_timeout: Option<Duration>,
@@ -490,6 +494,7 @@ pub fn fill_elapsed(outcome: TestOutcome, elapsed: Duration) -> TestOutcome {
 /// different (there's no "failed" variant here: per-iteration failures
 /// are already captured inside the report).
 #[doc(hidden)]
+#[inline]
 pub async fn run_bench_with_timeout_and_cancel<F, S>(
     bench_fut: F,
     test_timeout: Option<Duration>,
@@ -566,6 +571,7 @@ where
 /// "your budget is up" to bodies that opted into the token-listening
 /// pattern.
 #[doc(hidden)]
+#[inline]
 pub async fn drive_per_test_spawn<JoinFut, T, S>(
     join_fut: JoinFut,
     abort_handle: futures_util::future::AbortHandle,
@@ -700,6 +706,7 @@ enum Stage1Trigger {
 /// HRTB-using emission.
 #[doc(hidden)]
 #[allow(unsafe_code, reason = "scoped spawn — see fn docstring")]
+#[inline]
 pub unsafe fn extend_phase_future_lifetime<'a, F, T>(
     fut: F,
 ) -> Pin<Box<dyn Future<Output = T> + Send + 'static>>

@@ -43,6 +43,7 @@ pub struct BinNotFound {
 }
 
 impl std::fmt::Display for BinNotFound {
+    #[inline]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
     }
@@ -64,6 +65,7 @@ impl std::error::Error for BinNotFound {}
 /// Returns [`BinNotFound`] if `current_exe()` fails, the expected
 /// ancestor directories are missing, or the bin file isn't on disk.
 #[doc(hidden)]
+#[inline]
 pub fn __resolve_at_runtime(bin_name: &str) -> Result<PathBuf, BinNotFound> {
     let current = std::env::current_exe().map_err(|e| BinNotFound {
         message: format!(

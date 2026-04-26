@@ -905,6 +905,7 @@ impl SuiteReporter for ModeReporter {
 /// Empty input or fully-stripped paths return `""`.
 #[doc(hidden)]
 #[must_use]
+#[inline]
 pub fn normalize_module_path(mp: &str) -> String {
     let mut out: Vec<&str> = Vec::new();
     let mut just_dropped_crate = false;
@@ -932,6 +933,7 @@ pub fn normalize_module_path(mp: &str) -> String {
 /// test name (no leading separator).
 #[doc(hidden)]
 #[must_use]
+#[inline]
 pub fn qualified_test_name(module_path: &str, test_name: &str) -> String {
     let normalized = normalize_module_path(module_path);
     if normalized.is_empty() {
@@ -953,6 +955,7 @@ pub fn qualified_test_name(module_path: &str, test_name: &str) -> String {
 /// output (see [`qualified_test_name`]). Filter and skip both
 /// substring-match against it, so anything a user can copy out of the
 /// runner's output is a valid filter.
+#[inline]
 pub fn token_passes_filters(
     qualified_name: &str,
     ignored: bool,
@@ -993,6 +996,7 @@ pub fn token_passes_filters(
 /// `cargo` comes from the caller (the `#[rudzio::main]` macro expands
 /// `cargo_meta!()` at the user's crate site so the `env!(...)` values
 /// belong to that crate, not rudzio).
+#[inline]
 pub fn run(cargo: crate::config::CargoMeta) -> ! {
     // Default `RUST_BACKTRACE=full` (and `RUST_LIB_BACKTRACE`) **only
     // when the user hasn't set them**. Backtraces are essential for

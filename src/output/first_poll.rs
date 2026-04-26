@@ -36,6 +36,7 @@ pub struct FirstPoll<F> {
 
 impl<F> FirstPoll<F> {
     #[must_use]
+    #[inline]
     pub const fn new(
         inner: F,
         test_id: TestId,
@@ -57,6 +58,7 @@ impl<F> FirstPoll<F> {
 impl<F: Future + Unpin> Future for FirstPoll<F> {
     type Output = F::Output;
 
+    #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = Pin::get_mut(self);
         if !this.fired {

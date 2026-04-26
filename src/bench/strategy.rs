@@ -28,6 +28,7 @@ use crate::test_case::BoxError;
 pub struct Sequential(pub usize);
 
 impl Strategy for Sequential {
+    #[inline]
     async fn run<B, Fut, P>(&self, mut body: B, mut on_progress: P) -> BenchReport
     where
         B: FnMut() -> Fut,
@@ -84,6 +85,7 @@ impl Strategy for Sequential {
 pub struct Concurrent(pub usize);
 
 impl Strategy for Concurrent {
+    #[inline]
     async fn run<B, Fut, P>(&self, mut body: B, mut on_progress: P) -> BenchReport
     where
         B: FnMut() -> Fut,

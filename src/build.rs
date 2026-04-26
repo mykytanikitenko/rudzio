@@ -175,12 +175,14 @@ impl Error {
 }
 
 impl fmt::Display for Error {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message)
     }
 }
 
 impl StdError for Error {
+    #[inline]
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         // `Box<dyn Error + Send + Sync>::deref` yields `&(dyn Error + Send + Sync)`,
         // which coerces directly to `&(dyn Error + 'static)`.
@@ -215,6 +217,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// - `bin_crate` declares no `[[bin]]` targets.
 /// - The nested `cargo build` invocation exits non-zero.
 /// - A bin's expected output file does not exist after the nested build.
+#[inline]
 pub fn expose_bins(bin_crate: &str) -> Result<()> {
     let env = BuildEnv::capture()?;
     let sentinel = std::env::var_os(NESTED_SENTINEL_ENV);
@@ -358,6 +361,7 @@ pub fn expose_bins(bin_crate: &str) -> Result<()> {
 /// Same failure modes as [`expose_bins`]; additionally errors if
 /// `CARGO_PKG_NAME` is missing from the env (build scripts without a
 /// cargo parent).
+#[inline]
 pub fn expose_self_bins() -> Result<()> {
     let pkg_name = require_string_env("CARGO_PKG_NAME")?;
     expose_bins(&pkg_name)
@@ -421,6 +425,7 @@ pub enum SentinelAction {
 /// reads the sentinel and the calling crate's `CARGO_PKG_NAME` once,
 /// then feeds them through here.
 #[doc(hidden)]
+#[inline]
 pub fn decide_sentinel_action(
     sentinel: Option<&std::ffi::OsStr>,
     bin_crate: &str,
@@ -439,6 +444,7 @@ pub fn decide_sentinel_action(
 /// Returns `true` when the sentinel env var looks like it was set by
 /// an enclosing `expose_bins` invocation (present and non-empty).
 #[doc(hidden)]
+#[inline]
 pub fn sentinel_indicates_nested_call(value: Option<&std::ffi::OsStr>) -> bool {
     matches!(value, Some(v) if !v.is_empty())
 }

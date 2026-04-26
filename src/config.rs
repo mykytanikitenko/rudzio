@@ -102,6 +102,7 @@ impl OutputMode {
     /// TTY, because CI log capture frequently makes ANSI cursor-moves
     /// unreadable downstream).
     #[must_use]
+    #[inline]
     pub fn resolve(explicit: Option<Self>, env: &BTreeMap<String, String>) -> Self {
         if let Some(m) = explicit {
             return m;
@@ -309,6 +310,7 @@ impl Config {
     /// because the relevant values are only available as compile-time
     /// `env!(...)` expansions in the user's crate.
     #[must_use]
+    #[inline]
     pub fn parse(cargo: CargoMeta) -> Self {
         let argv: Vec<String> = env::args().skip(1).collect();
         let env_snapshot: BTreeMap<String, String> = env::vars().collect();
@@ -318,6 +320,7 @@ impl Config {
     /// Test-friendly parser. Takes argv + env explicitly so unit tests can
     /// exercise parsing without touching the ambient process environment.
     #[must_use]
+    #[inline]
     pub fn from_argv_and_env(
         argv: Vec<String>,
         env: BTreeMap<String, String>,
@@ -662,6 +665,7 @@ impl Config {
     /// disabled ([`Self::parallel_hardlimit`] is `None`).
     #[doc(hidden)]
     #[must_use]
+    #[inline]
     pub fn acquire_hardlimit_permit(&self) -> HardLimitGuard<'_> {
         self.hardlimit.acquire()
     }

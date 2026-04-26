@@ -66,6 +66,7 @@ impl BenchProgressSnapshot {
     /// immediately on strategy entry — before any samples have
     /// accumulated.
     #[must_use]
+    #[inline]
     pub const fn initial(total: usize) -> Self {
         Self {
             done: 0,
@@ -86,6 +87,7 @@ impl BenchProgressSnapshot {
     /// per run (capped by their stride), so total amortised cost is
     /// bounded even for high iteration counts.
     #[must_use]
+    #[inline]
     pub fn from_samples(samples: &[Duration], done: usize, total: usize) -> Self {
         if samples.is_empty() {
             let mut snap = Self::initial(total);
@@ -211,6 +213,7 @@ impl BenchReport {
     /// Smallest successful-iteration duration, or `None` if every iteration
     /// failed or the strategy attempted zero iterations.
     #[must_use]
+    #[inline]
     pub fn min(&self) -> Option<Duration> {
         self.samples.iter().copied().min()
     }
@@ -218,6 +221,7 @@ impl BenchReport {
     /// Largest successful-iteration duration, or `None` when there are no
     /// successful samples.
     #[must_use]
+    #[inline]
     pub fn max(&self) -> Option<Duration> {
         self.samples.iter().copied().max()
     }
@@ -225,6 +229,7 @@ impl BenchReport {
     /// Arithmetic mean of successful-iteration durations, or `None` when
     /// there are no successful samples.
     #[must_use]
+    #[inline]
     pub fn mean(&self) -> Option<Duration> {
         if self.samples.is_empty() {
             return None;
@@ -242,6 +247,7 @@ impl BenchReport {
     /// `percentile(0.5)` is the median; `percentile(0.99)` is the p99.
     /// Returns `None` when `p` is outside `[0.0, 1.0]`.
     #[must_use]
+    #[inline]
     pub fn percentile(&self, p: f64) -> Option<Duration> {
         if !(0.0..=1.0).contains(&p) || self.samples.is_empty() {
             return None;
@@ -270,6 +276,7 @@ impl BenchReport {
 
     /// A single-line summary: `"min X, p50 Y, p95 Z, max W (N samples)"`.
     #[must_use]
+    #[inline]
     pub fn summary_line(&self) -> String {
         let n = self.samples.len();
         if n == 0 {
@@ -288,6 +295,7 @@ impl BenchReport {
     /// durations. `None` when fewer than two samples are available
     /// (σ is undefined for n ≤ 1).
     #[must_use]
+    #[inline]
     pub fn std_dev(&self) -> Option<Duration> {
         if self.samples.len() < 2 {
             return None;
@@ -319,6 +327,7 @@ impl BenchReport {
     /// is less sensitive to outliers than the standard deviation.
     /// `None` when there are no samples.
     #[must_use]
+    #[inline]
     pub fn mad(&self) -> Option<Duration> {
         if self.samples.is_empty() {
             return None;
@@ -339,6 +348,7 @@ impl BenchReport {
     /// Interquartile range: p75 - p25. `None` when percentile
     /// computation yields nothing (no samples).
     #[must_use]
+    #[inline]
     pub fn iqr(&self) -> Option<Duration> {
         let p25 = self.percentile(0.25)?;
         let p75 = self.percentile(0.75)?;
@@ -347,6 +357,7 @@ impl BenchReport {
 
     /// Range: max - min. `None` when there are no samples.
     #[must_use]
+    #[inline]
     pub fn range(&self) -> Option<Duration> {
         Some(self.max()?.saturating_sub(self.min()?))
     }
@@ -355,6 +366,7 @@ impl BenchReport {
     /// relative spread (1.0 = σ equals the mean — very noisy). `None`
     /// when mean is zero or σ is unavailable.
     #[must_use]
+    #[inline]
     pub fn coefficient_of_variation(&self) -> Option<f64> {
         let mean = self.mean()?.as_nanos();
         let sd = self.std_dev()?.as_nanos();
@@ -378,6 +390,7 @@ impl BenchReport {
     ///
     /// [`strategy::Concurrent`]: crate::bench::strategy::Concurrent
     #[must_use]
+    #[inline]
     pub fn throughput_per_sec(&self) -> Option<f64> {
         let secs = self.total_elapsed.as_secs_f64();
         if secs <= 0.0 || self.samples.is_empty() {
@@ -395,6 +408,7 @@ impl BenchReport {
     /// Rough outlier count — samples more than `k × σ` from the mean
     /// (default `k = 3`). `None` when σ is unavailable.
     #[must_use]
+    #[inline]
     pub fn outlier_count(&self, k: f64) -> Option<usize> {
         let mean_ns = self.mean()?.as_nanos();
         let sd_ns = self.std_dev()?.as_nanos();
@@ -424,6 +438,7 @@ impl BenchReport {
     /// p1 / p5 / p10 / p25 / p50 / p75 / p90 / p95 / p99 / p99.9, IQR,
     /// outlier count (>3σ), and failure / panic tallies when present.
     #[must_use]
+    #[inline]
     pub fn detailed_summary(&self) -> String {
         let n = self.samples.len();
         if n == 0 {
@@ -508,6 +523,7 @@ impl BenchReport {
     /// range is `[min, max]` split into equal-width linear buckets. Each
     /// line is `"  [lo..hi) |######  count"`.
     #[must_use]
+    #[inline]
     pub fn ascii_histogram(&self, buckets: usize, width: usize) -> String {
         if self.samples.is_empty() || buckets == 0 {
             return String::new();

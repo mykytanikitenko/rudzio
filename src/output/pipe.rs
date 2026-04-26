@@ -60,6 +60,7 @@ impl SavedFds {
     /// Store the saved FDs. Both must be valid, dup'd copies of
     /// FDs 1 and 2 from before the capture swap.
     #[must_use]
+    #[inline]
     pub const fn new(stdout: RawFd, stderr: RawFd) -> Self {
         Self {
             stdout: AtomicI32::new(stdout),
@@ -72,6 +73,7 @@ impl SavedFds {
     /// path racing with the panic hook) each atomically swap the
     /// stored FD to `-1`; only the winner runs the real `dup2` +
     /// `close` pair. The loser sees `-1` and returns immediately.
+    #[inline]
     pub fn restore(&self) {
         let stdout = self.stdout.swap(-1, Ordering::AcqRel);
         let stderr = self.stderr.swap(-1, Ordering::AcqRel);
@@ -97,6 +99,7 @@ impl SavedFds {
 /// place, and hand back the read ends + saved originals. Best-effort
 /// enlargement of the pipe buffers to [`PIPE_SIZE`] — ignored silently
 /// if the platform or system policy refuses.
+#[inline]
 pub fn init() -> io::Result<Capture> {
     let saved_stdout = dup(libc::STDOUT_FILENO)?;
     let saved_stderr = match dup(libc::STDERR_FILENO) {

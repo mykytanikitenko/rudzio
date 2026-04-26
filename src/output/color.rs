@@ -25,6 +25,7 @@ impl ColorPolicy {
     /// everything else) > explicit `--color=always|never` >
     /// `NO_COLOR` (if set, colour off) > `--color=auto` + TTY check.
     #[must_use]
+    #[inline]
     pub fn resolve(mode: ColorMode, stdout_is_tty: bool, env: &BTreeMap<String, String>) -> Self {
         if env.contains_key("FORCE_COLOR") {
             return Self { use_color: true };
@@ -39,12 +40,14 @@ impl ColorPolicy {
 
     /// A colour-off policy — convenience for non-terminal paths.
     #[must_use]
+    #[inline]
     pub const fn off() -> Self {
         Self { use_color: false }
     }
 
     /// Whether colour escapes should be emitted.
     #[must_use]
+    #[inline]
     pub const fn enabled(self) -> bool {
         self.use_color
     }
@@ -52,6 +55,7 @@ impl ColorPolicy {
     /// Wrap `s` in red (`\x1b[31m`). Returns `s` unchanged when
     /// colour is off.
     #[must_use]
+    #[inline]
     pub fn red(self, s: &str) -> String {
         self.wrap(s, "31")
     }
@@ -59,6 +63,7 @@ impl ColorPolicy {
     /// Wrap `s` in green (`\x1b[32m`). Returns `s` unchanged when
     /// colour is off.
     #[must_use]
+    #[inline]
     pub fn green(self, s: &str) -> String {
         self.wrap(s, "32")
     }
@@ -66,6 +71,7 @@ impl ColorPolicy {
     /// Wrap `s` in yellow (`\x1b[33m`). Returns `s` unchanged when
     /// colour is off.
     #[must_use]
+    #[inline]
     pub fn yellow(self, s: &str) -> String {
         self.wrap(s, "33")
     }
@@ -73,6 +79,7 @@ impl ColorPolicy {
     /// Wrap `s` in dim / faint (`\x1b[2m`). Returns `s` unchanged when
     /// colour is off.
     #[must_use]
+    #[inline]
     pub fn dim(self, s: &str) -> String {
         self.wrap(s, "2")
     }
@@ -80,6 +87,7 @@ impl ColorPolicy {
     /// Wrap `s` in bold (`\x1b[1m`). Returns `s` unchanged when
     /// colour is off.
     #[must_use]
+    #[inline]
     pub fn bold(self, s: &str) -> String {
         self.wrap(s, "1")
     }
