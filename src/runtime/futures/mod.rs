@@ -5,6 +5,11 @@
 //! the main future via `LocalPool::run_until`. `sleep` uses
 //! [`futures_timer::Delay`].
 
+use std::io::Result as IoResult;
+
+use crate::config::Config;
+
+/// Internal wiring for the `futures::executor::ThreadPool` backend.
 mod runtime;
 
 pub use runtime::ThreadPool;
@@ -15,6 +20,6 @@ pub use runtime::ThreadPool;
 ///
 /// Returns an error if the underlying `ThreadPool` cannot be built.
 #[inline]
-pub fn new(config: &crate::config::Config) -> std::io::Result<ThreadPool> {
+pub fn new(config: &Config) -> IoResult<ThreadPool> {
     ThreadPool::new(config)
 }

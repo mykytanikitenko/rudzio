@@ -99,7 +99,7 @@ where
 
 impl<'suite_context, R> context::Suite<'suite_context, R> for Suite<'suite_context, R>
 where
-    R: for<'r> Runtime<'r> + Sync,
+    R: for<'rt> Runtime<'rt> + Sync,
 {
     type ContextError = Infallible;
     type SetupError = Infallible;
@@ -120,14 +120,7 @@ where
         // a child of the root cancel token the suite context was built with,
         // so root-level cancellation still propagates.
         let tracker = self.tracker.clone();
-        async move {
-            Ok(Test {
-                cancel,
-                rt: self.rt,
-                tracker,
-                config,
-            })
-        }
+        async move { Ok(Test::new(cancel, self.rt, tracker, config)) }
     }
 
     #[inline]

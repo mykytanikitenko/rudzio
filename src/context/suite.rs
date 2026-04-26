@@ -22,7 +22,7 @@ use crate::runtime::Runtime;
 /// 8. Drop runtime
 pub trait Suite<'suite_context, R>: Send + Sync + 'suite_context
 where
-    R: for<'r> Runtime<'r> + Sync,
+    R: for<'rt> Runtime<'rt> + Sync,
 {
     /// Error returned by [`Self::context`].
     type ContextError: fmt::Display + fmt::Debug + Send + Sync + 'suite_context;

@@ -13,13 +13,33 @@ where
     R: Runtime<'test_context> + Sync,
 {
     /// Child cancellation token scoped to this test.
-    pub(super) cancel: CancellationToken,
+    cancel: CancellationToken,
     /// Borrow of the async runtime driving the test.
-    pub(super) rt: &'test_context R,
+    rt: &'test_context R,
     /// Shared task tracker inherited from the suite context.
-    pub(super) tracker: TaskTracker,
+    tracker: TaskTracker,
     /// Resolved CLI/env configuration, handed down from the suite.
-    pub(super) config: &'test_context Config,
+    config: &'test_context Config,
+}
+
+impl<'test_context, R> Test<'test_context, R>
+where
+    R: Runtime<'test_context> + Sync,
+{
+    /// Construct a per-test context bundle.
+    pub(crate) const fn new(
+        cancel: CancellationToken,
+        rt: &'test_context R,
+        tracker: TaskTracker,
+        config: &'test_context Config,
+    ) -> Self {
+        Self {
+            cancel,
+            rt,
+            tracker,
+            config,
+        }
+    }
 }
 
 impl<'test_context, R> fmt::Debug for Test<'test_context, R>

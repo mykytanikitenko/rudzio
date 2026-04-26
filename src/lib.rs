@@ -1,3 +1,39 @@
+pub use rudzio_macro::{main, suite, test};
+
+pub use bench::{BenchReport, Strategy};
+pub use config::{BenchMode, CargoMeta, ColorMode, Config, Format, OutputMode, RunIgnoredMode};
+pub use context::{Suite, Test};
+pub use runner::{
+    TestSummary, normalize_module_path, qualified_test_name, run, token_passes_filters,
+};
+pub use runtime::{JoinError, Runtime};
+pub use suite::{
+    RuntimeGroupKey, RuntimeGroupOwner, SuiteId, SuiteReporter, SuiteRunRequest, SuiteSummary,
+    TestOutcome, TestRunFn, fnv1a64,
+};
+pub use test_case::{BoxError, IntoRudzioResult, TestCase, TestFn, box_error};
+pub use token::{TEST_TOKENS, TestToken};
+
+pub use futures_util;
+#[doc(hidden)]
+pub use linkme;
+#[doc(hidden)]
+pub use tokio_util;
+
+/// Re-export of the `tokio` runtime crate. Available whenever any of
+/// the `runtime-tokio-*` cargo features is on; lets downstream tests
+/// reach `tokio::time::sleep` etc. without listing tokio as a separate
+/// dev-dep (and crucially, without breaking the `cargo-rudzio`
+/// aggregator, which would otherwise see `::tokio` as missing from the
+/// generated bridge crate's resolver).
+#[doc(hidden)]
+#[cfg(any(
+    feature = "runtime-tokio-multi-thread",
+    feature = "runtime-tokio-current-thread",
+    feature = "runtime-tokio-local",
+))]
+pub use tokio;
+
 pub mod bench;
 pub mod bin;
 #[cfg(feature = "build")]
@@ -13,11 +49,6 @@ pub mod runtime;
 pub mod suite;
 pub mod test_case;
 pub mod token;
-
-pub use rudzio_macro::{main, suite, test};
-
-pub use bench::{BenchReport, Strategy};
-pub use config::{BenchMode, CargoMeta, ColorMode, Config, Format, OutputMode, RunIgnoredMode};
 
 /// Resolve a `[[bin]]` target's executable path at a test call site,
 /// returning a [`PathBuf`](std::path::PathBuf).
@@ -79,34 +110,3 @@ macro_rules! cargo_meta {
         }
     };
 }
-pub use context::{Suite, Test};
-pub use runner::{
-    TestSummary, normalize_module_path, qualified_test_name, run, token_passes_filters,
-};
-pub use runtime::{JoinError, Runtime};
-pub use suite::{
-    RuntimeGroupKey, RuntimeGroupOwner, SuiteId, SuiteReporter, SuiteRunRequest, SuiteSummary,
-    TestOutcome, TestRunFn, fnv1a64,
-};
-pub use test_case::{BoxError, IntoRudzioResult, TestCase, TestFn, box_error};
-pub use token::{TEST_TOKENS, TestToken};
-
-pub use futures_util;
-#[doc(hidden)]
-pub use linkme;
-#[doc(hidden)]
-pub use tokio_util;
-
-/// Re-export of the `tokio` runtime crate. Available whenever any of
-/// the `runtime-tokio-*` cargo features is on; lets downstream tests
-/// reach `tokio::time::sleep` etc. without listing tokio as a separate
-/// dev-dep (and crucially, without breaking the `cargo-rudzio`
-/// aggregator, which would otherwise see `::tokio` as missing from the
-/// generated bridge crate's resolver).
-#[doc(hidden)]
-#[cfg(any(
-    feature = "runtime-tokio-multi-thread",
-    feature = "runtime-tokio-current-thread",
-    feature = "runtime-tokio-local",
-))]
-pub use tokio;
