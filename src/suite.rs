@@ -16,11 +16,14 @@
 //! the owner's stack frame for the whole `run_group` call, and per-test
 //! borrows are scoped to the HRTB fn's `'s` lifetime.
 
-use std::any::TypeId;
+use std::any::{Any, TypeId};
 use std::marker::PhantomData;
+use std::mem;
+use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::time::Duration;
 
+use futures_util::future::{AbortHandle, Aborted};
 use tokio_util::sync::CancellationToken;
 
 use crate::bench::BenchReport;
@@ -134,7 +137,7 @@ pub enum TeardownResult {
 /// panicked rather than getting nothing.
 #[must_use]
 #[inline]
-pub fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+pub fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&'static str>() {
         (*s).to_owned()
     } else if let Some(s) = payload.downcast_ref::<String>() {
@@ -372,7 +375,7 @@ where
     use futures_util::FutureExt as _;
     use futures_util::future::{Either, select};
 
-    let catch_fut = std::panic::AssertUnwindSafe(phase_fut).catch_unwind();
+    let catch_fut = AssertUnwindSafe(phase_fut).catch_unwind();
     let cancellable = std::pin::pin!(phase_token.run_until_cancelled(catch_fut));
 
     let Some(dur) = phase_timeout else {
@@ -390,7 +393,7 @@ where
             return PhaseOutcome::Panicked(panic_payload_message(&*payload));
         }
         Either::Left((None, _)) => return PhaseOutcome::Cancelled,
-        Either::Right((_, still_pending)) => still_pending,
+        Either::Right(((), still_pending)) => still_pending,
     };
 
     // Timeout fired. Cancel the phase token so cooperative phase
@@ -574,14 +577,14 @@ where
 #[inline]
 pub async fn drive_per_test_spawn<JoinFut, T, S>(
     join_fut: JoinFut,
-    abort_handle: futures_util::future::AbortHandle,
+    abort_handle: AbortHandle,
     outer_budget: Option<Duration>,
     outer_grace: Option<Duration>,
     phase_token: CancellationToken,
     sleep: impl Fn(Duration) -> S,
 ) -> PhaseOutcome<T>
 where
-    JoinFut: Future<Output = Result<T, futures_util::future::Aborted>>,
+    JoinFut: Future<Output = Result<T, Aborted>>,
     S: Future<Output = ()>,
 {
     use futures_util::future::{Either, select};
@@ -660,7 +663,7 @@ where
         // via the now-cancelled phase_token returned by an inner
         // wrapper. All three end as TimedOut: the budget WAS blown,
         // but the body cooperated.
-        Either::Left((Ok(_), _)) | Either::Left((Err(_), _)) => PhaseOutcome::TimedOut,
+        Either::Left((Ok(_) | Err(_), _)) => PhaseOutcome::TimedOut,
         // Stage 3: grace expired. Body did not respond to phase_token
         // cancellation. Fire abort_handle (Layer-3 forced kill —
         // takes effect on tokio for tasks that yield, leaks for
@@ -705,7 +708,7 @@ enum Stage1Trigger {
 /// (#100013) when the source type uses `'_` inside the macro's
 /// HRTB-using emission.
 #[doc(hidden)]
-#[allow(unsafe_code, reason = "scoped spawn — see fn docstring")]
+#[expect(unsafe_code, reason = "scoped spawn — see fn docstring")]
 #[inline]
 pub unsafe fn extend_phase_future_lifetime<'a, F, T>(
     fut: F,
@@ -718,7 +721,7 @@ where
     // SAFETY: see fn-level docstring — caller awaits or runtime-aborts
     // before any captured borrow expires.
     unsafe {
-        std::mem::transmute::<
+        mem::transmute::<
             Pin<Box<dyn Future<Output = T> + Send + 'a>>,
             Pin<Box<dyn Future<Output = T> + Send + 'static>>,
         >(pinned)

@@ -15,7 +15,10 @@
 //!   every captured line, final status line on `TestCompleted`.
 
 use std::collections::HashMap;
-use std::io::Write as _;
+use std::fs::File;
+use std::io::{Result as IoResult, Write as _};
+use std::mem;
+use std::str;
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
@@ -23,8 +26,9 @@ use crossbeam_channel::{Receiver, Sender, select};
 
 use super::color::ColorPolicy;
 use super::events::{LifecycleEvent, PipeChunk, StdStream, TestId, TestState, TestStateKind};
+use crate::bench::{BenchProgressSnapshot, HISTOGRAM_BUCKETS};
 use crate::config::{Format, OutputMode};
-use crate::runner::qualified_test_name;
+use crate::runner::{normalize_module_path, qualified_test_name};
 use crate::suite::{TeardownResult, TestOutcome};
 
 const REDRAW_INTERVAL: Duration = Duration::from_millis(50);
@@ -37,7 +41,7 @@ pub struct Drawer {
     lifecycle_rx: Receiver<LifecycleEvent>,
     pipe_rx: Receiver<PipeChunk>,
     shutdown_rx: Receiver<()>,
-    terminal: std::fs::File,
+    terminal: File,
     output_mode: OutputMode,
     format: Format,
     color: ColorPolicy,
@@ -118,7 +122,7 @@ impl Drawer {
         lifecycle_rx: Receiver<LifecycleEvent>,
         pipe_rx: Receiver<PipeChunk>,
         shutdown_rx: Receiver<()>,
-        terminal: std::fs::File,
+        terminal: File,
         output_mode: OutputMode,
         format: Format,
         color: ColorPolicy,
@@ -148,7 +152,7 @@ impl Drawer {
     #[doc(hidden)]
     #[must_use]
     #[inline]
-    pub fn with_size_override(mut self, cols: usize, height: usize) -> Self {
+    pub const fn with_size_override(mut self, cols: usize, height: usize) -> Self {
         self.size_override = Some((cols, height));
         self
     }
@@ -398,11 +402,10 @@ impl Drawer {
                     // emission so late-drained bytes attributed via
                     // the thread map are already flushed.
                     let _unused = self.thread_to_test.remove(&state.thread);
-                    if let Some(slot) = self.slots.get_mut(&state.thread) {
-                        if slot.current == Some(test_id) {
+                    if let Some(slot) = self.slots.get_mut(&state.thread)
+                        && slot.current == Some(test_id) {
                             slot.current = None;
                         }
-                    }
                 }
             }
         }
@@ -435,8 +438,8 @@ impl Drawer {
                 LifecyclePhase::Setup => "setup",
                 LifecyclePhase::Teardown => "teardown",
             };
-            let suite_disp = crate::runner::normalize_module_path(suite);
-            let line = format!("{phase_word:<8} {suite_disp} ... started <{runtime_name}>\n",);
+            let suite_disp = normalize_module_path(suite);
+            let line = format!("{phase_word:<8} {suite_disp} ... started <{runtime_name}>\n");
             let _unused = self.terminal.write_all(line.as_bytes());
         }
     }
@@ -461,12 +464,12 @@ impl Drawer {
             LifecyclePhase::Teardown => "teardown",
         };
         let label = match (kind, &failure) {
-            (LifecyclePhase::Setup, Some(LifecycleFailure::TimedOut(_)))
-            | (LifecyclePhase::Teardown, Some(LifecycleFailure::TimedOut(_))) => {
+            (LifecyclePhase::Setup | LifecyclePhase::Teardown,
+Some(LifecycleFailure::TimedOut(_))) => {
                 StatusLabel::Timeout
             }
-            (LifecyclePhase::Setup, Some(LifecycleFailure::Hung(_)))
-            | (LifecyclePhase::Teardown, Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
+            (LifecyclePhase::Setup | LifecyclePhase::Teardown,
+Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
             (LifecyclePhase::Setup, None) => StatusLabel::SetupOk,
             // Suite-level setup failure renders as [FAIL]; the
             // [SETUP] tag is reserved for per-test SetupFailed.
@@ -477,7 +480,7 @@ impl Drawer {
             (LifecyclePhase::Teardown, Some(LifecycleFailure::Panicked(_))) => StatusLabel::Panic,
         };
         let tag_rendered = render_status_tag(label, self.color);
-        let suite_disp = crate::runner::normalize_module_path(suite);
+        let suite_disp = normalize_module_path(suite);
         let display = format!("{phase_word} {suite_disp}");
         let trailing = format!("<{runtime_name}, {elapsed:.2?}>");
         let lhs_naked = format!("{:width$} {display}", "", width = STATUS_TAG_WIDTH);
@@ -524,8 +527,8 @@ impl Drawer {
                 .copied()
                 .min_by_key(|id| self.tests.get(id).map(|s| s.started_at))
         };
-        if let Some(id) = chosen {
-            if let Some(state) = self.tests.get_mut(&id) {
+        if let Some(id) = chosen
+            && let Some(state) = self.tests.get_mut(&id) {
                 match chunk.stream {
                     StdStream::Stdout => state.stdout_buffer.extend_from_slice(&chunk.bytes),
                     StdStream::Stderr => state.stderr_buffer.extend_from_slice(&chunk.bytes),
@@ -544,7 +547,6 @@ impl Drawer {
                 }
                 return;
             }
-        }
         // Orphan bytes (no mapped test): pass through unprefixed.
         // Live mode: clear live region first; next redraw re-paints.
         if matches!(self.output_mode, OutputMode::Live) {
@@ -766,7 +768,7 @@ impl Drawer {
 }
 
 impl Summary {
-    fn record_outcome(&mut self, outcome: &TestOutcome) {
+    const fn record_outcome(&mut self, outcome: &TestOutcome) {
         match outcome {
             TestOutcome::Passed { .. } => self.passed = self.passed.saturating_add(1),
             TestOutcome::Failed { .. } | TestOutcome::SetupFailed { .. } => {
@@ -786,7 +788,7 @@ impl Summary {
     }
 }
 
-fn is_failure(outcome: &TestOutcome) -> bool {
+const fn is_failure(outcome: &TestOutcome) -> bool {
     match outcome {
         TestOutcome::Failed { .. }
         | TestOutcome::Panicked { .. }
@@ -846,7 +848,7 @@ enum LifecycleFailure {
     Hung(String),
 }
 
-fn status_label_from_outcome(outcome: &TestOutcome) -> StatusLabel {
+const fn status_label_from_outcome(outcome: &TestOutcome) -> StatusLabel {
     match outcome {
         TestOutcome::Passed { .. } => StatusLabel::Ok,
         TestOutcome::Failed { .. } => StatusLabel::Fail,
@@ -973,17 +975,13 @@ fn terminal_size_unix() -> (Option<usize>, Option<usize>) {
     // after the capture swap (FD 2 points at the write end of the
     // stderr capture pipe, so it's not useful) — we walk likely-
     // terminal FDs until one answers.
-    #[allow(unsafe_code)]
+    #[expect(unsafe_code)]
     unsafe {
-        let mut ws: libc::winsize = std::mem::zeroed();
+        let mut ws: libc::winsize = mem::zeroed();
         for fd in [libc::STDERR_FILENO, libc::STDIN_FILENO, libc::STDOUT_FILENO] {
             if libc::ioctl(fd, libc::TIOCGWINSZ, &raw mut ws) == 0 && ws.ws_col > 0 {
                 let cols = Some(usize::from(ws.ws_col));
-                let rows = if ws.ws_row > 0 {
-                    Some(usize::from(ws.ws_row))
-                } else {
-                    None
-                };
+                let rows = (ws.ws_row > 0).then(|| usize::from(ws.ws_row));
                 return (cols, rows);
             }
         }
@@ -1001,7 +999,7 @@ fn terminal_height() -> usize {
     24
 }
 
-fn outcome_label(outcome: &TestOutcome) -> &'static str {
+const fn outcome_label(outcome: &TestOutcome) -> &'static str {
     match outcome {
         TestOutcome::Failed { .. } => "FAILED",
         TestOutcome::Panicked { .. } => "PANICKED",
@@ -1029,7 +1027,7 @@ fn outcome_message(outcome: &TestOutcome) -> String {
     }
 }
 
-fn emit_captured_block(terminal: &mut std::fs::File, state: &TestState, color: ColorPolicy) {
+fn emit_captured_block(terminal: &mut File, state: &TestState, color: ColorPolicy) {
     for line in split_lines(&state.stdout_buffer) {
         let formatted = format!("  {line}\n");
         let _unused = terminal.write_all(formatted.as_bytes());
@@ -1041,7 +1039,7 @@ fn emit_captured_block(terminal: &mut std::fs::File, state: &TestState, color: C
 }
 
 fn emit_plain_lines(
-    terminal: &mut std::fs::File,
+    terminal: &mut File,
     bytes: &[u8],
     _display: &str,
     stream: StdStream,
@@ -1058,14 +1056,14 @@ fn emit_plain_lines(
 }
 
 fn split_lines(bytes: &[u8]) -> impl Iterator<Item = &str> {
-    std::str::from_utf8(bytes)
+    str::from_utf8(bytes)
         .unwrap_or("")
         .split('\n')
         .filter(|l| !l.is_empty())
 }
 
 fn update_last_line(dst: &mut String, bytes: &[u8]) {
-    let Ok(s) = std::str::from_utf8(bytes) else {
+    let Ok(s) = str::from_utf8(bytes) else {
         return;
     };
     for line in s.split('\n') {
@@ -1085,7 +1083,7 @@ fn update_last_line(dst: &mut String, bytes: &[u8]) {
 /// first. Used to maintain `TestState::recent_output` for the live
 /// streaming of test stdio under the running status row.
 fn append_complete_lines(dst: &mut Vec<String>, bytes: &[u8]) {
-    let Ok(s) = std::str::from_utf8(bytes) else {
+    let Ok(s) = str::from_utf8(bytes) else {
         return;
     };
     for line in s.split('\n') {
@@ -1113,10 +1111,10 @@ fn bar_render(done: usize, total: usize, width: usize) -> String {
     let mut out = String::with_capacity(width.saturating_add(2));
     out.push('[');
     for _ in 0..filled {
-        out.push('█');
+        out.push('\u{2588}');
     }
     for _ in filled..width {
-        out.push('░');
+        out.push('\u{2591}');
     }
     out.push(']');
     out
@@ -1141,7 +1139,7 @@ fn bar_render(done: usize, total: usize, width: usize) -> String {
 #[must_use]
 #[inline]
 pub fn bench_progress_trailing(
-    snap: &crate::bench::BenchProgressSnapshot,
+    snap: &BenchProgressSnapshot,
     cols: usize,
     _elapsed: Duration,
 ) -> String {
@@ -1305,7 +1303,7 @@ pub fn running_output_lines(
 #[must_use]
 #[inline]
 pub fn bench_histogram_lines(
-    snap: &crate::bench::BenchProgressSnapshot,
+    snap: &BenchProgressSnapshot,
     color: ColorPolicy,
     cols: usize,
     height_budget: usize,
@@ -1322,18 +1320,18 @@ pub fn bench_histogram_lines(
         .saturating_add(1);
     let line_budget = cols.saturating_sub(1).max(1);
     let body_budget = line_budget.saturating_sub(indent_width).max(1);
-    let bars_width = body_budget.min(crate::bench::HISTOGRAM_BUCKETS);
+    let bars_width = body_budget.min(HISTOGRAM_BUCKETS);
     if bars_width == 0 {
         return Vec::new();
     }
-    let levels: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let levels: [char; 8] = ['\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
     let mut bars = String::new();
     for col in 0..bars_width {
         let bin = col
-            .saturating_mul(crate::bench::HISTOGRAM_BUCKETS)
+            .saturating_mul(HISTOGRAM_BUCKETS)
             .checked_div(bars_width)
             .unwrap_or(0)
-            .min(crate::bench::HISTOGRAM_BUCKETS.saturating_sub(1));
+            .min(HISTOGRAM_BUCKETS.saturating_sub(1));
         let count = snap.histogram[bin];
         if count == 0 {
             bars.push(' ');
@@ -1368,7 +1366,7 @@ fn clip_to_cols(s: &str, cols: usize) -> String {
     }
     let take = cols.saturating_sub(1);
     let mut out: String = s.chars().take(take).collect();
-    out.push('…');
+    out.push('\u{2026}');
     out
 }
 
@@ -1386,7 +1384,7 @@ fn lifecycle_line(
     };
     let raw_display = format!(
         "{phase_word} {}",
-        crate::runner::normalize_module_path(lifecycle.suite)
+        normalize_module_path(lifecycle.suite)
     );
     let elapsed = lifecycle.started_at.elapsed();
     let trailing = format!("<{elapsed:.2?}>");
@@ -1419,7 +1417,7 @@ fn lifecycle_line(
 /// (the [`crate::output::CaptureGuard`]) is responsible for joining
 /// it during its drop.
 #[inline]
-pub fn spawn_drawer(drawer: Drawer) -> std::io::Result<JoinHandle<()>> {
+pub fn spawn_drawer(drawer: Drawer) -> IoResult<JoinHandle<()>> {
     thread::Builder::new()
         .name("rudzio-output-drawer".to_owned())
         .spawn(move || drawer.run())

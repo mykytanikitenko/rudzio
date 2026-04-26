@@ -12,11 +12,15 @@
 )]
 
 use std::fmt;
+use std::future;
 use std::io;
+use std::mem;
 use std::pin::Pin;
 use std::ptr;
 use std::sync::mpsc;
 use std::sync::{Condvar, Mutex};
+use std::task::Poll;
+use std::thread;
 use std::time::Duration;
 
 use embassy_executor::Spawner;
@@ -86,7 +90,7 @@ pub struct Runtime {
     executor: SendWrapper<&'static Executor>,
     /// Shared signaler driving the `block_on` parking loop.
     signaler: &'static Signaler,
-    /// Cached spawner. Also `!Send` via a `*mut ()` PhantomData.
+    /// Cached spawner. Also `!Send` via a `*mut ()` `PhantomData`.
     spawner: SendWrapper<Spawner>,
     /// Resolved [`Config`] this runtime was constructed from.
     config: Config,
@@ -179,9 +183,8 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
         // Lifetime extension: the `drive_until` loop below blocks this thread
         // until the task has completed, so the task can never outlive borrows
         // captured by `fut`.
-        #[allow(trivial_casts)]
         let fut_static: Pin<Box<dyn Future<Output = F::Output> + 'static>> = unsafe {
-            core::mem::transmute::<
+            mem::transmute::<
                 Pin<Box<dyn Future<Output = F::Output> + 'rt>>,
                 Pin<Box<dyn Future<Output = F::Output> + 'static>>,
             >(Box::pin(fut))
@@ -219,7 +222,7 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
         T: Send + 'static,
     {
         let (tx, rx) = mpsc::channel::<T>();
-        let _unused = std::thread::spawn(move || {
+        let _unused = thread::spawn(move || {
             let _unused = tx.send(func());
         });
         poll_channel(rx)
@@ -239,8 +242,8 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
         // pending task via the receiver's future, which in turn fires
         // `__pender` and unparks the executor loop.
         let (tx, rx) = mpsc::channel::<()>();
-        let _unused = std::thread::spawn(move || {
-            std::thread::sleep(duration);
+        let _unused = thread::spawn(move || {
+            thread::sleep(duration);
             let _unused = tx.send(());
         });
         async move {
@@ -312,21 +315,19 @@ where
 
 /// Poll an `mpsc::Receiver` from an async context, yielding between empty
 /// attempts so the executor can make progress on the sender side.
-fn poll_channel<T: Send + 'static>(
+async fn poll_channel<T: Send + 'static>(
     rx: mpsc::Receiver<T>,
-) -> impl Future<Output = Result<T, JoinError>> + Send + 'static {
-    async move {
-        loop {
-            match rx.try_recv() {
-                Ok(val) => return Ok(val),
-                Err(mpsc::TryRecvError::Empty) => {
-                    yield_once().await;
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    return Err(JoinError::cancelled(io::Error::other(
-                        "embassy task dropped before sending result",
-                    )));
-                }
+) -> Result<T, JoinError> {
+    loop {
+        match rx.try_recv() {
+            Ok(val) => return Ok(val),
+            Err(mpsc::TryRecvError::Empty) => {
+                yield_once().await;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err(JoinError::cancelled(io::Error::other(
+                    "embassy task dropped before sending result",
+                )));
             }
         }
     }
@@ -338,13 +339,13 @@ fn poll_channel<T: Send + 'static>(
 #[inline]
 fn yield_once() -> impl Future<Output = ()> + Send + 'static {
     let mut yielded = false;
-    std::future::poll_fn(move |cx| {
+    future::poll_fn(move |cx| {
         if yielded {
-            std::task::Poll::Ready(())
+            Poll::Ready(())
         } else {
             yielded = true;
             cx.waker().wake_by_ref();
-            std::task::Poll::Pending
+            Poll::Pending
         }
     })
 }

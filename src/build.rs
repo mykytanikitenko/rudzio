@@ -122,11 +122,13 @@
 //! as an explicit [`Error`] with context. There are no silent fallbacks:
 //! if the helper can't do its job, your build breaks loudly.
 
+use std::env;
 use std::error::Error as StdError;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::result::Result as StdResult;
 
 use cargo_metadata::{MetadataCommand, TargetKind};
 
@@ -194,7 +196,7 @@ impl StdError for Error {
 }
 
 /// Convenience alias used across this crate's surface.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = StdResult<T, Error>;
 
 /// Build `bin_crate`'s `[[bin]]` targets into a sandboxed cache inside
 /// the caller's `OUT_DIR` and emit `cargo:rustc-env=CARGO_BIN_EXE_<n>`
@@ -220,7 +222,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[inline]
 pub fn expose_bins(bin_crate: &str) -> Result<()> {
     let env = BuildEnv::capture()?;
-    let sentinel = std::env::var_os(NESTED_SENTINEL_ENV);
+    let sentinel = env::var_os(NESTED_SENTINEL_ENV);
     match decide_sentinel_action(sentinel.as_deref(), bin_crate, &env.pkg_name) {
         SentinelAction::Proceed => {}
         SentinelAction::SilentOk => return Ok(()),
@@ -387,7 +389,7 @@ impl BuildEnv {
             manifest_dir: require_path_env("CARGO_MANIFEST_DIR")?,
             out_dir: require_path_env("OUT_DIR")?,
             profile: require_string_env("PROFILE")?,
-            cargo: std::env::var_os("CARGO").ok_or_else(|| {
+            cargo: env::var_os("CARGO").ok_or_else(|| {
                 Error::new(
                     "`CARGO` env var missing; `expose_bins` must be called \
                      from a cargo-driven build script",
@@ -426,8 +428,9 @@ pub enum SentinelAction {
 /// then feeds them through here.
 #[doc(hidden)]
 #[inline]
+#[must_use] 
 pub fn decide_sentinel_action(
-    sentinel: Option<&std::ffi::OsStr>,
+    sentinel: Option<&OsStr>,
     bin_crate: &str,
     current_pkg: &str,
 ) -> SentinelAction {
@@ -445,12 +448,13 @@ pub fn decide_sentinel_action(
 /// an enclosing `expose_bins` invocation (present and non-empty).
 #[doc(hidden)]
 #[inline]
-pub fn sentinel_indicates_nested_call(value: Option<&std::ffi::OsStr>) -> bool {
+#[must_use] 
+pub fn sentinel_indicates_nested_call(value: Option<&OsStr>) -> bool {
     matches!(value, Some(v) if !v.is_empty())
 }
 
 fn require_string_env(name: &str) -> Result<String> {
-    std::env::var(name).map_err(|e| {
+    env::var(name).map_err(|e| {
         Error::with_source(
             format!(
                 "`{name}` env var missing; `expose_bins` must be called from \
@@ -486,7 +490,7 @@ impl ProfileFlag {
         }
     }
 
-    fn cli_flag(&self) -> Option<&'static str> {
+    const fn cli_flag(&self) -> Option<&'static str> {
         match self {
             Self::Debug => None,
             Self::Release => Some("--release"),

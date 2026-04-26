@@ -11,6 +11,7 @@
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
+use crate::bench::BenchProgressSnapshot;
 use crate::suite::{TeardownResult, TestOutcome};
 
 /// Unique id for a test *dispatch* — one per wrap in
@@ -93,7 +94,7 @@ pub enum LifecycleEvent {
     /// can travel through the lifecycle channel without overhead.
     BenchProgress {
         test_id: TestId,
-        snapshot: crate::bench::BenchProgressSnapshot,
+        snapshot: BenchProgressSnapshot,
     },
     /// A suite is about to run `Suite::setup`. Emitted from the
     /// runtime group thread before the user's setup body executes.
@@ -132,7 +133,7 @@ pub enum LifecycleEvent {
     },
     /// A per-test teardown (`Test::teardown`) returned `Err` or
     /// panicked. The drawer renders a separate FAIL line attributed
-    /// to the test and pushes a FailureRecord so the final
+    /// to the test and pushes a `FailureRecord` so the final
     /// `failures:` section includes it.
     TestTeardownFailed {
         module_path: &'static str,
@@ -175,6 +176,6 @@ pub enum TestStateKind {
     /// Under a bench strategy; the most recent progress snapshot
     /// drives the trailing block + mini-histogram in the renderer.
     Bench {
-        snapshot: crate::bench::BenchProgressSnapshot,
+        snapshot: BenchProgressSnapshot,
     },
 }

@@ -14,6 +14,7 @@
 //! fast as the kernel produces data, so the pipe buffer rarely fills
 //! and test `write`s rarely block.
 
+use std::fs::File;
 use std::io::{self, Read as _};
 use std::os::fd::OwnedFd;
 use std::thread::{self, JoinHandle};
@@ -34,7 +35,7 @@ pub fn spawn(fd: OwnedFd, stream: StdStream, tx: Sender<PipeChunk>) -> io::Resul
         StdStream::Stderr => "rudzio-output-reader-stderr",
     };
     thread::Builder::new().name(name.to_owned()).spawn(move || {
-        let mut file = std::fs::File::from(fd);
+        let mut file = File::from(fd);
         let mut buf = vec![0_u8; READ_BUF_SIZE];
         loop {
             match file.read(&mut buf) {

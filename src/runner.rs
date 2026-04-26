@@ -1,15 +1,18 @@
 use std::collections::HashMap;
 use std::env;
 use std::io::{self, IsTerminal as _, Write as _};
+#[cfg(unix)]
+use std::mem;
 use std::process;
 use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{ColorMode, Config, Format, OutputMode, RunIgnoredMode};
+use crate::config::{CargoMeta, ColorMode, Config, Format, OutputMode, RunIgnoredMode, USAGE};
 use crate::output::events::LifecycleEvent;
 use crate::output::{self};
 use crate::suite::{
@@ -175,9 +178,9 @@ fn terminal_width() -> usize {
     use std::os::fd::AsRawFd as _;
     // SAFETY: ioctl TIOCGWINSZ writes a `winsize` struct; we supply a
     // zero-initialised one and only read it when ioctl returns 0.
-    #[allow(unsafe_code)]
+    #[expect(unsafe_code)]
     unsafe {
-        let mut ws: libc::winsize = std::mem::zeroed();
+        let mut ws: libc::winsize = mem::zeroed();
         let fd = io::stdout().as_raw_fd();
         if libc::ioctl(fd, libc::TIOCGWINSZ, &raw mut ws) == 0 && ws.ws_col > 0 {
             return usize::from(ws.ws_col);
@@ -408,7 +411,7 @@ impl SuiteReporter for ModeReporter {
                     } else {
                         format!("<{runtime_name}, {}>", token.ignore_reason)
                     };
-                    let lhs_naked = format!("{:width$} {display}", "", width = tag_visible,);
+                    let lhs_naked = format!("{:width$} {display}", "", width = tag_visible);
                     let lhs_rendered = format!("{tag_rendered} {display}");
                     let line =
                         render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
@@ -435,7 +438,7 @@ impl SuiteReporter for ModeReporter {
                 Format::Pretty => {
                     let (tag_rendered, tag_visible) = status_tag(StatusLabel::Cancel, p.colored);
                     let display = qualified_test_name(token.module_path, token.name);
-                    let lhs_naked = format!("{:width$} {display}", "", width = tag_visible,);
+                    let lhs_naked = format!("{:width$} {display}", "", width = tag_visible);
                     let lhs_rendered = format!("{tag_rendered} {display}");
                     let trailing = runtime_only_info(runtime_name);
                     let line =
@@ -490,7 +493,7 @@ impl SuiteReporter for ModeReporter {
                 let (tag_rendered, tag_visible) = status_tag(label, p.colored);
                 let display = qualified_test_name(token.module_path, token.name);
                 let trailing = trailing_info(&outcome, runtime_name);
-                let lhs_naked = format!("{:width$} {display}", "", width = tag_visible,);
+                let lhs_naked = format!("{:width$} {display}", "", width = tag_visible);
                 let lhs_rendered = format!("{tag_rendered} {display}");
                 let header =
                     render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
@@ -547,7 +550,7 @@ impl SuiteReporter for ModeReporter {
                 let mut guard = p
                     .failures
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    .unwrap_or_else(PoisonError::into_inner);
                 guard.push(FailureInfo {
                     name: token.name,
                     message,
@@ -557,7 +560,7 @@ impl SuiteReporter for ModeReporter {
                 let mut guard = p
                     .failures
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    .unwrap_or_else(PoisonError::into_inner);
                 guard.push(FailureInfo {
                     name: token.name,
                     message: format!("test setup failed: {message}"),
@@ -567,7 +570,7 @@ impl SuiteReporter for ModeReporter {
                 let mut guard = p
                     .failures
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    .unwrap_or_else(PoisonError::into_inner);
                 let message = format!(
                     "benchmark {} reported {} failed iterations and {} panics:\n{}",
                     report.strategy,
@@ -639,7 +642,7 @@ impl SuiteReporter for ModeReporter {
                 let mut guard = p
                     .failures
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    .unwrap_or_else(PoisonError::into_inner);
                 guard.push(FailureInfo {
                     name: "<suite setup>",
                     message: format!(
@@ -725,7 +728,7 @@ impl SuiteReporter for ModeReporter {
                     let mut guard = p
                         .failures
                         .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        .unwrap_or_else(PoisonError::into_inner);
                     guard.push(FailureInfo {
                         name: "<suite teardown>",
                         message: format!("teardown {suite_disp} [{runtime_name}]: {msg}"),
@@ -735,7 +738,7 @@ impl SuiteReporter for ModeReporter {
                     let mut guard = p
                         .failures
                         .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        .unwrap_or_else(PoisonError::into_inner);
                     guard.push(FailureInfo {
                         name: "<suite teardown>",
                         message: format!("teardown {suite_disp} [{runtime_name}]: panic: {msg}"),
@@ -745,7 +748,7 @@ impl SuiteReporter for ModeReporter {
                     let mut guard = p
                         .failures
                         .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        .unwrap_or_else(PoisonError::into_inner);
                     guard.push(FailureInfo {
                         name: "<suite teardown>",
                         message: format!(
@@ -757,7 +760,7 @@ impl SuiteReporter for ModeReporter {
                     let mut guard = p
                         .failures
                         .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        .unwrap_or_else(PoisonError::into_inner);
                     guard.push(FailureInfo {
                         name: "<suite teardown>",
                         message: format!(
@@ -829,7 +832,7 @@ impl SuiteReporter for ModeReporter {
                     let mut guard = p
                         .failures
                         .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        .unwrap_or_else(PoisonError::into_inner);
                     guard.push(FailureInfo {
                         name: token.name,
                         message: format!("test teardown failed [{runtime_name}]: {msg}"),
@@ -839,7 +842,7 @@ impl SuiteReporter for ModeReporter {
                     let mut guard = p
                         .failures
                         .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        .unwrap_or_else(PoisonError::into_inner);
                     guard.push(FailureInfo {
                         name: token.name,
                         message: format!("test teardown panicked [{runtime_name}]: {msg}"),
@@ -849,7 +852,7 @@ impl SuiteReporter for ModeReporter {
                     let mut guard = p
                         .failures
                         .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        .unwrap_or_else(PoisonError::into_inner);
                     guard.push(FailureInfo {
                         name: token.name,
                         message: format!(
@@ -861,7 +864,7 @@ impl SuiteReporter for ModeReporter {
                     let mut guard = p
                         .failures
                         .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        .unwrap_or_else(PoisonError::into_inner);
                     guard.push(FailureInfo {
                         name: token.name,
                         message: format!(
@@ -956,6 +959,7 @@ pub fn qualified_test_name(module_path: &str, test_name: &str) -> String {
 /// substring-match against it, so anything a user can copy out of the
 /// runner's output is a valid filter.
 #[inline]
+#[must_use] 
 pub fn token_passes_filters(
     qualified_name: &str,
     ignored: bool,
@@ -963,11 +967,10 @@ pub fn token_passes_filters(
     skip_filters: &[String],
     run_ignored: RunIgnoredMode,
 ) -> bool {
-    if let Some(f) = filter {
-        if !qualified_name.contains(f) {
+    if let Some(f) = filter
+        && !qualified_name.contains(f) {
             return false;
         }
-    }
     for skip in skip_filters {
         if qualified_name.contains(skip.as_str()) {
             return false;
@@ -997,7 +1000,7 @@ pub fn token_passes_filters(
 /// `cargo_meta!()` at the user's crate site so the `env!(...)` values
 /// belong to that crate, not rudzio).
 #[inline]
-pub fn run(cargo: crate::config::CargoMeta) -> ! {
+pub fn run(cargo: CargoMeta) -> ! {
     // Default `RUST_BACKTRACE=full` (and `RUST_LIB_BACKTRACE`) **only
     // when the user hasn't set them**. Backtraces are essential for
     // diagnosing panics in async test bodies — the libtest harness
@@ -1016,7 +1019,7 @@ pub fn run(cargo: crate::config::CargoMeta) -> ! {
     // output-capture pipe is installed, so the help text reaches the
     // user's terminal directly.
     if config.help {
-        print!("{}", crate::config::USAGE);
+        print!("{USAGE}");
         process::exit(0);
     }
 
@@ -1195,7 +1198,7 @@ pub fn run(cargo: crate::config::CargoMeta) -> ! {
         let guard = p
             .failures
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(PoisonError::into_inner);
         if !guard.is_empty() {
             println!("\nfailures:\n");
             for f in guard.iter() {
@@ -1266,7 +1269,7 @@ fn enable_full_backtrace_default() {
     // SAFETY: rudzio's entry point runs before any test threads spawn,
     // so no other thread is mutating the environment concurrently.
     // `env::set_var` is sound under that single-threaded invariant.
-    #[allow(unsafe_code)]
+    #[expect(unsafe_code)]
     unsafe {
         if env::var_os("RUST_BACKTRACE").is_none() {
             env::set_var("RUST_BACKTRACE", "full");

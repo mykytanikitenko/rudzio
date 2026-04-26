@@ -13,6 +13,7 @@
 //! [`crate::config::Config::parallel_hardlimit`] for the user-facing knob
 //! and its resolution rules.
 
+use std::fmt;
 use std::num::NonZeroUsize;
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::Instant;
@@ -130,9 +131,9 @@ impl HardLimit {
     }
 }
 
-impl std::fmt::Debug for HardLimit {
+impl fmt::Debug for HardLimit {
     #[inline]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.inner {
             None => f
                 .debug_struct("HardLimit")

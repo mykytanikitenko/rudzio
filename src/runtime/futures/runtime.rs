@@ -4,13 +4,14 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::fmt;
 use std::io;
+use std::panic::{self, AssertUnwindSafe};
 use std::time::Duration;
 
 use ::futures_executor::{
     LocalPool, LocalSpawner, ThreadPool as FuturesThreadPool, ThreadPoolBuilder,
 };
 use ::futures_timer::Delay;
-use ::futures_util::FutureExt;
+use ::futures_util::FutureExt as _;
 use ::futures_util::task::{LocalSpawnExt as _, SpawnExt as _};
 use send_wrapper::SendWrapper;
 
@@ -93,7 +94,7 @@ impl<'rt> Runtime<'rt> for ThreadPool {
     {
         let handle = self
             .pool
-            .spawn_with_handle(std::panic::AssertUnwindSafe(fut).catch_unwind());
+            .spawn_with_handle(AssertUnwindSafe(fut).catch_unwind());
         async move {
             match handle {
                 Ok(remote) => match remote.await {
@@ -118,7 +119,7 @@ impl<'rt> Runtime<'rt> for ThreadPool {
         // blocking workloads can starve executor threads — pick a different
         // runtime for those.
         let handle = self.pool.spawn_with_handle(async move {
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(func))
+            panic::catch_unwind(AssertUnwindSafe(func))
         });
         async move {
             match handle {
@@ -138,7 +139,7 @@ impl<'rt> Runtime<'rt> for ThreadPool {
     {
         let handle = self
             .local_spawner
-            .spawn_local_with_handle(std::panic::AssertUnwindSafe(fut).catch_unwind());
+            .spawn_local_with_handle(AssertUnwindSafe(fut).catch_unwind());
         async move {
             match handle {
                 Ok(remote) => match remote.await {

@@ -5,6 +5,7 @@ use std::fmt;
 use std::io;
 use std::time::Duration;
 
+use compio_runtime::time::sleep as compio_sleep;
 use send_wrapper::SendWrapper;
 
 use crate::config::Config;
@@ -33,7 +34,7 @@ impl fmt::Debug for Runtime {
 impl Runtime {
     /// Build a compio runtime.
     ///
-    /// Fields consulted from [`Config`]: **none** — compio's io_uring
+    /// Fields consulted from [`Config`]: **none** — compio's `io_uring`
     /// driver is single-threaded. The full config is still stored and
     /// exposed via [`RuntimeTrait::config`](crate::runtime::Runtime::config).
     ///
@@ -122,7 +123,7 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
         // compio's timer is single-threaded; `SendWrapper` makes the future
         // `Send` while the runtime ensures it is always polled on the one
         // thread that owns the compio runtime.
-        SendWrapper::new(::compio_runtime::time::sleep(duration))
+        SendWrapper::new(compio_sleep(duration))
     }
 }
 

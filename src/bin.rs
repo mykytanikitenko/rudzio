@@ -30,7 +30,10 @@
 //! 3. If neither resolves, panic with a message that tells the user
 //!    exactly which fix applies (pre-build, or add `build.rs`).
 
+use std::env;
+use std::error::Error;
 use std::ffi::OsString;
+use std::fmt;
 use std::path::PathBuf;
 
 /// Error reported by the runtime fallback behind the [`crate::bin!`]
@@ -42,14 +45,14 @@ pub struct BinNotFound {
     message: String,
 }
 
-impl std::fmt::Display for BinNotFound {
+impl fmt::Display for BinNotFound {
     #[inline]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message)
     }
 }
 
-impl std::error::Error for BinNotFound {}
+impl Error for BinNotFound {}
 
 /// Runtime backing for the [`crate::bin!`] macro. Only called when
 /// `option_env!("CARGO_BIN_EXE_<name>")` was `None` at compile time.
@@ -67,7 +70,7 @@ impl std::error::Error for BinNotFound {}
 #[doc(hidden)]
 #[inline]
 pub fn __resolve_at_runtime(bin_name: &str) -> Result<PathBuf, BinNotFound> {
-    let current = std::env::current_exe().map_err(|e| BinNotFound {
+    let current = env::current_exe().map_err(|e| BinNotFound {
         message: format!(
             "rudzio::bin!(\"{bin_name}\"): failed to read \
              `std::env::current_exe()`: {e}. Cargo's test runner normally \

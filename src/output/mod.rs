@@ -37,6 +37,8 @@ pub mod pipe;
 pub mod reader;
 pub mod render;
 
+#[cfg(unix)]
+use std::fs::File;
 use std::io;
 #[cfg(unix)]
 use std::sync::Arc;
@@ -48,7 +50,7 @@ use crossbeam_channel::Sender;
 #[cfg(unix)]
 use crossbeam_channel::{bounded, unbounded};
 
-use crate::config::Config;
+use crate::config::{Config, OutputMode};
 
 pub use events::{LifecycleEvent, PipeChunk, StdStream, TestId, TestState, TestStateKind};
 
@@ -150,7 +152,7 @@ impl Drop for CaptureGuard {
 /// isn't Unix.
 #[inline]
 pub fn init(config: &Config) -> io::Result<CaptureGuard> {
-    if matches!(config.output_mode, crate::config::OutputMode::Plain) {
+    if matches!(config.output_mode, OutputMode::Plain) {
         // Install the panic hook even in plain mode — without it, a
         // panic on a background thread spawned by user setup wouldn't
         // bump the unattributed-panic counter and the runner's
@@ -195,7 +197,7 @@ fn init_unix(config: &Config) -> io::Result<CaptureGuard> {
     // Wrap the drawer terminal OwnedFd in a std::fs::File. File's Drop
     // closes the FD when the drawer thread exits — independent of the
     // SavedFds restore path.
-    let terminal = std::fs::File::from(capture.drawer_terminal);
+    let terminal = File::from(capture.drawer_terminal);
 
     let drawer = render::Drawer::new(
         lifecycle_rx,
