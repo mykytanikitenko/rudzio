@@ -5,24 +5,24 @@ use std::pin::Pin;
 
 pub type BoxError = Box<dyn error::Error + Send + Sync + 'static>;
 
+pub type TestFn =
+    for<'body> fn(
+        &'body mut dyn Any,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BoxError>> + Send + 'body>>;
+
 /// Wraps any `Display + Debug` value as a `BoxError`.
 /// Used by generated code to support error types (e.g. `anyhow::Error`)
 /// that don't implement `std::error::Error` directly.
 #[derive(Debug)]
 struct DisplayError(String);
 
-impl fmt::Display for DisplayError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl error::Error for DisplayError {}
-
-/// Convert any `Display` error into a [`BoxError`].
-#[inline]
-pub fn box_error<E: fmt::Display>(err: E) -> BoxError {
-    Box::new(DisplayError(format!("{err:#}")))
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct TestCase {
+    pub func: TestFn,
+    pub ignore_reason: &'static str,
+    pub ignored: bool,
+    pub name: &'static str,
 }
 
 /// Bridge trait the test macro uses to accept every shape of test-body
@@ -43,6 +43,14 @@ pub trait IntoRudzioResult {
     fn into_rudzio_result(self) -> Result<(), BoxError>;
 }
 
+impl error::Error for DisplayError {}
+
+impl fmt::Display for DisplayError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 impl IntoRudzioResult for () {
     #[inline]
     fn into_rudzio_result(self) -> Result<(), BoxError> {
@@ -55,20 +63,6 @@ impl<T, E: fmt::Display> IntoRudzioResult for Result<T, E> {
     fn into_rudzio_result(self) -> Result<(), BoxError> {
         self.map(|_| ()).map_err(box_error)
     }
-}
-
-pub type TestFn =
-    for<'body> fn(
-        &'body mut dyn Any,
-    ) -> Pin<Box<dyn Future<Output = Result<(), BoxError>> + Send + 'body>>;
-
-#[derive(Clone, Copy, Debug)]
-#[non_exhaustive]
-pub struct TestCase {
-    pub func: TestFn,
-    pub ignore_reason: &'static str,
-    pub ignored: bool,
-    pub name: &'static str,
 }
 
 impl TestCase {
@@ -87,4 +81,10 @@ impl TestCase {
             name,
         }
     }
+}
+
+/// Convert any `Display` error into a [`BoxError`].
+#[inline]
+pub fn box_error<E: fmt::Display>(err: E) -> BoxError {
+    Box::new(DisplayError(format!("{err:#}")))
 }

@@ -198,6 +198,93 @@ impl StdError for Error {
 /// Convenience alias used across this crate's surface.
 pub type Result<T> = StdResult<T, Error>;
 
+/// Required build-script environment variables, read up-front so errors
+/// surface in one place rather than at the site of first use.
+struct BuildEnv {
+    cargo: OsString,
+    manifest_dir: PathBuf,
+    out_dir: PathBuf,
+    /// `CARGO_PKG_NAME` — the crate whose build script is currently
+    /// running. Compared against `bin_crate` when the sentinel is set
+    /// to distinguish expected same-crate re-entry (silent Ok) from
+    /// unexpected cross-crate re-entry (warn + Ok).
+    pkg_name: String,
+    profile: String,
+}
+
+/// Maps cargo's `PROFILE` env var (set to `debug` or `release` for
+/// build scripts) onto the flag we pass to the nested `cargo build` and
+/// onto the output subdirectory cargo writes the binary into.
+enum ProfileFlag {
+    Debug,
+    Release,
+}
+
+/// What [`expose_bins`] should do based on the sentinel env var and the
+/// relationship between `bin_crate` and the calling crate.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SentinelAction {
+    /// No nested invocation in progress — run the full
+    /// metadata/build/emit pipeline.
+    Proceed,
+    /// Nested invocation is for the same crate the caller is already
+    /// building. Return `Ok(())` silently — the outer call will emit
+    /// the env vars after its nested cargo finishes. This is the
+    /// expected re-entry triggered by `expose_bins("self-crate")` from
+    /// the same crate's own build.rs.
+    SilentOk,
+    /// Sentinel is set but `bin_crate` differs from the calling crate
+    /// — possible cross-crate cycle. Emit a `cargo:warning=` and
+    /// return `Ok(())` to break the recursion.
+    WarnAndOk,
+}
+
+impl BuildEnv {
+    fn capture() -> Result<Self> {
+        Ok(Self {
+            manifest_dir: require_path_env("CARGO_MANIFEST_DIR")?,
+            out_dir: require_path_env("OUT_DIR")?,
+            profile: require_string_env("PROFILE")?,
+            cargo: env::var_os("CARGO").ok_or_else(|| {
+                Error::new(
+                    "`CARGO` env var missing; `expose_bins` must be called \
+                     from a cargo-driven build script",
+                )
+            })?,
+            pkg_name: require_string_env("CARGO_PKG_NAME")?,
+        })
+    }
+}
+
+impl ProfileFlag {
+    const fn cli_flag(&self) -> Option<&'static str> {
+        match self {
+            Self::Debug => None,
+            Self::Release => Some("--release"),
+        }
+    }
+
+    fn from_env_profile(profile: &str) -> Result<Self> {
+        match profile {
+            "debug" => Ok(Self::Debug),
+            "release" => Ok(Self::Release),
+            other => Err(Error::new(format!(
+                "unrecognised `PROFILE={other}`; rudzio-build only knows how \
+                 to forward `debug` or `release`. Custom profiles with \
+                 non-standard `inherits` would need explicit handling."
+            ))),
+        }
+    }
+
+    fn output_subdir(&self) -> &'static Path {
+        match self {
+            Self::Debug => Path::new("debug"),
+            Self::Release => Path::new("release"),
+        }
+    }
+}
+
 /// Build `bin_crate`'s `[[bin]]` targets into a sandboxed cache inside
 /// the caller's `OUT_DIR` and emit `cargo:rustc-env=CARGO_BIN_EXE_<n>`
 /// directives so `env!("CARGO_BIN_EXE_<n>")` resolves in the caller's
@@ -369,57 +456,6 @@ pub fn expose_self_bins() -> Result<()> {
     expose_bins(&pkg_name)
 }
 
-/// Required build-script environment variables, read up-front so errors
-/// surface in one place rather than at the site of first use.
-struct BuildEnv {
-    manifest_dir: PathBuf,
-    out_dir: PathBuf,
-    profile: String,
-    cargo: OsString,
-    /// `CARGO_PKG_NAME` — the crate whose build script is currently
-    /// running. Compared against `bin_crate` when the sentinel is set
-    /// to distinguish expected same-crate re-entry (silent Ok) from
-    /// unexpected cross-crate re-entry (warn + Ok).
-    pkg_name: String,
-}
-
-impl BuildEnv {
-    fn capture() -> Result<Self> {
-        Ok(Self {
-            manifest_dir: require_path_env("CARGO_MANIFEST_DIR")?,
-            out_dir: require_path_env("OUT_DIR")?,
-            profile: require_string_env("PROFILE")?,
-            cargo: env::var_os("CARGO").ok_or_else(|| {
-                Error::new(
-                    "`CARGO` env var missing; `expose_bins` must be called \
-                     from a cargo-driven build script",
-                )
-            })?,
-            pkg_name: require_string_env("CARGO_PKG_NAME")?,
-        })
-    }
-}
-
-/// What [`expose_bins`] should do based on the sentinel env var and the
-/// relationship between `bin_crate` and the calling crate.
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SentinelAction {
-    /// No nested invocation in progress — run the full
-    /// metadata/build/emit pipeline.
-    Proceed,
-    /// Nested invocation is for the same crate the caller is already
-    /// building. Return `Ok(())` silently — the outer call will emit
-    /// the env vars after its nested cargo finishes. This is the
-    /// expected re-entry triggered by `expose_bins("self-crate")` from
-    /// the same crate's own build.rs.
-    SilentOk,
-    /// Sentinel is set but `bin_crate` differs from the calling crate
-    /// — possible cross-crate cycle. Emit a `cargo:warning=` and
-    /// return `Ok(())` to break the recursion.
-    WarnAndOk,
-}
-
 /// Decide what [`expose_bins`] should do given the current sentinel
 /// state and crate identity.
 ///
@@ -469,38 +505,3 @@ fn require_path_env(name: &str) -> Result<PathBuf> {
     require_string_env(name).map(PathBuf::from)
 }
 
-/// Maps cargo's `PROFILE` env var (set to `debug` or `release` for
-/// build scripts) onto the flag we pass to the nested `cargo build` and
-/// onto the output subdirectory cargo writes the binary into.
-enum ProfileFlag {
-    Debug,
-    Release,
-}
-
-impl ProfileFlag {
-    fn from_env_profile(profile: &str) -> Result<Self> {
-        match profile {
-            "debug" => Ok(Self::Debug),
-            "release" => Ok(Self::Release),
-            other => Err(Error::new(format!(
-                "unrecognised `PROFILE={other}`; rudzio-build only knows how \
-                 to forward `debug` or `release`. Custom profiles with \
-                 non-standard `inherits` would need explicit handling."
-            ))),
-        }
-    }
-
-    const fn cli_flag(&self) -> Option<&'static str> {
-        match self {
-            Self::Debug => None,
-            Self::Release => Some("--release"),
-        }
-    }
-
-    fn output_subdir(&self) -> &'static Path {
-        match self {
-            Self::Debug => Path::new("debug"),
-            Self::Release => Path::new("release"),
-        }
-    }
-}

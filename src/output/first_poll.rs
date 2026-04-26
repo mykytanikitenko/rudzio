@@ -26,12 +26,12 @@ use super::events::{LifecycleEvent, TestId};
 /// [`super::events::TestState`]).
 #[derive(Debug)]
 pub struct FirstPoll<F> {
-    inner: F,
     fired: bool,
-    test_id: TestId,
+    inner: F,
     module_path: &'static str,
-    test_name: &'static str,
     runtime_name: &'static str,
+    test_id: TestId,
+    test_name: &'static str,
 }
 
 impl<F> FirstPoll<F> {

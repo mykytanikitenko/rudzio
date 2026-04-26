@@ -60,25 +60,15 @@ pub use events::{LifecycleEvent, PipeChunk, StdStream, TestId, TestState, TestSt
 /// through every dispatch signature.
 static LIFECYCLE_SENDER: OnceLock<Sender<LifecycleEvent>> = OnceLock::new();
 
-/// Send a lifecycle event on the global channel. No-op when capture
-/// isn't initialised (e.g. on Windows, or when init failed). Never
-/// blocks — the channel is unbounded.
-#[inline]
-pub fn send_lifecycle(event: LifecycleEvent) {
-    if let Some(tx) = LIFECYCLE_SENDER.get() {
-        let _unused = tx.send(event);
-    }
-}
-
 /// Owner of capture/render infrastructure. Dropping it restores FDs
 /// 1 and 2, joins the drawer, and joins the pipe readers.
 #[derive(Debug)]
 #[cfg(unix)]
 pub struct CaptureGuard {
-    saved: Arc<pipe::SavedFds>,
-    reader_stdout: Option<JoinHandle<()>>,
-    reader_stderr: Option<JoinHandle<()>>,
     drawer: Option<JoinHandle<()>>,
+    reader_stderr: Option<JoinHandle<()>>,
+    reader_stdout: Option<JoinHandle<()>>,
+    saved: Arc<pipe::SavedFds>,
     shutdown_tx: Option<Sender<()>>,
 }
 
@@ -220,4 +210,14 @@ fn init_unix(config: &Config) -> io::Result<CaptureGuard> {
         drawer: Some(drawer_handle),
         shutdown_tx: Some(shutdown_tx),
     })
+}
+
+/// Send a lifecycle event on the global channel. No-op when capture
+/// isn't initialised (e.g. on Windows, or when init failed). Never
+/// blocks — the channel is unbounded.
+#[inline]
+pub fn send_lifecycle(event: LifecycleEvent) {
+    if let Some(tx) = LIFECYCLE_SENDER.get() {
+        let _unused = tx.send(event);
+    }
 }

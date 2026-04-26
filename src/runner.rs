@@ -22,136 +22,7 @@ use crate::suite::{
 use crate::token::{TEST_TOKENS, TestToken};
 
 // ---------------------------------------------------------------------------
-// TestSummary
-// ---------------------------------------------------------------------------
-
-/// Results of a test run.
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy)]
-pub struct TestSummary {
-    pub cancelled: usize,
-    pub failed: usize,
-    /// Tests escalated from `TimedOut` to `Hung` because they ignored
-    /// cooperative cancellation past `--phase-hang-grace`. Counted
-    /// alongside `failed`/`panicked`/`timed_out` for `is_success`.
-    pub hung: usize,
-    pub ignored: usize,
-    pub panicked: usize,
-    pub passed: usize,
-    pub timed_out: usize,
-    pub total: usize,
-    /// Combined count of suite-level + per-test teardown failures
-    /// (Err *or* panic *or* Hung). Drives [`is_success`] so a botched
-    /// cleanup fails the run even when every test body passed.
-    pub teardown_failures: usize,
-}
-
-impl TestSummary {
-    #[inline]
-    #[must_use]
-    pub const fn exit_code(&self) -> i32 {
-        if self.is_success() { 0 } else { 1 }
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn is_success(&self) -> bool {
-        self.failed == 0
-            && self.timed_out == 0
-            && self.hung == 0
-            && self.panicked == 0
-            && self.cancelled == 0
-            && self.teardown_failures == 0
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn merge(self, other: Self) -> Self {
-        Self {
-            cancelled: self.cancelled.saturating_add(other.cancelled),
-            failed: self.failed.saturating_add(other.failed),
-            hung: self.hung.saturating_add(other.hung),
-            ignored: self.ignored.saturating_add(other.ignored),
-            panicked: self.panicked.saturating_add(other.panicked),
-            passed: self.passed.saturating_add(other.passed),
-            timed_out: self.timed_out.saturating_add(other.timed_out),
-            total: self.total.saturating_add(other.total),
-            teardown_failures: self
-                .teardown_failures
-                .saturating_add(other.teardown_failures),
-        }
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn zero() -> Self {
-        Self {
-            cancelled: 0,
-            failed: 0,
-            hung: 0,
-            ignored: 0,
-            panicked: 0,
-            passed: 0,
-            timed_out: 0,
-            total: 0,
-            teardown_failures: 0,
-        }
-    }
-}
-
-impl From<SuiteSummary> for TestSummary {
-    #[inline]
-    fn from(summary: SuiteSummary) -> Self {
-        Self {
-            cancelled: summary.cancelled,
-            failed: summary.failed,
-            hung: summary.hung,
-            ignored: summary.ignored,
-            panicked: summary.panicked,
-            passed: summary.passed,
-            timed_out: summary.timed_out,
-            total: summary.total,
-            teardown_failures: summary.teardown_failures,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Color helpers (used by the Plain-mode reporter only; live mode has
-// its own ColorPolicy in src/output/color.rs).
-// ---------------------------------------------------------------------------
-
-fn use_color(mode: ColorMode) -> bool {
-    match mode {
-        ColorMode::Always => true,
-        ColorMode::Never => false,
-        ColorMode::Auto => env::var_os("NO_COLOR").is_none() && io::stdout().is_terminal(),
-    }
-}
-
-fn paint(text: &str, code: &str, colored: bool) -> String {
-    if colored {
-        format!("\x1b[{code}m{text}\x1b[0m")
-    } else {
-        text.to_owned()
-    }
-}
-
-fn green(text: &str, colored: bool) -> String {
-    paint(text, "32", colored)
-}
-fn red(text: &str, colored: bool) -> String {
-    paint(text, "31", colored)
-}
-fn yellow(text: &str, colored: bool) -> String {
-    paint(text, "33", colored)
-}
-fn bold(text: &str, colored: bool) -> String {
-    paint(text, "1", colored)
-}
-
-// ---------------------------------------------------------------------------
-// New-format rendering helpers (used by both plain and live modes)
+// Constants for new-format rendering
 // ---------------------------------------------------------------------------
 //
 // Target output:
@@ -163,191 +34,23 @@ fn bold(text: &str, colored: bool) -> String {
 // Status labels sit in a fixed-width left column so names align; the
 // trailing `<...>` block is right-aligned to the terminal width.
 
-/// Max visible width (brackets inclusive) of any status label we emit,
-/// used to pad so everything after lines up.
-const STATUS_TAG_WIDTH: usize = 9; // `[TIMEOUT]` / `[CANCEL] ` / `[IGNORE] `
-
 /// Minimum column padding between name and `<...>` info block when
 /// nothing forces a wider layout.
 const MIN_TRAILING_PAD: usize = 2;
 
-/// Best-effort terminal column count for right-aligning the trailing
-/// info. Falls back to 100 when we can't query the TTY.
-#[cfg(unix)]
-fn terminal_width() -> usize {
-    use std::os::fd::AsRawFd as _;
-    // SAFETY: ioctl TIOCGWINSZ writes a `winsize` struct; we supply a
-    // zero-initialised one and only read it when ioctl returns 0.
-    #[expect(unsafe_code)]
-    unsafe {
-        let mut ws: libc::winsize = mem::zeroed();
-        let fd = io::stdout().as_raw_fd();
-        if libc::ioctl(fd, libc::TIOCGWINSZ, &raw mut ws) == 0 && ws.ws_col > 0 {
-            return usize::from(ws.ws_col);
-        }
-    }
-    100
-}
-
-#[cfg(not(unix))]
-fn terminal_width() -> usize {
-    100
-}
-
-/// Build the padded, coloured status tag for an outcome.
-/// Returns `(rendered_with_color, visible_width)`.
-fn status_tag(outcome_label: StatusLabel, colored: bool) -> (String, usize) {
-    let (word, code) = match outcome_label {
-        StatusLabel::Ok => ("OK", "32"),
-        StatusLabel::Fail => ("FAIL", "31"),
-        StatusLabel::Panic => ("PANIC", "31"),
-        StatusLabel::Timeout => ("TIMEOUT", "33"),
-        StatusLabel::Ignore => ("IGNORE", "2"),
-        StatusLabel::Cancel => ("CANCEL", "33"),
-        StatusLabel::Bench => ("BENCH", "32"),
-        StatusLabel::BenchErr => ("BENCH", "31"),
-        StatusLabel::Setup => ("SETUP", "31"),
-        StatusLabel::Hang => ("HANG", "31"),
-    };
-    let naked = format!("[{word}]");
-    let visible = naked.chars().count();
-    let painted = paint(&naked, code, colored);
-    // Pad with trailing spaces so the status column has uniform width.
-    let pad = STATUS_TAG_WIDTH.saturating_sub(visible);
-    let mut out = painted;
-    for _ in 0..pad {
-        out.push(' ');
-    }
-    (out, STATUS_TAG_WIDTH)
-}
-
-#[derive(Debug, Clone, Copy)]
-enum StatusLabel {
-    Ok,
-    Fail,
-    Panic,
-    Timeout,
-    Ignore,
-    Cancel,
-    Bench,
-    BenchErr,
-    Setup,
-    Hang,
-}
-
-impl StatusLabel {
-    const fn from_outcome(outcome: &TestOutcome) -> Self {
-        match outcome {
-            TestOutcome::Passed { .. } => Self::Ok,
-            TestOutcome::Failed { .. } => Self::Fail,
-            TestOutcome::Panicked { .. } => Self::Panic,
-            TestOutcome::SetupFailed { .. } => Self::Setup,
-            TestOutcome::TimedOut => Self::Timeout,
-            TestOutcome::Hung { .. } => Self::Hang,
-            TestOutcome::Cancelled => Self::Cancel,
-            TestOutcome::Benched { report, .. } => {
-                if report.failures.is_empty() && report.panics == 0 {
-                    Self::Bench
-                } else {
-                    Self::BenchErr
-                }
-            }
-        }
-    }
-}
-
-/// Format the trailing `<...>` info block for an outcome. Runtime
-/// name comes first, then elapsed, then bench-specific details.
-fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
-    match outcome {
-        TestOutcome::Passed { elapsed }
-        | TestOutcome::Failed { elapsed, .. }
-        | TestOutcome::Panicked { elapsed }
-        | TestOutcome::Hung { elapsed }
-        | TestOutcome::SetupFailed { elapsed, .. } => {
-            format!("<{runtime_name}, {}>", format_elapsed(*elapsed))
-        }
-        TestOutcome::TimedOut | TestOutcome::Cancelled => format!("<{runtime_name}>"),
-        TestOutcome::Benched { elapsed, report } => {
-            let mut inner = format!(
-                "{runtime_name}, {}, {}",
-                format_elapsed(*elapsed),
-                report.strategy,
-            );
-            if let Some(p50) = report.median() {
-                inner.push_str(&format!(", p50 {p50:.2?}"));
-            }
-            format!("<{inner}>")
-        }
-    }
-}
-
-/// Format the `<runtime>` info block for events that don't carry an
-/// elapsed or outcome (ignored / cancelled-before-dispatch).
-fn runtime_only_info(runtime_name: &str) -> String {
-    format!("<{runtime_name}>")
-}
-
-/// One-shot diagnostic message for a finished test — rendered
-/// indented right under its status line so the reason for failure
-/// (test body error, setup error, panic payload, timeout note)
-/// is visible without scrolling to the end-of-run failures section.
-fn outcome_inline_message(outcome: &TestOutcome) -> Option<String> {
-    match outcome {
-        TestOutcome::Failed { message, .. } => Some(message.clone()),
-        TestOutcome::SetupFailed { message, .. } => Some(format!("test setup failed: {message}")),
-        TestOutcome::TimedOut => Some("test exceeded its timeout".to_owned()),
-        TestOutcome::Hung { .. } => Some("hung; abort signal sent".to_owned()),
-        TestOutcome::Cancelled => Some("test was cancelled before completion".to_owned()),
-        TestOutcome::Panicked { .. } | TestOutcome::Passed { .. } | TestOutcome::Benched { .. } => {
-            None
-        }
-    }
-}
-
-/// Right-align `trailing` to the terminal width, with at least
-/// [`MIN_TRAILING_PAD`] spaces between `lhs` and `trailing`. `lhs`
-/// already includes the status tag + space + display name; its
-/// visible width is passed separately so ANSI escapes don't skew the
-/// column math.
-fn render_status_line(
-    lhs_naked: &str,
-    lhs_rendered: &str,
-    trailing: &str,
-    term_cols: usize,
-) -> String {
-    let lhs_visible = lhs_naked.chars().count();
-    let trailing_visible = trailing.chars().count();
-    let pad = term_cols
-        .saturating_sub(lhs_visible)
-        .saturating_sub(trailing_visible)
-        .max(MIN_TRAILING_PAD);
-    let mut out = String::with_capacity(lhs_rendered.len() + pad + trailing.len());
-    out.push_str(lhs_rendered);
-    for _ in 0..pad {
-        out.push(' ');
-    }
-    out.push_str(trailing);
-    out
-}
-
-fn format_elapsed(elapsed: Duration) -> String {
-    format!("{elapsed:.2?}")
-}
+/// Max visible width (brackets inclusive) of any status label we emit,
+/// used to pad so everything after lines up.
+const STATUS_TAG_WIDTH: usize = 9; // `[TIMEOUT]` / `[CANCEL] ` / `[IGNORE] `
 
 // ---------------------------------------------------------------------------
-// Failure accumulator (plain-mode only)
+// Types
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 struct FailureInfo {
-    name: &'static str,
     message: String,
+    name: &'static str,
 }
-
-// ---------------------------------------------------------------------------
-// Mode-aware reporter
-// ---------------------------------------------------------------------------
 
 /// Reporter used by the runner. Behaviour depends on
 /// [`OutputMode`] captured at construction:
@@ -371,10 +74,49 @@ struct ModeReporter {
 }
 
 struct PlainState {
+    colored: bool,
     failures: Mutex<Vec<FailureInfo>>,
     fmt: Format,
-    colored: bool,
 }
+
+#[derive(Debug, Clone, Copy)]
+enum StatusLabel {
+    Bench,
+    BenchErr,
+    Cancel,
+    Fail,
+    Hang,
+    Ignore,
+    Ok,
+    Panic,
+    Setup,
+    Timeout,
+}
+
+/// Results of a test run.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy)]
+pub struct TestSummary {
+    pub cancelled: usize,
+    pub failed: usize,
+    /// Tests escalated from `TimedOut` to `Hung` because they ignored
+    /// cooperative cancellation past `--phase-hang-grace`. Counted
+    /// alongside `failed`/`panicked`/`timed_out` for `is_success`.
+    pub hung: usize,
+    pub ignored: usize,
+    pub panicked: usize,
+    pub passed: usize,
+    /// Combined count of suite-level + per-test teardown failures
+    /// (Err *or* panic *or* Hung). Drives [`is_success`] so a botched
+    /// cleanup fails the run even when every test body passed.
+    pub teardown_failures: usize,
+    pub timed_out: usize,
+    pub total: usize,
+}
+
+// ---------------------------------------------------------------------------
+// Impls
+// ---------------------------------------------------------------------------
 
 impl ModeReporter {
     fn new(config: &Config) -> Self {
@@ -395,7 +137,56 @@ impl ModeReporter {
     }
 }
 
+impl StatusLabel {
+    const fn from_outcome(outcome: &TestOutcome) -> Self {
+        match outcome {
+            TestOutcome::Passed { .. } => Self::Ok,
+            TestOutcome::Failed { .. } => Self::Fail,
+            TestOutcome::Panicked { .. } => Self::Panic,
+            TestOutcome::SetupFailed { .. } => Self::Setup,
+            TestOutcome::TimedOut => Self::Timeout,
+            TestOutcome::Hung { .. } => Self::Hang,
+            TestOutcome::Cancelled => Self::Cancel,
+            TestOutcome::Benched { report, .. } => {
+                if report.failures.is_empty() && report.panics == 0 {
+                    Self::Bench
+                } else {
+                    Self::BenchErr
+                }
+            }
+        }
+    }
+}
+
 impl SuiteReporter for ModeReporter {
+    fn report_cancelled(&self, token: &'static TestToken, runtime_name: &'static str) {
+        if let Some(plain) = &self.plain {
+            match plain.fmt {
+                Format::Terse => {
+                    print!("{}", yellow("c", plain.colored));
+                    let _flush = io::stdout().flush();
+                }
+                Format::Pretty => {
+                    let (tag_rendered, tag_visible) = status_tag(StatusLabel::Cancel, plain.colored);
+                    let display = qualified_test_name(token.module_path, token.name);
+                    let lhs_naked = format!("{:width$} {display}", "", width = tag_visible);
+                    let lhs_rendered = format!("{tag_rendered} {display}");
+                    let trailing = runtime_only_info(runtime_name);
+                    let line =
+                        render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
+                    println!("{line}");
+                }
+            }
+            return;
+        }
+        output::send_lifecycle(LifecycleEvent::TestIgnored {
+            module_path: token.module_path,
+            test_name: token.name,
+            runtime_name,
+            reason: "cancelled before dispatch",
+        });
+    }
+
     fn report_ignored(&self, token: &'static TestToken, runtime_name: &'static str) {
         if let Some(plain) = &self.plain {
             match plain.fmt {
@@ -425,34 +216,6 @@ impl SuiteReporter for ModeReporter {
             test_name: token.name,
             runtime_name,
             reason: token.ignore_reason,
-        });
-    }
-
-    fn report_cancelled(&self, token: &'static TestToken, runtime_name: &'static str) {
-        if let Some(plain) = &self.plain {
-            match plain.fmt {
-                Format::Terse => {
-                    print!("{}", yellow("c", plain.colored));
-                    let _flush = io::stdout().flush();
-                }
-                Format::Pretty => {
-                    let (tag_rendered, tag_visible) = status_tag(StatusLabel::Cancel, plain.colored);
-                    let display = qualified_test_name(token.module_path, token.name);
-                    let lhs_naked = format!("{:width$} {display}", "", width = tag_visible);
-                    let lhs_rendered = format!("{tag_rendered} {display}");
-                    let trailing = runtime_only_info(runtime_name);
-                    let line =
-                        render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
-                    println!("{line}");
-                }
-            }
-            return;
-        }
-        output::send_lifecycle(LifecycleEvent::TestIgnored {
-            module_path: token.module_path,
-            test_name: token.name,
-            runtime_name,
-            reason: "cancelled before dispatch",
         });
     }
 
@@ -587,26 +350,6 @@ impl SuiteReporter for ModeReporter {
         }
     }
 
-    fn report_warning(&self, message: &str) {
-        eprintln!("warning: {message}");
-    }
-
-    fn report_suite_setup_started(&self, runtime_name: &'static str, suite: &'static str) {
-        if let Some(plain) = &self.plain {
-            if matches!(plain.fmt, Format::Pretty) {
-                let suite = normalize_module_path(suite);
-                println!("setup    {suite} ... started <{runtime_name}>");
-            }
-            return;
-        }
-        output::send_lifecycle(LifecycleEvent::SuiteSetupStarted {
-            runtime_name,
-            suite,
-            thread: thread::current().id(),
-            at: Instant::now(),
-        });
-    }
-
     fn report_suite_setup_finished(
         &self,
         runtime_name: &'static str,
@@ -662,15 +405,15 @@ impl SuiteReporter for ModeReporter {
         });
     }
 
-    fn report_suite_teardown_started(&self, runtime_name: &'static str, suite: &'static str) {
+    fn report_suite_setup_started(&self, runtime_name: &'static str, suite: &'static str) {
         if let Some(plain) = &self.plain {
             if matches!(plain.fmt, Format::Pretty) {
                 let suite = normalize_module_path(suite);
-                println!("teardown {suite} ... started <{runtime_name}>");
+                println!("setup    {suite} ... started <{runtime_name}>");
             }
             return;
         }
-        output::send_lifecycle(LifecycleEvent::SuiteTeardownStarted {
+        output::send_lifecycle(LifecycleEvent::SuiteSetupStarted {
             runtime_name,
             suite,
             thread: thread::current().id(),
@@ -780,6 +523,22 @@ impl SuiteReporter for ModeReporter {
         });
     }
 
+    fn report_suite_teardown_started(&self, runtime_name: &'static str, suite: &'static str) {
+        if let Some(plain) = &self.plain {
+            if matches!(plain.fmt, Format::Pretty) {
+                let suite = normalize_module_path(suite);
+                println!("teardown {suite} ... started <{runtime_name}>");
+            }
+            return;
+        }
+        output::send_lifecycle(LifecycleEvent::SuiteTeardownStarted {
+            runtime_name,
+            suite,
+            thread: thread::current().id(),
+            at: Instant::now(),
+        });
+    }
+
     fn report_test_teardown_failure(
         &self,
         token: &'static TestToken,
@@ -882,11 +641,147 @@ impl SuiteReporter for ModeReporter {
             result,
         });
     }
+
+    fn report_warning(&self, message: &str) {
+        eprintln!("warning: {message}");
+    }
+}
+
+impl TestSummary {
+    #[inline]
+    #[must_use]
+    pub const fn exit_code(&self) -> i32 {
+        if self.is_success() { 0 } else { 1 }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_success(&self) -> bool {
+        self.failed == 0
+            && self.timed_out == 0
+            && self.hung == 0
+            && self.panicked == 0
+            && self.cancelled == 0
+            && self.teardown_failures == 0
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn merge(self, other: Self) -> Self {
+        Self {
+            cancelled: self.cancelled.saturating_add(other.cancelled),
+            failed: self.failed.saturating_add(other.failed),
+            hung: self.hung.saturating_add(other.hung),
+            ignored: self.ignored.saturating_add(other.ignored),
+            panicked: self.panicked.saturating_add(other.panicked),
+            passed: self.passed.saturating_add(other.passed),
+            timed_out: self.timed_out.saturating_add(other.timed_out),
+            total: self.total.saturating_add(other.total),
+            teardown_failures: self
+                .teardown_failures
+                .saturating_add(other.teardown_failures),
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn zero() -> Self {
+        Self {
+            cancelled: 0,
+            failed: 0,
+            hung: 0,
+            ignored: 0,
+            panicked: 0,
+            passed: 0,
+            timed_out: 0,
+            total: 0,
+            teardown_failures: 0,
+        }
+    }
+}
+
+impl From<SuiteSummary> for TestSummary {
+    #[inline]
+    fn from(summary: SuiteSummary) -> Self {
+        Self {
+            cancelled: summary.cancelled,
+            failed: summary.failed,
+            hung: summary.hung,
+            ignored: summary.ignored,
+            panicked: summary.panicked,
+            passed: summary.passed,
+            timed_out: summary.timed_out,
+            total: summary.total,
+            teardown_failures: summary.teardown_failures,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Display-name normalization
+// Free functions (alphabetical)
 // ---------------------------------------------------------------------------
+
+fn bold(text: &str, colored: bool) -> String {
+    paint(text, "1", colored)
+}
+
+/// Set `RUST_BACKTRACE=full` and `RUST_LIB_BACKTRACE=full` if neither
+/// is already in the env, so panic messages always carry an actionable
+/// backtrace under the rudzio runner. When the binary is launched
+/// directly (no rudzio runner), this fn is never called and stdlib's
+/// normal env-var lookup applies.
+fn enable_full_backtrace_default() {
+    // SAFETY: rudzio's entry point runs before any test threads spawn,
+    // so no other thread is mutating the environment concurrently.
+    // `env::set_var` is sound under that single-threaded invariant.
+    #[expect(unsafe_code)]
+    unsafe {
+        if env::var_os("RUST_BACKTRACE").is_none() {
+            env::set_var("RUST_BACKTRACE", "full");
+        }
+        if env::var_os("RUST_LIB_BACKTRACE").is_none() {
+            env::set_var("RUST_LIB_BACKTRACE", "full");
+        }
+    }
+}
+
+fn format_elapsed(elapsed: Duration) -> String {
+    format!("{elapsed:.2?}")
+}
+
+fn green(text: &str, colored: bool) -> String {
+    paint(text, "32", colored)
+}
+
+#[cfg(unix)]
+fn install_signal_handler(token: CancellationToken) {
+    use signal_hook::consts::{SIGINT, SIGTERM};
+    use signal_hook::iterator::Signals;
+
+    let mut signals = match Signals::new([SIGINT, SIGTERM]) {
+        Ok(handle) => handle,
+        Err(err) => {
+            eprintln!("warning: failed to install signal handler: {err}");
+            return;
+        }
+    };
+    let _handle = thread::Builder::new()
+        .name("rudzio-signal-handler".to_owned())
+        .spawn(move || {
+            if let Some(signal) = signals.forever().next() {
+                let name = match signal {
+                    SIGINT => "SIGINT",
+                    SIGTERM => "SIGTERM",
+                    _ => "unknown signal",
+                };
+                eprintln!("\nreceived {name}, cancelling run...");
+                token.cancel();
+            }
+        });
+}
+
+#[cfg(not(unix))]
+fn install_signal_handler(_token: CancellationToken) {}
 
 /// Strip rudzio-autogenerated segments from a `module_path!()` string
 /// so the displayed test path begins at the user's crate or module
@@ -930,6 +825,31 @@ pub fn normalize_module_path(mp: &str) -> String {
     out.join("::")
 }
 
+/// One-shot diagnostic message for a finished test — rendered
+/// indented right under its status line so the reason for failure
+/// (test body error, setup error, panic payload, timeout note)
+/// is visible without scrolling to the end-of-run failures section.
+fn outcome_inline_message(outcome: &TestOutcome) -> Option<String> {
+    match outcome {
+        TestOutcome::Failed { message, .. } => Some(message.clone()),
+        TestOutcome::SetupFailed { message, .. } => Some(format!("test setup failed: {message}")),
+        TestOutcome::TimedOut => Some("test exceeded its timeout".to_owned()),
+        TestOutcome::Hung { .. } => Some("hung; abort signal sent".to_owned()),
+        TestOutcome::Cancelled => Some("test was cancelled before completion".to_owned()),
+        TestOutcome::Panicked { .. } | TestOutcome::Passed { .. } | TestOutcome::Benched { .. } => {
+            None
+        }
+    }
+}
+
+fn paint(text: &str, code: &str, colored: bool) -> String {
+    if colored {
+        format!("\x1b[{code}m{text}\x1b[0m")
+    } else {
+        text.to_owned()
+    }
+}
+
 /// Format a token's display name as the runner shows it everywhere:
 /// the normalized module path joined to the test name with `::`.
 /// When normalization strips the path to nothing, returns just the
@@ -946,45 +866,35 @@ pub fn qualified_test_name(module_path: &str, test_name: &str) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Filter predicate
-// ---------------------------------------------------------------------------
-
-/// Decide whether a single test should run, given the user-supplied
-/// filter, `--skip` substrings, and `--ignored` / `--include-ignored`
-/// mode.
-///
-/// `qualified_name` is the same string the runner displays in its
-/// output (see [`qualified_test_name`]). Filter and skip both
-/// substring-match against it, so anything a user can copy out of the
-/// runner's output is a valid filter.
-#[inline]
-#[must_use] 
-pub fn token_passes_filters(
-    qualified_name: &str,
-    ignored: bool,
-    filter: Option<&str>,
-    skip_filters: &[String],
-    run_ignored: RunIgnoredMode,
-) -> bool {
-    if let Some(needle) = filter
-        && !qualified_name.contains(needle) {
-            return false;
-        }
-    for skip in skip_filters {
-        if qualified_name.contains(skip.as_str()) {
-            return false;
-        }
-    }
-    match run_ignored {
-        RunIgnoredMode::Normal | RunIgnoredMode::Include => true,
-        RunIgnoredMode::Only => ignored,
-    }
+fn red(text: &str, colored: bool) -> String {
+    paint(text, "31", colored)
 }
 
-// ---------------------------------------------------------------------------
-// run()
-// ---------------------------------------------------------------------------
+/// Right-align `trailing` to the terminal width, with at least
+/// [`MIN_TRAILING_PAD`] spaces between `lhs` and `trailing`. `lhs`
+/// already includes the status tag + space + display name; its
+/// visible width is passed separately so ANSI escapes don't skew the
+/// column math.
+fn render_status_line(
+    lhs_naked: &str,
+    lhs_rendered: &str,
+    trailing: &str,
+    term_cols: usize,
+) -> String {
+    let lhs_visible = lhs_naked.chars().count();
+    let trailing_visible = trailing.chars().count();
+    let pad = term_cols
+        .saturating_sub(lhs_visible)
+        .saturating_sub(trailing_visible)
+        .max(MIN_TRAILING_PAD);
+    let mut out = String::with_capacity(lhs_rendered.len() + pad + trailing.len());
+    out.push_str(lhs_rendered);
+    for _ in 0..pad {
+        out.push(' ');
+    }
+    out.push_str(trailing);
+    out
+}
 
 /// Collect all registered [`TestToken`]s, group them by
 /// `runtime_group_key`, run each group in its own OS thread via its
@@ -1260,56 +1170,128 @@ pub fn run(cargo: CargoMeta) -> ! {
     process::exit(total.exit_code())
 }
 
-/// Set `RUST_BACKTRACE=full` and `RUST_LIB_BACKTRACE=full` if neither
-/// is already in the env, so panic messages always carry an actionable
-/// backtrace under the rudzio runner. When the binary is launched
-/// directly (no rudzio runner), this fn is never called and stdlib's
-/// normal env-var lookup applies.
-fn enable_full_backtrace_default() {
-    // SAFETY: rudzio's entry point runs before any test threads spawn,
-    // so no other thread is mutating the environment concurrently.
-    // `env::set_var` is sound under that single-threaded invariant.
+/// Format the `<runtime>` info block for events that don't carry an
+/// elapsed or outcome (ignored / cancelled-before-dispatch).
+fn runtime_only_info(runtime_name: &str) -> String {
+    format!("<{runtime_name}>")
+}
+
+/// Build the padded, coloured status tag for an outcome.
+/// Returns `(rendered_with_color, visible_width)`.
+fn status_tag(outcome_label: StatusLabel, colored: bool) -> (String, usize) {
+    let (word, code) = match outcome_label {
+        StatusLabel::Ok => ("OK", "32"),
+        StatusLabel::Fail => ("FAIL", "31"),
+        StatusLabel::Panic => ("PANIC", "31"),
+        StatusLabel::Timeout => ("TIMEOUT", "33"),
+        StatusLabel::Ignore => ("IGNORE", "2"),
+        StatusLabel::Cancel => ("CANCEL", "33"),
+        StatusLabel::Bench => ("BENCH", "32"),
+        StatusLabel::BenchErr => ("BENCH", "31"),
+        StatusLabel::Setup => ("SETUP", "31"),
+        StatusLabel::Hang => ("HANG", "31"),
+    };
+    let naked = format!("[{word}]");
+    let visible = naked.chars().count();
+    let painted = paint(&naked, code, colored);
+    // Pad with trailing spaces so the status column has uniform width.
+    let pad = STATUS_TAG_WIDTH.saturating_sub(visible);
+    let mut out = painted;
+    for _ in 0..pad {
+        out.push(' ');
+    }
+    (out, STATUS_TAG_WIDTH)
+}
+
+/// Best-effort terminal column count for right-aligning the trailing
+/// info. Falls back to 100 when we can't query the TTY.
+#[cfg(unix)]
+fn terminal_width() -> usize {
+    use std::os::fd::AsRawFd as _;
+    // SAFETY: ioctl TIOCGWINSZ writes a `winsize` struct; we supply a
+    // zero-initialised one and only read it when ioctl returns 0.
     #[expect(unsafe_code)]
     unsafe {
-        if env::var_os("RUST_BACKTRACE").is_none() {
-            env::set_var("RUST_BACKTRACE", "full");
+        let mut ws: libc::winsize = mem::zeroed();
+        let fd = io::stdout().as_raw_fd();
+        if libc::ioctl(fd, libc::TIOCGWINSZ, &raw mut ws) == 0 && ws.ws_col > 0 {
+            return usize::from(ws.ws_col);
         }
-        if env::var_os("RUST_LIB_BACKTRACE").is_none() {
-            env::set_var("RUST_LIB_BACKTRACE", "full");
+    }
+    100
+}
+
+#[cfg(not(unix))]
+fn terminal_width() -> usize {
+    100
+}
+
+/// Decide whether a single test should run, given the user-supplied
+/// filter, `--skip` substrings, and `--ignored` / `--include-ignored`
+/// mode.
+///
+/// `qualified_name` is the same string the runner displays in its
+/// output (see [`qualified_test_name`]). Filter and skip both
+/// substring-match against it, so anything a user can copy out of the
+/// runner's output is a valid filter.
+#[inline]
+#[must_use]
+pub fn token_passes_filters(
+    qualified_name: &str,
+    ignored: bool,
+    filter: Option<&str>,
+    skip_filters: &[String],
+    run_ignored: RunIgnoredMode,
+) -> bool {
+    if let Some(needle) = filter
+        && !qualified_name.contains(needle) {
+            return false;
+        }
+    for skip in skip_filters {
+        if qualified_name.contains(skip.as_str()) {
+            return false;
+        }
+    }
+    match run_ignored {
+        RunIgnoredMode::Normal | RunIgnoredMode::Include => true,
+        RunIgnoredMode::Only => ignored,
+    }
+}
+
+/// Format the trailing `<...>` info block for an outcome. Runtime
+/// name comes first, then elapsed, then bench-specific details.
+fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
+    match outcome {
+        TestOutcome::Passed { elapsed }
+        | TestOutcome::Failed { elapsed, .. }
+        | TestOutcome::Panicked { elapsed }
+        | TestOutcome::Hung { elapsed }
+        | TestOutcome::SetupFailed { elapsed, .. } => {
+            format!("<{runtime_name}, {}>", format_elapsed(*elapsed))
+        }
+        TestOutcome::TimedOut | TestOutcome::Cancelled => format!("<{runtime_name}>"),
+        TestOutcome::Benched { elapsed, report } => {
+            let mut inner = format!(
+                "{runtime_name}, {}, {}",
+                format_elapsed(*elapsed),
+                report.strategy,
+            );
+            if let Some(p50) = report.median() {
+                inner.push_str(&format!(", p50 {p50:.2?}"));
+            }
+            format!("<{inner}>")
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Signal handling
-// ---------------------------------------------------------------------------
-
-#[cfg(unix)]
-fn install_signal_handler(token: CancellationToken) {
-    use signal_hook::consts::{SIGINT, SIGTERM};
-    use signal_hook::iterator::Signals;
-
-    let mut signals = match Signals::new([SIGINT, SIGTERM]) {
-        Ok(handle) => handle,
-        Err(err) => {
-            eprintln!("warning: failed to install signal handler: {err}");
-            return;
-        }
-    };
-    let _handle = thread::Builder::new()
-        .name("rudzio-signal-handler".to_owned())
-        .spawn(move || {
-            if let Some(signal) = signals.forever().next() {
-                let name = match signal {
-                    SIGINT => "SIGINT",
-                    SIGTERM => "SIGTERM",
-                    _ => "unknown signal",
-                };
-                eprintln!("\nreceived {name}, cancelling run...");
-                token.cancel();
-            }
-        });
+fn use_color(mode: ColorMode) -> bool {
+    match mode {
+        ColorMode::Always => true,
+        ColorMode::Never => false,
+        ColorMode::Auto => env::var_os("NO_COLOR").is_none() && io::stdout().is_terminal(),
+    }
 }
 
-#[cfg(not(unix))]
-fn install_signal_handler(_token: CancellationToken) {}
+fn yellow(text: &str, colored: bool) -> String {
+    paint(text, "33", colored)
+}

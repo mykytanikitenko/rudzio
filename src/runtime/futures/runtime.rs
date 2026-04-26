@@ -19,16 +19,16 @@ use crate::config::Config;
 use crate::runtime::{JoinError, Runtime};
 
 pub struct ThreadPool {
-    /// Shared Send thread pool used by `spawn` / `spawn_blocking`.
-    pool: FuturesThreadPool,
+    /// Resolved [`Config`] this runtime was constructed from.
+    config: Config,
     /// Per-runtime `LocalPool` driving `spawn_local` tasks. `!Send`, so
     /// wrapped in `SendWrapper` — only ever touched on the group thread
     /// that owns the runtime.
     local: SendWrapper<RefCell<LocalPool>>,
     /// Cached handle used to enqueue `!Send` futures onto `local`.
     local_spawner: SendWrapper<LocalSpawner>,
-    /// Resolved [`Config`] this runtime was constructed from.
-    config: Config,
+    /// Shared Send thread pool used by `spawn` / `spawn_blocking`.
+    pool: FuturesThreadPool,
 }
 
 impl fmt::Debug for ThreadPool {
@@ -66,6 +66,17 @@ impl ThreadPool {
 
 impl<'rt> Runtime<'rt> for ThreadPool {
     #[inline]
+    fn block_on<F>(&self, fut: F) -> F::Output
+    where
+        F: Future + 'rt,
+        F::Output: 'static,
+    {
+        // `run_until` drives every queued LocalPool task alongside `fut`,
+        // so `spawn_local` futures make progress for free.
+        self.local.borrow_mut().run_until(fut)
+    }
+
+    #[inline]
     fn config(&self) -> &Config {
         &self.config
     }
@@ -76,14 +87,8 @@ impl<'rt> Runtime<'rt> for ThreadPool {
     }
 
     #[inline]
-    fn block_on<F>(&self, fut: F) -> F::Output
-    where
-        F: Future + 'rt,
-        F::Output: 'static,
-    {
-        // `run_until` drives every queued LocalPool task alongside `fut`,
-        // so `spawn_local` futures make progress for free.
-        self.local.borrow_mut().run_until(fut)
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
+        Delay::new(duration)
     }
 
     #[inline]
@@ -149,11 +154,6 @@ impl<'rt> Runtime<'rt> for ThreadPool {
                 Err(err) => Err(JoinError::cancelled(io::Error::other(err.to_string()))),
             }
         }
-    }
-
-    #[inline]
-    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
-        Delay::new(duration)
     }
 }
 

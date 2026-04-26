@@ -32,9 +32,9 @@ pub struct HardLimit {
 }
 
 struct Inner {
-    state: Mutex<State>,
     cvar: Condvar,
     max: NonZeroUsize,
+    state: Mutex<State>,
 }
 
 struct State {
@@ -50,6 +50,44 @@ pub struct HardLimitGuard<'a> {
 }
 
 impl HardLimit {
+    /// Block the calling thread until a permit is available, then hand
+    /// back an RAII guard. Disabled-mode returns immediately with a
+    /// no-op guard.
+    ///
+    /// A notice is emitted to the sink (stdout in production) **only if
+    /// the thread actually parked** on the Condvar — never on the
+    /// fast-path. The emitted line carries the measured parking duration.
+    #[inline]
+    pub fn acquire(&self) -> HardLimitGuard<'_> {
+        let Some(inner) = &self.inner else {
+            return HardLimitGuard { owner: None };
+        };
+
+        let mut state = inner.state.lock().unwrap_or_else(PoisonError::into_inner);
+
+        if state.available > 0 {
+            state.available -= 1;
+            return HardLimitGuard { owner: Some(self) };
+        }
+
+        let parked_at = Instant::now();
+        let mut state = inner
+            .cvar
+            .wait_while(state, |inner| inner.available == 0)
+            .unwrap_or_else(PoisonError::into_inner);
+        state.available -= 1;
+        drop(state);
+        let parked = parked_at.elapsed();
+
+        (self.sink)(&format!(
+            "rudzio: parked {parked:?} on parallel-hardlimit ({max} max); \
+             disable with --threads-parallel-hardlimit=none",
+            max = inner.max.get(),
+        ));
+
+        HardLimitGuard { owner: Some(self) }
+    }
+
     /// `None` = gate disabled, acquire is a no-op. `Some(n)` = at most
     /// `n` concurrent permits; additional acquirers park until one is
     /// released.
@@ -90,44 +128,6 @@ impl HardLimit {
             }),
             sink: Box::new(sink),
         }
-    }
-
-    /// Block the calling thread until a permit is available, then hand
-    /// back an RAII guard. Disabled-mode returns immediately with a
-    /// no-op guard.
-    ///
-    /// A notice is emitted to the sink (stdout in production) **only if
-    /// the thread actually parked** on the Condvar — never on the
-    /// fast-path. The emitted line carries the measured parking duration.
-    #[inline]
-    pub fn acquire(&self) -> HardLimitGuard<'_> {
-        let Some(inner) = &self.inner else {
-            return HardLimitGuard { owner: None };
-        };
-
-        let mut state = inner.state.lock().unwrap_or_else(PoisonError::into_inner);
-
-        if state.available > 0 {
-            state.available -= 1;
-            return HardLimitGuard { owner: Some(self) };
-        }
-
-        let parked_at = Instant::now();
-        let mut state = inner
-            .cvar
-            .wait_while(state, |inner| inner.available == 0)
-            .unwrap_or_else(PoisonError::into_inner);
-        state.available -= 1;
-        drop(state);
-        let parked = parked_at.elapsed();
-
-        (self.sink)(&format!(
-            "rudzio: parked {parked:?} on parallel-hardlimit ({max} max); \
-             disable with --threads-parallel-hardlimit=none",
-            max = inner.max.get(),
-        ));
-
-        HardLimitGuard { owner: Some(self) }
     }
 }
 

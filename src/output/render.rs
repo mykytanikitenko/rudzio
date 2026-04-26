@@ -31,41 +31,59 @@ use crate::config::{Format, OutputMode};
 use crate::runner::{normalize_module_path, qualified_test_name};
 use crate::suite::{TeardownResult, TestOutcome};
 
-const REDRAW_INTERVAL: Duration = Duration::from_millis(50);
 const HINT_MAX_WIDTH: usize = 120;
+/// Number of viewport rows reserved for everything other than a
+/// single test's output stream — the status row itself, the runner's
+/// own progress markers, and a safety margin so a final completion
+/// line doesn't trigger a scroll while the live region is being
+/// cleared.
+const LIVE_REGION_RESERVED_ROWS: usize = 4;
+/// The minimum gap between the left side and the right-aligned
+/// trailing `<...>` block when the line would otherwise be shorter
+/// than the terminal.
+const MIN_TRAILING_PAD: usize = 2;
+const REDRAW_INTERVAL: Duration = Duration::from_millis(50);
+const RUNTIME_PREFIX_WIDTH: usize = 14;
+/// Fixed visible width of the status-tag column (including trailing
+/// pad so the rest of the line starts at a stable column).
+pub const STATUS_TAG_WIDTH: usize = 9;
+
+/// Type alias for the lifecycle channel Sender — used by runner
+/// and macro-generated code that publishes events.
+pub type LifecycleSender = Sender<LifecycleEvent>;
 
 /// Persistent drawer state. Constructed and handed to
 /// [`spawn_drawer`]; the main loop lives in [`Drawer::run`].
 #[derive(Debug)]
 pub struct Drawer {
+    color: ColorPolicy,
+    format: Format,
+    last_live_rows: usize,
     lifecycle_rx: Receiver<LifecycleEvent>,
+    output_mode: OutputMode,
     pipe_rx: Receiver<PipeChunk>,
     shutdown_rx: Receiver<()>,
-    terminal: File,
-    output_mode: OutputMode,
-    format: Format,
-    color: ColorPolicy,
-    slot_order: Vec<ThreadId>,
-    slots: HashMap<ThreadId, RuntimeSlot>,
-    tests: HashMap<TestId, TestState>,
-    thread_to_test: HashMap<ThreadId, TestId>,
-    last_live_rows: usize,
-    summary: Summary,
     /// Test-only override for the terminal size queries. Production
     /// uses `None`, falling through to the ioctl-driven
     /// [`terminal_width`] / [`terminal_height`].
     size_override: Option<(usize, usize)>,
+    slot_order: Vec<ThreadId>,
+    slots: HashMap<ThreadId, RuntimeSlot>,
+    summary: Summary,
+    terminal: File,
+    tests: HashMap<TestId, TestState>,
+    thread_to_test: HashMap<ThreadId, TestId>,
 }
 
 #[derive(Debug)]
 struct RuntimeSlot {
-    runtime_name: &'static str,
     current: Option<TestId>,
     /// Suite-lifecycle activity occupying this slot. While a suite's
     /// setup or teardown is in flight, no test runs on the slot's
     /// thread, so the live region renders this in place of the
     /// usual running-test row.
     lifecycle: Option<SlotLifecycle>,
+    runtime_name: &'static str,
 }
 
 /// A suite-level operation currently occupying a runtime slot. The
@@ -74,8 +92,20 @@ struct RuntimeSlot {
 #[derive(Debug, Clone, Copy)]
 struct SlotLifecycle {
     kind: LifecyclePhase,
-    suite: &'static str,
     started_at: Instant,
+    suite: &'static str,
+}
+
+/// What went wrong in a suite-lifecycle finish event.
+#[derive(Debug)]
+enum LifecycleFailure {
+    Error(String),
+    /// Phase escalated past `--phase-hang-grace`. The wrapper fired
+    /// the abort handle; on tokio the spawned task drops on next
+    /// poll, on other runtimes it leaks until process exit.
+    Hung(String),
+    Panicked(String),
+    TimedOut(String),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -84,108 +114,145 @@ enum LifecyclePhase {
     Teardown,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum StatusLabel {
+    Bench,
+    BenchErr,
+    Cancel,
+    Fail,
+    /// Test or teardown blew its budget AND remained pending past the
+    /// Layer-2 grace window. The wrapper has fired its abort handle
+    /// and moved on. Painted **red** (failure-class) so it's distinct
+    /// from `Timeout`'s yellow (warn-class).
+    Hang,
+    Ignore,
+    Ok,
+    Panic,
+    Run,
+    /// Failed test outcome where the per-test context (`Suite::context`)
+    /// returned `Err` before the body could run. Distinct from `Fail`
+    /// so the user sees that the test never executed.
+    Setup,
+    /// Suite-level setup completed successfully — bright variant of
+    /// `Ok` reserved for lifecycle lines so they stand apart from the
+    /// per-test stream.
+    SetupOk,
+    Timeout,
+}
+
 #[derive(Debug, Default)]
 struct Summary {
-    passed: usize,
-    failed: usize,
-    ignored: usize,
-    timed_out: usize,
-    panicked: usize,
+    benched: usize,
     cancelled: usize,
+    failed: usize,
+    failures: Vec<FailureRecord>,
     /// Tests escalated past `--phase-hang-grace`. Counted separately
     /// so the summary line can show `N hung` distinct from `N timed
     /// out` and the renderer can paint a red `[HANG]` tag.
     hung: usize,
-    benched: usize,
-    teardown_failures: usize,
-    failures: Vec<FailureRecord>,
+    ignored: usize,
+    panicked: usize,
+    passed: usize,
     started_at: Option<Instant>,
+    teardown_failures: usize,
+    timed_out: usize,
 }
 
 #[derive(Debug)]
 struct FailureRecord {
-    display_name: String,
-    outcome_label: &'static str,
-    message: String,
     captured_stderr: String,
     captured_stdout: String,
+    display_name: String,
+    message: String,
+    outcome_label: &'static str,
 }
 
 impl Drawer {
-    /// Build a drawer. Slots are allocated lazily as `TestStarted`
-    /// events come in — one per distinct `ThreadId`, in first-seen
-    /// order — so the runner doesn't have to know runtime names
-    /// up-front.
-    #[must_use]
-    #[inline]
-    pub fn new(
-        lifecycle_rx: Receiver<LifecycleEvent>,
-        pipe_rx: Receiver<PipeChunk>,
-        shutdown_rx: Receiver<()>,
-        terminal: File,
-        output_mode: OutputMode,
-        format: Format,
-        color: ColorPolicy,
-    ) -> Self {
-        Self {
-            lifecycle_rx,
-            pipe_rx,
-            shutdown_rx,
-            terminal,
-            output_mode,
-            format,
-            color,
-            slot_order: Vec::new(),
-            slots: HashMap::new(),
-            tests: HashMap::new(),
-            thread_to_test: HashMap::new(),
-            last_live_rows: 0,
-            summary: Summary::default(),
-            size_override: None,
+    fn clear_live_region(&mut self) {
+        if self.last_live_rows == 0 {
+            return;
+        }
+        let esc = format!("\x1b[{n}A\x1b[J", n = self.last_live_rows);
+        let _unused = self.terminal.write_all(esc.as_bytes());
+        self.last_live_rows = 0;
+    }
+
+    fn drain_remaining(&mut self) {
+        while let Ok(ev) = self.lifecycle_rx.try_recv() {
+            self.handle_lifecycle(ev);
+        }
+        while let Ok(chunk) = self.pipe_rx.try_recv() {
+            self.handle_pipe(chunk);
         }
     }
 
-    /// Force the drawer to render against a fixed terminal size,
-    /// bypassing the ioctl probe. Hidden from the public API surface
-    /// — only the in-tree integration tests use this to pin the
-    /// "row never wraps" invariant against synthetic widths.
-    #[doc(hidden)]
-    #[must_use]
-    #[inline]
-    pub const fn with_size_override(mut self, cols: usize, height: usize) -> Self {
-        self.size_override = Some((cols, height));
-        self
-    }
+    fn emit_completion_block(&mut self, state: &TestState, outcome: &TestOutcome) {
+        if matches!(self.output_mode, OutputMode::Live) {
+            self.clear_live_region();
+        }
+        let display = qualified_test_name(state.module_path, state.test_name);
+        let label = status_label_from_outcome(outcome);
+        let tag_rendered = render_status_tag(label, self.color);
+        let trailing = trailing_info(outcome, state.runtime_name);
+        let lhs_naked = format!("{:width$} {display}", "", width = STATUS_TAG_WIDTH);
+        let lhs_rendered = format!("{tag_rendered} {display}");
+        let term_cols = terminal_width();
+        let header = render_line(&lhs_naked, &lhs_rendered, &trailing, term_cols);
+        let _unused = self.terminal.write_all(header.as_bytes());
+        let _unused = self.terminal.write_all(b"\n");
 
-    fn render_size(&self) -> (usize, usize) {
-        self.size_override
-            .unwrap_or_else(|| (terminal_width(), terminal_height()))
-    }
-
-    /// Main loop: `select!` over all input channels plus a redraw
-    /// timer until shutdown. On exit, drain pending events, clear
-    /// the live region, and print the final summary.
-    #[inline]
-    pub fn run(mut self) {
-        self.summary.started_at = Some(Instant::now());
-        let timer = crossbeam_channel::tick(REDRAW_INTERVAL);
-        loop {
-            select! {
-                recv(self.lifecycle_rx) -> msg => match msg {
-                    Ok(ev) => self.handle_lifecycle(ev),
-                    Err(_) => break,
-                },
-                recv(self.pipe_rx) -> msg => match msg {
-                    Ok(chunk) => self.handle_pipe(chunk),
-                    Err(_) => break,
-                },
-                recv(timer) -> _tick => self.redraw_live_region(),
-                recv(self.shutdown_rx) -> _done => break,
+        // Surface the failure message right under the header so the
+        // user sees WHY a test failed/setup-failed/etc. without
+        // scrolling to the end-of-run failures section. One line per
+        // newline in the message; each indented to line up under the
+        // test display, painted in the tag's color.
+        let msg = outcome_message(outcome);
+        if !msg.is_empty() {
+            for line in msg.lines() {
+                let body = format!("  {line}\n");
+                let painted = match label {
+                    StatusLabel::Fail
+                    | StatusLabel::Panic
+                    | StatusLabel::Setup
+                    | StatusLabel::Timeout
+                    | StatusLabel::Cancel
+                    | StatusLabel::Hang => self.color.red(&body),
+                    _ => body,
+                };
+                let _unused = self.terminal.write_all(painted.as_bytes());
             }
         }
-        self.drain_remaining();
-        self.clear_live_region();
-        self.print_final_summary();
+
+        // In plain mode we already printed bytes live; in live mode
+        // this is the first time captured output hits the terminal.
+        if matches!(self.output_mode, OutputMode::Live) {
+            emit_captured_block(&mut self.terminal, state, self.color);
+        }
+
+        if let TestOutcome::Benched { report, .. } = outcome {
+            let detail = report.detailed_summary();
+            let _unused = self.terminal.write_all(detail.as_bytes());
+            if report.failures.is_empty() && report.panics == 0 {
+                let hist = report.ascii_histogram(10, 30);
+                if !hist.is_empty() {
+                    let _unused = self.terminal.write_all(b"  histogram:\n");
+                    let _unused = self.terminal.write_all(hist.as_bytes());
+                }
+            }
+        }
+        let _unused = self.terminal.write_all(b"\n");
+        self.last_live_rows = 0;
+    }
+
+    fn emit_plain_started(&mut self, test_id: TestId) {
+        if let Some(state) = self.tests.get(&test_id) {
+            let line = format!(
+                "test {} ... started [{}]\n",
+                qualified_test_name(state.module_path, state.test_name),
+                state.runtime_name,
+            );
+            let _unused = self.terminal.write_all(line.as_bytes());
+        }
     }
 
     fn handle_lifecycle(&mut self, ev: LifecycleEvent) {
@@ -411,37 +478,46 @@ impl Drawer {
         }
     }
 
-    fn handle_suite_lifecycle_start(
-        &mut self,
-        kind: LifecyclePhase,
-        runtime_name: &'static str,
-        suite: &'static str,
-        thread: ThreadId,
-        at: Instant,
-    ) {
-        if !self.slots.contains_key(&thread) {
-            self.slot_order.push(thread);
+    fn handle_pipe(&mut self, chunk: PipeChunk) {
+        // Attribution: the reader thread has no producer-thread info.
+        // When exactly one test is running, attribute to it. When
+        // multiple are running concurrently, attribute to the
+        // earliest-started (deterministic fallback — doc'd as
+        // best-effort for concurrent output).
+        let chosen: Option<TestId> = if self.tests.len() == 1 {
+            self.tests.keys().copied().next()
+        } else {
+            self.thread_to_test
+                .values()
+                .copied()
+                .min_by_key(|id| self.tests.get(id).map(|state| state.started_at))
+        };
+        if let Some(id) = chosen
+            && let Some(state) = self.tests.get_mut(&id) {
+                match chunk.stream {
+                    StdStream::Stdout => state.stdout_buffer.extend_from_slice(&chunk.bytes),
+                    StdStream::Stderr => state.stderr_buffer.extend_from_slice(&chunk.bytes),
+                }
+                update_last_line(&mut state.last_output_line, &chunk.bytes);
+                append_complete_lines(&mut state.recent_output, &chunk.bytes);
+                if matches!(self.output_mode, OutputMode::Plain) {
+                    let display = qualified_test_name(state.module_path, state.test_name);
+                    emit_plain_lines(
+                        &mut self.terminal,
+                        &chunk.bytes,
+                        &display,
+                        chunk.stream,
+                        self.color,
+                    );
+                }
+                return;
+            }
+        // Orphan bytes (no mapped test): pass through unprefixed.
+        // Live mode: clear live region first; next redraw re-paints.
+        if matches!(self.output_mode, OutputMode::Live) {
+            self.clear_live_region();
         }
-        let entry = self.slots.entry(thread).or_insert(RuntimeSlot {
-            runtime_name,
-            current: None,
-            lifecycle: None,
-        });
-        entry.runtime_name = runtime_name;
-        entry.lifecycle = Some(SlotLifecycle {
-            kind,
-            suite,
-            started_at: at,
-        });
-        if matches!(self.output_mode, OutputMode::Plain) {
-            let phase_word = match kind {
-                LifecyclePhase::Setup => "setup",
-                LifecyclePhase::Teardown => "teardown",
-            };
-            let suite_disp = normalize_module_path(suite);
-            let line = format!("{phase_word:<8} {suite_disp} ... started <{runtime_name}>\n");
-            let _unused = self.terminal.write_all(line.as_bytes());
-        }
+        let _unused = self.terminal.write_all(&chunk.bytes);
     }
 
     fn handle_suite_lifecycle_finish(
@@ -513,115 +589,129 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
         self.last_live_rows = 0;
     }
 
-    fn handle_pipe(&mut self, chunk: PipeChunk) {
-        // Attribution: the reader thread has no producer-thread info.
-        // When exactly one test is running, attribute to it. When
-        // multiple are running concurrently, attribute to the
-        // earliest-started (deterministic fallback — doc'd as
-        // best-effort for concurrent output).
-        let chosen: Option<TestId> = if self.tests.len() == 1 {
-            self.tests.keys().copied().next()
-        } else {
-            self.thread_to_test
-                .values()
-                .copied()
-                .min_by_key(|id| self.tests.get(id).map(|state| state.started_at))
-        };
-        if let Some(id) = chosen
-            && let Some(state) = self.tests.get_mut(&id) {
-                match chunk.stream {
-                    StdStream::Stdout => state.stdout_buffer.extend_from_slice(&chunk.bytes),
-                    StdStream::Stderr => state.stderr_buffer.extend_from_slice(&chunk.bytes),
-                }
-                update_last_line(&mut state.last_output_line, &chunk.bytes);
-                append_complete_lines(&mut state.recent_output, &chunk.bytes);
-                if matches!(self.output_mode, OutputMode::Plain) {
-                    let display = qualified_test_name(state.module_path, state.test_name);
-                    emit_plain_lines(
-                        &mut self.terminal,
-                        &chunk.bytes,
-                        &display,
-                        chunk.stream,
-                        self.color,
-                    );
-                }
-                return;
-            }
-        // Orphan bytes (no mapped test): pass through unprefixed.
-        // Live mode: clear live region first; next redraw re-paints.
-        if matches!(self.output_mode, OutputMode::Live) {
-            self.clear_live_region();
+    fn handle_suite_lifecycle_start(
+        &mut self,
+        kind: LifecyclePhase,
+        runtime_name: &'static str,
+        suite: &'static str,
+        thread: ThreadId,
+        at: Instant,
+    ) {
+        if !self.slots.contains_key(&thread) {
+            self.slot_order.push(thread);
         }
-        let _unused = self.terminal.write_all(&chunk.bytes);
-    }
-
-    fn emit_plain_started(&mut self, test_id: TestId) {
-        if let Some(state) = self.tests.get(&test_id) {
-            let line = format!(
-                "test {} ... started [{}]\n",
-                qualified_test_name(state.module_path, state.test_name),
-                state.runtime_name,
-            );
+        let entry = self.slots.entry(thread).or_insert(RuntimeSlot {
+            runtime_name,
+            current: None,
+            lifecycle: None,
+        });
+        entry.runtime_name = runtime_name;
+        entry.lifecycle = Some(SlotLifecycle {
+            kind,
+            suite,
+            started_at: at,
+        });
+        if matches!(self.output_mode, OutputMode::Plain) {
+            let phase_word = match kind {
+                LifecyclePhase::Setup => "setup",
+                LifecyclePhase::Teardown => "teardown",
+            };
+            let suite_disp = normalize_module_path(suite);
+            let line = format!("{phase_word:<8} {suite_disp} ... started <{runtime_name}>\n");
             let _unused = self.terminal.write_all(line.as_bytes());
         }
     }
 
-    fn emit_completion_block(&mut self, state: &TestState, outcome: &TestOutcome) {
-        if matches!(self.output_mode, OutputMode::Live) {
-            self.clear_live_region();
+    /// Build a drawer. Slots are allocated lazily as `TestStarted`
+    /// events come in — one per distinct `ThreadId`, in first-seen
+    /// order — so the runner doesn't have to know runtime names
+    /// up-front.
+    #[must_use]
+    #[inline]
+    pub fn new(
+        lifecycle_rx: Receiver<LifecycleEvent>,
+        pipe_rx: Receiver<PipeChunk>,
+        shutdown_rx: Receiver<()>,
+        terminal: File,
+        output_mode: OutputMode,
+        format: Format,
+        color: ColorPolicy,
+    ) -> Self {
+        Self {
+            lifecycle_rx,
+            pipe_rx,
+            shutdown_rx,
+            terminal,
+            output_mode,
+            format,
+            color,
+            slot_order: Vec::new(),
+            slots: HashMap::new(),
+            tests: HashMap::new(),
+            thread_to_test: HashMap::new(),
+            last_live_rows: 0,
+            summary: Summary::default(),
+            size_override: None,
         }
-        let display = qualified_test_name(state.module_path, state.test_name);
-        let label = status_label_from_outcome(outcome);
-        let tag_rendered = render_status_tag(label, self.color);
-        let trailing = trailing_info(outcome, state.runtime_name);
-        let lhs_naked = format!("{:width$} {display}", "", width = STATUS_TAG_WIDTH);
-        let lhs_rendered = format!("{tag_rendered} {display}");
-        let term_cols = terminal_width();
-        let header = render_line(&lhs_naked, &lhs_rendered, &trailing, term_cols);
-        let _unused = self.terminal.write_all(header.as_bytes());
-        let _unused = self.terminal.write_all(b"\n");
+    }
 
-        // Surface the failure message right under the header so the
-        // user sees WHY a test failed/setup-failed/etc. without
-        // scrolling to the end-of-run failures section. One line per
-        // newline in the message; each indented to line up under the
-        // test display, painted in the tag's color.
-        let msg = outcome_message(outcome);
-        if !msg.is_empty() {
-            for line in msg.lines() {
-                let body = format!("  {line}\n");
-                let painted = match label {
-                    StatusLabel::Fail
-                    | StatusLabel::Panic
-                    | StatusLabel::Setup
-                    | StatusLabel::Timeout
-                    | StatusLabel::Cancel
-                    | StatusLabel::Hang => self.color.red(&body),
-                    _ => body,
-                };
-                let _unused = self.terminal.write_all(painted.as_bytes());
-            }
-        }
-
-        // In plain mode we already printed bytes live; in live mode
-        // this is the first time captured output hits the terminal.
-        if matches!(self.output_mode, OutputMode::Live) {
-            emit_captured_block(&mut self.terminal, state, self.color);
-        }
-
-        if let TestOutcome::Benched { report, .. } = outcome {
-            let detail = report.detailed_summary();
-            let _unused = self.terminal.write_all(detail.as_bytes());
-            if report.failures.is_empty() && report.panics == 0 {
-                let hist = report.ascii_histogram(10, 30);
-                if !hist.is_empty() {
-                    let _unused = self.terminal.write_all(b"  histogram:\n");
-                    let _unused = self.terminal.write_all(hist.as_bytes());
+    fn print_final_summary(&mut self) {
+        let total_elapsed = self
+            .summary
+            .started_at
+            .map_or(Duration::ZERO, |start| start.elapsed());
+        if !self.summary.failures.is_empty() {
+            let _unused = self.terminal.write_all(b"\nfailures:\n\n");
+            for fr in &self.summary.failures {
+                let header = format!("---- {} {} ----\n", fr.display_name, fr.outcome_label);
+                let _unused = self.terminal.write_all(header.as_bytes());
+                if !fr.message.is_empty() {
+                    let _unused = self.terminal.write_all(fr.message.as_bytes());
+                    if !fr.message.ends_with('\n') {
+                        let _unused = self.terminal.write_all(b"\n");
+                    }
                 }
+                if !fr.captured_stdout.is_empty() {
+                    let _unused = self.terminal.write_all(b"---- stdout ----\n");
+                    let _unused = self.terminal.write_all(fr.captured_stdout.as_bytes());
+                    if !fr.captured_stdout.ends_with('\n') {
+                        let _unused = self.terminal.write_all(b"\n");
+                    }
+                }
+                if !fr.captured_stderr.is_empty() {
+                    let _unused = self.terminal.write_all(b"---- stderr ----\n");
+                    let coloured = self.color.red(&fr.captured_stderr);
+                    let _unused = self.terminal.write_all(coloured.as_bytes());
+                    if !fr.captured_stderr.ends_with('\n') {
+                        let _unused = self.terminal.write_all(b"\n");
+                    }
+                }
+                let _unused = self.terminal.write_all(b"\n");
             }
         }
-        let _unused = self.terminal.write_all(b"\n");
-        self.last_live_rows = 0;
+        let failed_total = self.summary.failed
+            + self.summary.panicked
+            + self.summary.timed_out
+            + self.summary.hung
+            + self.summary.cancelled
+            + self.summary.teardown_failures;
+        let overall = if failed_total == 0 {
+            self.color.green("ok")
+        } else {
+            self.color.red("FAILED")
+        };
+        let summary_line = format!(
+            "\ntest result: {overall}. {} passed; {failed_total} failed; \
+             {} benched; {} hung; {} ignored; {} teardown failed; finished in {:.2}s\n",
+            self.summary.passed,
+            self.summary.benched,
+            self.summary.hung,
+            self.summary.ignored,
+            self.summary.teardown_failures,
+            total_elapsed.as_secs_f64(),
+        );
+        let _unused = self.terminal.write_all(summary_line.as_bytes());
+        let _unused = self.terminal.flush();
     }
 
     fn redraw_live_region(&mut self) {
@@ -689,81 +779,47 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
         self.last_live_rows = rows;
     }
 
-    fn clear_live_region(&mut self) {
-        if self.last_live_rows == 0 {
-            return;
-        }
-        let esc = format!("\x1b[{n}A\x1b[J", n = self.last_live_rows);
-        let _unused = self.terminal.write_all(esc.as_bytes());
-        self.last_live_rows = 0;
+    fn render_size(&self) -> (usize, usize) {
+        self.size_override
+            .unwrap_or_else(|| (terminal_width(), terminal_height()))
     }
 
-    fn drain_remaining(&mut self) {
-        while let Ok(ev) = self.lifecycle_rx.try_recv() {
-            self.handle_lifecycle(ev);
-        }
-        while let Ok(chunk) = self.pipe_rx.try_recv() {
-            self.handle_pipe(chunk);
-        }
-    }
-
-    fn print_final_summary(&mut self) {
-        let total_elapsed = self
-            .summary
-            .started_at
-            .map_or(Duration::ZERO, |start| start.elapsed());
-        if !self.summary.failures.is_empty() {
-            let _unused = self.terminal.write_all(b"\nfailures:\n\n");
-            for fr in &self.summary.failures {
-                let header = format!("---- {} {} ----\n", fr.display_name, fr.outcome_label);
-                let _unused = self.terminal.write_all(header.as_bytes());
-                if !fr.message.is_empty() {
-                    let _unused = self.terminal.write_all(fr.message.as_bytes());
-                    if !fr.message.ends_with('\n') {
-                        let _unused = self.terminal.write_all(b"\n");
-                    }
-                }
-                if !fr.captured_stdout.is_empty() {
-                    let _unused = self.terminal.write_all(b"---- stdout ----\n");
-                    let _unused = self.terminal.write_all(fr.captured_stdout.as_bytes());
-                    if !fr.captured_stdout.ends_with('\n') {
-                        let _unused = self.terminal.write_all(b"\n");
-                    }
-                }
-                if !fr.captured_stderr.is_empty() {
-                    let _unused = self.terminal.write_all(b"---- stderr ----\n");
-                    let coloured = self.color.red(&fr.captured_stderr);
-                    let _unused = self.terminal.write_all(coloured.as_bytes());
-                    if !fr.captured_stderr.ends_with('\n') {
-                        let _unused = self.terminal.write_all(b"\n");
-                    }
-                }
-                let _unused = self.terminal.write_all(b"\n");
+    /// Main loop: `select!` over all input channels plus a redraw
+    /// timer until shutdown. On exit, drain pending events, clear
+    /// the live region, and print the final summary.
+    #[inline]
+    pub fn run(mut self) {
+        self.summary.started_at = Some(Instant::now());
+        let timer = crossbeam_channel::tick(REDRAW_INTERVAL);
+        loop {
+            select! {
+                recv(self.lifecycle_rx) -> msg => match msg {
+                    Ok(ev) => self.handle_lifecycle(ev),
+                    Err(_) => break,
+                },
+                recv(self.pipe_rx) -> msg => match msg {
+                    Ok(chunk) => self.handle_pipe(chunk),
+                    Err(_) => break,
+                },
+                recv(timer) -> _tick => self.redraw_live_region(),
+                recv(self.shutdown_rx) -> _done => break,
             }
         }
-        let failed_total = self.summary.failed
-            + self.summary.panicked
-            + self.summary.timed_out
-            + self.summary.hung
-            + self.summary.cancelled
-            + self.summary.teardown_failures;
-        let overall = if failed_total == 0 {
-            self.color.green("ok")
-        } else {
-            self.color.red("FAILED")
-        };
-        let summary_line = format!(
-            "\ntest result: {overall}. {} passed; {failed_total} failed; \
-             {} benched; {} hung; {} ignored; {} teardown failed; finished in {:.2}s\n",
-            self.summary.passed,
-            self.summary.benched,
-            self.summary.hung,
-            self.summary.ignored,
-            self.summary.teardown_failures,
-            total_elapsed.as_secs_f64(),
-        );
-        let _unused = self.terminal.write_all(summary_line.as_bytes());
-        let _unused = self.terminal.flush();
+        self.drain_remaining();
+        self.clear_live_region();
+        self.print_final_summary();
+    }
+
+    /// Force the drawer to render against a fixed terminal size,
+    /// bypassing the ioctl probe. Hidden from the public API surface
+    /// — only the in-tree integration tests use this to pin the
+    /// "row never wraps" invariant against synthetic widths.
+    #[doc(hidden)]
+    #[must_use]
+    #[inline]
+    pub const fn with_size_override(mut self, cols: usize, height: usize) -> Self {
+        self.size_override = Some((cols, height));
+        self
     }
 }
 
@@ -799,53 +855,6 @@ const fn is_failure(outcome: &TestOutcome) -> bool {
         TestOutcome::Benched { report, .. } => !report.is_success(),
         TestOutcome::Passed { .. } => false,
     }
-}
-
-/// Fixed visible width of the status-tag column (including trailing
-/// pad so the rest of the line starts at a stable column).
-pub const STATUS_TAG_WIDTH: usize = 9;
-
-/// The minimum gap between the left side and the right-aligned
-/// trailing `<...>` block when the line would otherwise be shorter
-/// than the terminal.
-const MIN_TRAILING_PAD: usize = 2;
-
-#[derive(Debug, Clone, Copy)]
-enum StatusLabel {
-    Ok,
-    Fail,
-    Panic,
-    Timeout,
-    Ignore,
-    Cancel,
-    Bench,
-    BenchErr,
-    Run,
-    /// Failed test outcome where the per-test context (`Suite::context`)
-    /// returned `Err` before the body could run. Distinct from `Fail`
-    /// so the user sees that the test never executed.
-    Setup,
-    /// Suite-level setup completed successfully — bright variant of
-    /// `Ok` reserved for lifecycle lines so they stand apart from the
-    /// per-test stream.
-    SetupOk,
-    /// Test or teardown blew its budget AND remained pending past the
-    /// Layer-2 grace window. The wrapper has fired its abort handle
-    /// and moved on. Painted **red** (failure-class) so it's distinct
-    /// from `Timeout`'s yellow (warn-class).
-    Hang,
-}
-
-/// What went wrong in a suite-lifecycle finish event.
-#[derive(Debug)]
-enum LifecycleFailure {
-    Error(String),
-    Panicked(String),
-    TimedOut(String),
-    /// Phase escalated past `--phase-hang-grace`. The wrapper fired
-    /// the abort handle; on tokio the spawned task drops on next
-    /// poll, on other runtimes it leaks until process exit.
-    Hung(String),
 }
 
 const fn status_label_from_outcome(outcome: &TestOutcome) -> StatusLabel {
@@ -1093,8 +1102,6 @@ fn append_complete_lines(dst: &mut Vec<String>, bytes: &[u8]) {
     }
 }
 
-const RUNTIME_PREFIX_WIDTH: usize = 14;
-
 /// Render a horizontal progress bar of `width` characters showing
 /// `done / total` filled. Solid block `█` for filled cells, light shade
 /// `░` for empty. Used by [`bench_progress_trailing`] for the inline
@@ -1242,13 +1249,6 @@ pub fn running_line(runtime: &str, state: &TestState, color: ColorPolicy, cols: 
         cols.saturating_sub(1).max(1),
     )
 }
-
-/// Number of viewport rows reserved for everything other than a
-/// single test's output stream — the status row itself, the runner's
-/// own progress markers, and a safety margin so a final completion
-/// line doesn't trigger a scroll while the live region is being
-/// cleared.
-const LIVE_REGION_RESERVED_ROWS: usize = 4;
 
 /// Lines emitted below a running test's status row — the test's
 /// stdout/stderr appearing live, in source order. The drawer clears
@@ -1422,7 +1422,3 @@ pub fn spawn_drawer(drawer: Drawer) -> IoResult<JoinHandle<()>> {
         .name("rudzio-output-drawer".to_owned())
         .spawn(move || drawer.run())
 }
-
-/// Type alias for the lifecycle channel Sender — used by runner
-/// and macro-generated code that publishes events.
-pub type LifecycleSender = Sender<LifecycleEvent>;

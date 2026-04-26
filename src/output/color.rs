@@ -19,6 +19,52 @@ pub struct ColorPolicy {
 }
 
 impl ColorPolicy {
+    /// Wrap `text` in bold (`\x1b[1m`). Returns `text` unchanged when
+    /// colour is off.
+    #[must_use]
+    #[inline]
+    pub fn bold(self, text: &str) -> String {
+        self.wrap(text, "1")
+    }
+
+    /// Wrap `text` in dim / faint (`\x1b[2m`). Returns `text` unchanged when
+    /// colour is off.
+    #[must_use]
+    #[inline]
+    pub fn dim(self, text: &str) -> String {
+        self.wrap(text, "2")
+    }
+
+    /// Whether colour escapes should be emitted.
+    #[must_use]
+    #[inline]
+    pub const fn enabled(self) -> bool {
+        self.use_color
+    }
+
+    /// Wrap `text` in green (`\x1b[32m`). Returns `text` unchanged when
+    /// colour is off.
+    #[must_use]
+    #[inline]
+    pub fn green(self, text: &str) -> String {
+        self.wrap(text, "32")
+    }
+
+    /// A colour-off policy — convenience for non-terminal paths.
+    #[must_use]
+    #[inline]
+    pub const fn off() -> Self {
+        Self { use_color: false }
+    }
+
+    /// Wrap `text` in red (`\x1b[31m`). Returns `text` unchanged when
+    /// colour is off.
+    #[must_use]
+    #[inline]
+    pub fn red(self, text: &str) -> String {
+        self.wrap(text, "31")
+    }
+
     /// Compute the policy from the runner's `--color=` setting, the
     /// original-stdout TTY status, and the environment snapshot.
     /// Precedence: `FORCE_COLOR` (if set, colour on regardless of
@@ -38,34 +84,12 @@ impl ColorPolicy {
         Self { use_color }
     }
 
-    /// A colour-off policy — convenience for non-terminal paths.
-    #[must_use]
-    #[inline]
-    pub const fn off() -> Self {
-        Self { use_color: false }
-    }
-
-    /// Whether colour escapes should be emitted.
-    #[must_use]
-    #[inline]
-    pub const fn enabled(self) -> bool {
-        self.use_color
-    }
-
-    /// Wrap `text` in red (`\x1b[31m`). Returns `text` unchanged when
-    /// colour is off.
-    #[must_use]
-    #[inline]
-    pub fn red(self, text: &str) -> String {
-        self.wrap(text, "31")
-    }
-
-    /// Wrap `text` in green (`\x1b[32m`). Returns `text` unchanged when
-    /// colour is off.
-    #[must_use]
-    #[inline]
-    pub fn green(self, text: &str) -> String {
-        self.wrap(text, "32")
+    fn wrap(self, text: &str, code: &str) -> String {
+        if self.use_color {
+            format!("\x1b[{code}m{text}\x1b[0m")
+        } else {
+            text.to_owned()
+        }
     }
 
     /// Wrap `text` in yellow (`\x1b[33m`). Returns `text` unchanged when
@@ -74,29 +98,5 @@ impl ColorPolicy {
     #[inline]
     pub fn yellow(self, text: &str) -> String {
         self.wrap(text, "33")
-    }
-
-    /// Wrap `text` in dim / faint (`\x1b[2m`). Returns `text` unchanged when
-    /// colour is off.
-    #[must_use]
-    #[inline]
-    pub fn dim(self, text: &str) -> String {
-        self.wrap(text, "2")
-    }
-
-    /// Wrap `text` in bold (`\x1b[1m`). Returns `text` unchanged when
-    /// colour is off.
-    #[must_use]
-    #[inline]
-    pub fn bold(self, text: &str) -> String {
-        self.wrap(text, "1")
-    }
-
-    fn wrap(self, text: &str, code: &str) -> String {
-        if self.use_color {
-            format!("\x1b[{code}m{text}\x1b[0m")
-        } else {
-            text.to_owned()
-        }
     }
 }

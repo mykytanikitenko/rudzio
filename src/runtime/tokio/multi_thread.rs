@@ -13,10 +13,10 @@ use crate::runtime::tokio::error::tokio_join_error_to_join_error;
 use crate::runtime::{JoinError, Runtime};
 
 pub struct Multithread {
-    /// Underlying tokio multi-thread runtime.
-    rt: TokioRuntime,
     /// Resolved [`Config`] this runtime was constructed from.
     config: Config,
+    /// Underlying tokio multi-thread runtime.
+    rt: TokioRuntime,
 }
 
 impl fmt::Debug for Multithread {
@@ -57,6 +57,15 @@ impl Multithread {
 
 impl<'rt> Runtime<'rt> for Multithread {
     #[inline]
+    fn block_on<F>(&self, fut: F) -> F::Output
+    where
+        F: Future + 'rt,
+        F::Output: 'static,
+    {
+        self.rt.block_on(fut)
+    }
+
+    #[inline]
     fn config(&self) -> &Config {
         &self.config
     }
@@ -67,12 +76,8 @@ impl<'rt> Runtime<'rt> for Multithread {
     }
 
     #[inline]
-    fn block_on<F>(&self, fut: F) -> F::Output
-    where
-        F: Future + 'rt,
-        F::Output: 'static,
-    {
-        self.rt.block_on(fut)
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
+        sleep(duration)
     }
 
     #[inline]
@@ -117,10 +122,5 @@ impl<'rt> Runtime<'rt> for Multithread {
                 .map(SendWrapper::take)
                 .map_err(tokio_join_error_to_join_error)
         }
-    }
-
-    #[inline]
-    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
-        sleep(duration)
     }
 }

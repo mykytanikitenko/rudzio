@@ -30,10 +30,6 @@ const PIPE_SIZE: libc::c_int = 1 << 20;
 /// drop via [`SavedFds::restore`].
 #[derive(Debug)]
 pub struct Capture {
-    /// Read end of the pipe whose write end is now FD 1.
-    pub stdout_read: OwnedFd,
-    /// Read end of the pipe whose write end is now FD 2.
-    pub stderr_read: OwnedFd,
     /// A third dup of the original stdout (taken before the swap),
     /// handed to the drawer so it can write the live region and
     /// history to the real terminal. Owned separately from
@@ -44,6 +40,10 @@ pub struct Capture {
     /// the panic hook can share the same state via `Arc<SavedFds>`
     /// and whichever path restores first takes ownership.
     pub saved: SavedFds,
+    /// Read end of the pipe whose write end is now FD 2.
+    pub stderr_read: OwnedFd,
+    /// Read end of the pipe whose write end is now FD 1.
+    pub stdout_read: OwnedFd,
 }
 
 /// Shared storage for the pre-capture FDs. Holding one of these
@@ -52,8 +52,8 @@ pub struct Capture {
 /// makes subsequent calls no-op.
 #[derive(Debug)]
 pub struct SavedFds {
-    stdout: AtomicI32,
     stderr: AtomicI32,
+    stdout: AtomicI32,
 }
 
 impl SavedFds {

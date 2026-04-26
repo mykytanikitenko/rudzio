@@ -36,10 +36,10 @@ impl TestId {
 /// Which standard stream a captured chunk came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StdStream {
-    /// FD 1 before capture.
-    Stdout,
     /// FD 2 before capture.
     Stderr,
+    /// FD 1 before capture.
+    Stdout,
 }
 
 /// A raw byte chunk read from a captured pipe, not yet attributed to
@@ -48,23 +48,55 @@ pub enum StdStream {
 /// lifecycle-event-maintained `thread_to_test` table.
 #[derive(Debug)]
 pub struct PipeChunk {
-    pub stream: StdStream,
     pub bytes: Vec<u8>,
+    pub stream: StdStream,
 }
 
 /// A lifecycle event emitted by runtime threads (directly or via
 /// `FirstPoll` / the panic hook) to the drawer.
 #[derive(Debug)]
 pub enum LifecycleEvent {
-    /// First `poll` of a test future — the moment the test is
-    /// actually running, not merely scheduled. Establishes the
-    /// `{thread → test_id}` mapping the drawer uses to attribute
-    /// subsequent captured bytes.
-    TestStarted {
+    /// Periodic progress notification from a bench strategy.
+    /// Strategies call the progress callback roughly every 1% of
+    /// their iteration count; the drawer only renders the most
+    /// recent value. The payload is `Copy` and allocation-free so it
+    /// can travel through the lifecycle channel without overhead.
+    BenchProgress {
         test_id: TestId,
-        module_path: &'static str,
-        test_name: &'static str,
+        snapshot: BenchProgressSnapshot,
+    },
+    /// `Suite::setup` returned. `error` is `None` on success and
+    /// `Some(message)` on failure (the error's `Display` form).
+    SuiteSetupFinished {
         runtime_name: &'static str,
+        suite: &'static str,
+        thread: ThreadId,
+        elapsed: Duration,
+        error: Option<String>,
+    },
+    /// A suite is about to run `Suite::setup`. Emitted from the
+    /// runtime group thread before the user's setup body executes.
+    /// `thread` lets the drawer pin the in-flight setup to the same
+    /// runtime slot that will host the suite's tests.
+    SuiteSetupStarted {
+        runtime_name: &'static str,
+        suite: &'static str,
+        thread: ThreadId,
+        at: Instant,
+    },
+    /// `Suite::teardown` returned (possibly via panic).
+    SuiteTeardownFinished {
+        runtime_name: &'static str,
+        suite: &'static str,
+        thread: ThreadId,
+        elapsed: Duration,
+        result: TeardownResult,
+    },
+    /// A suite is about to run `Suite::teardown` (after all its tests
+    /// have finished, regardless of outcome).
+    SuiteTeardownStarted {
+        runtime_name: &'static str,
+        suite: &'static str,
         thread: ThreadId,
         at: Instant,
     },
@@ -87,49 +119,17 @@ pub enum LifecycleEvent {
         runtime_name: &'static str,
         reason: &'static str,
     },
-    /// Periodic progress notification from a bench strategy.
-    /// Strategies call the progress callback roughly every 1% of
-    /// their iteration count; the drawer only renders the most
-    /// recent value. The payload is `Copy` and allocation-free so it
-    /// can travel through the lifecycle channel without overhead.
-    BenchProgress {
+    /// First `poll` of a test future — the moment the test is
+    /// actually running, not merely scheduled. Establishes the
+    /// `{thread → test_id}` mapping the drawer uses to attribute
+    /// subsequent captured bytes.
+    TestStarted {
         test_id: TestId,
-        snapshot: BenchProgressSnapshot,
-    },
-    /// A suite is about to run `Suite::setup`. Emitted from the
-    /// runtime group thread before the user's setup body executes.
-    /// `thread` lets the drawer pin the in-flight setup to the same
-    /// runtime slot that will host the suite's tests.
-    SuiteSetupStarted {
+        module_path: &'static str,
+        test_name: &'static str,
         runtime_name: &'static str,
-        suite: &'static str,
         thread: ThreadId,
         at: Instant,
-    },
-    /// `Suite::setup` returned. `error` is `None` on success and
-    /// `Some(message)` on failure (the error's `Display` form).
-    SuiteSetupFinished {
-        runtime_name: &'static str,
-        suite: &'static str,
-        thread: ThreadId,
-        elapsed: Duration,
-        error: Option<String>,
-    },
-    /// A suite is about to run `Suite::teardown` (after all its tests
-    /// have finished, regardless of outcome).
-    SuiteTeardownStarted {
-        runtime_name: &'static str,
-        suite: &'static str,
-        thread: ThreadId,
-        at: Instant,
-    },
-    /// `Suite::teardown` returned (possibly via panic).
-    SuiteTeardownFinished {
-        runtime_name: &'static str,
-        suite: &'static str,
-        thread: ThreadId,
-        elapsed: Duration,
-        result: TeardownResult,
     },
     /// A per-test teardown (`Test::teardown`) returned `Err` or
     /// panicked. The drawer renders a separate FAIL line attributed
@@ -146,36 +146,36 @@ pub enum LifecycleEvent {
 /// Drawer-owned state for a single in-flight test.
 #[derive(Debug)]
 pub struct TestState {
-    pub module_path: &'static str,
-    pub test_name: &'static str,
-    pub runtime_name: &'static str,
-    pub thread: ThreadId,
-    pub started_at: Instant,
     pub kind: TestStateKind,
-    /// Captured stdout bytes, appended as chunks arrive.
-    pub stdout_buffer: Vec<u8>,
-    /// Captured stderr bytes, appended as chunks arrive.
-    pub stderr_buffer: Vec<u8>,
     /// Most-recent `\n`-terminated line observed on either stream,
     /// kept around for clients that want a single-line summary; the
     /// live drawer renders the full output stream below the status
     /// row instead.
     pub last_output_line: String,
+    pub module_path: &'static str,
     /// Every complete output line the test has emitted so far,
     /// oldest first. The live drawer streams these untruncated below
     /// the running status row, repainted in place every 50ms tick so
     /// the user sees stdout/stderr live as the test runs.
     pub recent_output: Vec<String>,
+    pub runtime_name: &'static str,
+    pub started_at: Instant,
+    /// Captured stderr bytes, appended as chunks arrive.
+    pub stderr_buffer: Vec<u8>,
+    /// Captured stdout bytes, appended as chunks arrive.
+    pub stdout_buffer: Vec<u8>,
+    pub test_name: &'static str,
+    pub thread: ThreadId,
 }
 
 /// Current rendering state for a test's live-region slot.
 #[derive(Debug, Clone, Copy)]
 pub enum TestStateKind {
-    /// Ordinary test body running (no bench strategy).
-    Running,
     /// Under a bench strategy; the most recent progress snapshot
     /// drives the trailing block + mini-histogram in the renderer.
     Bench {
         snapshot: BenchProgressSnapshot,
     },
+    /// Ordinary test body running (no bench strategy).
+    Running,
 }

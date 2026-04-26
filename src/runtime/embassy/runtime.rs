@@ -50,8 +50,8 @@ fn __pender(context: *mut ()) {
 /// issued from a timer thread inside `sleep`). `block_on` calls `wait()` on
 /// the group thread to sleep until that happens.
 struct Signaler {
-    flag: Mutex<bool>,
     condvar: Condvar,
+    flag: Mutex<bool>,
 }
 
 impl Signaler {
@@ -62,18 +62,18 @@ impl Signaler {
         }
     }
 
+    fn signal(&self) {
+        let mut guard = self.flag.lock().expect("signaler flag poisoned");
+        *guard = true;
+        self.condvar.notify_one();
+    }
+
     fn wait(&self) {
         let mut guard = self.flag.lock().expect("signaler flag poisoned");
         while !*guard {
             guard = self.condvar.wait(guard).expect("signaler condvar poisoned");
         }
         *guard = false;
-    }
-
-    fn signal(&self) {
-        let mut guard = self.flag.lock().expect("signaler flag poisoned");
-        *guard = true;
-        self.condvar.notify_one();
     }
 }
 
@@ -82,6 +82,8 @@ impl Signaler {
 type ErasedTask = Pin<Box<dyn Future<Output = ()> + 'static>>;
 
 pub struct Runtime {
+    /// Resolved [`Config`] this runtime was constructed from.
+    config: Config,
     /// Raw executor leaked to `'static` so it can hand out `Spawner`s.
     ///
     /// `Executor` contains a `PhantomData<*mut ()>` which marks it `!Sync`;
@@ -92,8 +94,6 @@ pub struct Runtime {
     signaler: &'static Signaler,
     /// Cached spawner. Also `!Send` via a `*mut ()` `PhantomData`.
     spawner: SendWrapper<Spawner>,
-    /// Resolved [`Config`] this runtime was constructed from.
-    config: Config,
 }
 
 impl fmt::Debug for Runtime {
@@ -104,6 +104,24 @@ impl fmt::Debug for Runtime {
 }
 
 impl Runtime {
+    /// Drive the executor until `done` returns `Some`, then return its value.
+    fn drive_until<T>(&self, mut done: impl FnMut() -> Option<T>) -> T {
+        loop {
+            if let Some(value) = done() {
+                return value;
+            }
+            // SAFETY: the executor was initialized by `Runtime::new` and we
+            // never re-enter `poll` (this loop is the sole caller).
+            unsafe {
+                self.executor.poll();
+            }
+            if let Some(value) = done() {
+                return value;
+            }
+            self.signaler.wait();
+        }
+    }
+
     /// Build an embassy runtime.
     ///
     /// Fields consulted from [`Config`]: **none** — embassy's executor is
@@ -136,37 +154,9 @@ impl Runtime {
             .expect("freshly-leaked TaskStorage cannot already be occupied");
         self.spawner.spawn(token);
     }
-
-    /// Drive the executor until `done` returns `Some`, then return its value.
-    fn drive_until<T>(&self, mut done: impl FnMut() -> Option<T>) -> T {
-        loop {
-            if let Some(value) = done() {
-                return value;
-            }
-            // SAFETY: the executor was initialized by `Runtime::new` and we
-            // never re-enter `poll` (this loop is the sole caller).
-            unsafe {
-                self.executor.poll();
-            }
-            if let Some(value) = done() {
-                return value;
-            }
-            self.signaler.wait();
-        }
-    }
 }
 
 impl<'rt> RuntimeTrait<'rt> for Runtime {
-    #[inline]
-    fn config(&self) -> &Config {
-        &self.config
-    }
-
-    #[inline]
-    fn name(&self) -> &'static str {
-        "embassy::Runtime"
-    }
-
     #[inline]
     fn block_on<F>(&self, fut: F) -> F::Output
     where
@@ -204,6 +194,31 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
     }
 
     #[inline]
+    fn config(&self) -> &Config {
+        &self.config
+    }
+
+    #[inline]
+    fn name(&self) -> &'static str {
+        "embassy::Runtime"
+    }
+
+    #[inline]
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
+        // No native timer; delegate to an OS thread. Its `tx.send` wakes the
+        // pending task via the receiver's future, which in turn fires
+        // `__pender` and unparks the executor loop.
+        let (tx, rx) = mpsc::channel::<()>();
+        let _unused = thread::spawn(move || {
+            thread::sleep(duration);
+            let _unused = tx.send(());
+        });
+        async move {
+            let _unused = poll_channel(rx).await;
+        }
+    }
+
+    #[inline]
     fn spawn<F>(&self, fut: F) -> impl Future<Output = Result<F::Output, JoinError>> + Send + 'rt
     where
         F: Future + Send + 'static,
@@ -234,21 +249,6 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
         F: Future + 'static,
     {
         spawn_task_local(&self.spawner, fut)
-    }
-
-    #[inline]
-    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
-        // No native timer; delegate to an OS thread. Its `tx.send` wakes the
-        // pending task via the receiver's future, which in turn fires
-        // `__pender` and unparks the executor loop.
-        let (tx, rx) = mpsc::channel::<()>();
-        let _unused = thread::spawn(move || {
-            thread::sleep(duration);
-            let _unused = tx.send(());
-        });
-        async move {
-            let _unused = poll_channel(rx).await;
-        }
     }
 }
 

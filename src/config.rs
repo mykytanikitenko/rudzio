@@ -18,102 +18,84 @@ use std::time::Duration;
 
 use crate::parallelism::{HardLimit, HardLimitGuard};
 
-/// Compile-time cargo metadata captured from `env!(...)` at the user's
-/// `#[rudzio::main]` expansion site. Lets test bodies resolve fixture
-/// paths relative to the test crate's manifest without calling out to
-/// `cargo` or parsing `Cargo.toml` at runtime.
-///
-/// Construct with the [`cargo_meta!`](crate::cargo_meta) macro — it
-/// expands to the `env!(...)` block in the caller's crate:
-///
-/// ```rust,ignore
-/// let meta = rudzio::cargo_meta!();
-/// ```
-#[derive(Debug, Clone)]
-pub struct CargoMeta {
-    /// `env!("CARGO_MANIFEST_DIR")` — absolute path to the crate that
-    /// invoked `#[rudzio::main]`.
-    pub manifest_dir: PathBuf,
-    /// `env!("CARGO_PKG_NAME")`.
-    pub pkg_name: String,
-    /// `env!("CARGO_PKG_VERSION")`.
-    pub pkg_version: String,
-    /// `env!("CARGO_CRATE_NAME")` — the `pkg_name` with `-` replaced by
-    /// `_`, or the target name for renamed targets.
-    pub crate_name: String,
-}
+/// Human-readable usage string emitted by `--help` / `-h`. Lives on
+/// `Config` so the runner and any custom aggregator (hand-rolled
+/// `#[rudzio::main]` call site) print the same canonical text.
+pub const USAGE: &str = "\
+rudzio test runner
 
-/// Output rendering style.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Format {
-    /// One line per test with status and elapsed time.
-    Pretty,
-    /// One character per test (`.`/`F`/`c`/`i`) on a single line.
-    Terse,
-}
+USAGE:
+    <test-binary> [OPTIONS] [FILTER]
 
-/// ANSI colour policy for terminal output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ColorMode {
-    /// Enable colour if stdout is a TTY and `NO_COLOR` is unset.
-    Auto,
-    /// Force colour on.
-    Always,
-    /// Force colour off.
-    Never,
-}
+ARGUMENTS:
+    <FILTER>                    Positional substring; only tests whose name
+                                contains this substring run. Combine with
+                                --skip to carve out a complementary subset.
 
-/// How `#[ignore]`d tests should be treated for this run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RunIgnoredMode {
-    /// Default: skip tests marked `#[ignore]`, report them as ignored.
-    Normal,
-    /// `--ignored`: only run ignored tests.
-    Only,
-    /// `--include-ignored`: run every test, ignored or not.
-    Include,
-}
+OPTIONS:
+    --skip <SUBSTRING>          Exclude tests whose name contains <SUBSTRING>.
+                                Repeatable \u{2014} accumulates across occurrences.
+    --ignored                   Only run tests marked #[ignore].
+    --include-ignored           Run every test, ignored or not.
+    --bench                     Dispatch #[rudzio::test(benchmark=...)] tests
+                                through their strategy. Non-bench tests still
+                                run.
+    --no-bench                  Skip bench-annotated tests (reported as
+                                ignored).
+    --list                      Print test names (one per line, libtest
+                                format) and exit without running anything.
+    --test-threads <N>          OS worker-thread count runtimes size their
+                                pool to. Defaults to RUST_TEST_THREADS, else
+                                std::thread::available_parallelism().
+    --concurrency-limit <N>     Max in-flight tests per runtime group.
+                                Defaults to --test-threads.
+    --format <pretty|terse>     Output format. Default: pretty.
+    --color <auto|always|never> ANSI colour policy. Default: auto.
+    --output <live|plain>       Output rendering. 'live' = bottom-of-terminal
+                                live region + history above (default on TTY
+                                with CI unset). 'plain' = linear append-only
+                                (default off-TTY or under CI).
+    --plain                     Shorthand for --output=plain.
+    --test-timeout <SECS>       Per-test budget. On expiry, the per-test
+                                cancellation token fires and teardown runs.
+    --run-timeout <SECS>        Whole-run budget. Cancels the root token;
+                                in-flight tests wind down, queued tests are
+                                reported as cancelled, teardowns run.
+    --phase-hang-grace <SECS>   Layer-2 grace after a phase exceeds its
+                                budget. The phase token is cancelled and
+                                the future is given this long to drop
+                                voluntarily before the wrapper escalates
+                                to [HANG] and fires the abort handle.
+                                Default 2s. Set to 0 to disable.
+    --cancel-grace-period <SECS>
+                                Layer-1 process-exit safety net. After
+                                root cancellation (SIGINT / SIGTERM /
+                                --run-timeout), the watchdog sleeps this
+                                long, then process::exit(2) if the binary
+                                hasn't already terminated. Default 5s.
+                                Set to 0 to disable.
+    -h, --help                  Print this message and exit.
 
-/// Test-output rendering strategy.
-///
-/// `Live` drives a bottom-of-terminal live region with one row pair per
-/// runtime slot (status + latest-output hint) plus an append-only history
-/// region above it (see `crate::output::render`). `Plain` skips the live
-/// region and prints linear append-only output suitable for log files and
-/// CI pipelines.
-///
-/// Resolution rules (in order): explicit `--output=<mode>` or `--plain`
-/// wins; otherwise `Live` iff stdout is a terminal AND the `CI`
-/// environment variable is unset; otherwise `Plain`. See
-/// [`OutputMode::resolve`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputMode {
-    /// Bottom-of-terminal live region + history above.
-    Live,
-    /// Linear append-only output, one line per event.
-    Plain,
-}
+ENVIRONMENT:
+    RUST_TEST_THREADS           Default for --test-threads when the flag
+                                is absent.
+    NO_COLOR                    If set (any value) and --color=auto, colour
+                                off.
+    FORCE_COLOR                 If set (any value), colour on regardless of
+                                --color and TTY status.
+    CI                          If set and --output is absent, selects
+                                --output=plain even on a TTY (CI log
+                                capture often can't render the live region).
 
-impl OutputMode {
-    /// Pick an [`OutputMode`] from an explicit user choice plus the
-    /// ambient environment. `explicit` comes from `--output=` / `--plain`;
-    /// `env` is the snapshot captured at startup (the `CI` key is used as
-    /// a "definitely not a human terminal" hint even when stdout IS a
-    /// TTY, because CI log capture frequently makes ANSI cursor-moves
-    /// unreadable downstream).
-    #[must_use]
-    #[inline]
-    pub fn resolve(explicit: Option<Self>, env: &BTreeMap<String, String>) -> Self {
-        if let Some(mode) = explicit {
-            return mode;
-        }
-        if io::stdout().is_terminal() && !env.contains_key("CI") {
-            Self::Live
-        } else {
-            Self::Plain
-        }
-    }
-}
+EXIT STATUS:
+    0   every test passed (or none ran).
+    1   at least one test failed, panicked, was cancelled, or timed out;
+        or a teardown failure fired.
+    2   runner setup error (output capture init, etc.).
+
+Unknown flags are preserved in Config::unparsed for downstream parsing
+by custom runtimes or test helpers \u{2014} they do not produce an error.
+";
 
 /// How `#[rudzio::test(benchmark = ...)]`-annotated tests should be run.
 ///
@@ -128,11 +110,6 @@ impl OutputMode {
 /// test runs its body once as a regular test.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BenchMode {
-    /// Default: run the body once as a regular test, ignore the
-    /// `benchmark = ...` argument. Keeps `cargo test` fast on CI while
-    /// still exercising the bench body for correctness.
-    #[default]
-    Smoke,
     /// `--bench`: dispatch each bench-annotated test through its
     /// strategy and render the resulting [`crate::bench::BenchReport`].
     /// Regular (non-benched) tests still run normally in this mode.
@@ -141,6 +118,47 @@ pub enum BenchMode {
     /// reported as ignored so the count still makes sense). Useful on
     /// slow CI where even the smoke run is too much.
     Skip,
+    /// Default: run the body once as a regular test, ignore the
+    /// `benchmark = ...` argument. Keeps `cargo test` fast on CI while
+    /// still exercising the bench body for correctness.
+    #[default]
+    Smoke,
+}
+
+/// Compile-time cargo metadata captured from `env!(...)` at the user's
+/// `#[rudzio::main]` expansion site. Lets test bodies resolve fixture
+/// paths relative to the test crate's manifest without calling out to
+/// `cargo` or parsing `Cargo.toml` at runtime.
+///
+/// Construct with the [`cargo_meta!`](crate::cargo_meta) macro — it
+/// expands to the `env!(...)` block in the caller's crate:
+///
+/// ```rust,ignore
+/// let meta = rudzio::cargo_meta!();
+/// ```
+#[derive(Debug, Clone)]
+pub struct CargoMeta {
+    /// `env!("CARGO_CRATE_NAME")` — the `pkg_name` with `-` replaced by
+    /// `_`, or the target name for renamed targets.
+    pub crate_name: String,
+    /// `env!("CARGO_MANIFEST_DIR")` — absolute path to the crate that
+    /// invoked `#[rudzio::main]`.
+    pub manifest_dir: PathBuf,
+    /// `env!("CARGO_PKG_NAME")`.
+    pub pkg_name: String,
+    /// `env!("CARGO_PKG_VERSION")`.
+    pub pkg_version: String,
+}
+
+/// ANSI colour policy for terminal output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorMode {
+    /// Force colour on.
+    Always,
+    /// Enable colour if stdout is a TTY and `NO_COLOR` is unset.
+    Auto,
+    /// Force colour off.
+    Never,
 }
 
 /// Resolved configuration for a test run, aggregating every CLI flag the
@@ -151,15 +169,29 @@ pub enum BenchMode {
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Positional filter — runs only tests whose name contains this substring.
-    pub filter: Option<String>,
-    /// `--skip=<substring>` entries. A test is excluded if its name contains
-    /// any of them.
-    pub skip_filters: Vec<String>,
-    /// OS worker-thread count the runtime should size its pool to. Resolved
-    /// from `--test-threads`, `RUST_TEST_THREADS`, or
-    /// [`thread::available_parallelism`] in that order.
-    pub threads: usize,
+    /// How `#[rudzio::test(benchmark = ...)]`-annotated tests are treated.
+    pub bench_mode: BenchMode,
+    /// `--cancel-grace-period=<secs>`. Layer-1 process-exit
+    /// safety net: after `root_token.cancel()` fires (SIGINT,
+    /// SIGTERM, or `--run-timeout`), a watchdog thread sleeps this
+    /// long, then `process::exit(2)` if the binary hasn't already
+    /// terminated. Catches the case where a sync-blocked task can't
+    /// be unblocked by any cooperative mechanism. `None` (encoded by
+    /// `--cancel-grace-period=0`) disables the watchdog.
+    ///
+    /// Defaults to `Some(5s)` — comfortably above `--phase-hang-grace`'s
+    /// 2s default so Layer 2 has a real chance to land before Layer 1
+    /// fires, and below the 10s SIGKILL grace period most CI systems
+    /// apply.
+    pub cancel_grace_period: Option<Duration>,
+    /// Compile-time cargo metadata from the crate whose `#[rudzio::main]`
+    /// kicked off this run. Non-optional on purpose: `manifest_dir` is
+    /// the kind of field where "maybe absent" is a trap. If you need a
+    /// `Config` outside `#[rudzio::main]`, construct one with
+    /// [`cargo_meta!`](crate::cargo_meta).
+    pub cargo: CargoMeta,
+    /// Colour policy.
+    pub color: ColorMode,
     /// Maximum number of tests dispatched concurrently per runtime group.
     /// This is the *scheduler* knob (how many futures are in-flight at
     /// once); [`Self::threads`] is the *executor* knob (how many OS
@@ -167,6 +199,34 @@ pub struct Config {
     /// [`Self::threads`] so single-flag invocations behave the same as
     /// libtest.
     pub concurrency_limit: usize,
+    /// Snapshot of every environment variable at runner start. `BTreeMap`
+    /// so iteration order is deterministic across runs.
+    pub env: BTreeMap<String, String>,
+    /// Positional filter — runs only tests whose name contains this substring.
+    pub filter: Option<String>,
+    /// Output format.
+    pub format: Format,
+    /// Shared [`HardLimit`] permit pool, constructed from
+    /// [`Self::parallel_hardlimit`]. Held behind an [`Arc`] so every
+    /// generated per-test fn (which only ever sees `&Config`) can acquire
+    /// against the same gate without threading an extra parameter through
+    /// the runner → owner → test-fn chain.
+    ///
+    /// `pub(crate)` rather than `pub` on purpose: the public knob is
+    /// [`Self::parallel_hardlimit`]; the Arc is an implementation detail
+    /// and may be replaced by a non-Arc construction if we later move to
+    /// scoped threads for test dispatch.
+    #[doc(hidden)]
+    pub hardlimit: Arc<HardLimit>,
+    /// `--help` / `-h`: print a usage message listing every recognised
+    /// flag and environment variable, then exit. Handled by the runner
+    /// (see `crate::runner::run`) so the help text reaches the real
+    /// terminal rather than the capture pipe.
+    pub help: bool,
+    /// `--list`: print test names and exit without running.
+    pub list: bool,
+    /// Rendering strategy for the runner's test output.
+    pub output_mode: OutputMode,
     /// Hard cap on the total number of rudzio-dispatched test bodies actively
     /// polling at once, **across every runtime group**. This is rudzio's
     /// third — and outermost — concurrency knob and it **composes** with the
@@ -216,39 +276,26 @@ pub struct Config {
     /// rather than papering over it — set the hardlimit at least as high
     /// as the largest current-thread `concurrency_limit` in your run.
     pub parallel_hardlimit: Option<NonZeroUsize>,
-    /// Shared [`HardLimit`] permit pool, constructed from
-    /// [`Self::parallel_hardlimit`]. Held behind an [`Arc`] so every
-    /// generated per-test fn (which only ever sees `&Config`) can acquire
-    /// against the same gate without threading an extra parameter through
-    /// the runner → owner → test-fn chain.
+    /// `--phase-hang-grace=<secs>`. Layer-2 grace window applied
+    /// *after* a phase blows its budget: the wrapper cancels the
+    /// phase token, then waits this long for the phase future to
+    /// drop voluntarily before escalating to `Hung` and firing the
+    /// runtime abort handle. `None` (encoded by `--phase-hang-grace=0`)
+    /// disables the escalation — phases that exceed their budget
+    /// stop at `TimedOut` and the binary relies on Layer 1 for any
+    /// remaining cleanup.
     ///
-    /// `pub(crate)` rather than `pub` on purpose: the public knob is
-    /// [`Self::parallel_hardlimit`]; the Arc is an implementation detail
-    /// and may be replaced by a non-Arc construction if we later move to
-    /// scoped threads for test dispatch.
-    #[doc(hidden)]
-    pub hardlimit: Arc<HardLimit>,
-    /// Output format.
-    pub format: Format,
-    /// Colour policy.
-    pub color: ColorMode,
+    /// Defaults to `Some(2s)` — short enough that pathological hangs
+    /// don't slow the tear-down significantly, long enough that
+    /// real-world cooperative cancellation has time to land.
+    pub phase_hang_grace: Option<Duration>,
     /// How `#[ignore]`d tests are treated.
     pub run_ignored: RunIgnoredMode,
-    /// How `#[rudzio::test(benchmark = ...)]`-annotated tests are treated.
-    pub bench_mode: BenchMode,
-    /// Rendering strategy for the runner's test output.
-    pub output_mode: OutputMode,
-    /// `--list`: print test names and exit without running.
-    pub list: bool,
-    /// `--help` / `-h`: print a usage message listing every recognised
-    /// flag and environment variable, then exit. Handled by the runner
-    /// (see `crate::runner::run`) so the help text reaches the real
-    /// terminal rather than the capture pipe.
-    pub help: bool,
-    /// `--test-timeout=<secs>`. `None` = unbounded.
-    pub test_timeout: Option<Duration>,
     /// `--run-timeout=<secs>`. `None` = unbounded.
     pub run_timeout: Option<Duration>,
+    /// `--skip=<substring>` entries. A test is excluded if its name contains
+    /// any of them.
+    pub skip_filters: Vec<String>,
     /// `--suite-setup-timeout=<secs>`. Default budget for `Suite::setup`.
     /// `None` = unbounded.
     pub suite_setup_timeout: Option<Duration>,
@@ -263,58 +310,67 @@ pub struct Config {
     /// `Test::teardown`. Overridden per-test by
     /// `#[rudzio::test(teardown_timeout = ...)]`. `None` = unbounded.
     pub test_teardown_timeout: Option<Duration>,
-    /// `--phase-hang-grace=<secs>`. Layer-2 grace window applied
-    /// *after* a phase blows its budget: the wrapper cancels the
-    /// phase token, then waits this long for the phase future to
-    /// drop voluntarily before escalating to `Hung` and firing the
-    /// runtime abort handle. `None` (encoded by `--phase-hang-grace=0`)
-    /// disables the escalation — phases that exceed their budget
-    /// stop at `TimedOut` and the binary relies on Layer 1 for any
-    /// remaining cleanup.
-    ///
-    /// Defaults to `Some(2s)` — short enough that pathological hangs
-    /// don't slow the tear-down significantly, long enough that
-    /// real-world cooperative cancellation has time to land.
-    pub phase_hang_grace: Option<Duration>,
-    /// `--cancel-grace-period=<secs>`. Layer-1 process-exit
-    /// safety net: after `root_token.cancel()` fires (SIGINT,
-    /// SIGTERM, or `--run-timeout`), a watchdog thread sleeps this
-    /// long, then `process::exit(2)` if the binary hasn't already
-    /// terminated. Catches the case where a sync-blocked task can't
-    /// be unblocked by any cooperative mechanism. `None` (encoded by
-    /// `--cancel-grace-period=0`) disables the watchdog.
-    ///
-    /// Defaults to `Some(5s)` — comfortably above `--phase-hang-grace`'s
-    /// 2s default so Layer 2 has a real chance to land before Layer 1
-    /// fires, and below the 10s SIGKILL grace period most CI systems
-    /// apply.
-    pub cancel_grace_period: Option<Duration>,
+    /// `--test-timeout=<secs>`. `None` = unbounded.
+    pub test_timeout: Option<Duration>,
+    /// OS worker-thread count the runtime should size its pool to. Resolved
+    /// from `--test-threads`, `RUST_TEST_THREADS`, or
+    /// [`thread::available_parallelism`] in that order.
+    pub threads: usize,
     /// CLI arguments the runner did not recognise, preserved verbatim for
     /// downstream parsing by user code / custom runtimes.
     pub unparsed: Vec<String>,
-    /// Snapshot of every environment variable at runner start. `BTreeMap`
-    /// so iteration order is deterministic across runs.
-    pub env: BTreeMap<String, String>,
-    /// Compile-time cargo metadata from the crate whose `#[rudzio::main]`
-    /// kicked off this run. Non-optional on purpose: `manifest_dir` is
-    /// the kind of field where "maybe absent" is a trap. If you need a
-    /// `Config` outside `#[rudzio::main]`, construct one with
-    /// [`cargo_meta!`](crate::cargo_meta).
-    pub cargo: CargoMeta,
+}
+
+/// Output rendering style.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    /// One line per test with status and elapsed time.
+    Pretty,
+    /// One character per test (`.`/`F`/`c`/`i`) on a single line.
+    Terse,
+}
+
+/// Test-output rendering strategy.
+///
+/// `Live` drives a bottom-of-terminal live region with one row pair per
+/// runtime slot (status + latest-output hint) plus an append-only history
+/// region above it (see `crate::output::render`). `Plain` skips the live
+/// region and prints linear append-only output suitable for log files and
+/// CI pipelines.
+///
+/// Resolution rules (in order): explicit `--output=<mode>` or `--plain`
+/// wins; otherwise `Live` iff stdout is a terminal AND the `CI`
+/// environment variable is unset; otherwise `Plain`. See
+/// [`OutputMode::resolve`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputMode {
+    /// Bottom-of-terminal live region + history above.
+    Live,
+    /// Linear append-only output, one line per event.
+    Plain,
+}
+
+/// How `#[ignore]`d tests should be treated for this run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunIgnoredMode {
+    /// `--include-ignored`: run every test, ignored or not.
+    Include,
+    /// Default: skip tests marked `#[ignore]`, report them as ignored.
+    Normal,
+    /// `--ignored`: only run ignored tests.
+    Only,
 }
 
 impl Config {
-    /// Read from `env::args()` and the whole process environment. Unknown
-    /// flags are preserved in [`Self::unparsed`] instead of being dropped.
-    /// `cargo` comes from the call site via [`cargo_meta!`](crate::cargo_meta)
-    /// because the relevant values are only available as compile-time
-    /// `env!(...)` expansions in the user's crate.
+    /// Acquire one permit from the process-wide parallel-execution gate.
+    /// Intended for macro-generated per-test code — users shouldn't need
+    /// to call this directly. Returns a no-op guard when the gate is
+    /// disabled ([`Self::parallel_hardlimit`] is `None`).
+    #[doc(hidden)]
     #[must_use]
     #[inline]
-    pub fn parse(cargo: CargoMeta) -> Self {
-        let argv: Vec<String> = env::args().skip(1).collect();
-        let env_snapshot: BTreeMap<String, String> = env::vars().collect();
-        Self::from_argv_and_env(argv, env_snapshot, cargo)
+    pub fn acquire_hardlimit_permit(&self) -> HardLimitGuard<'_> {
+        self.hardlimit.acquire()
     }
 
     /// Test-friendly parser. Takes argv + env explicitly so unit tests can
@@ -328,11 +384,11 @@ impl Config {
     ) -> Self {
         #[derive(Clone, Copy, Default)]
         enum HardlimitArg {
+            Disabled,
+            Explicit(NonZeroUsize),
+            Threads,
             #[default]
             Unset,
-            Disabled,
-            Threads,
-            Explicit(NonZeroUsize),
         }
 
         fn classify_hardlimit(text: &str) -> Option<HardlimitArg> {
@@ -632,120 +688,64 @@ impl Config {
         let hardlimit = Arc::new(HardLimit::new(parallel_hardlimit));
 
         Self {
-            filter,
-            skip_filters,
-            threads,
-            concurrency_limit,
-            parallel_hardlimit,
-            hardlimit,
-            format,
-            color,
-            run_ignored,
             bench_mode,
-            output_mode,
-            list,
+            cancel_grace_period,
+            cargo,
+            color,
+            concurrency_limit,
+            env,
+            filter,
+            format,
+            hardlimit,
             help,
-            test_timeout,
+            list,
+            output_mode,
+            parallel_hardlimit,
+            phase_hang_grace,
+            run_ignored,
             run_timeout,
+            skip_filters,
             suite_setup_timeout,
             suite_teardown_timeout,
             test_setup_timeout,
             test_teardown_timeout,
-            phase_hang_grace,
-            cancel_grace_period,
+            test_timeout,
+            threads,
             unparsed,
-            env,
-            cargo,
         }
     }
 
-    /// Acquire one permit from the process-wide parallel-execution gate.
-    /// Intended for macro-generated per-test code — users shouldn't need
-    /// to call this directly. Returns a no-op guard when the gate is
-    /// disabled ([`Self::parallel_hardlimit`] is `None`).
-    #[doc(hidden)]
+    /// Read from `env::args()` and the whole process environment. Unknown
+    /// flags are preserved in [`Self::unparsed`] instead of being dropped.
+    /// `cargo` comes from the call site via [`cargo_meta!`](crate::cargo_meta)
+    /// because the relevant values are only available as compile-time
+    /// `env!(...)` expansions in the user's crate.
     #[must_use]
     #[inline]
-    pub fn acquire_hardlimit_permit(&self) -> HardLimitGuard<'_> {
-        self.hardlimit.acquire()
+    pub fn parse(cargo: CargoMeta) -> Self {
+        let argv: Vec<String> = env::args().skip(1).collect();
+        let env_snapshot: BTreeMap<String, String> = env::vars().collect();
+        Self::from_argv_and_env(argv, env_snapshot, cargo)
     }
 }
 
-/// Human-readable usage string emitted by `--help` / `-h`. Lives on
-/// `Config` so the runner and any custom aggregator (hand-rolled
-/// `#[rudzio::main]` call site) print the same canonical text.
-pub const USAGE: &str = "\
-rudzio test runner
-
-USAGE:
-    <test-binary> [OPTIONS] [FILTER]
-
-ARGUMENTS:
-    <FILTER>                    Positional substring; only tests whose name
-                                contains this substring run. Combine with
-                                --skip to carve out a complementary subset.
-
-OPTIONS:
-    --skip <SUBSTRING>          Exclude tests whose name contains <SUBSTRING>.
-                                Repeatable \u{2014} accumulates across occurrences.
-    --ignored                   Only run tests marked #[ignore].
-    --include-ignored           Run every test, ignored or not.
-    --bench                     Dispatch #[rudzio::test(benchmark=...)] tests
-                                through their strategy. Non-bench tests still
-                                run.
-    --no-bench                  Skip bench-annotated tests (reported as
-                                ignored).
-    --list                      Print test names (one per line, libtest
-                                format) and exit without running anything.
-    --test-threads <N>          OS worker-thread count runtimes size their
-                                pool to. Defaults to RUST_TEST_THREADS, else
-                                std::thread::available_parallelism().
-    --concurrency-limit <N>     Max in-flight tests per runtime group.
-                                Defaults to --test-threads.
-    --format <pretty|terse>     Output format. Default: pretty.
-    --color <auto|always|never> ANSI colour policy. Default: auto.
-    --output <live|plain>       Output rendering. 'live' = bottom-of-terminal
-                                live region + history above (default on TTY
-                                with CI unset). 'plain' = linear append-only
-                                (default off-TTY or under CI).
-    --plain                     Shorthand for --output=plain.
-    --test-timeout <SECS>       Per-test budget. On expiry, the per-test
-                                cancellation token fires and teardown runs.
-    --run-timeout <SECS>        Whole-run budget. Cancels the root token;
-                                in-flight tests wind down, queued tests are
-                                reported as cancelled, teardowns run.
-    --phase-hang-grace <SECS>   Layer-2 grace after a phase exceeds its
-                                budget. The phase token is cancelled and
-                                the future is given this long to drop
-                                voluntarily before the wrapper escalates
-                                to [HANG] and fires the abort handle.
-                                Default 2s. Set to 0 to disable.
-    --cancel-grace-period <SECS>
-                                Layer-1 process-exit safety net. After
-                                root cancellation (SIGINT / SIGTERM /
-                                --run-timeout), the watchdog sleeps this
-                                long, then process::exit(2) if the binary
-                                hasn't already terminated. Default 5s.
-                                Set to 0 to disable.
-    -h, --help                  Print this message and exit.
-
-ENVIRONMENT:
-    RUST_TEST_THREADS           Default for --test-threads when the flag
-                                is absent.
-    NO_COLOR                    If set (any value) and --color=auto, colour
-                                off.
-    FORCE_COLOR                 If set (any value), colour on regardless of
-                                --color and TTY status.
-    CI                          If set and --output is absent, selects
-                                --output=plain even on a TTY (CI log
-                                capture often can't render the live region).
-
-EXIT STATUS:
-    0   every test passed (or none ran).
-    1   at least one test failed, panicked, was cancelled, or timed out;
-        or a teardown failure fired.
-    2   runner setup error (output capture init, etc.).
-
-Unknown flags are preserved in Config::unparsed for downstream parsing
-by custom runtimes or test helpers \u{2014} they do not produce an error.
-";
+impl OutputMode {
+    /// Pick an [`OutputMode`] from an explicit user choice plus the
+    /// ambient environment. `explicit` comes from `--output=` / `--plain`;
+    /// `env` is the snapshot captured at startup (the `CI` key is used as
+    /// a "definitely not a human terminal" hint even when stdout IS a
+    /// TTY, because CI log capture frequently makes ANSI cursor-moves
+    /// unreadable downstream).
+    #[must_use]
+    #[inline]
+    pub fn resolve(explicit: Option<Self>, env: &BTreeMap<String, String>) -> Self {
+        if let Some(mode) = explicit {
+            return mode;
+        }
+        if io::stdout().is_terminal() && !env.contains_key("CI") {
+            Self::Live
+        } else {
+            Self::Plain
+        }
+    }
+}

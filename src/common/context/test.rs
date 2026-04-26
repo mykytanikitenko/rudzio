@@ -35,9 +35,9 @@ where
     ) -> Self {
         Self {
             cancel,
+            config,
             rt,
             tracker,
-            config,
         }
     }
 }
