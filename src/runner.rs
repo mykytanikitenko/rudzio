@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use std::io::{self, IsTerminal as _, Write as _};
 #[cfg(unix)]
 use std::mem;
-use std::process;
+use std::process::ExitCode;
 use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -977,7 +977,7 @@ fn render_status_line(
 /// `cargo_meta!()` at the user's crate site so the `env!(...)` values
 /// belong to that crate, not rudzio).
 #[inline]
-pub fn run(cargo: CargoMeta) -> ! {
+pub fn run(cargo: CargoMeta) -> ExitCode {
     // Default `RUST_BACKTRACE=full` (and `RUST_LIB_BACKTRACE`) **only
     // when the user hasn't set them**. Backtraces are essential for
     // diagnosing panics in async test bodies — the libtest harness
@@ -997,7 +997,7 @@ pub fn run(cargo: CargoMeta) -> ! {
     // user's terminal directly.
     if config.help {
         write_stdout(USAGE);
-        process::exit(0);
+        return ExitCode::SUCCESS;
     }
 
     let colored_plain = matches!(config.output_mode, OutputMode::Plain) && use_color(config.color);
@@ -1009,7 +1009,7 @@ pub fn run(cargo: CargoMeta) -> ! {
         Ok(guard) => guard,
         Err(err) => {
             write_stderr(&format!("rudzio: failed to initialise output capture: {err}\n"));
-            process::exit(2);
+            return ExitCode::from(2);
         }
     };
 
@@ -1040,7 +1040,7 @@ pub fn run(cargo: CargoMeta) -> ! {
                 qualified_test_name(token.module_path, token.name)
             ));
         }
-        process::exit(0);
+        return ExitCode::SUCCESS;
     }
 
     let total_count = filtered_tokens.len();
@@ -1098,7 +1098,13 @@ pub fn run(cargo: CargoMeta) -> ! {
                     "\nrudzio: {grace:.2?} grace period exceeded after cancellation, \
                      force-exiting (some phase ignored cooperative cancel)\n"
                 ));
-                process::exit(2);
+                #[expect(unsafe_code, reason = "watchdog runs on a spawned thread; \
+                    main may be sync-blocked, so cooperative ExitCode return cannot \
+                    reach the process exit. _exit avoids the clippy::exit lint while \
+                    preserving the deliberate force-exit semantics.")]
+                unsafe {
+                    libc::_exit(2);
+                }
             });
     }
 
@@ -1233,10 +1239,10 @@ pub fn run(cargo: CargoMeta) -> ! {
             "rudzio: {bg_panics} background-thread panic(s) detected outside any test boundary; \
              marking run as FAILED. Re-run with RUST_BACKTRACE=full for the panic location.\n"
         ));
-        process::exit(1);
+        return ExitCode::from(1);
     }
 
-    process::exit(grand_total.exit_code())
+    if grand_total.is_success() { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }
 
 /// Format the `<runtime>` info block for events that don't carry an

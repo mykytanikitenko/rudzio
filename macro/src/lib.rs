@@ -33,11 +33,11 @@ pub fn main(args: TokenStream, input: TokenStream) -> TokenStream {
         Err(err) => return err.to_compile_error().into(),
     };
     quote::quote! {
-        fn main() {
+        fn main() -> ::std::process::ExitCode {
             // `cargo_meta!()` expands to `env!(CARGO_MANIFEST_DIR)` etc.
             // at THIS call site (the user's crate), so `manifest_dir`
             // resolves to the user's package, not to rudzio's.
-            ::rudzio::run(::rudzio::cargo_meta!());
+            ::rudzio::run(::rudzio::cargo_meta!())
         }
     }
     .into()
