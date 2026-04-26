@@ -6,7 +6,7 @@
 //! `rudzio-macro` wrapper handles the `proc_macro::TokenStream` boundary
 //! and delegates to these entry points.
 
-pub mod args;
 pub mod codegen;
+pub mod parse;
 pub mod suite_codegen;
 pub mod transform;

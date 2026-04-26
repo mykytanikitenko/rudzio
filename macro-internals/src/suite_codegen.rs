@@ -3,14 +3,26 @@ use quote::{format_ident, quote};
 use syn::token::{Paren, Pub};
 use syn::{Ident, Item, ItemFn, ItemMod, Path};
 
-use crate::args::{MainArgs, RuntimeConfig};
+use crate::parse::{MainArgs, RuntimeConfig};
 use crate::codegen::{extract_ignore_reason, extract_test_attr_args};
 use crate::transform::{
-    CtxKind, classify_ctx_param, has_test_attr, is_async_fn, is_test_attr, transform_test_signature,
+    CtxKind, classify_ctx_param, has_test_attr, is_async_fn, is_test_attr, apply_runtime_generics,
 };
 
+/// Expand a `#[rudzio::suite([...])] mod ... { ... }` invocation into the
+/// fully wired per-runtime helper items, lifecycle/test statics, and
+/// rewritten test module.
+///
+/// # Errors
+///
+/// Returns `Err(syn::Error)` when:
+/// - the input module has no body (the user wrote `mod foo;` instead
+///   of `mod foo { ... }`),
+/// - the module body contains no `#[rudzio::test]`-annotated functions,
+/// - or any per-test attribute body fails to parse (propagated from
+///   [`crate::codegen::extract_test_attr_args`]).
 #[inline]
-pub fn expand_suite(args: MainArgs, input_mod: ItemMod) -> syn::Result<TokenStream> {
+pub fn expand_suite(args: &MainArgs, input_mod: ItemMod) -> syn::Result<TokenStream> {
     let items = match &input_mod.content {
         Some((_, items)) => items.clone(),
         None => {
@@ -42,7 +54,7 @@ pub fn expand_suite(args: MainArgs, input_mod: ItemMod) -> syn::Result<TokenStre
                     )))),
                 });
                 modified.attrs.retain(|attr| !is_test_attr(attr));
-                modified = transform_test_signature(modified);
+                modified = apply_runtime_generics(modified);
                 return Item::Fn(modified);
             }
             item.clone()
@@ -532,18 +544,18 @@ fn generate_per_config(
         // Per-test attribute overrides emitted as `Option<u64>` constants;
         // the runtime-side resolver computes
         // `override.map(Duration::from_secs).or(config.<phase>_timeout)`.
-        let attr_test_timeout_secs = match attr_args.timeout_secs {
-            Some(n) => quote! { ::core::option::Option::Some(#n) },
-            None => quote! { ::core::option::Option::None },
-        };
-        let attr_setup_timeout_secs = match attr_args.setup_timeout_secs {
-            Some(n) => quote! { ::core::option::Option::Some(#n) },
-            None => quote! { ::core::option::Option::None },
-        };
-        let attr_teardown_timeout_secs = match attr_args.teardown_timeout_secs {
-            Some(n) => quote! { ::core::option::Option::Some(#n) },
-            None => quote! { ::core::option::Option::None },
-        };
+        let attr_test_timeout_secs = attr_args.timeout_secs.map_or_else(
+            || quote! { ::core::option::Option::None },
+            |secs| quote! { ::core::option::Option::Some(#secs) },
+        );
+        let attr_setup_timeout_secs = attr_args.setup_timeout_secs.map_or_else(
+            || quote! { ::core::option::Option::None },
+            |secs| quote! { ::core::option::Option::Some(#secs) },
+        );
+        let attr_teardown_timeout_secs = attr_args.teardown_timeout_secs.map_or_else(
+            || quote! { ::core::option::Option::None },
+            |secs| quote! { ::core::option::Option::Some(#secs) },
+        );
         // `proc_macro2::Span::start().line` is available on stable and returns
         // line tracking from the compiler in proc-macro context and from
         // proc-macro2's own tracking (e.g. `syn::parse_str`) in regular

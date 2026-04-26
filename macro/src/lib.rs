@@ -6,7 +6,7 @@ use proc_macro::TokenStream;
 
 use proc_macro2::Span;
 use proc_macro2::TokenStream as TokenStream2;
-use rudzio_macro_internals::args::MainArgs;
+use rudzio_macro_internals::parse::MainArgs;
 use rudzio_macro_internals::suite_codegen::expand_suite;
 
 #[inline]
@@ -56,7 +56,7 @@ pub fn suite(args: TokenStream, input: TokenStream) -> TokenStream {
         Err(err) => return err.to_compile_error().into(),
     };
 
-    match expand_suite(parsed_args, input_mod) {
+    match expand_suite(&parsed_args, input_mod) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }

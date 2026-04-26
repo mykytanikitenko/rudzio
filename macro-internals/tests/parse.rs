@@ -2,7 +2,7 @@
 //! test body runs under rudzio's own runner.
 
 use quote::ToTokens;
-use rudzio_macro_internals::args::RuntimeConfig;
+use rudzio_macro_internals::parse::RuntimeConfig;
 
 fn render(p: &impl ToTokens) -> String {
     p.to_token_stream().to_string().replace(' ', "")

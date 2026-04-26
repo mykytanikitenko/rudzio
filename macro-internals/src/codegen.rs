@@ -21,6 +21,11 @@ pub struct TestAttrArgs {
 /// Back-compat thin wrapper: callers that only care about the
 /// `benchmark = ...` slot can keep using this without unpacking the
 /// full struct.
+///
+/// # Errors
+///
+/// Propagates any parse failure from [`extract_test_attr_args`] —
+/// unknown attribute keywords or malformed values.
 #[inline]
 pub fn extract_benchmark_expr(func: &ItemFn) -> syn::Result<Option<Expr>> {
     extract_test_attr_args(func).map(|args| args.benchmark)
@@ -31,6 +36,7 @@ pub fn extract_benchmark_expr(func: &ItemFn) -> syn::Result<Option<Expr>> {
 /// Accepts every form rustc accepts (`#[ignore]`, `#[ignore = "..."]`,
 /// `#[ignore("...")]`, `#[ignore(reason = "...")]`).
 #[inline]
+#[must_use]
 pub fn extract_ignore_reason(func: &ItemFn) -> (bool, String) {
     for attr in &func.attrs {
         if !attr.path().is_ident("ignore") {
@@ -71,6 +77,14 @@ pub fn extract_ignore_reason(func: &ItemFn) -> (bool, String) {
 /// bodies surface as `Err(syn::Error)` so the compiler points straight
 /// at the offending token instead of the macro losing the signal
 /// silently.
+///
+/// # Errors
+///
+/// Returns `Err(syn::Error)` when an attribute body contains an
+/// unknown keyword (anything other than `benchmark`, `timeout`,
+/// `setup_timeout`, `teardown_timeout`) or when a value fails to
+/// parse as the expected type (e.g. a non-integer literal in a
+/// `*_timeout = ...` slot).
 #[inline]
 pub fn extract_test_attr_args(func: &ItemFn) -> syn::Result<TestAttrArgs> {
     let mut args = TestAttrArgs::default();

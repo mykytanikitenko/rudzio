@@ -2,8 +2,8 @@
 //! `rudzio-macro-internals` crate. `linkme` collects every `#[rudzio::test]`
 //! across the submodules below into one process.
 
-mod args;
 mod codegen;
+mod parse;
 mod test_attr_args;
 mod transform;
 

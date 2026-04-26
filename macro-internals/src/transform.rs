@@ -20,11 +20,13 @@ pub enum CtxKind {
 }
 
 /// Inspect `func`'s first parameter and classify it into a [`CtxKind`].
+///
 /// Non-reference and typed-self parameters (unusual in test fns but
 /// possible) are treated as [`CtxKind::None`] — the codegen calls the
 /// fn with no arguments in those cases, which will fail to compile
 /// loudly rather than silently wire up a `&ctx`.
 #[inline]
+#[must_use]
 pub fn classify_ctx_param(func: &ItemFn) -> CtxKind {
     let Some(first) = func.sig.inputs.first() else {
         return CtxKind::None;
@@ -45,16 +47,22 @@ pub fn classify_ctx_param(func: &ItemFn) -> CtxKind {
 /// Returns `true` when `func` carries any attribute the suite macro
 /// recognises as a test marker (`#[test]` or `#[rudzio::test]`).
 #[inline]
+#[must_use]
 pub fn has_test_attr(func: &ItemFn) -> bool {
     func.attrs.iter().any(is_test_attr)
 }
 
+/// Returns `true` when `func` is declared `async fn`.
 #[inline]
-pub fn is_async_fn(func: &ItemFn) -> bool {
+#[must_use]
+pub const fn is_async_fn(func: &ItemFn) -> bool {
     func.sig.asyncness.is_some()
 }
 
+/// Returns `true` when `attr` is one of the test markers the suite
+/// macro recognises (`#[test]` or `#[rudzio::test]`).
 #[inline]
+#[must_use]
 pub fn is_test_attr(attr: &Attribute) -> bool {
     attr.path().is_ident("test")
         || (attr.path().segments.len() == 2 && {
@@ -66,12 +74,14 @@ pub fn is_test_attr(attr: &Attribute) -> bool {
 }
 
 /// `true` if the function's return type is `()` — either left off
-/// entirely (`fn foo()`) or written out (`fn foo() -> ()`). Drives the
-/// `#[rudzio::test]` dispatch: void-return bodies get wrapped in a
-/// trailing `Ok(())` so the surrounding `.map_err(...)` chain still
-/// type-checks, letting users write bare libtest-shaped tests without
-/// thinking about Result.
+/// entirely (`fn foo()`) or written out (`fn foo() -> ()`).
+///
+/// Drives the `#[rudzio::test]` dispatch: void-return bodies get
+/// wrapped in a trailing `Ok(())` so the surrounding `.map_err(...)`
+/// chain still type-checks, letting users write bare libtest-shaped
+/// tests without thinking about Result.
 #[inline]
+#[must_use]
 pub fn returns_unit(func: &ItemFn) -> bool {
     match &func.sig.output {
         syn::ReturnType::Default => true,
@@ -102,7 +112,8 @@ pub fn returns_unit(func: &ItemFn) -> bool {
 ///
 /// If the context type already has generic arguments, leaves it unchanged.
 #[inline]
-pub fn transform_test_signature(mut func: ItemFn) -> ItemFn {
+#[must_use]
+pub fn apply_runtime_generics(mut func: ItemFn) -> ItemFn {
     use proc_macro2::Span;
 
     let should_transform = if let Some(first_param) = func.sig.inputs.first()

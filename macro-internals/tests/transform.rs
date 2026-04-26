@@ -2,7 +2,7 @@
 
 use syn::{ItemFn, parse_quote};
 
-use rudzio_macro_internals::transform::transform_test_signature;
+use rudzio_macro_internals::transform::apply_runtime_generics;
 
 #[rudzio::suite([
     (
@@ -12,7 +12,7 @@ use rudzio_macro_internals::transform::transform_test_signature;
     ),
 ])]
 mod tests {
-    use super::{ItemFn, parse_quote, transform_test_signature};
+    use super::{ItemFn, parse_quote, apply_runtime_generics};
     use rudzio::common::context::Test;
 
     #[rudzio::test]
@@ -23,7 +23,7 @@ mod tests {
             }
         };
 
-        let transformed = transform_test_signature(func);
+        let transformed = apply_runtime_generics(func);
 
         anyhow::ensure!(!transformed.sig.generics.params.is_empty());
 
@@ -65,7 +65,7 @@ mod tests {
             }
         };
 
-        let transformed = transform_test_signature(func);
+        let transformed = apply_runtime_generics(func);
 
         anyhow::ensure!(
             transformed.sig.generics.params.is_empty(),
@@ -106,7 +106,7 @@ mod tests {
             }
         };
 
-        let transformed = transform_test_signature(func);
+        let transformed = apply_runtime_generics(func);
 
         anyhow::ensure!(!transformed.sig.generics.params.is_empty());
 
@@ -142,7 +142,7 @@ mod tests {
             }
         };
 
-        let transformed = transform_test_signature(func);
+        let transformed = apply_runtime_generics(func);
 
         anyhow::ensure!(
             transformed.sig.generics.params.is_empty(),
@@ -159,7 +159,7 @@ mod tests {
             }
         };
 
-        let transformed = transform_test_signature(func);
+        let transformed = apply_runtime_generics(func);
 
         anyhow::ensure!(
             transformed.sig.generics.params.is_empty(),
