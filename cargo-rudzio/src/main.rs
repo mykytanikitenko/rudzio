@@ -4,7 +4,7 @@
     reason = "toml_edit's insert/push API routinely returns the previous value; CLI glue does not care about the dropped option"
 )]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use anyhow::{Context as _, Result, bail};
@@ -78,7 +78,11 @@ fn run_generate(rest: &[String]) -> Result<()> {
 }
 
 fn run_test(rest: &[String]) -> Result<ExitCode> {
-    let plan = generate::plan_from_cwd()?;
+    let (path_args, runner_args) = split_path_args(rest);
+    let mut plan = generate::plan_from_cwd()?;
+    if !path_args.is_empty() {
+        plan.restrict_to_paths(&path_args)?;
+    }
     emit_diagnostic_warnings(&plan);
     let target = plan.default_output_dir();
     generate::write_runner(&plan, &target)?;
@@ -92,13 +96,44 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
         .arg("--manifest-path")
         .arg(&manifest)
         .arg("--")
-        .args(rest)
+        .args(&runner_args)
         .status()
         .with_context(|| format!("failed to spawn cargo run --manifest-path {}", manifest.display()))?;
     Ok(match status.code() {
         Some(code) => ExitCode::from(u8::try_from(code & 0xFF).unwrap_or(1)),
         None => ExitCode::from(1),
     })
+}
+
+/// Split positional `cargo rudzio test` args into directory paths
+/// (used to restrict the aggregator to a subset of workspace members)
+/// and runner-bound args (filters, --skip, etc., forwarded verbatim).
+///
+/// An arg counts as a path iff it is path-shaped (starts with `./`,
+/// `../`, `/`, or is exactly `.` / `..`) AND resolves to a directory
+/// on disk. The disk check guards against runner filters that happen
+/// to look path-shaped — rudzio test names use `::`, so a real path
+/// arg practically must exist as a directory at the time of the run.
+fn split_path_args(rest: &[String]) -> (Vec<PathBuf>, Vec<String>) {
+    let mut paths = Vec::new();
+    let mut runner = Vec::new();
+    for arg in rest {
+        if is_existing_dir_path_arg(arg) {
+            paths.push(PathBuf::from(arg));
+        } else {
+            runner.push(arg.clone());
+        }
+    }
+    (paths, runner)
+}
+
+fn is_existing_dir_path_arg(s: &str) -> bool {
+    let path_shaped = s == "."
+        || s == ".."
+        || s.starts_with("./")
+        || s.starts_with("../")
+        || s.starts_with('/');
+    path_shaped && Path::new(s).is_dir()
 }
 
 /// Print warnings from the src-scan diagnostic pass before the

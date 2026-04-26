@@ -151,6 +151,39 @@ impl Plan {
     pub fn default_output_dir(&self) -> PathBuf {
         PathBuf::from(self.target_directory.as_std_path()).join(AGGREGATOR_NAME)
     }
+
+    /// Drop every member whose manifest dir is not at-or-under any of
+    /// `roots` (recursive: a member at `roots[i]/sub/sub` still matches).
+    /// Returns Err if no member survives — saves the user from a silent
+    /// "0 tests" run when their path typo'd.
+    pub fn restrict_to_paths(&mut self, roots: &[PathBuf]) -> Result<()> {
+        let abs_roots: Vec<PathBuf> = roots.iter().map(|p| canonicalize_or_keep(p)).collect();
+        self.members.retain(|m| {
+            let abs = canonicalize_or_keep(&m.manifest_dir);
+            member_under_any_root(&abs, &abs_roots)
+        });
+        if self.members.is_empty() {
+            let shown = roots
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!("no rudzio crates found at-or-under: {shown}");
+        }
+        Ok(())
+    }
+}
+
+/// Pure helper: is `member_dir` at-or-under any path in `roots`? Both
+/// sides are expected to be already-canonicalized absolute paths so
+/// comparison is component-wise. Lifted out of [`Plan::restrict_to_paths`]
+/// so it's testable without touching the filesystem.
+pub fn member_under_any_root(member_dir: &Path, roots: &[PathBuf]) -> bool {
+    roots.iter().any(|root| member_dir.starts_with(root))
+}
+
+fn canonicalize_or_keep(p: &Path) -> PathBuf {
+    fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
 fn build_plan(metadata: &Metadata) -> Result<Plan> {

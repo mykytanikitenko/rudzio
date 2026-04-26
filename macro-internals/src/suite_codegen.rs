@@ -207,6 +207,18 @@ fn generate_per_config(
                     }
                 }
 
+                // Nothing to run — every token was filtered to ignored or
+                // bench-skipped. Skip the runtime's block_on entirely so we
+                // don't pay setup/teardown cost for a suite with no active
+                // tests. Tokens filtered out by the runner's positional /
+                // --skip filters never reach here at all (the runner drops
+                // their group from dispatch); this guard handles the
+                // remaining case where every reaching token was classified
+                // out above.
+                if active.is_empty() {
+                    return summary;
+                }
+
                 // Step 3: drive the suite under the runtime's own block_on.
                 // Borrows of `&rt` and `&suite` are scoped to this call;
                 // every lifetime here is tied to the local stack frame.

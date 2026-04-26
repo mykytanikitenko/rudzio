@@ -6,8 +6,9 @@ use cargo_rudzio::generate::{
     DevDepSpec, GitRef, MemberPlan, Plan, RudzioLocation, RudzioSpec, WorkspaceDepSpec,
     bridge_applies_to, bridge_dir_name, bridge_package_name, build_bridge_build_rs,
     build_bridge_cargo_toml, build_main_rs, build_rudzio_inline_table, collect_rudzio_spec,
-    detect_src_rudzio_suite, load_rudzio_activated_features, scan_unbroadened_cfg_test_mods,
-    scan_unbroadened_cfg_test_mods_in_plan, write_bridge_crate, write_runner,
+    detect_src_rudzio_suite, load_rudzio_activated_features, member_under_any_root,
+    scan_unbroadened_cfg_test_mods, scan_unbroadened_cfg_test_mods_in_plan, write_bridge_crate,
+    write_runner,
 };
 
 fn member(name: &str, dev_deps: Vec<DevDepSpec>) -> MemberPlan {
@@ -71,9 +72,9 @@ mod tests {
         BTreeMap, DevDepSpec, GitRef, Path, RudzioLocation, RudzioSpec, WorkspaceDepSpec,
         bridge_applies_to, bridge_dir_name, bridge_package_name, build_bridge_build_rs,
         build_bridge_cargo_toml, build_main_rs, build_rudzio_inline_table, collect_rudzio_spec,
-        detect_src_rudzio_suite, load_rudzio_activated_features, member, plan_with_members,
-        rudzio_dep, scan_unbroadened_cfg_test_mods, scan_unbroadened_cfg_test_mods_in_plan,
-        write_bridge_crate, write_runner, ws_root,
+        detect_src_rudzio_suite, load_rudzio_activated_features, member,
+        member_under_any_root, plan_with_members, rudzio_dep, scan_unbroadened_cfg_test_mods,
+        scan_unbroadened_cfg_test_mods_in_plan, write_bridge_crate, write_runner, ws_root,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -1554,6 +1555,106 @@ mod tests {
         anyhow::ensure!(
             err.to_string().contains("features") && err.to_string().contains("array"),
             "error must mention `features` and `array`, got: {err}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn member_under_any_root_exact_match() -> anyhow::Result<()> {
+        anyhow::ensure!(member_under_any_root(
+            &PathBuf::from("/ws/crate-a"),
+            &[PathBuf::from("/ws/crate-a")],
+        ));
+        Ok(())
+    }
+
+    // Recursive: a sub-crate at `/ws/crate-a/sub` is under `/ws/crate-a`.
+    #[rudzio::test]
+    fn member_under_any_root_descendant_match() -> anyhow::Result<()> {
+        anyhow::ensure!(member_under_any_root(
+            &PathBuf::from("/ws/crate-a/sub/leaf"),
+            &[PathBuf::from("/ws/crate-a")],
+        ));
+        Ok(())
+    }
+
+    // Component-wise (not string-prefix) — `crate-aa` is NOT under `crate-a`.
+    #[rudzio::test]
+    fn member_under_any_root_avoids_string_prefix_collision() -> anyhow::Result<()> {
+        anyhow::ensure!(!member_under_any_root(
+            &PathBuf::from("/ws/crate-aa"),
+            &[PathBuf::from("/ws/crate-a")],
+        ));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn member_under_any_root_unrelated_rejects() -> anyhow::Result<()> {
+        anyhow::ensure!(!member_under_any_root(
+            &PathBuf::from("/ws/crate-b"),
+            &[PathBuf::from("/ws/crate-a")],
+        ));
+        Ok(())
+    }
+
+    // Multiple roots, OR semantics.
+    #[rudzio::test]
+    fn member_under_any_root_matches_any_of_many() -> anyhow::Result<()> {
+        let roots = vec![PathBuf::from("/ws/crate-a"), PathBuf::from("/ws/other")];
+        anyhow::ensure!(member_under_any_root(&PathBuf::from("/ws/other/sub"), &roots));
+        anyhow::ensure!(member_under_any_root(&PathBuf::from("/ws/crate-a"), &roots));
+        anyhow::ensure!(!member_under_any_root(&PathBuf::from("/ws/crate-c"), &roots));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn restrict_to_paths_keeps_members_under_root() -> anyhow::Result<()> {
+        let tmp = tempdir()?;
+        let root = tmp.path();
+        let kept_dir = root.join("crate-a");
+        let dropped_dir = root.join("crate-b");
+        let nested_dir = root.join("crate-a/inner");
+        fs::create_dir_all(&kept_dir)?;
+        fs::create_dir_all(&dropped_dir)?;
+        fs::create_dir_all(&nested_dir)?;
+
+        let mut kept_a = member("kept-a", vec![rudzio_dep()]);
+        kept_a.manifest_dir = kept_dir.clone();
+        let mut nested = member("kept-nested", vec![rudzio_dep()]);
+        nested.manifest_dir = nested_dir.clone();
+        let mut dropped = member("dropped", vec![rudzio_dep()]);
+        dropped.manifest_dir = dropped_dir.clone();
+
+        let mut plan = plan_with_members(
+            vec![kept_a, nested, dropped],
+            root.to_str().expect("utf8 tempdir"),
+        );
+        plan.restrict_to_paths(&[kept_dir.clone()])?;
+
+        let names: Vec<&str> = plan.members.iter().map(|m| m.package_name.as_str()).collect();
+        anyhow::ensure!(
+            names == vec!["kept-a", "kept-nested"],
+            "expected [kept-a, kept-nested], got {names:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn restrict_to_paths_errors_when_no_matches() -> anyhow::Result<()> {
+        let tmp = tempdir()?;
+        let root = tmp.path();
+        let crate_dir = root.join("crate-a");
+        let unrelated_dir = root.join("elsewhere");
+        fs::create_dir_all(&crate_dir)?;
+        fs::create_dir_all(&unrelated_dir)?;
+
+        let mut m = member("only", vec![rudzio_dep()]);
+        m.manifest_dir = crate_dir;
+        let mut plan = plan_with_members(vec![m], root.to_str().expect("utf8 tempdir"));
+        let err = plan.restrict_to_paths(&[unrelated_dir.clone()]).unwrap_err();
+        anyhow::ensure!(
+            err.to_string().contains("no rudzio crates found"),
+            "error should explain the empty result, got: {err}",
         );
         Ok(())
     }
