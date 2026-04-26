@@ -1101,3 +1101,251 @@ mod bin_resolver {
         Ok(())
     }
 }
+
+#[rudzio::suite([
+    (
+        runtime = rudzio::runtime::tokio::Multithread::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::tokio::CurrentThread::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::tokio::Local::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::compio::Runtime::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::embassy::Runtime::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::futures::ThreadPool::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+])]
+mod filter_matching {
+    use rudzio::common::context::Test;
+    use rudzio::{RunIgnoredMode, token_passes_filters};
+
+    fn skips(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    // Regression: a path-shaped substring copied from runner output must
+    // match the test it came from. Before the fix this returned false
+    // because the filter looked at the leaf name only.
+    #[rudzio::test]
+    fn path_shaped_filter_matches_qualified_name(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(token_passes_filters(
+            "crate::write_layer::main::e2e_inproc::doput",
+            false,
+            Some("e2e_inproc"),
+            &[],
+            RunIgnoredMode::Normal,
+        ));
+        Ok(())
+    }
+
+    // Existing leaf-name workflow keeps working under the new rule
+    // because the leaf is a substring of the qualified name.
+    #[rudzio::test]
+    fn leaf_name_filter_still_matches(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(token_passes_filters(
+            "crate::write_layer::main::e2e_inproc::doput",
+            false,
+            Some("doput"),
+            &[],
+            RunIgnoredMode::Normal,
+        ));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn non_matching_filter_rejects(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(!token_passes_filters(
+            "crate::write_layer::main::e2e_inproc::doput",
+            false,
+            Some("nope"),
+            &[],
+            RunIgnoredMode::Normal,
+        ));
+        Ok(())
+    }
+
+    // Regression: --skip with a path-shaped substring must reject tests
+    // in that module. Before the fix, --skip "file_v3::" matched no
+    // tests because skip looked at the leaf only.
+    #[rudzio::test]
+    fn path_shaped_skip_rejects(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(!token_passes_filters(
+            "crate::storage::file_v3::reads::ok",
+            false,
+            None,
+            &skips(&["file_v3::"]),
+            RunIgnoredMode::Normal,
+        ));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn path_shaped_skip_leaves_siblings(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(token_passes_filters(
+            "crate::storage::file_v2::reads::ok",
+            false,
+            None,
+            &skips(&["file_v3::"]),
+            RunIgnoredMode::Normal,
+        ));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn skip_wins_over_filter(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(!token_passes_filters(
+            "crate::e2e_inproc::doput",
+            false,
+            Some("e2e_inproc"),
+            &skips(&["doput"]),
+            RunIgnoredMode::Normal,
+        ));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn run_ignored_only_rejects_non_ignored(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(!token_passes_filters(
+            "crate::any::test",
+            false,
+            None,
+            &[],
+            RunIgnoredMode::Only,
+        ));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn run_ignored_only_keeps_ignored(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(token_passes_filters(
+            "crate::any::test",
+            true,
+            None,
+            &[],
+            RunIgnoredMode::Only,
+        ));
+        Ok(())
+    }
+}
+
+#[rudzio::suite([
+    (
+        runtime = rudzio::runtime::tokio::Multithread::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::tokio::CurrentThread::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::tokio::Local::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::compio::Runtime::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::embassy::Runtime::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+    (
+        runtime = rudzio::runtime::futures::ThreadPool::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+])]
+mod path_normalize {
+    use rudzio::common::context::Test;
+    use rudzio::{normalize_module_path, qualified_test_name};
+
+    // Per-crate mode: the cargo `[[test]] name = "main"` test binary
+    // makes the leading segment `main`. Drop it so the displayed path
+    // begins at the user's first real module.
+    #[rudzio::test]
+    fn per_crate_main_prefix_is_stripped(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(normalize_module_path("main::runner::test_case") == "runner::test_case");
+        Ok(())
+    }
+
+    // Aggregator mode: `<aggregator>::tests::<crate>::main::<rest>` —
+    // drop the aggregator crate, the `tests` wrapper, and the inner
+    // `main` shim, leaving the user's crate at the head.
+    #[rudzio::test]
+    fn aggregator_prefix_is_stripped(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            normalize_module_path("rudzio_auto_runner::tests::write_layer::main::e2e::doput")
+                == "write_layer::e2e::doput"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn tests_wrapper_only_dropped_after_crate(_ctx: &Test) -> anyhow::Result<()> {
+        // A `tests` segment further down the path stays intact —
+        // only the aggregator's immediate `tests::` wrapper is
+        // autogenerated.
+        anyhow::ensure!(
+            normalize_module_path("crate::user_mod::tests::case") == "user_mod::tests::case"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn inner_main_segments_are_stripped(_ctx: &Test) -> anyhow::Result<()> {
+        // An interior `main` segment (the aggregator's `tests/main.rs`
+        // shim mounted as `mod main`) is rudzio convention, not user
+        // code, so drop it.
+        anyhow::ensure!(
+            normalize_module_path("agg::tests::crate_x::main::body::leaf")
+                == "crate_x::body::leaf"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn empty_after_strip_returns_empty(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(normalize_module_path("main") == "");
+        anyhow::ensure!(normalize_module_path("") == "");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn qualified_name_joins_normalized_path(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            qualified_test_name("main::runner::sub", "test_case") == "runner::sub::test_case"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn qualified_name_omits_separator_when_path_empty(_ctx: &Test) -> anyhow::Result<()> {
+        // No leading `::` when normalization produces nothing.
+        anyhow::ensure!(qualified_test_name("main", "test_case") == "test_case");
+        Ok(())
+    }
+}

@@ -24,6 +24,7 @@ use crossbeam_channel::{Receiver, Sender, select};
 use super::color::ColorPolicy;
 use super::events::{LifecycleEvent, PipeChunk, StdStream, TestId, TestState, TestStateKind};
 use crate::config::{Format, OutputMode};
+use crate::runner::qualified_test_name;
 use crate::suite::{TeardownResult, TestOutcome};
 
 const REDRAW_INTERVAL: Duration = Duration::from_millis(50);
@@ -214,7 +215,7 @@ impl Drawer {
                 reason,
             } => {
                 self.summary.ignored = self.summary.ignored.saturating_add(1);
-                let display = format!("{module_path}::{test_name}");
+                let display = qualified_test_name(module_path, test_name);
                 if matches!(self.output_mode, OutputMode::Live) {
                     self.clear_live_region();
                 }
@@ -309,7 +310,7 @@ impl Drawer {
                 if matches!(self.output_mode, OutputMode::Live) {
                     self.clear_live_region();
                 }
-                let display = format!("{module_path}::{test_name}");
+                let display = qualified_test_name(module_path, test_name);
                 let (label, label_text, message) = match result {
                     TeardownResult::Ok => return,
                     TeardownResult::Err(msg) => (StatusLabel::Fail, "error", msg),
@@ -358,7 +359,7 @@ impl Drawer {
                 if let Some(state) = self.tests.remove(&test_id) {
                     if is_failure(&outcome) {
                         self.summary.failures.push(FailureRecord {
-                            display_name: format!("{}::{}", state.module_path, state.test_name),
+                            display_name: qualified_test_name(state.module_path, state.test_name),
                             outcome_label: outcome_label(&outcome),
                             message: outcome_message(&outcome),
                             captured_stderr: String::from_utf8_lossy(&state.stderr_buffer)
@@ -409,8 +410,9 @@ impl Drawer {
                 LifecyclePhase::Setup => "setup",
                 LifecyclePhase::Teardown => "teardown",
             };
+            let suite_disp = crate::runner::normalize_module_path(suite);
             let line = format!(
-                "{phase_word:<8} {suite} ... started <{runtime_name}>\n",
+                "{phase_word:<8} {suite_disp} ... started <{runtime_name}>\n",
             );
             let _unused = self.terminal.write_all(line.as_bytes());
         }
@@ -454,7 +456,8 @@ impl Drawer {
             (LifecyclePhase::Teardown, Some(LifecycleFailure::Panicked(_))) => StatusLabel::Panic,
         };
         let tag_rendered = render_status_tag(label, self.color);
-        let display = format!("{phase_word} {suite}");
+        let suite_disp = crate::runner::normalize_module_path(suite);
+        let display = format!("{phase_word} {suite_disp}");
         let trailing = format!("<{runtime_name}, {elapsed:.2?}>");
         let lhs_naked = format!("{:width$} {display}", "", width = STATUS_TAG_WIDTH);
         let lhs_rendered = format!("{tag_rendered} {display}");
@@ -473,7 +476,7 @@ impl Drawer {
             let painted = self.color.red(&body);
             let _unused = self.terminal.write_all(painted.as_bytes());
             self.summary.failures.push(FailureRecord {
-                display_name: format!("{phase_word} {suite}"),
+                display_name: format!("{phase_word} {suite_disp}"),
                 outcome_label: match kind {
                     LifecyclePhase::Setup => "SUITE SETUP FAILED",
                     LifecyclePhase::Teardown => "SUITE TEARDOWN FAILED",
@@ -509,7 +512,7 @@ impl Drawer {
                 update_last_line(&mut state.last_output_line, &chunk.bytes);
                 append_complete_lines(&mut state.recent_output, &chunk.bytes);
                 if matches!(self.output_mode, OutputMode::Plain) {
-                    let display = format!("{}::{}", state.module_path, state.test_name);
+                    let display = qualified_test_name(state.module_path, state.test_name);
                     emit_plain_lines(
                         &mut self.terminal,
                         &chunk.bytes,
@@ -532,8 +535,9 @@ impl Drawer {
     fn emit_plain_started(&mut self, test_id: TestId) {
         if let Some(state) = self.tests.get(&test_id) {
             let line = format!(
-                "test {}::{} ... started [{}]\n",
-                state.module_path, state.test_name, state.runtime_name,
+                "test {} ... started [{}]\n",
+                qualified_test_name(state.module_path, state.test_name),
+                state.runtime_name,
             );
             let _unused = self.terminal.write_all(line.as_bytes());
         }
@@ -543,7 +547,7 @@ impl Drawer {
         if matches!(self.output_mode, OutputMode::Live) {
             self.clear_live_region();
         }
-        let display = format!("{}::{}", state.module_path, state.test_name);
+        let display = qualified_test_name(state.module_path, state.test_name);
         let label = status_label_from_outcome(outcome);
         let tag_rendered = render_status_tag(label, self.color);
         let trailing = trailing_info(outcome, state.runtime_name);
@@ -1048,7 +1052,7 @@ fn running_line(runtime: &str, state: &TestState, color: ColorPolicy) -> String 
         TestStateKind::Bench { .. } => StatusLabel::Bench,
     };
     let tag = render_status_tag(label, color);
-    let display = format!("{}::{}", state.module_path, state.test_name);
+    let display = qualified_test_name(state.module_path, state.test_name);
     let elapsed = state.started_at.elapsed();
     let trailing = match state.kind {
         TestStateKind::Running => format!("<{elapsed:.2?}>"),
@@ -1091,7 +1095,10 @@ fn lifecycle_line(runtime: &str, lifecycle: &SlotLifecycle, color: ColorPolicy) 
         LifecyclePhase::Setup => "setup",
         LifecyclePhase::Teardown => "teardown",
     };
-    let display = format!("{phase_word} {}", lifecycle.suite);
+    let display = format!(
+        "{phase_word} {}",
+        crate::runner::normalize_module_path(lifecycle.suite)
+    );
     let elapsed = lifecycle.started_at.elapsed();
     let trailing = format!("<{elapsed:.2?}>");
     let lhs_naked = format!(

@@ -406,7 +406,7 @@ impl SuiteReporter for ModeReporter {
                 }
                 Format::Pretty => {
                     let (tag_rendered, tag_visible) = status_tag(StatusLabel::Ignore, p.colored);
-                    let display = format!("{}::{}", token.module_path, token.name);
+                    let display = qualified_test_name(token.module_path, token.name);
                     let trailing = if token.ignore_reason.is_empty() {
                         runtime_only_info(runtime_name)
                     } else {
@@ -438,7 +438,7 @@ impl SuiteReporter for ModeReporter {
                 }
                 Format::Pretty => {
                     let (tag_rendered, tag_visible) = status_tag(StatusLabel::Cancel, p.colored);
-                    let display = format!("{}::{}", token.module_path, token.name);
+                    let display = qualified_test_name(token.module_path, token.name);
                     let lhs_naked = format!("{:width$} {display}", "", width = tag_visible,);
                     let lhs_rendered = format!("{tag_rendered} {display}");
                     let trailing = runtime_only_info(runtime_name);
@@ -492,7 +492,7 @@ impl SuiteReporter for ModeReporter {
             Format::Pretty => {
                 let label = StatusLabel::from_outcome(&outcome);
                 let (tag_rendered, tag_visible) = status_tag(label, p.colored);
-                let display = format!("{}::{}", token.module_path, token.name);
+                let display = qualified_test_name(token.module_path, token.name);
                 let trailing = trailing_info(&outcome, runtime_name);
                 let lhs_naked = format!("{:width$} {display}", "", width = tag_visible,);
                 let lhs_rendered = format!("{tag_rendered} {display}");
@@ -595,6 +595,7 @@ impl SuiteReporter for ModeReporter {
     fn report_suite_setup_started(&self, runtime_name: &'static str, suite: &'static str) {
         if let Some(p) = &self.plain {
             if matches!(p.fmt, Format::Pretty) {
+                let suite = normalize_module_path(suite);
                 println!("setup    {suite} ... started <{runtime_name}>");
             }
             return;
@@ -627,7 +628,7 @@ impl SuiteReporter for ModeReporter {
                     StatusLabel::Ok
                 };
                 let (tag_rendered, tag_visible) = status_tag(label, p.colored);
-                let display = format!("setup {suite}");
+                let display = format!("setup {}", normalize_module_path(suite));
                 let trailing = format!("<{runtime_name}, {}>", format_elapsed(elapsed));
                 let lhs_naked = format!("{:width$} {display}", "", width = tag_visible);
                 let lhs_rendered = format!("{tag_rendered} {display}");
@@ -645,7 +646,7 @@ impl SuiteReporter for ModeReporter {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 guard.push(FailureInfo {
                     name: "<suite setup>",
-                    message: format!("setup {suite} [{runtime_name}]: {msg}"),
+                    message: format!("setup {} [{runtime_name}]: {msg}", normalize_module_path(suite)),
                 });
             }
             return;
@@ -662,6 +663,7 @@ impl SuiteReporter for ModeReporter {
     fn report_suite_teardown_started(&self, runtime_name: &'static str, suite: &'static str) {
         if let Some(p) = &self.plain {
             if matches!(p.fmt, Format::Pretty) {
+                let suite = normalize_module_path(suite);
                 println!("teardown {suite} ... started <{runtime_name}>");
             }
             return;
@@ -682,6 +684,7 @@ impl SuiteReporter for ModeReporter {
         result: TeardownResult,
     ) {
         if let Some(p) = &self.plain {
+            let suite_disp = normalize_module_path(suite);
             if matches!(p.fmt, Format::Pretty) {
                 let label = match result {
                     TeardownResult::Ok => StatusLabel::Ok,
@@ -691,7 +694,7 @@ impl SuiteReporter for ModeReporter {
                     TeardownResult::Hung => StatusLabel::Hang,
                 };
                 let (tag_rendered, tag_visible) = status_tag(label, p.colored);
-                let display = format!("teardown {suite}");
+                let display = format!("teardown {suite_disp}");
                 let trailing = format!("<{runtime_name}, {}>", format_elapsed(elapsed));
                 let lhs_naked = format!("{:width$} {display}", "", width = tag_visible);
                 let lhs_rendered = format!("{tag_rendered} {display}");
@@ -726,7 +729,7 @@ impl SuiteReporter for ModeReporter {
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     guard.push(FailureInfo {
                         name: "<suite teardown>",
-                        message: format!("teardown {suite} [{runtime_name}]: {msg}"),
+                        message: format!("teardown {suite_disp} [{runtime_name}]: {msg}"),
                     });
                 }
                 TeardownResult::Panicked(msg) => {
@@ -736,7 +739,7 @@ impl SuiteReporter for ModeReporter {
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     guard.push(FailureInfo {
                         name: "<suite teardown>",
-                        message: format!("teardown {suite} [{runtime_name}]: panic: {msg}"),
+                        message: format!("teardown {suite_disp} [{runtime_name}]: panic: {msg}"),
                     });
                 }
                 TeardownResult::TimedOut => {
@@ -747,7 +750,7 @@ impl SuiteReporter for ModeReporter {
                     guard.push(FailureInfo {
                         name: "<suite teardown>",
                         message: format!(
-                            "teardown {suite} [{runtime_name}]: timeout: teardown timed out"
+                            "teardown {suite_disp} [{runtime_name}]: timeout: teardown timed out"
                         ),
                     });
                 }
@@ -759,7 +762,7 @@ impl SuiteReporter for ModeReporter {
                     guard.push(FailureInfo {
                         name: "<suite teardown>",
                         message: format!(
-                            "teardown {suite} [{runtime_name}]: hang: teardown hung; abort signal sent"
+                            "teardown {suite_disp} [{runtime_name}]: hang: teardown hung; abort signal sent"
                         ),
                     });
                 }
@@ -785,7 +788,7 @@ impl SuiteReporter for ModeReporter {
             let _prev = self.test_teardown_failures.fetch_add(1, Ordering::Relaxed);
         }
         if let Some(p) = &self.plain {
-            let display = format!("{}::{}", token.module_path, token.name);
+            let display = qualified_test_name(token.module_path, token.name);
             if matches!(p.fmt, Format::Pretty) {
                 let label = match result {
                     TeardownResult::Ok => return,
@@ -880,6 +883,101 @@ impl SuiteReporter for ModeReporter {
 }
 
 // ---------------------------------------------------------------------------
+// Display-name normalization
+// ---------------------------------------------------------------------------
+
+/// Strip rudzio-autogenerated segments from a `module_path!()` string
+/// so the displayed test path begins at the user's crate or module
+/// name. Drops:
+///
+/// 1. The leading segment — always the crate where the test was
+///    compiled. In per-crate mode this is `main` (the cargo
+///    `[[test]] name = "main"` test binary). In the workspace
+///    aggregator it is the aggregator crate name. In neither mode
+///    does the segment carry information the user wrote or expects.
+/// 2. The literal `tests` segment when it appears immediately after
+///    the dropped crate segment — only the aggregator emits a
+///    `mod tests` wrapper around its member crates.
+/// 3. Any further segment named `main`. The aggregator mounts each
+///    member's `tests/main.rs` shim as `mod main`, and the same name
+///    is the cargo test-binary convention; both are autogenerated
+///    rather than user-authored.
+///
+/// Empty input or fully-stripped paths return `""`.
+#[doc(hidden)]
+#[must_use]
+pub fn normalize_module_path(mp: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    let mut just_dropped_crate = false;
+    for (i, seg) in mp.split("::").enumerate() {
+        if i == 0 {
+            just_dropped_crate = true;
+            continue;
+        }
+        if just_dropped_crate && seg == "tests" {
+            just_dropped_crate = false;
+            continue;
+        }
+        just_dropped_crate = false;
+        if seg == "main" {
+            continue;
+        }
+        out.push(seg);
+    }
+    out.join("::")
+}
+
+/// Format a token's display name as the runner shows it everywhere:
+/// the normalized module path joined to the test name with `::`.
+/// When normalization strips the path to nothing, returns just the
+/// test name (no leading separator).
+#[doc(hidden)]
+#[must_use]
+pub fn qualified_test_name(module_path: &str, test_name: &str) -> String {
+    let normalized = normalize_module_path(module_path);
+    if normalized.is_empty() {
+        test_name.to_owned()
+    } else {
+        format!("{normalized}::{test_name}")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Filter predicate
+// ---------------------------------------------------------------------------
+
+/// Decide whether a single test should run, given the user-supplied
+/// filter, `--skip` substrings, and `--ignored` / `--include-ignored`
+/// mode.
+///
+/// `qualified_name` is the same string the runner displays in its
+/// output (see [`qualified_test_name`]). Filter and skip both
+/// substring-match against it, so anything a user can copy out of the
+/// runner's output is a valid filter.
+pub fn token_passes_filters(
+    qualified_name: &str,
+    ignored: bool,
+    filter: Option<&str>,
+    skip_filters: &[String],
+    run_ignored: RunIgnoredMode,
+) -> bool {
+    if let Some(f) = filter {
+        if !qualified_name.contains(f) {
+            return false;
+        }
+    }
+    for skip in skip_filters {
+        if qualified_name.contains(skip.as_str()) {
+            return false;
+        }
+    }
+    match run_ignored {
+        RunIgnoredMode::Normal | RunIgnoredMode::Include => true,
+        RunIgnoredMode::Only => ignored,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // run()
 // ---------------------------------------------------------------------------
 
@@ -938,20 +1036,14 @@ pub fn run(cargo: crate::config::CargoMeta) -> ! {
         .iter()
         .copied()
         .filter(|t| {
-            if let Some(ref f) = config.filter {
-                if !t.name.contains(f.as_str()) {
-                    return false;
-                }
-            }
-            for skip in &config.skip_filters {
-                if t.name.contains(skip.as_str()) {
-                    return false;
-                }
-            }
-            match config.run_ignored {
-                RunIgnoredMode::Normal | RunIgnoredMode::Include => true,
-                RunIgnoredMode::Only => t.ignored,
-            }
+            let qualified = qualified_test_name(t.module_path, t.name);
+            token_passes_filters(
+                &qualified,
+                t.ignored,
+                config.filter.as_deref(),
+                &config.skip_filters,
+                config.run_ignored,
+            )
         })
         .collect();
 
@@ -960,7 +1052,7 @@ pub fn run(cargo: crate::config::CargoMeta) -> ! {
     if config.list {
         drop(capture_guard);
         for token in &filtered_tokens {
-            println!("{}: test", token.name);
+            println!("{}: test", qualified_test_name(token.module_path, token.name));
         }
         process::exit(0);
     }
