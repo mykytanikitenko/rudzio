@@ -2,29 +2,39 @@
 //! test body runs under rudzio's own runner.
 
 use quote::ToTokens;
+
+use rudzio::common::context::{Suite, Test};
+use rudzio::runtime::tokio::Multithread;
 use rudzio_macro_internals::parse::RuntimeConfig;
 
-fn render(p: &impl ToTokens) -> String {
-    p.to_token_stream().to_string().replace(' ', "")
+/// Render any [`ToTokens`] value to a whitespace-stripped string —
+/// the test suite compares parsed paths by their canonical token
+/// shape rather than by structural equality on `syn` AST nodes.
+fn render(tokens: &impl ToTokens) -> String {
+    tokens.to_token_stream().to_string().replace(' ', "")
 }
 
+/// Parse `source` as a [`RuntimeConfig`] and return the error
+/// message string when it fails. Bails when parsing unexpectedly
+/// succeeds — the rejection cases must surface a `syn::Error`
+/// pointing at the offending token rather than silently accepting
+/// the input.
 fn parse_err_msg(source: &str) -> anyhow::Result<String> {
     match syn::parse_str::<RuntimeConfig>(source) {
         Ok(_) => anyhow::bail!("expected parse to fail for `{source}`"),
-        Err(e) => Ok(e.to_string()),
+        Err(err) => Ok(err.to_string()),
     }
 }
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
+        runtime = Multithread::new,
+        suite = Suite,
+        test = Test,
     ),
 ])]
 mod tests {
-    use super::{RuntimeConfig, parse_err_msg, render};
-    use rudzio::common::context::Test;
+    use super::{RuntimeConfig, Test, parse_err_msg, render};
 
     #[rudzio::test]
     fn parses_suite_and_test_keywords(_ctx: &Test) -> anyhow::Result<()> {

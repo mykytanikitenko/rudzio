@@ -2,18 +2,19 @@
 
 use syn::{ItemFn, parse_quote};
 
+use rudzio::common::context::{Suite, Test};
+use rudzio::runtime::tokio::Multithread;
 use rudzio_macro_internals::transform::apply_runtime_generics;
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
+        runtime = Multithread::new,
+        suite = Suite,
+        test = Test,
     ),
 ])]
 mod tests {
-    use super::{ItemFn, parse_quote, apply_runtime_generics};
-    use rudzio::common::context::Test;
+    use super::{ItemFn, Test, apply_runtime_generics, parse_quote};
 
     #[rudzio::test]
     fn test_transform_simple_base_context(_ctx: &Test) -> anyhow::Result<()> {

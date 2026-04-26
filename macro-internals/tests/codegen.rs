@@ -2,18 +2,19 @@
 
 use syn::{ItemFn, parse_quote};
 
+use rudzio::common::context::{Suite, Test};
+use rudzio::runtime::tokio::Multithread;
 use rudzio_macro_internals::codegen::extract_ignore_reason;
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
+        runtime = Multithread::new,
+        suite = Suite,
+        test = Test,
     ),
 ])]
 mod tests {
-    use super::{ItemFn, extract_ignore_reason, parse_quote};
-    use rudzio::common::context::Test;
+    use super::{ItemFn, Test, extract_ignore_reason, parse_quote};
 
     #[rudzio::test]
     fn ignore_reason_none_for_fn_without_attr(_ctx: &Test) -> anyhow::Result<()> {

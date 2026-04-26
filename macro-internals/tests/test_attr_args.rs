@@ -8,18 +8,19 @@
 
 use syn::{ItemFn, parse_quote};
 
+use rudzio::common::context::{Suite, Test};
+use rudzio::runtime::tokio::Multithread;
 use rudzio_macro_internals::codegen::extract_test_attr_args;
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
+        runtime = Multithread::new,
+        suite = Suite,
+        test = Test,
     ),
 ])]
 mod tests {
-    use super::{ItemFn, extract_test_attr_args, parse_quote};
-    use rudzio::common::context::Test;
+    use super::{ItemFn, Test, extract_test_attr_args, parse_quote};
 
     /// A14. `timeout = N` becomes `Some(N)` on the parsed args struct.
     /// The benchmark slot stays `None` when no benchmark is requested.
