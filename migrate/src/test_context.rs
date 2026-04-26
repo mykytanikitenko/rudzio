@@ -19,7 +19,7 @@
 //!   a. when wrapping a module, which suite / test path to emit in
 //!      `#[rudzio::suite([...])]` (the generated `XxxRudzioSuite` for
 //!      modules whose fns use `#[test_context(Xxx)]`, or the default
-//!      common::context::Suite/Test otherwise);
+//!      `common::context::Suite/Test` otherwise);
 //!   b. when processing the impl-file, whether to append the generated
 //!      bridge code.
 
@@ -80,14 +80,17 @@ pub struct TestContextPlan {
 }
 
 impl TestContextResolver {
+    #[must_use] 
     pub fn empty() -> Self {
         Self::default()
     }
 
+    #[must_use] 
     pub fn plan_for(&self, ctx_key: &str) -> Option<&TestContextPlan> {
         self.plans.get(ctx_key)
     }
 
+    #[must_use] 
     pub fn is_unresolved(&self, ctx_key: &str) -> bool {
         self.unresolved.contains(ctx_key)
     }
@@ -281,6 +284,7 @@ impl<'ast> Visit<'ast> for Scanner<'_> {
 /// Returns the Rust source for the bridge `Suite` + `Test` impls for a
 /// given resolved ctx type. Appended to the end of the impl file by
 /// the caller.
+#[must_use] 
 pub fn render_bridge_impls(plan: &TestContextPlan) -> String {
     let ctx = &plan.ctx_ident;
     let bridge = &plan.bridge_ident;

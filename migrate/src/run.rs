@@ -8,6 +8,7 @@ use std::process::ExitCode;
 
 use crate::{cli, discovery, emit, manifest, preflight, report, runner_scaffold, test_context};
 
+#[must_use] 
 pub fn entry() -> ExitCode {
     entry_with_args(std::env::args().collect())
 }
@@ -15,6 +16,7 @@ pub fn entry() -> ExitCode {
 /// Same as [`entry`] but takes argv explicitly so embedders (e.g.
 /// the `cargo-rudzio migrate` subcommand) can drive the migrator
 /// without relying on the ambient process argv.
+#[must_use] 
 pub fn entry_with_args(args: Vec<String>) -> ExitCode {
     let parsed = match cli::parse(args) {
         Ok(c) => c,
@@ -269,7 +271,7 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
                     report.warn(
                         tests_main,
                         None,
-                        "tests/main.rs already exists; leaving it and its [[test]] entry alone — add `#[rudzio::main] fn main() {}` yourself if the file doesn't already host one",
+                        "tests/main.rs already exists; leaving it and its [[test]] entry alone \u{2014} add `#[rudzio::main] fn main() {}` yourself if the file doesn't already host one",
                     );
                 }
                 Err(err) => {
@@ -312,10 +314,10 @@ fn collect_workspace_dep_names(start: &Path) -> std::collections::BTreeSet<Strin
     let mut current = start.to_path_buf();
     loop {
         let candidate = current.join("Cargo.toml");
-        if candidate.is_file() {
-            if let Ok(source) = std::fs::read_to_string(&candidate) {
-                if let Ok(doc) = source.parse::<toml_edit::DocumentMut>() {
-                    if let Some(ws_deps) = doc
+        if candidate.is_file()
+            && let Ok(source) = std::fs::read_to_string(&candidate)
+                && let Ok(doc) = source.parse::<toml_edit::DocumentMut>()
+                    && let Some(ws_deps) = doc
                         .as_table()
                         .get("workspace")
                         .and_then(|i| i.as_table())
@@ -324,9 +326,6 @@ fn collect_workspace_dep_names(start: &Path) -> std::collections::BTreeSet<Strin
                     {
                         return ws_deps.iter().map(|(k, _)| k.to_owned()).collect();
                     }
-                }
-            }
-        }
         if !current.pop() {
             return std::collections::BTreeSet::new();
         }
@@ -343,7 +342,7 @@ fn suite_root_mod_rs_for(file: &Path, pkg_root: &Path) -> Option<PathBuf> {
     let rel = file.strip_prefix(&tests_dir).ok()?;
     let mut components = rel.components();
     let suite = components.next()?.as_os_str().to_str()?.to_owned();
-    let rest: Vec<&std::ffi::OsStr> = components.map(|c| c.as_os_str()).collect();
+    let rest: Vec<&std::ffi::OsStr> = components.map(std::path::Component::as_os_str).collect();
     // File IS the suite root; nothing to do here — the rewriter
     // handles fn main injection for files that did change.
     if rest.is_empty() || (rest.len() == 1 && rest[0] == std::ffi::OsStr::new("mod.rs")) {
@@ -464,7 +463,7 @@ fn integration_test_entry_for(
     let rel = file.strip_prefix(&tests_dir).ok()?;
     let mut components = rel.components();
     let first = components.next()?.as_os_str().to_str()?.to_owned();
-    let rest: Vec<&std::ffi::OsStr> = components.map(|c| c.as_os_str()).collect();
+    let rest: Vec<&std::ffi::OsStr> = components.map(std::path::Component::as_os_str).collect();
 
     // `tests/<stem>.rs` (direct child).
     if rest.is_empty() {

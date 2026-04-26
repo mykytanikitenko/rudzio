@@ -27,6 +27,7 @@ pub enum TestKind {
 }
 
 impl TestKind {
+    #[must_use] 
     pub const fn forced_runtime(self) -> Option<RuntimeChoice> {
         match self {
             Self::TokioMulti | Self::TokioDefault => Some(RuntimeChoice::TokioMt),
@@ -40,6 +41,7 @@ impl TestKind {
         }
     }
 
+    #[must_use] 
     pub const fn needs_compat_warning(self) -> Option<&'static str> {
         match self {
             Self::AsyncStd => Some(
@@ -62,6 +64,7 @@ pub struct Detected {
     pub extra_tokio_args: Vec<String>,
 }
 
+#[must_use] 
 pub fn classify_test_attr(attr: &Attribute) -> Option<Detected> {
     let path = path_to_string(attr.path());
     let kind = match path.as_str() {
@@ -98,15 +101,15 @@ fn classify_tokio_attr(attr: &Attribute) -> Detected {
             let name = meta.path.get_ident().map(ToString::to_string);
             match name.as_deref() {
                 Some("flavor") => {
-                    let _unused = meta.value().and_then(|v| v.parse::<syn::LitStr>());
+                    let _unused = meta.value().and_then(syn::parse::ParseBuffer::parse::<syn::LitStr>);
                 }
                 Some("worker_threads") => {
-                    if let Ok(v) = meta.value().and_then(|v| v.parse::<Lit>()) {
+                    if let Ok(v) = meta.value().and_then(syn::parse::ParseBuffer::parse::<Lit>) {
                         extras.push(format!("worker_threads = {}", lit_to_string(&v)));
                     }
                 }
                 Some("start_paused") => {
-                    if let Ok(v) = meta.value().and_then(|v| v.parse::<Lit>()) {
+                    if let Ok(v) = meta.value().and_then(syn::parse::ParseBuffer::parse::<Lit>) {
                         extras.push(format!("start_paused = {}", lit_to_string(&v)));
                     }
                 }
@@ -124,6 +127,7 @@ fn classify_tokio_attr(attr: &Attribute) -> Detected {
     }
 }
 
+#[must_use] 
 pub fn path_to_string(path: &syn::Path) -> String {
     let mut s = String::new();
     if path.leading_colon.is_some() {
@@ -138,6 +142,7 @@ pub fn path_to_string(path: &syn::Path) -> String {
     s
 }
 
+#[must_use] 
 pub fn lit_to_string(lit: &Lit) -> String {
     match lit {
         Lit::Str(s) => format!("\"{}\"", s.value()),
@@ -149,16 +154,19 @@ pub fn lit_to_string(lit: &Lit) -> String {
 
 /// Returns `true` if the attribute is any `#[ignore]` form, so the
 /// rewriter knows to preserve it verbatim.
+#[must_use] 
 pub fn is_ignore_attr(attr: &Attribute) -> bool {
     path_to_string(attr.path()) == "ignore"
 }
 
 /// Returns `true` if the attribute is `#[should_panic]` / `#[should_panic(expected = ...)]`.
+#[must_use] 
 pub fn is_should_panic_attr(attr: &Attribute) -> bool {
     path_to_string(attr.path()) == "should_panic"
 }
 
 /// Returns `true` if the attribute is `#[bench]` (unstable libtest).
+#[must_use] 
 pub fn is_bench_attr(attr: &Attribute) -> bool {
     path_to_string(attr.path()) == "bench"
 }
@@ -167,6 +175,7 @@ pub fn is_bench_attr(attr: &Attribute) -> bool {
 /// outer `#[rstest]` wrapper or the `#[case(...)]` / `#[values(...)]`
 /// parameter-site markers. None of these have a rudzio equivalent in
 /// v1; the conversion path should skip these fns entirely.
+#[must_use] 
 pub fn is_rstest_attr(attr: &Attribute) -> bool {
     let s = path_to_string(attr.path());
     matches!(
@@ -185,6 +194,7 @@ pub fn is_rstest_attr(attr: &Attribute) -> bool {
 
 /// Returns the `T` in `#[test_context(T)]` if that's what this attribute
 /// is; returns `None` otherwise.
+#[must_use] 
 pub fn as_test_context(attr: &Attribute) -> Option<syn::Path> {
     if path_to_string(attr.path()) != "test_context" {
         return None;

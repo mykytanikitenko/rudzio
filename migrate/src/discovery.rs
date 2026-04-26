@@ -136,22 +136,19 @@ fn collect_lib_modules(pkg_root: &Path) -> Vec<LibModuleDecl> {
             continue;
         }
         let ident = m.ident.to_string();
-        let rel_path = match extract_path_attr(&m.attrs) {
-            Some(custom) => format!("src/{custom}"),
-            None => {
-                // Rustc's default resolution: `src/<name>.rs` before
-                // `src/<name>/mod.rs`.
-                let leaf = pkg_root.join(format!("src/{ident}.rs"));
-                let folder = pkg_root.join(format!("src/{ident}/mod.rs"));
-                if leaf.is_file() {
-                    format!("src/{ident}.rs")
-                } else if folder.is_file() {
-                    format!("src/{ident}/mod.rs")
-                } else {
-                    // Can't locate the module's source on disk; skip
-                    // rather than emit a broken `#[path]`.
-                    continue;
-                }
+        let rel_path = if let Some(custom) = extract_path_attr(&m.attrs) { format!("src/{custom}") } else {
+            // Rustc's default resolution: `src/<name>.rs` before
+            // `src/<name>/mod.rs`.
+            let leaf = pkg_root.join(format!("src/{ident}.rs"));
+            let folder = pkg_root.join(format!("src/{ident}/mod.rs"));
+            if leaf.is_file() {
+                format!("src/{ident}.rs")
+            } else if folder.is_file() {
+                format!("src/{ident}/mod.rs")
+            } else {
+                // Can't locate the module's source on disk; skip
+                // rather than emit a broken `#[path]`.
+                continue;
             }
         };
         let attrs: Vec<String> = m
@@ -206,17 +203,15 @@ fn needs_lib_aggregation(pkg_root: &Path, lib_modules: &[LibModuleDecl]) -> bool
         }
         // Submodule file declares its own non-`#[path]` `mod Y;`.
         let file = pkg_root.join(&m.rel_path);
-        if let Ok(src) = fs::read_to_string(&file) {
-            if let Ok(t) = syn::parse_file(&src) {
+        if let Ok(src) = fs::read_to_string(&file)
+            && let Ok(t) = syn::parse_file(&src) {
                 for item in &t.items {
-                    if let syn::Item::Mod(sub) = item {
-                        if sub.content.is_none() && extract_path_attr(&sub.attrs).is_none() {
+                    if let syn::Item::Mod(sub) = item
+                        && sub.content.is_none() && extract_path_attr(&sub.attrs).is_none() {
                             return true;
                         }
-                    }
                 }
             }
-        }
     }
     false
 }
@@ -226,13 +221,11 @@ fn extract_path_attr(attrs: &[syn::Attribute]) -> Option<String> {
         if !is_path_attr(attr) {
             continue;
         }
-        if let syn::Meta::NameValue(nv) = &attr.meta {
-            if let syn::Expr::Lit(expr_lit) = &nv.value {
-                if let syn::Lit::Str(s) = &expr_lit.lit {
+        if let syn::Meta::NameValue(nv) = &attr.meta
+            && let syn::Expr::Lit(expr_lit) = &nv.value
+                && let syn::Lit::Str(s) = &expr_lit.lit {
                     return Some(s.value());
                 }
-            }
-        }
     }
     None
 }

@@ -136,7 +136,7 @@ fn strip_one_newline(s: &str) -> &str {
 )]
 #[cfg(any(test, rudzio_test))]
 mod tests {
-    use super::*;
+    use super::{ACK_PHRASE, require_acknowledgement, PreflightError};
     use ::rudzio::common::context::Test;
     use std::io::Cursor;
     /* pre-migration (rudzio-migrate):

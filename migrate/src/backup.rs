@@ -6,12 +6,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 pub const BACKUP_SUFFIX: &str = ".backup_before_migration_to_rudzio";
+#[must_use] 
 pub fn backup_path(original: &Path) -> PathBuf {
     let mut s = original.as_os_str().to_owned();
     s.push(BACKUP_SUFFIX);
     PathBuf::from(s)
 }
 /// Copy `original` to its sibling `.backup_before_migration_to_rudzio`.
+///
 /// Idempotent: if a backup already exists at the destination this
 /// returns `Ok(false)` and leaves the existing backup in place (first
 /// copy wins; the idea is that repeated runs against a dirty tree with
@@ -31,6 +33,7 @@ pub enum BackupOutcome {
     AlreadyExists(PathBuf),
 }
 impl BackupOutcome {
+    #[must_use] 
     pub fn path(&self) -> &Path {
         match self {
             Self::Created(p) | Self::AlreadyExists(p) => p,
@@ -47,7 +50,7 @@ impl BackupOutcome {
 )]
 #[cfg(any(test, rudzio_test))]
 mod tests {
-    use super::*;
+    use super::{Path, backup_path, PathBuf};
     use ::rudzio::common::context::Test;
     /* pre-migration (rudzio-migrate):
     #[test]

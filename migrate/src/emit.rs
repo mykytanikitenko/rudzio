@@ -74,23 +74,20 @@ pub fn process_file(
         // Last-resort safety net: if prettyplease still panics on
         // some shape we didn't normalise, skip the whole rewrite
         // with a warning rather than aborting the run.
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Ok(mut s) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             prettyplease::unparse(&tree)
         })) {
-            Ok(mut s) => {
-                if !salvaged.is_empty() {
-                    s = splice_salvaged_verbatim_impls(&s, &salvaged);
-                }
-                s
+            if !salvaged.is_empty() {
+                s = splice_salvaged_verbatim_impls(&s, &salvaged);
             }
-            Err(_) => {
-                report.warn(
-                    path.to_path_buf(),
-                    None,
-                    "prettyplease::unparse panicked on this file (likely an ImplItem::Verbatim — bodyless `fn X(&self);` from a macro such as `ambassador::delegate_to_remote_methods`); skipping the rewrite, original file left untouched",
-                );
-                return Ok(None);
-            }
+            s
+        } else {
+            report.warn(
+                path.to_path_buf(),
+                None,
+                "prettyplease::unparse panicked on this file (likely an ImplItem::Verbatim \u{2014} bodyless `fn X(&self);` from a macro such as `ambassador::delegate_to_remote_methods`); skipping the rewrite, original file left untouched",
+            );
+            return Ok(None);
         }
     } else {
         (*source).clone()
@@ -144,25 +141,22 @@ fn splice_bridge_before_first_suite_or_main(output: &str, bridge: &str) -> Strin
                 .any(|a| trimmed.starts_with(a))
                 .then_some(offset)
         });
-    match earliest_anchor {
-        Some(idx) => {
-            let mut out = String::with_capacity(output.len() + bridge.len() + 1);
-            out.push_str(&output[..idx]);
-            out.push_str(bridge);
-            if !bridge.ends_with('\n') {
-                out.push('\n');
-            }
-            out.push_str(&output[idx..]);
-            out
+    if let Some(idx) = earliest_anchor {
+        let mut out = String::with_capacity(output.len() + bridge.len() + 1);
+        out.push_str(&output[..idx]);
+        out.push_str(bridge);
+        if !bridge.ends_with('\n') {
+            out.push('\n');
         }
-        None => {
-            let mut out = output.to_owned();
-            if !out.ends_with('\n') {
-                out.push('\n');
-            }
-            out.push_str(bridge);
-            out
+        out.push_str(&output[idx..]);
+        out
+    } else {
+        let mut out = output.to_owned();
+        if !out.ends_with('\n') {
+            out.push('\n');
         }
+        out.push_str(bridge);
+        out
     }
 }
 
@@ -223,11 +217,10 @@ fn salvage_verbatim_impls_in_items(
             *item = placeholder;
             continue;
         }
-        if let syn::Item::Mod(m) = item {
-            if let Some((_, inner)) = &mut m.content {
+        if let syn::Item::Mod(m) = item
+            && let Some((_, inner)) = &mut m.content {
                 salvage_verbatim_impls_in_items(inner, source, out);
             }
-        }
     }
 }
 
@@ -246,11 +239,7 @@ fn capture_item_source(item: &syn::Item, source: &str) -> Option<String> {
         _ => item.span().byte_range().start,
     };
     let end = item.span().byte_range().end;
-    if start < end && end <= source.len() {
-        Some(source[start..end].to_owned())
-    } else {
-        None
-    }
+    (start < end && end <= source.len()).then(|| source[start..end].to_owned())
 }
 
 /// After `prettyplease::unparse` renders the tree, each salvaged
@@ -371,12 +360,11 @@ fn splice_preserved_originals(output: &str, originals: &[String]) -> String {
         output.len() + originals.iter().map(String::len).sum::<usize>() + 256,
     );
     for line in output.split_inclusive('\n') {
-        if let Some((indent, idx)) = parse_sentinel_line(line) {
-            if let Some(snippet) = originals.get(idx) {
+        if let Some((indent, idx)) = parse_sentinel_line(line)
+            && let Some(snippet) = originals.get(idx) {
                 push_block_comment(&mut out, indent, snippet);
                 continue;
             }
-        }
         out.push_str(line);
     }
     out

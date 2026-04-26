@@ -84,7 +84,7 @@ struct Rewriter<'a, 'r> {
     /// file root. 0 means top-level (file scope).
     mod_depth: usize,
     /// Forced runtimes observed on converted file-scope test fns
-    /// (mod_depth == 0 at conversion time). Used to pick the runtime
+    /// (`mod_depth` == 0 at conversion time). Used to pick the runtime
     /// for the synthesized wrapping mod in the post-pass: if every
     /// file-scope fn agrees, honor that choice; otherwise fall back
     /// to `--runtime`.
@@ -125,11 +125,10 @@ impl VisitMut for Rewriter<'_, '_> {
         visit_mut::visit_item_mod_mut(self, m);
         self.mod_depth = self.mod_depth.saturating_sub(1);
         prune_unused_test_context_import(m);
-        if self.stripped_any_test_context_attr {
-            if let Some((_, items)) = &mut m.content {
+        if self.stripped_any_test_context_attr
+            && let Some((_, items)) = &mut m.content {
                 prune_test_context_macro_imports_in_items(items);
             }
-        }
     }
 
     fn visit_item_fn_mut(&mut self, f: &mut ItemFn) {
@@ -142,7 +141,7 @@ impl VisitMut for Rewriter<'_, '_> {
         {
             self.warn_span(
                 f.sig.ident.span(),
-                "test fn uses rstest (`#[rstest]` / `#[case]` / `#[values]`); left unchanged — rudzio has no parameterised-test equivalent, rewrite by hand",
+                "test fn uses rstest (`#[rstest]` / `#[case]` / `#[values]`); left unchanged \u{2014} rudzio has no parameterised-test equivalent, rewrite by hand",
             );
             return;
         }
@@ -587,7 +586,7 @@ impl Rewriter<'_, '_> {
         if has_self_receiver(f) {
             self.warn_span(
                 f.sig.ident.span(),
-                "test fn takes `self` receiver; rudzio tests are free fns — skipping",
+                "test fn takes `self` receiver; rudzio tests are free fns \u{2014} skipping",
             );
             return;
         }
@@ -602,7 +601,7 @@ impl Rewriter<'_, '_> {
         {
             self.warn_span(
                 f.sig.ident.span(),
-                "test fn uses rstest (`#[rstest]` / `#[case]` / `#[values]`); left unchanged — rudzio has no parameterised-test equivalent, rewrite by hand",
+                "test fn uses rstest (`#[rstest]` / `#[case]` / `#[values]`); left unchanged \u{2014} rudzio has no parameterised-test equivalent, rewrite by hand",
             );
             return;
         }
@@ -616,7 +615,7 @@ impl Rewriter<'_, '_> {
         if has_non_ctx_shaped_params(f) {
             self.warn_span(
                 f.sig.ident.span(),
-                "test fn has parameters that don't look like a single `&T` / `&mut T` context borrow (likely rstest #[case] / #[values]); left unchanged — rudzio has no parameterised-test equivalent, rewrite by hand",
+                "test fn has parameters that don't look like a single `&T` / `&mut T` context borrow (likely rstest #[case] / #[values]); left unchanged \u{2014} rudzio has no parameterised-test equivalent, rewrite by hand",
             );
             return;
         }
@@ -631,11 +630,7 @@ impl Rewriter<'_, '_> {
             self.warn_span(f.sig.ident.span(), msg);
         }
 
-        let original_snippet = if self.preserve_originals {
-            Some(self.capture_original_snippet(f))
-        } else {
-            None
-        };
+        let original_snippet = self.preserve_originals.then(|| self.capture_original_snippet(f));
 
         replace_attr_with_rudzio_test(&mut f.attrs, idx);
         let resolved_plan = self.pop_resolved_test_context_plan(&f.attrs);
@@ -662,11 +657,10 @@ impl Rewriter<'_, '_> {
             .forced_runtime()
             .unwrap_or(self.default_runtime);
         let _inserted = self.rewrite.runtimes_used.insert(runtime);
-        if self.mod_depth == 0 {
-            if let Some(forced) = detected.kind.forced_runtime() {
+        if self.mod_depth == 0
+            && let Some(forced) = detected.kind.forced_runtime() {
                 let _inserted_file_scope = self.file_scope_runtimes.insert(forced);
             }
-        }
 
         if let Some(snippet) = original_snippet {
             let n = self.rewrite.original_snippets.len();
@@ -709,7 +703,7 @@ impl Rewriter<'_, '_> {
             if detect::is_should_panic_attr(a) {
                 actions.push(Action::Drop(Some((
                     a.span(),
-                    "#[should_panic] stripped; rudzio does not support panic-expectation — rewrite the body to assert the panic manually".to_owned(),
+                    "#[should_panic] stripped; rudzio does not support panic-expectation \u{2014} rewrite the body to assert the panic manually".to_owned(),
                 ))));
                 continue;
             }
@@ -759,7 +753,7 @@ impl Rewriter<'_, '_> {
             // is a known-good shape).
             self.warn_span(
                 f.sig.ident.span(),
-                "test fn has a non-trivial parameter list; preserved verbatim — verify the suite's `test = ...` path matches the intended context type",
+                "test fn has a non-trivial parameter list; preserved verbatim \u{2014} verify the suite's `test = ...` path matches the intended context type",
             );
         }
 
@@ -823,7 +817,7 @@ impl Rewriter<'_, '_> {
     }
 }
 
-fn apply_body_rewrite(f: &mut ItemFn, original_return: ReturnKind) {
+const fn apply_body_rewrite(f: &mut ItemFn, original_return: ReturnKind) {
     // Only the `Other` case (non-Result, non-unit) needs a body
     // tweak — `apply_signature_rewrite` already replaced the body
     // there with `{ let _unused = { <original> }; Ok(()) }`. Result
@@ -906,7 +900,7 @@ fn has_self_receiver(f: &ItemFn) -> bool {
 /// True if the fn has params that don't match the "single ctx borrow"
 /// shape rudzio expects: exactly zero params (we inject `_ctx: &Test`)
 /// or exactly one param that's a `&T` / `&mut T` reference (user's own
-/// ctx type, left alone — rudzio::test's macro transform will fix the
+/// ctx type, left alone — `rudzio::test`'s macro transform will fix the
 /// generics). Anything else — multiple params, owned values, tuples —
 /// signals a parameterised-test library (rstest, etc.) whose shape the
 /// rudzio macro can't handle.
@@ -1039,11 +1033,10 @@ fn collect_runtime_hints(items: &[Item], out: &mut BTreeSet<RuntimeChoice>) {
         match item {
             Item::Fn(f) => {
                 for attr in &f.attrs {
-                    if let Some(d) = detect::classify_test_attr(attr) {
-                        if let Some(rt) = d.kind.forced_runtime() {
+                    if let Some(d) = detect::classify_test_attr(attr)
+                        && let Some(rt) = d.kind.forced_runtime() {
                             let _inserted = out.insert(rt);
                         }
-                    }
                 }
             }
             Item::Mod(sub) => {
@@ -1057,7 +1050,7 @@ fn collect_runtime_hints(items: &[Item], out: &mut BTreeSet<RuntimeChoice>) {
 }
 
 /// Group every recognised test fn inside `m` by its target context
-/// (None for plain tests, Some(ctx_key) for resolved `#[test_context]`
+/// (None for plain tests, `Some(ctx_key)` for resolved `#[test_context]`
 /// uses). The map's key set is what `try_promote_cfg_test_mod` uses
 /// to decide single-suite vs split — len == 1 is the single case,
 /// len > 1 triggers the per-ctx split.
@@ -1178,7 +1171,7 @@ fn is_tests_binary_root(path: &std::path::Path) -> bool {
     // count: a direct child `tests/<stem>.rs`, or a suite-dir
     // `tests/<suite>/mod.rs`. Anything deeper is a submodule and
     // inherits its main from the root via `mod` declarations.
-    let mut components: Vec<&std::ffi::OsStr> = path.components().map(|c| c.as_os_str()).collect();
+    let mut components: Vec<&std::ffi::OsStr> = path.components().map(std::path::Component::as_os_str).collect();
     // Find the outermost `tests` segment.
     let Some(tests_idx) = components
         .iter()
@@ -1342,8 +1335,8 @@ fn hoist_inner_attrs_on_mod(m: &mut ItemMod) {
 /// Emitted verbatim by `emit::unparse_with_originals` whenever we need
 /// to format a `Punctuated` list of attrs onto an item — kept here so
 /// the rewrite module owns all path-synthesis.
-#[allow(dead_code)]
-fn debug_assert_attr_list(_attrs: &Punctuated<TokenStream, token::Comma>) {}
+#[expect(dead_code)]
+const fn debug_assert_attr_list(_attrs: &Punctuated<TokenStream, token::Comma>) {}
 
-#[allow(dead_code)]
-fn placeholder_for_block(_b: &ExprBlock) {}
+#[expect(dead_code)]
+const fn placeholder_for_block(_b: &ExprBlock) {}

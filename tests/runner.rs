@@ -813,7 +813,7 @@ mod config_parser {
 ])]
 mod bench_strategies {
     use rudzio::bench::{
-        BenchReport, Strategy,
+        BenchReport, Strategy as _,
         strategy::{Concurrent, Sequential},
     };
     use rudzio::common::context::Test;
@@ -867,7 +867,7 @@ mod bench_strategies {
             .run(
                 || async {
                     let i = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    if i % 2 == 0 {
+                    if i.is_multiple_of(2) {
                         Ok(())
                     } else {
                         Err(rudzio::test_case::box_error("even iteration required"))

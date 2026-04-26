@@ -34,7 +34,7 @@ use rudzio::output::events::{
 use rudzio::output::render::{Drawer, running_line, running_output_lines, spawn_drawer};
 use rudzio::suite::TestOutcome;
 
-const RUNNING_HEADER: &str = "──────────────────────── running ────────────────────────";
+const RUNNING_HEADER: &str = "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500} running \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}";
 
 /// Handles for driving a synthetic `Drawer` from a test. Drop the
 /// `life_tx` + `shutdown_tx` and the drawer winds down; the test then
@@ -325,7 +325,7 @@ mod tests {
         let long_test_name = "live_redraw_drops_running_header_when_all_slots_idle";
         let long_module = "rudzio::render_idle_redraw";
         let long_stdout: String = "x".repeat(200);
-        let started_at = Instant::now() - Duration::from_millis(220);
+        let started_at = Instant::now().checked_sub(Duration::from_millis(220)).unwrap();
 
         let mut state = TestState {
             module_path: long_module,
@@ -342,7 +342,7 @@ mod tests {
         // A second, multi-byte UTF-8 line — the byte-length is > the
         // char-count; an off-by-one width calc on bytes vs chars
         // would still make this overflow.
-        state.recent_output.push("кириллица".repeat(40));
+        state.recent_output.push("\u{43a}\u{438}\u{440}\u{438}\u{43b}\u{43b}\u{438}\u{446}\u{430}".repeat(40));
 
         // Sweep across realistic terminal widths. We include a
         // boundary case (cols = `RUNTIME_PREFIX_WIDTH + STATUS_TAG_WIDTH
@@ -633,8 +633,7 @@ fn unique_terminal_path() -> PathBuf {
     let pid = std::process::id();
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!("rudzio-render-test-{pid}-{nanos}-{n}.log"))
 }

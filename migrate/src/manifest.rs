@@ -1,4 +1,4 @@
-//! Cargo.toml edits via toml_edit. Preserves comments, key order,
+//! Cargo.toml edits via `toml_edit`. Preserves comments, key order,
 //! and whitespace outside the regions we touch.
 
 use std::fs;
@@ -285,11 +285,10 @@ fn set_anyhow_dependency(doc: &mut DocumentMut, workspace_pins_anyhow: bool) {
 /// point at a workspace fork, etc.
 fn dep_already_present(doc: &DocumentMut, name: &str) -> bool {
     for section in ["dependencies", "dev-dependencies"] {
-        if let Some(tbl) = doc.as_table().get(section).and_then(|i| i.as_table()) {
-            if tbl.contains_key(name) {
+        if let Some(tbl) = doc.as_table().get(section).and_then(|i| i.as_table())
+            && tbl.contains_key(name) {
                 return true;
             }
-        }
     }
     false
 }
@@ -382,7 +381,7 @@ fn ensure_test_entry(doc: &mut DocumentMut, entry: &IntegrationTestEntry) {
         if name_match || path_match {
             let harness_is_false = existing
                 .get("harness")
-                .and_then(|v| v.as_bool())
+                .and_then(Item::as_bool)
                 .is_some_and(|b| !b);
             if !harness_is_false {
                 let _prev = existing.insert("harness", value(false));

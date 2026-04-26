@@ -36,7 +36,7 @@ use rudzio::suite::TestOutcome;
 /// Synthetic snapshot with a non-trivial histogram so
 /// `bench_histogram_lines` actually paints bars. `cov` is a sane
 /// finite value so the wide trailing block exercises the cov branch.
-fn fake_snapshot(done: usize, total: usize) -> BenchProgressSnapshot {
+const fn fake_snapshot(done: usize, total: usize) -> BenchProgressSnapshot {
     let mut histogram = [0_u32; HISTOGRAM_BUCKETS];
     histogram[3] = 4;
     histogram[7] = 12;
@@ -63,7 +63,7 @@ fn fake_bench_state(snapshot: BenchProgressSnapshot) -> TestState {
         test_name: "demo",
         runtime_name: "tokio::Multithread",
         thread: thread::current().id(),
-        started_at: Instant::now() - Duration::from_millis(120),
+        started_at: Instant::now().checked_sub(Duration::from_millis(120)).unwrap(),
         kind: TestStateKind::Bench { snapshot },
         stdout_buffer: Vec::new(),
         stderr_buffer: Vec::new(),
@@ -204,7 +204,7 @@ mod tests {
         let snap = fake_snapshot(421, 1000);
         let trailing = bench_progress_trailing(&snap, 200, Duration::from_millis(120));
         for needle in [
-            "[", "█", "░", "]", "42%", "421/1000", "p50=", "p95=", "cov=4.3%",
+            "[", "\u{2588}", "\u{2591}", "]", "42%", "421/1000", "p50=", "p95=", "cov=4.3%",
         ] {
             anyhow::ensure!(
                 trailing.contains(needle),
@@ -224,17 +224,17 @@ mod tests {
         let cases: &[(usize, &[&str], &[&str])] = &[
             (
                 200,
-                &["[", "█", "42%", "421/1000", "p50=", "p95=", "cov="],
+                &["[", "\u{2588}", "42%", "421/1000", "p50=", "p95=", "cov="],
                 &[],
             ),
             (
                 100,
-                &["[", "█", "42%", "421/1000", "p50=", "p95=", "cov="],
+                &["[", "\u{2588}", "42%", "421/1000", "p50=", "p95=", "cov="],
                 &[],
             ),
             (
                 80,
-                &["[", "█", "42%", "421/1000", "p50=", "p95="],
+                &["[", "\u{2588}", "42%", "421/1000", "p50=", "p95="],
                 &["cov="],
             ),
             (60, &["42%", "421/1000", "p50="], &["[", "p95=", "cov="]),
@@ -272,14 +272,14 @@ mod tests {
             lines.len(),
         );
         let bars_row = strip_ansi(&lines[0]);
-        let block_chars: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+        let block_chars: &[char] = &['\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
         anyhow::ensure!(
             bars_row.chars().any(|c| block_chars.contains(&c)),
             "bars row missing block-drawing chars: {bars_row:?}",
         );
         let axis_row = strip_ansi(&lines[1]);
         anyhow::ensure!(
-            axis_row.contains('…') || axis_row.contains("...") || axis_row.contains('µ'),
+            axis_row.contains('\u{2026}') || axis_row.contains("...") || axis_row.contains('\u{b5}'),
             "axis row should show min … max range: {axis_row:?}",
         );
         // `cols-1` DECAWM rule
@@ -379,7 +379,7 @@ mod tests {
         // ASCII histogram uses `#` characters only — so a row in
         // scrollback containing any of these block chars is exclusively
         // a live-region paint that escaped the cursor-up clear.
-        let live_chars: &[char] = &['░', '▁', '▂', '▃', '▄', '▅', '▆', '▇'];
+        let live_chars: &[char] = &['\u{2591}', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}'];
         let stripes: Vec<String> = term
             .scrollback
             .iter()
@@ -603,8 +603,7 @@ fn unique_terminal_path() -> PathBuf {
     let pid = std::process::id();
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!("rudzio-bench-live-test-{pid}-{nanos}-{n}.log"))
 }

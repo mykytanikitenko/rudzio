@@ -73,14 +73,14 @@ fn render_lib_aggregation_template() -> String {
 //!
 //! `src/lib.rs` is pulled in below as `mod __lib;` so the test
 //! binary recompiles the whole lib with `cfg(test)` active and
-//! sees every `#[rudzio::suite]` block — including ones gated
+//! sees every `#[rudzio::suite]` block \u{2014} including ones gated
 //! by `#[cfg(test)]` and ones that reference items defined at
 //! the lib's crate root.
 //!
 //! `pub use __lib::*;` mirrors the lib's public surface at this
 //! binary's crate root, so `crate::X` paths inside the lib still
 //! resolve to the equivalent items here. The one caveat:
-//! `pub use ::*` only re-exports `pub` items — if any
+//! `pub use ::*` only re-exports `pub` items \u{2014} if any
 //! `use crate::Foo` inside the lib reaches a `pub(crate) Foo`,
 //! rewrite that one site as `use self::Foo` (in lib.rs) or
 //! `use super::Foo` (in submodules). Both are semantically

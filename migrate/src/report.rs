@@ -35,6 +35,7 @@ pub struct Warning {
 }
 
 impl Report {
+    #[must_use] 
     pub const fn new() -> Self {
         Self {
             files_touched: Vec::new(),
@@ -85,7 +86,7 @@ impl Report {
         self.cargo_toml_edits.push(path);
     }
 
-    pub fn add_converted(&mut self, count: usize) {
+    pub const fn add_converted(&mut self, count: usize) {
         self.tests_converted = self.tests_converted.saturating_add(count);
     }
 

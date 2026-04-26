@@ -33,6 +33,7 @@ pub enum RuntimeChoice {
 }
 
 impl RuntimeChoice {
+    #[must_use] 
     pub const fn suite_path(self) -> &'static str {
         match self {
             Self::TokioMt => "::rudzio::runtime::tokio::Multithread::new",
@@ -43,6 +44,7 @@ impl RuntimeChoice {
         }
     }
 
+    #[must_use] 
     pub const fn cargo_feature(self) -> &'static str {
         match self {
             Self::TokioMt => "runtime-tokio-multi-thread",
@@ -78,7 +80,7 @@ impl core::fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 pub const USAGE: &str = "\
-rudzio-migrate — best-effort converter of Rust tests into rudzio tests.
+rudzio-migrate \u{2014} best-effort converter of Rust tests into rudzio tests.
 
 USAGE:
     rudzio-migrate [OPTIONS]
@@ -99,7 +101,7 @@ OPTIONS:
     --only-package <NAME>   Restrict the run to a single workspace member
                             (matched against the `cargo metadata` package
                             name). Other packages are left alone.
-    --tests-only            Skip src/**/*.rs during conversion — only
+    --tests-only            Skip src/**/*.rs during conversion \u{2014} only
                             tests/ files are migrated. Use when src/
                             is dense with macros (`ambassador`,
                             delegation) that syn parses but
@@ -108,7 +110,7 @@ OPTIONS:
 
 NOTE: The tool refuses to run on a dirty git tree and requires the user
 to type an acknowledgement phrase. Both gates are load-bearing safety
-features — there is no bypass flag.
+features \u{2014} there is no bypass flag.
 ";
 
 pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError> {
