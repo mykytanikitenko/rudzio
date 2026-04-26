@@ -1,5 +1,6 @@
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
+use syn::token::{Paren, Pub};
 use syn::{Ident, Item, ItemFn, ItemMod, Path};
 
 use crate::args::{MainArgs, RuntimeConfig};
@@ -8,6 +9,7 @@ use crate::transform::{
     CtxKind, classify_ctx_param, has_test_attr, is_async_fn, is_test_attr, transform_test_signature,
 };
 
+#[inline]
 pub fn expand_suite(args: MainArgs, input_mod: ItemMod) -> syn::Result<TokenStream> {
     let items = match &input_mod.content {
         Some((_, items)) => items.clone(),
@@ -31,15 +33,15 @@ pub fn expand_suite(args: MainArgs, input_mod: ItemMod) -> syn::Result<TokenStre
             {
                 let mut modified = func.clone();
                 modified.vis = syn::Visibility::Restricted(syn::VisRestricted {
-                    pub_token: syn::token::Pub(proc_macro2::Span::call_site()),
-                    paren_token: syn::token::Paren(proc_macro2::Span::call_site()),
+                    pub_token: Pub(Span::call_site()),
+                    paren_token: Paren(Span::call_site()),
                     in_token: None,
                     path: Box::new(Path::from(syn::PathSegment::from(Ident::new(
                         "super",
-                        proc_macro2::Span::call_site(),
+                        Span::call_site(),
                     )))),
                 });
-                modified.attrs.retain(|a| !is_test_attr(a));
+                modified.attrs.retain(|attr| !is_test_attr(attr));
                 modified = transform_test_signature(modified);
                 return Item::Fn(modified);
             }
@@ -49,9 +51,14 @@ pub fn expand_suite(args: MainArgs, input_mod: ItemMod) -> syn::Result<TokenStre
 
     let test_functions: Vec<_> = items
         .iter()
-        .filter_map(|item| match item {
-            Item::Fn(func) if has_test_attr(func) => Some(func.clone()),
-            _ => None,
+        .filter_map(|item| {
+            if let Item::Fn(func) = item
+                && has_test_attr(func)
+            {
+                Some(func.clone())
+            } else {
+                None
+            }
         })
         .collect();
 
@@ -90,6 +97,11 @@ pub fn expand_suite(args: MainArgs, input_mod: ItemMod) -> syn::Result<TokenStre
     Ok(expanded)
 }
 
+/// Emit the per-config (i.e. per `(runtime, suite, test)` triple) helper
+/// items and lifecycle/test statics for one `RuntimeConfig` of a
+/// `#[rudzio::main]` invocation. Mutates `helper_items` and
+/// `token_statics` in place — both are flushed into the final expansion
+/// by `expand_suite`.
 fn generate_per_config(
     mod_name: &Ident,
     cfg_idx: usize,
@@ -957,9 +969,9 @@ fn generate_per_config(
 /// Convert a `snake_case` identifier to `UpperCamelCase`. Splits on `_`,
 /// uppercases the first char of each segment, and drops the underscores
 /// so the result conforms to Rust's type-name convention.
-fn to_upper_camel(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for segment in s.split('_').filter(|seg| !seg.is_empty()) {
+fn to_upper_camel(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for segment in name.split('_').filter(|seg| !seg.is_empty()) {
         let mut chars = segment.chars();
         if let Some(first) = chars.next() {
             out.extend(first.to_uppercase());

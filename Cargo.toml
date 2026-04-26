@@ -36,7 +36,9 @@ compio-runtime = { workspace = true, features = ["time"], optional = true }
 # it), so a single feature flip works across platforms.
 compio-driver = { workspace = true, optional = true }
 embassy-executor = { workspace = true, optional = true }
-futures-executor = { workspace = true, features = ["thread-pool"], optional = true }
+futures-executor = { workspace = true, features = [
+  "thread-pool",
+], optional = true }
 futures-timer = { workspace = true, optional = true }
 send_wrapper = { workspace = true, features = ["futures"], optional = true }
 # Only compiled when the `build` feature is on (the `rudzio::build`
@@ -60,7 +62,16 @@ libc = { workspace = true }
 # cause a duplicate build.
 [dev-dependencies]
 # Dogfood under every runtime rudzio ships.
-rudzio = { path = ".", features = ["build", "common", "runtime-tokio-multi-thread", "runtime-tokio-current-thread", "runtime-tokio-local", "runtime-compio", "runtime-embassy", "runtime-futures"] }
+rudzio = { path = ".", features = [
+  "build",
+  "common",
+  "runtime-tokio-multi-thread",
+  "runtime-tokio-current-thread",
+  "runtime-tokio-local",
+  "runtime-compio",
+  "runtime-embassy",
+  "runtime-futures",
+] }
 anyhow = "=1.0.102"
 # Renderer regression tests construct a `Drawer` directly and feed it
 # synthetic lifecycle events; that requires the same channel primitives
@@ -84,25 +95,32 @@ build = ["dep:cargo_metadata"]
 # Off by default so consumers that implement their own context types don't
 # pay for code they don't use.
 common = []
-runtime-tokio-multi-thread = ["dep:tokio", "dep:send_wrapper", "tokio/rt-multi-thread"]
+runtime-tokio-multi-thread = [
+  "dep:tokio",
+  "dep:send_wrapper",
+  "tokio/rt-multi-thread",
+]
 runtime-tokio-current-thread = ["dep:tokio", "dep:send_wrapper"]
 runtime-tokio-local = ["dep:tokio", "dep:send_wrapper"]
-runtime-compio = ["dep:compio-runtime", "dep:compio-driver", "compio-driver/io-uring", "dep:send_wrapper"]
+runtime-compio = [
+  "dep:compio-runtime",
+  "dep:compio-driver",
+  "compio-driver/io-uring",
+  "dep:send_wrapper",
+]
 runtime-embassy = ["dep:embassy-executor", "dep:send_wrapper"]
-runtime-futures = ["dep:futures-executor", "dep:futures-timer", "dep:send_wrapper"]
+runtime-futures = [
+  "dep:futures-executor",
+  "dep:futures-timer",
+  "dep:send_wrapper",
+]
 
 [lints]
 workspace = true
 
 [workspace]
 resolver = "3"
-members = [
-  "cargo-rudzio",
-  "fixtures",
-  "macro",
-  "macro-internals",
-  "migrate",
-]
+members = ["cargo-rudzio", "fixtures", "macro", "macro-internals", "migrate"]
 
 [workspace.package]
 edition = "2024"
@@ -210,6 +228,7 @@ std_instead_of_core = { level = "allow", priority = 1 }
 separated_literal_suffix = { level = "allow", priority = 1 }
 single_call_fn = { level = "allow", priority = 1 }
 tests_outside_test_module = { level = "allow", priority = 1 }
+# TODO: propably ai bs
 # Many test binaries include intentional panics and unreachable! calls to
 # exercise the framework's panic handling. Their signature keeps a Result
 # return so the surrounding framework machinery still type-checks.

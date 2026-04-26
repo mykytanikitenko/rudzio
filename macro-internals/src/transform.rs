@@ -1,39 +1,5 @@
 use syn::{Attribute, ItemFn};
 
-pub fn has_test_attr(func: &ItemFn) -> bool {
-    func.attrs.iter().any(is_test_attr)
-}
-
-pub fn is_test_attr(attr: &Attribute) -> bool {
-    attr.path().is_ident("test")
-        || (attr.path().segments.len() == 2 && {
-            let first = attr.path().segments.first();
-            let second = attr.path().segments.last();
-            matches!((first, second),
-                (Some(f), Some(s)) if f.ident == "rudzio" && s.ident == "test")
-        })
-}
-
-pub fn is_async_fn(func: &ItemFn) -> bool {
-    func.sig.asyncness.is_some()
-}
-
-/// `true` if the function's return type is `()` — either left off
-/// entirely (`fn foo()`) or written out (`fn foo() -> ()`). Drives the
-/// `#[rudzio::test]` dispatch: void-return bodies get wrapped in a
-/// trailing `Ok(())` so the surrounding `.map_err(...)` chain still
-/// type-checks, letting users write bare libtest-shaped tests without
-/// thinking about Result.
-pub fn returns_unit(func: &ItemFn) -> bool {
-    match &func.sig.output {
-        syn::ReturnType::Default => true,
-        syn::ReturnType::Type(_, ty) => matches!(
-            &**ty,
-            syn::Type::Tuple(t) if t.elems.is_empty()
-        ),
-    }
-}
-
 /// How a `#[rudzio::test]` fn relates to its per-test context.
 ///
 /// Used by the suite codegen to decide how to dispatch the test body.
@@ -42,14 +8,15 @@ pub fn returns_unit(func: &ItemFn) -> bool {
 /// propagation behave uniformly); the variant only controls whether —
 /// and how — that context is passed to the test fn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CtxKind {
+    /// `fn test(ctx: &mut T)` — mutable borrow.
+    Mutable,
     /// `fn test()` — no context parameter. Setup + teardown still run;
     /// the test body just doesn't see the context.
     None,
     /// `fn test(ctx: &T)` — shared borrow.
     Shared,
-    /// `fn test(ctx: &mut T)` — mutable borrow.
-    Mutable,
 }
 
 /// Inspect `func`'s first parameter and classify it into a [`CtxKind`].
@@ -57,6 +24,7 @@ pub enum CtxKind {
 /// possible) are treated as [`CtxKind::None`] — the codegen calls the
 /// fn with no arguments in those cases, which will fail to compile
 /// loudly rather than silently wire up a `&ctx`.
+#[inline]
 pub fn classify_ctx_param(func: &ItemFn) -> CtxKind {
     let Some(first) = func.sig.inputs.first() else {
         return CtxKind::None;
@@ -71,6 +39,46 @@ pub fn classify_ctx_param(func: &ItemFn) -> CtxKind {
         CtxKind::Mutable
     } else {
         CtxKind::Shared
+    }
+}
+
+/// Returns `true` when `func` carries any attribute the suite macro
+/// recognises as a test marker (`#[test]` or `#[rudzio::test]`).
+#[inline]
+pub fn has_test_attr(func: &ItemFn) -> bool {
+    func.attrs.iter().any(is_test_attr)
+}
+
+#[inline]
+pub fn is_async_fn(func: &ItemFn) -> bool {
+    func.sig.asyncness.is_some()
+}
+
+#[inline]
+pub fn is_test_attr(attr: &Attribute) -> bool {
+    attr.path().is_ident("test")
+        || (attr.path().segments.len() == 2 && {
+            let first = attr.path().segments.first();
+            let second = attr.path().segments.last();
+            matches!((first, second),
+                (Some(first_seg), Some(second_seg)) if first_seg.ident == "rudzio" && second_seg.ident == "test")
+        })
+}
+
+/// `true` if the function's return type is `()` — either left off
+/// entirely (`fn foo()`) or written out (`fn foo() -> ()`). Drives the
+/// `#[rudzio::test]` dispatch: void-return bodies get wrapped in a
+/// trailing `Ok(())` so the surrounding `.map_err(...)` chain still
+/// type-checks, letting users write bare libtest-shaped tests without
+/// thinking about Result.
+#[inline]
+pub fn returns_unit(func: &ItemFn) -> bool {
+    match &func.sig.output {
+        syn::ReturnType::Default => true,
+        syn::ReturnType::Type(_, ty) => matches!(
+            &**ty,
+            syn::Type::Tuple(tuple) if tuple.elems.is_empty()
+        ),
     }
 }
 
@@ -93,6 +101,7 @@ pub fn classify_ctx_param(func: &ItemFn) -> CtxKind {
 /// `ctx.teardown()` move, breaking `&mut TestContext` test signatures.
 ///
 /// If the context type already has generic arguments, leaves it unchanged.
+#[inline]
 pub fn transform_test_signature(mut func: ItemFn) -> ItemFn {
     use proc_macro2::Span;
 

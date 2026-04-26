@@ -2,11 +2,13 @@ use syn::parse::{Parse, ParseStream};
 use syn::{Ident, Path, Token, bracketed, parenthesized};
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct MainArgs {
     pub configs: Vec<RuntimeConfig>,
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct RuntimeConfig {
     pub runtime: Path,
     pub suite: Path,
@@ -15,6 +17,7 @@ pub struct RuntimeConfig {
 
 impl RuntimeConfig {
     /// Drop the constructor segment (`::new`) and keep just the runtime type.
+    #[inline]
     pub fn runtime_type(&self) -> Path {
         let take_n = self.runtime.segments.len().saturating_sub(1);
         let segments = self.runtime.segments.iter().take(take_n).cloned().collect();
@@ -25,7 +28,33 @@ impl RuntimeConfig {
     }
 }
 
+impl Parse for MainArgs {
+    #[inline]
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let content;
+        bracketed!(content in input);
+
+        let mut configs = Vec::new();
+        while !content.is_empty() {
+            configs.push(content.parse()?);
+            if !content.is_empty() {
+                let _: Token![,] = content.parse()?;
+            }
+        }
+
+        if configs.is_empty() {
+            return Err(syn::Error::new(
+                content.span(),
+                "expected at least one runtime configuration",
+            ));
+        }
+
+        Ok(Self { configs })
+    }
+}
+
 impl Parse for RuntimeConfig {
+    #[inline]
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let content;
         parenthesized!(content in input);
@@ -71,6 +100,11 @@ impl Parse for RuntimeConfig {
     }
 }
 
+/// Reject `Path`s that carry generic / fn arguments on any segment.
+///
+/// Returns `Err(syn::Error)` pointing at the first offending segment so
+/// the user sees the macro's expectation rather than a downstream
+/// compile error in expanded code.
 fn ensure_bare_path(path: &Path, field: &str) -> syn::Result<()> {
     for seg in &path.segments {
         if !seg.arguments.is_empty() {
@@ -83,28 +117,4 @@ fn ensure_bare_path(path: &Path, field: &str) -> syn::Result<()> {
         }
     }
     Ok(())
-}
-
-impl Parse for MainArgs {
-    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let content;
-        bracketed!(content in input);
-
-        let mut configs = Vec::new();
-        while !content.is_empty() {
-            configs.push(content.parse()?);
-            if !content.is_empty() {
-                let _: Token![,] = content.parse()?;
-            }
-        }
-
-        if configs.is_empty() {
-            return Err(syn::Error::new(
-                content.span(),
-                "expected at least one runtime configuration",
-            ));
-        }
-
-        Ok(Self { configs })
-    }
 }
