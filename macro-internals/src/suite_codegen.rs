@@ -1,13 +1,62 @@
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::token::{Paren, Pub};
-use syn::{Ident, Item, ItemFn, ItemMod, Path};
+use syn::{Expr, Ident, Item, ItemFn, ItemMod, Path};
 
 use crate::parse::{MainArgs, RuntimeConfig};
 use crate::codegen::{extract_ignore_reason, extract_test_attr_args};
 use crate::transform::{
     CtxKind, classify_ctx_param, has_test_attr, is_async_fn, is_test_attr, apply_runtime_generics,
 };
+
+/// Token stream for a benchmarked test body dispatch: emits a
+/// `match config.bench_mode { … }` so the same binary serves both
+/// `cargo test` (Smoke / Skip) and `cargo test -- --bench` (Full).
+fn bench_test_outcome(
+    bench_expr: &Expr,
+    dispatch_call: &TokenStream,
+    runtime_type: &Path,
+    bench_body_closure: &TokenStream,
+) -> TokenStream {
+    quote! {
+        match config.bench_mode {
+            ::rudzio::config::BenchMode::Full => {
+                use ::rudzio::bench::Strategy as _;
+                let __rudzio_strategy = #bench_expr;
+                let __rudzio_progress_test_id = __rudzio_test_id;
+                let bench_fut = __rudzio_strategy.run(
+                    #bench_body_closure,
+                    move |__rudzio_snapshot| {
+                        ::rudzio::output::send_lifecycle(
+                            ::rudzio::output::events::LifecycleEvent::BenchProgress {
+                                test_id: __rudzio_progress_test_id,
+                                snapshot: __rudzio_snapshot,
+                            },
+                        );
+                    },
+                );
+                ::rudzio::suite::run_bench_with_timeout_and_cancel(
+                    bench_fut,
+                    test_timeout,
+                    config.phase_hang_grace,
+                    per_test_token.clone(),
+                    |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
+                ).await
+            }
+            ::rudzio::config::BenchMode::Smoke
+            | ::rudzio::config::BenchMode::Skip => {
+                let test_fut = async { #dispatch_call };
+                ::rudzio::suite::run_test_with_timeout_and_cancel(
+                    test_fut,
+                    test_timeout,
+                    config.phase_hang_grace,
+                    per_test_token.clone(),
+                    |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
+                ).await
+            }
+        }
+    }
+}
 
 /// Expand a `#[rudzio::suite([...])] mod ... { ... }` invocation into the
 /// fully wired per-runtime helper items, lifecycle/test statics, and
@@ -679,59 +728,12 @@ fn generate_per_config(
         // surface is plumbed through the type system but only fires
         // when a future caller spawns the body explicitly via
         // `drive_per_test_spawn`.
-        let test_outcome_expr = if let Some(bench_expr) = benchmark {
-            quote! {
-                match config.bench_mode {
-                    ::rudzio::config::BenchMode::Full => {
-                        use ::rudzio::bench::Strategy as _;
-                        let __rudzio_strategy = #bench_expr;
-                        let __rudzio_progress_test_id = __rudzio_test_id;
-                        let bench_fut = __rudzio_strategy.run(
-                            #bench_body_closure,
-                            move |__rudzio_snapshot| {
-                                ::rudzio::output::send_lifecycle(
-                                    ::rudzio::output::events::LifecycleEvent::BenchProgress {
-                                        test_id: __rudzio_progress_test_id,
-                                        snapshot: __rudzio_snapshot,
-                                    },
-                                );
-                            },
-                        );
-                        ::rudzio::suite::run_bench_with_timeout_and_cancel(
-                            bench_fut,
-                            test_timeout,
-                            config.phase_hang_grace,
-                            per_test_token.clone(),
-                            |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
-                        ).await
-                    }
-                    ::rudzio::config::BenchMode::Smoke
-                    | ::rudzio::config::BenchMode::Skip => {
-                        let test_fut = async { #dispatch_call };
-                        ::rudzio::suite::run_test_with_timeout_and_cancel(
-                            test_fut,
-                            test_timeout,
-                            config.phase_hang_grace,
-                            per_test_token.clone(),
-                            |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
-                        ).await
-                    }
-                }
-            }
-        } else {
-            quote! {
-                {
-                    let test_fut = async { #dispatch_call };
-                    ::rudzio::suite::run_test_with_timeout_and_cancel(
-                        test_fut,
-                        test_timeout,
-                        config.phase_hang_grace,
-                        per_test_token.clone(),
-                        |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
-                    ).await
-                }
-            }
-        };
+        let test_outcome_expr = benchmark.as_ref().map_or_else(
+            || plain_test_outcome(&dispatch_call, &runtime_type),
+            |bench_expr| {
+                bench_test_outcome(bench_expr, &dispatch_call, &runtime_type, &bench_body_closure)
+            },
+        );
 
         helper_items.push(quote! {
             #[doc(hidden)]
@@ -979,6 +981,23 @@ fn generate_per_config(
 }
 
 /// Convert a `snake_case` identifier to `UpperCamelCase`. Splits on `_`,
+/// Token stream for a non-benchmarked test body dispatch: a single
+/// `run_test_with_timeout_and_cancel` call wrapped in a block.
+fn plain_test_outcome(dispatch_call: &TokenStream, runtime_type: &Path) -> TokenStream {
+    quote! {
+        {
+            let test_fut = async { #dispatch_call };
+            ::rudzio::suite::run_test_with_timeout_and_cancel(
+                test_fut,
+                test_timeout,
+                config.phase_hang_grace,
+                per_test_token.clone(),
+                |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
+            ).await
+        }
+    }
+}
+
 /// uppercases the first char of each segment, and drops the underscores
 /// so the result conforms to Rust's type-name convention.
 fn to_upper_camel(name: &str) -> String {
