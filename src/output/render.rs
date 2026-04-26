@@ -31,6 +31,8 @@ use crate::config::{Format, OutputMode};
 use crate::runner::{normalize_module_path, qualified_test_name};
 use crate::suite::{TeardownResult, TestOutcome};
 
+/// Maximum visible width for the cached `last_output_line` hint
+/// shown alongside a running test's status row.
 const HINT_MAX_WIDTH: usize = 120;
 /// Number of viewport rows reserved for everything other than a
 /// single test's output stream — the status row itself, the runner's
@@ -42,7 +44,10 @@ const LIVE_REGION_RESERVED_ROWS: usize = 4;
 /// trailing `<...>` block when the line would otherwise be shorter
 /// than the terminal.
 const MIN_TRAILING_PAD: usize = 2;
+/// How often the live region repaints while tests run.
 const REDRAW_INTERVAL: Duration = Duration::from_millis(50);
+/// Fixed visible width of the runtime-name prefix column on each
+/// live-region row, so columns line up across runtimes.
 const RUNTIME_PREFIX_WIDTH: usize = 14;
 /// Fixed visible width of the status-tag column (including trailing
 /// pad so the rest of the line starts at a stable column).
@@ -56,33 +61,55 @@ pub type LifecycleSender = Sender<LifecycleEvent>;
 /// [`spawn_drawer`]; the main loop lives in [`Drawer::run`].
 #[derive(Debug)]
 pub struct Drawer {
+    /// Colour-rendering policy for status tags and captured output.
     color: ColorPolicy,
+    /// Output format selector (e.g. terse vs full live region).
     format: Format,
+    /// Row count of the most recent live-region paint, used to drive
+    /// the cursor-up clear before the next paint.
     last_live_rows: usize,
+    /// Inbound lifecycle events (test start/finish, suite hooks).
     lifecycle_rx: Receiver<LifecycleEvent>,
+    /// Whether output is rendered live (interactive) or in plain
+    /// append-only mode.
     output_mode: OutputMode,
+    /// Captured stdout/stderr bytes attributed to the active test.
     pipe_rx: Receiver<PipeChunk>,
+    /// Signal that the runner has finished; drains and exits.
     shutdown_rx: Receiver<()>,
     /// Test-only override for the terminal size queries. Production
     /// uses `None`, falling through to the ioctl-driven
     /// [`terminal_width`] / [`terminal_height`].
     size_override: Option<(usize, usize)>,
+    /// Display order of runtime slots (first-seen `ThreadId`s).
     slot_order: Vec<ThreadId>,
+    /// Per-thread runtime slot state keyed by the runtime's worker
+    /// thread.
     slots: HashMap<ThreadId, RuntimeSlot>,
+    /// Aggregated counters and failure records for the final summary.
     summary: Summary,
+    /// Saved-original terminal handle; all writes go here so capture
+    /// redirection of stdout/stderr doesn't loop back into ourselves.
     terminal: File,
+    /// In-flight test states keyed by test id.
     tests: HashMap<TestId, TestState>,
+    /// Map from runtime thread to the test currently running on it,
+    /// used to attribute pipe bytes to the right test.
     thread_to_test: HashMap<ThreadId, TestId>,
 }
 
+/// Per-runtime-thread slot tracking the test (or suite hook) that
+/// owns the live-region row.
 #[derive(Debug)]
 struct RuntimeSlot {
+    /// Test currently running on this slot, if any.
     current: Option<TestId>,
     /// Suite-lifecycle activity occupying this slot. While a suite's
     /// setup or teardown is in flight, no test runs on the slot's
     /// thread, so the live region renders this in place of the
     /// usual running-test row.
     lifecycle: Option<SlotLifecycle>,
+    /// Display name of the runtime owning this slot (e.g. `tokio`).
     runtime_name: &'static str,
 }
 
@@ -91,43 +118,62 @@ struct RuntimeSlot {
 /// just like a running test.
 #[derive(Debug, Clone, Copy)]
 struct SlotLifecycle {
+    /// Whether this slot is mid-setup or mid-teardown.
     kind: LifecyclePhase,
+    /// When the phase started, used to render an elapsed counter.
     started_at: Instant,
+    /// The suite whose lifecycle hook is running.
     suite: &'static str,
 }
 
 /// What went wrong in a suite-lifecycle finish event.
 #[derive(Debug)]
 enum LifecycleFailure {
+    /// Hook returned `Err`.
     Error(String),
     /// Phase escalated past `--phase-hang-grace`. The wrapper fired
     /// the abort handle; on tokio the spawned task drops on next
     /// poll, on other runtimes it leaks until process exit.
     Hung(String),
+    /// Hook panicked; payload is the panic message.
     Panicked(String),
+    /// Hook exceeded its configured timeout but had not yet escalated
+    /// to hang.
     TimedOut(String),
 }
 
+/// Which suite lifecycle hook is running on a given slot.
 #[derive(Debug, Clone, Copy)]
 enum LifecyclePhase {
+    /// `Suite::setup` is in flight.
     Setup,
+    /// `Suite::teardown` is in flight.
     Teardown,
 }
 
+/// Status tag rendered as `[OK]`, `[FAIL]`, etc. on a result line.
 #[derive(Debug, Clone, Copy)]
 enum StatusLabel {
+    /// Successful benchmark run.
     Bench,
+    /// Benchmark with failures or panics.
     BenchErr,
+    /// Test cancelled before completion.
     Cancel,
+    /// Standard test failure.
     Fail,
     /// Test or teardown blew its budget AND remained pending past the
     /// Layer-2 grace window. The wrapper has fired its abort handle
     /// and moved on. Painted **red** (failure-class) so it's distinct
     /// from `Timeout`'s yellow (warn-class).
     Hang,
+    /// Test marked `#[ignore]` and not run.
     Ignore,
+    /// Test passed.
     Ok,
+    /// Test panicked.
     Panic,
+    /// Test currently in progress.
     Run,
     /// Failed test outcome where the per-test context (`Suite::context`)
     /// returned `Err` before the body could run. Distinct from `Fail`
@@ -137,37 +183,58 @@ enum StatusLabel {
     /// `Ok` reserved for lifecycle lines so they stand apart from the
     /// per-test stream.
     SetupOk,
+    /// Test exceeded its configured timeout.
     Timeout,
 }
 
+/// Aggregated counters and detailed failure records used to print the
+/// final post-run summary block.
 #[derive(Debug, Default)]
 struct Summary {
+    /// Successful benchmark count.
     benched: usize,
+    /// Tests cancelled before completion.
     cancelled: usize,
+    /// Tests with a standard failure.
     failed: usize,
+    /// Detailed records used to print per-failure stdout/stderr blocks.
     failures: Vec<FailureRecord>,
     /// Tests escalated past `--phase-hang-grace`. Counted separately
     /// so the summary line can show `N hung` distinct from `N timed
     /// out` and the renderer can paint a red `[HANG]` tag.
     hung: usize,
+    /// Tests skipped via `#[ignore]`.
     ignored: usize,
+    /// Tests that panicked.
     panicked: usize,
+    /// Tests that passed.
     passed: usize,
+    /// When the run started, used for the wall-clock total elapsed.
     started_at: Option<Instant>,
+    /// Suite or test teardown failures.
     teardown_failures: usize,
+    /// Tests that exceeded their timeout.
     timed_out: usize,
 }
 
+/// One failure entry surfaced in the post-run failures section.
 #[derive(Debug)]
 struct FailureRecord {
+    /// Captured stderr bytes for the failing item.
     captured_stderr: String,
+    /// Captured stdout bytes for the failing item.
     captured_stdout: String,
+    /// Human-readable identifier for the failing test or hook.
     display_name: String,
+    /// Failure message body printed under the header.
     message: String,
+    /// Short label appended to the section header (e.g. `FAILED`).
     outcome_label: &'static str,
 }
 
 impl Drawer {
+    /// Erase the previously painted live region using a cursor-up + clear
+    /// escape sequence so the next paint overwrites it cleanly.
     fn clear_live_region(&mut self) {
         if self.last_live_rows == 0 {
             return;
@@ -177,6 +244,8 @@ impl Drawer {
         self.last_live_rows = 0;
     }
 
+    /// Drain any pending lifecycle and pipe events at shutdown so the
+    /// final summary reflects every test's outcome.
     fn drain_remaining(&mut self) {
         while let Ok(ev) = self.lifecycle_rx.try_recv() {
             self.handle_lifecycle(ev);
@@ -186,6 +255,8 @@ impl Drawer {
         }
     }
 
+    /// Print the header, failure message, and captured output for a
+    /// completed test.
     fn emit_completion_block(&mut self, state: &TestState, outcome: &TestOutcome) {
         if matches!(self.output_mode, OutputMode::Live) {
             self.clear_live_region();
@@ -244,6 +315,7 @@ impl Drawer {
         self.last_live_rows = 0;
     }
 
+    /// Emit the plain-mode `... started` line for a freshly started test.
     fn emit_plain_started(&mut self, test_id: TestId) {
         if let Some(state) = self.tests.get(&test_id) {
             let line = format!(
@@ -255,6 +327,8 @@ impl Drawer {
         }
     }
 
+    /// Dispatch a lifecycle event to the appropriate state-update path
+    /// (start, finish, ignore, suite hooks).
     fn handle_lifecycle(&mut self, ev: LifecycleEvent) {
         match ev {
             LifecycleEvent::TestStarted {
@@ -478,6 +552,8 @@ impl Drawer {
         }
     }
 
+    /// Attribute a captured pipe chunk to the appropriate in-flight test
+    /// and either buffer or pass it through to the terminal.
     fn handle_pipe(&mut self, chunk: PipeChunk) {
         // Attribution: the reader thread has no producer-thread info.
         // When exactly one test is running, attribute to it. When
@@ -520,6 +596,8 @@ impl Drawer {
         let _unused = self.terminal.write_all(&chunk.bytes);
     }
 
+    /// Render the result line for a suite setup or teardown that just
+    /// finished, recording any failure for the final summary.
     fn handle_suite_lifecycle_finish(
         &mut self,
         kind: LifecyclePhase,
@@ -589,6 +667,8 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
         self.last_live_rows = 0;
     }
 
+    /// Mark the slot owning `thread` as running a suite setup or
+    /// teardown so the live region renders the lifecycle row.
     fn handle_suite_lifecycle_start(
         &mut self,
         kind: LifecyclePhase,
@@ -655,6 +735,8 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
         }
     }
 
+    /// Print the failures section followed by the one-line totals at
+    /// the very end of the run.
     fn print_final_summary(&mut self) {
         let total_elapsed = self
             .summary
@@ -714,6 +796,8 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
         let _unused = self.terminal.flush();
     }
 
+    /// Erase and repaint the live region with the current per-slot
+    /// activity; called on every redraw tick in live mode.
     fn redraw_live_region(&mut self) {
         if !matches!(self.output_mode, OutputMode::Live) || matches!(self.format, Format::Terse) {
             return;
@@ -779,6 +863,8 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
         self.last_live_rows = rows;
     }
 
+    /// Return the `(cols, rows)` size to render against, honouring any
+    /// test-only override before falling back to the ioctl probe.
     fn render_size(&self) -> (usize, usize) {
         self.size_override
             .unwrap_or_else(|| (terminal_width(), terminal_height()))
@@ -824,6 +910,8 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
 }
 
 impl Summary {
+    /// Bump the counter that matches `outcome` so the final summary
+    /// totals stay in sync with completed tests.
     const fn record_outcome(&mut self, outcome: &TestOutcome) {
         match outcome {
             TestOutcome::Passed { .. } => self.passed = self.passed.saturating_add(1),
@@ -844,6 +932,8 @@ impl Summary {
     }
 }
 
+/// Return `true` when `outcome` should be recorded in the failures
+/// list (any non-passing variant or a bench with errors).
 const fn is_failure(outcome: &TestOutcome) -> bool {
     match outcome {
         TestOutcome::Failed { .. }
@@ -857,6 +947,8 @@ const fn is_failure(outcome: &TestOutcome) -> bool {
     }
 }
 
+/// Map a [`TestOutcome`] to the [`StatusLabel`] used to paint the
+/// header tag.
 const fn status_label_from_outcome(outcome: &TestOutcome) -> StatusLabel {
     match outcome {
         TestOutcome::Passed { .. } => StatusLabel::Ok,
@@ -977,6 +1069,8 @@ fn terminal_height() -> usize {
     rows.unwrap_or(24)
 }
 
+/// Read the terminal `(cols, rows)` via `TIOCGWINSZ`, walking
+/// likely-terminal FDs and returning `(None, None)` when none answer.
 #[cfg(unix)]
 fn terminal_size_unix() -> (Option<usize>, Option<usize>) {
     // SAFETY: ioctl TIOCGWINSZ writes a `winsize` we allocated; we
@@ -1008,6 +1102,8 @@ fn terminal_height() -> usize {
     24
 }
 
+/// Short uppercase label for the `---- name LABEL ----` header in the
+/// failures section.
 const fn outcome_label(outcome: &TestOutcome) -> &'static str {
     match outcome {
         TestOutcome::Failed { .. } => "FAILED",
@@ -1021,6 +1117,8 @@ const fn outcome_label(outcome: &TestOutcome) -> &'static str {
     }
 }
 
+/// Human-readable failure message extracted from `outcome` for
+/// printing under the result header.
 fn outcome_message(outcome: &TestOutcome) -> String {
     match outcome {
         TestOutcome::Failed { message, .. } => message.clone(),
@@ -1036,6 +1134,8 @@ fn outcome_message(outcome: &TestOutcome) -> String {
     }
 }
 
+/// Print a test's buffered stdout/stderr underneath its completion
+/// header in live mode.
 fn emit_captured_block(terminal: &mut File, state: &TestState, color: ColorPolicy) {
     for line in split_lines(&state.stdout_buffer) {
         let formatted = format!("  {line}\n");
@@ -1047,6 +1147,8 @@ fn emit_captured_block(terminal: &mut File, state: &TestState, color: ColorPolic
     }
 }
 
+/// Print captured bytes line-by-line in plain mode, colouring stderr
+/// red while leaving stdout uncoloured.
 fn emit_plain_lines(
     terminal: &mut File,
     bytes: &[u8],
@@ -1064,6 +1166,8 @@ fn emit_plain_lines(
     }
 }
 
+/// Iterate over non-empty lines of UTF-8 in `bytes`, returning an
+/// empty iterator when the bytes are not valid UTF-8.
 fn split_lines(bytes: &[u8]) -> impl Iterator<Item = &str> {
     str::from_utf8(bytes)
         .unwrap_or("")
@@ -1071,6 +1175,8 @@ fn split_lines(bytes: &[u8]) -> impl Iterator<Item = &str> {
         .filter(|line| !line.is_empty())
 }
 
+/// Replace `dst` with the last complete (non-empty) line in `bytes`,
+/// truncated to [`HINT_MAX_WIDTH`] characters.
 fn update_last_line(dst: &mut String, bytes: &[u8]) {
     let Ok(text) = str::from_utf8(bytes) else {
         return;
@@ -1370,6 +1476,8 @@ fn clip_to_cols(text: &str, cols: usize) -> String {
     out
 }
 
+/// Build the live-region status row for an in-flight suite setup or
+/// teardown.
 fn lifecycle_line(
     runtime: &str,
     lifecycle: &SlotLifecycle,
@@ -1416,6 +1524,11 @@ fn lifecycle_line(
 /// Spawn the drawer thread. Returns the join handle; the caller
 /// (the [`crate::output::CaptureGuard`]) is responsible for joining
 /// it during its drop.
+///
+/// # Errors
+///
+/// Returns an error when the OS refuses to spawn the named drawer
+/// thread (e.g. resource exhaustion).
 #[inline]
 pub fn spawn_drawer(drawer: Drawer) -> IoResult<JoinHandle<()>> {
     thread::Builder::new()

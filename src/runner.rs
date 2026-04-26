@@ -46,9 +46,13 @@ const STATUS_TAG_WIDTH: usize = 9; // `[TIMEOUT]` / `[CANCEL] ` / `[IGNORE] `
 // Types
 // ---------------------------------------------------------------------------
 
+/// One captured failure used by the plain-mode reporter to print the
+/// post-run summary block.
 #[derive(Debug)]
 struct FailureInfo {
+    /// Human-readable failure message.
     message: String,
+    /// Test display name.
     name: &'static str,
 }
 
@@ -63,6 +67,7 @@ struct FailureInfo {
 ///   `report_outcome` is a no-op because the macro-generated
 ///   dispatch already emits `TestCompleted` with the full outcome.
 struct ModeReporter {
+    /// Plain-mode rendering state; `None` when running in live mode.
     plain: Option<PlainState>,
     /// Count of per-test teardown failures (Err or panic). The codegen
     /// calls [`Self::report_test_teardown_failure`] from inside each
@@ -73,23 +78,39 @@ struct ModeReporter {
     test_teardown_failures: AtomicUsize,
 }
 
+/// Mutable state used while rendering plain-mode output to stdout.
 struct PlainState {
+    /// Whether ANSI colour escapes should be emitted.
     colored: bool,
+    /// Failures collected during the run, printed at the end.
     failures: Mutex<Vec<FailureInfo>>,
+    /// Render format (terse `.` characters vs full pretty lines).
     fmt: Format,
 }
 
+/// Status tag rendered before each result line in the plain-mode
+/// renderer.
 #[derive(Debug, Clone, Copy)]
 enum StatusLabel {
+    /// Successful benchmark run.
     Bench,
+    /// Benchmark with failures or panics.
     BenchErr,
+    /// Test cancelled before completion.
     Cancel,
+    /// Standard test failure.
     Fail,
+    /// Test exceeded its phase-hang-grace window.
     Hang,
+    /// Test marked `#[ignore]` and skipped.
     Ignore,
+    /// Test passed.
     Ok,
+    /// Test panicked.
     Panic,
+    /// Per-test setup returned `Err`.
     Setup,
+    /// Test exceeded its timeout.
     Timeout,
 }
 
@@ -97,20 +118,27 @@ enum StatusLabel {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct TestSummary {
+    /// Tests cancelled before completion.
     pub cancelled: usize,
+    /// Tests that failed via assertion or returned `Err`.
     pub failed: usize,
     /// Tests escalated from `TimedOut` to `Hung` because they ignored
     /// cooperative cancellation past `--phase-hang-grace`. Counted
     /// alongside `failed`/`panicked`/`timed_out` for `is_success`.
     pub hung: usize,
+    /// Tests skipped via `#[ignore]`.
     pub ignored: usize,
+    /// Tests that panicked.
     pub panicked: usize,
+    /// Tests that passed.
     pub passed: usize,
     /// Combined count of suite-level + per-test teardown failures
     /// (Err *or* panic *or* Hung). Drives [`is_success`] so a botched
     /// cleanup fails the run even when every test body passed.
     pub teardown_failures: usize,
+    /// Tests that exceeded their timeout but did not escalate to hang.
     pub timed_out: usize,
+    /// Total number of tests considered (including ignored).
     pub total: usize,
 }
 
@@ -119,6 +147,8 @@ pub struct TestSummary {
 // ---------------------------------------------------------------------------
 
 impl ModeReporter {
+    /// Construct a reporter wired for either plain or live output mode
+    /// based on `config.output_mode`.
     fn new(config: &Config) -> Self {
         match config.output_mode {
             OutputMode::Plain => Self {
@@ -138,6 +168,7 @@ impl ModeReporter {
 }
 
 impl StatusLabel {
+    /// Map a [`TestOutcome`] to the matching status label.
     const fn from_outcome(outcome: &TestOutcome) -> Self {
         match outcome {
             TestOutcome::Passed { .. } => Self::Ok,
@@ -721,6 +752,7 @@ impl From<SuiteSummary> for TestSummary {
 // Free functions (alphabetical)
 // ---------------------------------------------------------------------------
 
+/// Wrap `text` with the bold ANSI SGR code when `colored` is true.
 fn bold(text: &str, colored: bool) -> String {
     paint(text, "1", colored)
 }
@@ -745,14 +777,19 @@ fn enable_full_backtrace_default() {
     }
 }
 
+/// Format `elapsed` for the trailing `<runtime, …>` block using a
+/// short `1.23s`-style representation.
 fn format_elapsed(elapsed: Duration) -> String {
     format!("{elapsed:.2?}")
 }
 
+/// Wrap `text` with the green ANSI SGR code when `colored` is true.
 fn green(text: &str, colored: bool) -> String {
     paint(text, "32", colored)
 }
 
+/// Install SIGINT/SIGTERM handlers that flip `token`, giving in-flight
+/// tests a chance to observe cooperative cancellation.
 #[cfg(unix)]
 fn install_signal_handler(token: CancellationToken) {
     use signal_hook::consts::{SIGINT, SIGTERM};
@@ -842,6 +879,8 @@ fn outcome_inline_message(outcome: &TestOutcome) -> Option<String> {
     }
 }
 
+/// Wrap `text` with the given ANSI SGR `code` when `colored` is true,
+/// otherwise return `text` unchanged.
 fn paint(text: &str, code: &str, colored: bool) -> String {
     if colored {
         format!("\x1b[{code}m{text}\x1b[0m")
@@ -866,6 +905,7 @@ pub fn qualified_test_name(module_path: &str, test_name: &str) -> String {
     }
 }
 
+/// Wrap `text` with the red ANSI SGR code when `colored` is true.
 fn red(text: &str, colored: bool) -> String {
     paint(text, "31", colored)
 }
@@ -1284,6 +1324,8 @@ fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
     }
 }
 
+/// Decide whether ANSI colour escapes should be emitted in plain
+/// mode, honouring `--color`, `NO_COLOR`, and the stdout-TTY check.
 fn use_color(mode: ColorMode) -> bool {
     match mode {
         ColorMode::Always => true,
@@ -1292,6 +1334,7 @@ fn use_color(mode: ColorMode) -> bool {
     }
 }
 
+/// Wrap `text` with the yellow ANSI SGR code when `colored` is true.
 fn yellow(text: &str, colored: bool) -> String {
     paint(text, "33", colored)
 }

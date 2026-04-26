@@ -23,11 +23,18 @@ use crossbeam_channel::Sender;
 
 use super::events::{PipeChunk, StdStream};
 
+/// Per-iteration heap buffer size for the blocking `read()` loop —
+/// sized to amortise syscall overhead against memory waste.
 const READ_BUF_SIZE: usize = 16 * 1024;
 
 /// Spawn a reader thread for one pipe. The thread takes ownership of
 /// `fd` and exits when `read` returns 0 (writer end closed) or the
 /// drawer hangs up the receiver.
+///
+/// # Errors
+///
+/// Returns an error when the OS refuses to spawn the named reader
+/// thread (e.g. resource exhaustion).
 #[inline]
 pub fn spawn(fd: OwnedFd, stream: StdStream, tx: Sender<PipeChunk>) -> io::Result<JoinHandle<()>> {
     let name = match stream {

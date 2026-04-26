@@ -153,11 +153,14 @@ pub const NESTED_SENTINEL_ENV: &str = "__RUDZIO_EXPOSE_BINS_ACTIVE";
 /// etc.) with a human-readable message.
 #[derive(Debug)]
 pub struct Error {
+    /// Human-readable description shown via [`fmt::Display`].
     message: String,
+    /// Underlying cause when the failure wraps a lower-level error.
     source: Option<Box<dyn StdError + Send + Sync + 'static>>,
 }
 
 impl Error {
+    /// Build a standalone error carrying only a message (no source).
     fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
@@ -165,6 +168,7 @@ impl Error {
         }
     }
 
+    /// Build an error wrapping a lower-level error as its source.
     fn with_source(
         message: impl Into<String>,
         source: impl StdError + Send + Sync + 'static,
@@ -201,14 +205,21 @@ pub type Result<T> = StdResult<T, Error>;
 /// Required build-script environment variables, read up-front so errors
 /// surface in one place rather than at the site of first use.
 struct BuildEnv {
+    /// Path to the cargo binary (`$CARGO`) used to spawn the nested
+    /// `cargo build`.
     cargo: OsString,
+    /// `$CARGO_MANIFEST_DIR` — directory of the calling build script.
     manifest_dir: PathBuf,
+    /// `$OUT_DIR` — where the nested target dir and emitted artifacts
+    /// live.
     out_dir: PathBuf,
     /// `CARGO_PKG_NAME` — the crate whose build script is currently
     /// running. Compared against `bin_crate` when the sentinel is set
     /// to distinguish expected same-crate re-entry (silent Ok) from
     /// unexpected cross-crate re-entry (warn + Ok).
     pkg_name: String,
+    /// `$PROFILE` — `debug` or `release`, forwarded to the nested
+    /// build.
     profile: String,
 }
 
@@ -216,7 +227,9 @@ struct BuildEnv {
 /// build scripts) onto the flag we pass to the nested `cargo build` and
 /// onto the output subdirectory cargo writes the binary into.
 enum ProfileFlag {
+    /// `cargo build` (no flag); output lives under `target/debug`.
     Debug,
+    /// `cargo build --release`; output lives under `target/release`.
     Release,
 }
 
@@ -241,6 +254,8 @@ pub enum SentinelAction {
 }
 
 impl BuildEnv {
+    /// Read every required env var up-front so missing-cargo failures
+    /// surface in one place rather than at the first use.
     fn capture() -> Result<Self> {
         Ok(Self {
             manifest_dir: require_path_env("CARGO_MANIFEST_DIR")?,
@@ -258,6 +273,7 @@ impl BuildEnv {
 }
 
 impl ProfileFlag {
+    /// CLI flag to pass to `cargo build` for this profile, if any.
     const fn cli_flag(&self) -> Option<&'static str> {
         match self {
             Self::Debug => None,
@@ -265,6 +281,7 @@ impl ProfileFlag {
         }
     }
 
+    /// Parse cargo's `$PROFILE` value into a known profile flag.
     fn from_env_profile(profile: &str) -> Result<Self> {
         match profile {
             "debug" => Ok(Self::Debug),
@@ -277,6 +294,8 @@ impl ProfileFlag {
         }
     }
 
+    /// Subdirectory under cargo's target dir where the built artifacts
+    /// land for this profile.
     fn output_subdir(&self) -> &'static Path {
         match self {
             Self::Debug => Path::new("debug"),
@@ -489,6 +508,8 @@ pub fn sentinel_indicates_nested_call(value: Option<&OsStr>) -> bool {
     matches!(value, Some(val) if !val.is_empty())
 }
 
+/// Read a required env var as a string, mapping a missing/invalid
+/// value to a contextful build-script error.
 fn require_string_env(name: &str) -> Result<String> {
     env::var(name).map_err(|err| {
         Error::with_source(
@@ -501,6 +522,7 @@ fn require_string_env(name: &str) -> Result<String> {
     })
 }
 
+/// Read a required env var and parse it as a [`PathBuf`].
 fn require_path_env(name: &str) -> Result<PathBuf> {
     require_string_env(name).map(PathBuf::from)
 }

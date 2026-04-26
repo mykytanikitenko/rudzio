@@ -50,11 +50,15 @@ fn __pender(context: *mut ()) {
 /// issued from a timer thread inside `sleep`). `block_on` calls `wait()` on
 /// the group thread to sleep until that happens.
 struct Signaler {
+    /// Condvar woken by `signal()` to release a parked `wait()` caller.
     condvar: Condvar,
+    /// Latch set by `signal()` so a `wait()` racing against `signal()`
+    /// observes the wake.
     flag: Mutex<bool>,
 }
 
 impl Signaler {
+    /// Build a signaler with the latch cleared and no waiters.
     const fn new() -> Self {
         Self {
             flag: Mutex::new(false),
@@ -62,12 +66,15 @@ impl Signaler {
         }
     }
 
+    /// Set the latch and wake any thread parked in [`Self::wait`].
     fn signal(&self) {
         let mut guard = self.flag.lock().expect("signaler flag poisoned");
         *guard = true;
         self.condvar.notify_one();
     }
 
+    /// Block until [`Self::signal`] is observed, clearing the latch
+    /// before returning so the next wait can be re-armed.
     fn wait(&self) {
         let mut guard = self.flag.lock().expect("signaler flag poisoned");
         while !*guard {

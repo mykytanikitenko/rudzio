@@ -26,11 +26,19 @@ use super::events::{LifecycleEvent, TestId};
 /// [`super::events::TestState`]).
 #[derive(Debug)]
 pub struct FirstPoll<F> {
+    /// `true` once the first poll has emitted the `TestStarted` event,
+    /// used to make the announcement idempotent across polls.
     fired: bool,
+    /// The wrapped test-body future; subsequent polls delegate to it.
     inner: F,
+    /// `module_path!()` of the test, forwarded into the event.
     module_path: &'static str,
+    /// Display name of the runtime hosting this test.
     runtime_name: &'static str,
+    /// Identifier used by the drawer to correlate lifecycle and pipe
+    /// events for this test.
     test_id: TestId,
+    /// The test's identifier within its module.
     test_name: &'static str,
 }
 

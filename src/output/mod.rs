@@ -65,10 +65,16 @@ static LIFECYCLE_SENDER: OnceLock<Sender<LifecycleEvent>> = OnceLock::new();
 #[derive(Debug)]
 #[cfg(unix)]
 pub struct CaptureGuard {
+    /// Join handle for the drawer thread; taken in `Drop`.
     drawer: Option<JoinHandle<()>>,
+    /// Join handle for the stderr pipe-reader thread.
     reader_stderr: Option<JoinHandle<()>>,
+    /// Join handle for the stdout pipe-reader thread.
     reader_stdout: Option<JoinHandle<()>>,
+    /// Saved FDs restored on drop or panic; shared with the panic
+    /// hook so whichever path runs first wins.
     saved: Arc<pipe::SavedFds>,
+    /// Shutdown signal that ends the drawer's `select!` loop.
     shutdown_tx: Option<Sender<()>>,
 }
 
@@ -140,6 +146,12 @@ impl Drop for CaptureGuard {
 /// selected (the runner's reporter prints cargo-test-style lines
 /// itself — the drawer is unnecessary overhead) or when the target
 /// isn't Unix.
+///
+/// # Errors
+///
+/// Returns an error when the FD-swapping `pipe()` setup fails, when
+/// spawning a reader/drawer thread fails, or when any underlying
+/// `dup2`/`pipe2` syscall returns an OS error.
 #[inline]
 pub fn init(config: &Config) -> io::Result<CaptureGuard> {
     if matches!(config.output_mode, OutputMode::Plain) {
@@ -162,6 +174,8 @@ pub fn init(config: &Config) -> io::Result<CaptureGuard> {
     }
 }
 
+/// Unix-only init path: swap FDs 1/2 onto pipes and spawn the
+/// drawer/readers wired to the captured streams.
 #[cfg(unix)]
 fn init_unix(config: &Config) -> io::Result<CaptureGuard> {
     use std::io::IsTerminal as _;

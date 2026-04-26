@@ -15,6 +15,8 @@ use crate::config::ColorMode;
 /// around instead of re-querying the environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ColorPolicy {
+    /// Whether ANSI colour escapes should be emitted by the wrap
+    /// helpers.
     use_color: bool,
 }
 
@@ -84,6 +86,8 @@ impl ColorPolicy {
         Self { use_color }
     }
 
+    /// Apply an ANSI SGR `code` around `text` when colour is enabled,
+    /// otherwise return `text` unchanged.
     fn wrap(self, text: &str, code: &str) -> String {
         if self.use_color {
             format!("\x1b[{code}m{text}\x1b[0m")

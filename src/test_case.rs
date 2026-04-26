@@ -40,6 +40,13 @@ pub struct TestCase {
 /// async bodies) so a single dispatch path covers every supported
 /// signature shape.
 pub trait IntoRudzioResult {
+    /// Convert this value into the runner's canonical
+    /// `Result<(), BoxError>` form.
+    ///
+    /// # Errors
+    ///
+    /// Returns the test body's error boxed into [`BoxError`] when the
+    /// implementing type is `Result::Err`; never errors for `()`.
     fn into_rudzio_result(self) -> Result<(), BoxError>;
 }
 

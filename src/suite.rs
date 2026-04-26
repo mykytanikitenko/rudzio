@@ -70,7 +70,9 @@ pub struct RuntimeGroupKey(pub u64);
 /// [`drive_per_test_spawn`]. Carried as a value so the outer race
 /// can branch on which trigger fired without a second token check.
 enum Stage1Trigger {
+    /// Per-test budget elapsed before the parent cancel fired.
     Budget,
+    /// Parent cancellation token fired before the budget elapsed.
     Parent,
 }
 

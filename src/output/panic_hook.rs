@@ -38,6 +38,8 @@ thread_local! {
     static CURRENT_TEST_ID: Cell<Option<TestId>> = const { Cell::new(None) };
 }
 
+/// Tracks whether the rudzio panic hook has already been installed,
+/// so repeated [`install`] calls become no-ops.
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
 /// Process-wide count of panics observed by the rudzio panic hook

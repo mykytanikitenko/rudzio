@@ -52,7 +52,9 @@ pub struct Capture {
 /// makes subsequent calls no-op.
 #[derive(Debug)]
 pub struct SavedFds {
+    /// Saved-original FD 2 (stderr); set to `-1` once restored.
     stderr: AtomicI32,
+    /// Saved-original FD 1 (stdout); set to `-1` once restored.
     stdout: AtomicI32,
 }
 
@@ -99,6 +101,11 @@ impl SavedFds {
 /// place, and hand back the read ends + saved originals. Best-effort
 /// enlargement of the pipe buffers to [`PIPE_SIZE`] — ignored silently
 /// if the platform or system policy refuses.
+///
+/// # Errors
+///
+/// Returns an error when any of the underlying `dup` / `pipe` /
+/// `dup2` syscalls fails (e.g. FD-table exhaustion).
 #[inline]
 pub fn init() -> io::Result<Capture> {
     let saved_stdout = dup(libc::STDOUT_FILENO)?;
@@ -176,6 +183,8 @@ pub fn init() -> io::Result<Capture> {
     })
 }
 
+/// Duplicate `fd` via `libc::dup`, returning an owned raw FD or the
+/// last OS error.
 fn dup(fd: RawFd) -> io::Result<RawFd> {
     // SAFETY: libc::dup of a valid FD (1 or 2) returns a new FD or
     // -1 on error. The returned FD is owned by the caller.
@@ -187,6 +196,7 @@ fn dup(fd: RawFd) -> io::Result<RawFd> {
     }
 }
 
+/// Duplicate `src` onto `dst` via `libc::dup2`, surfacing OS errors.
 fn dup2(src: RawFd, dst: RawFd) -> io::Result<()> {
     // SAFETY: libc::dup2 with valid src+dst FDs is defined; the kernel
     // atomically closes dst (if open) and duplicates src into it.
@@ -198,6 +208,8 @@ fn dup2(src: RawFd, dst: RawFd) -> io::Result<()> {
     }
 }
 
+/// Close `fd` via `libc::close`, ignoring any error since drop paths
+/// have nowhere to report it.
 fn close(fd: RawFd) {
     // SAFETY: closing a valid FD is defined; errors are ignored
     // because Drop paths have nowhere to report them.
@@ -206,6 +218,8 @@ fn close(fd: RawFd) {
     }
 }
 
+/// Create an anonymous pipe and return its read and write ends as
+/// owned FDs.
 fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0_i32; 2];
     // SAFETY: libc::pipe writes two FDs into the provided 2-element
@@ -222,6 +236,7 @@ fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     Ok((read, write))
 }
 
+/// Linux-only: enlarge the pipe buffer for `fd` via `F_SETPIPE_SZ`.
 #[cfg(target_os = "linux")]
 fn set_pipe_size(fd: RawFd, size: libc::c_int) -> io::Result<()> {
     // SAFETY: F_SETPIPE_SZ is a Linux fcntl command accepting an int.

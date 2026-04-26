@@ -27,17 +27,29 @@ use std::time::Instant;
 /// See the [module-level docs](self) for the "why real Condvar, not an
 /// async semaphore" rationale.
 pub struct HardLimit {
+    /// Backing slot pool; `None` means the gate is disabled and every
+    /// acquire is a no-op fast-path.
     inner: Option<Inner>,
+    /// Sink for one-line parking notices (production prints to stdout;
+    /// tests inject their own).
     sink: Box<dyn Fn(&str) + Send + Sync>,
 }
 
+/// Backing pool shared by every [`HardLimitGuard`] — the mutex/condvar
+/// pair plus the configured maximum.
 struct Inner {
+    /// Condvar woken when a permit is released so a parked acquirer
+    /// can resume.
     cvar: Condvar,
+    /// Configured maximum number of concurrent permits.
     max: NonZeroUsize,
+    /// Mutable per-pool state behind a lock.
     state: Mutex<State>,
 }
 
+/// Mutable counters guarded by `Inner::state`.
 struct State {
+    /// Number of permits currently free.
     available: usize,
 }
 
@@ -46,6 +58,8 @@ struct State {
 /// is a no-op on drop.
 #[derive(Debug)]
 pub struct HardLimitGuard<'a> {
+    /// Owning gate when this guard holds a real permit; `None` for
+    /// no-op guards from disabled-mode acquires.
     owner: Option<&'a HardLimit>,
 }
 
