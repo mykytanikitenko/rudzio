@@ -12,12 +12,17 @@ use std::time::Duration;
 
 use rudzio::context;
 use rudzio::runtime::Runtime;
+use rudzio::runtime::tokio::Multithread;
 use rudzio::tokio_util::sync::CancellationToken;
+use tokio::time::sleep;
 
+/// Suite whose per-test [`context::Suite::context`] always hangs until
+/// the cancel token fires (or 30s, whichever comes first).
 struct HangingContextSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
+    /// Ties the struct to the runtime lifetime without carrying any state.
     _marker: PhantomData<&'suite_context R>,
 }
 
@@ -33,7 +38,7 @@ where
 
 impl<'suite_context, R> context::Suite<'suite_context, R> for HangingContextSuite<'suite_context, R>
 where
-    R: for<'r> Runtime<'r> + Sync,
+    R: for<'rt> Runtime<'rt> + Sync,
 {
     type ContextError = Infallible;
     type SetupError = Infallible;
@@ -50,7 +55,7 @@ where
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         let _unused = cancel
             .run_until_cancelled(async {
-                ::tokio::time::sleep(Duration::from_secs(30)).await;
+                sleep(Duration::from_secs(30)).await;
             })
             .await;
         Ok(NeverBuiltTest {
@@ -73,10 +78,14 @@ where
     }
 }
 
+/// Per-test context placeholder; never actually constructed because
+/// [`HangingContextSuite::context`] hangs past the per-test setup
+/// timeout.
 struct NeverBuiltTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
 {
+    /// Ties the struct to the runtime lifetime without carrying any state.
     _marker: PhantomData<&'test_context R>,
 }
 
@@ -102,7 +111,7 @@ where
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
+        runtime = Multithread::new,
         suite = HangingContextSuite,
         test = NeverBuiltTest,
     ),
@@ -111,6 +120,10 @@ mod tests {
     use super::NeverBuiltTest;
 
     #[rudzio::test(setup_timeout = 1)]
+    #[expect(
+        clippy::unreachable,
+        reason = "this fixture exercises the per-test #[rudzio::test(setup_timeout=1)] override; Suite::context hangs and is killed by the per-test setup timeout, so the body must be unreachable"
+    )]
     fn attr_setup_times_out(_ctx: &NeverBuiltTest) -> anyhow::Result<()> {
         unreachable!("body must not run when attribute setup timeout fires");
     }

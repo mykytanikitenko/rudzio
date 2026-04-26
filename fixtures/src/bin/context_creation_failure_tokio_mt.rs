@@ -11,6 +11,8 @@ use std::marker::PhantomData;
 
 use rudzio::context;
 use rudzio::runtime::Runtime;
+use rudzio::runtime::tokio::Multithread;
+use rudzio::tokio_util::sync::CancellationToken;
 
 /// Error type used to fail context creation on purpose.
 #[derive(Debug)]
@@ -44,7 +46,7 @@ where
 
 impl<'suite_context, R> context::Suite<'suite_context, R> for BrokenContextSuite<'suite_context, R>
 where
-    R: for<'r> Runtime<'r> + Sync,
+    R: for<'rt> Runtime<'rt> + Sync,
 {
     type ContextError = ContextErr;
     type SetupError = ContextErr;
@@ -56,7 +58,7 @@ where
 
     async fn context<'test_context>(
         &'test_context self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
         _config: &'test_context ::rudzio::Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Err(ContextErr)
@@ -64,7 +66,7 @@ where
 
     async fn setup(
         _rt: &'suite_context R,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
         _config: &'suite_context ::rudzio::Config,
     ) -> Result<Self, Self::SetupError> {
         Ok(Self {
@@ -74,7 +76,7 @@ where
 
     async fn teardown(
         self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
     ) -> Result<(), Self::TeardownError> {
         Ok(())
     }
@@ -107,7 +109,7 @@ where
 
     async fn teardown(
         self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
     ) -> Result<(), Self::TeardownError> {
         Ok(())
     }
@@ -115,7 +117,7 @@ where
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
+        runtime = Multithread::new,
         suite = BrokenContextSuite,
         test = NeverBuiltTest,
     ),
@@ -124,11 +126,19 @@ mod tests {
     use super::NeverBuiltTest;
 
     #[rudzio::test]
+    #[expect(
+        clippy::unreachable,
+        reason = "this fixture exercises Suite::context returning Err; the body must be unreachable to confirm the runner reports SETUP without invoking it"
+    )]
     fn first(_ctx: &NeverBuiltTest) -> anyhow::Result<()> {
         unreachable!("body must not run when context() fails")
     }
 
     #[rudzio::test]
+    #[expect(
+        clippy::unreachable,
+        reason = "this fixture exercises Suite::context returning Err; the body must be unreachable to confirm the runner reports SETUP without invoking it"
+    )]
     fn second(_ctx: &NeverBuiltTest) -> anyhow::Result<()> {
         unreachable!("body must not run when context() fails")
     }

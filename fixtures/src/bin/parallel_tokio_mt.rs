@@ -14,6 +14,8 @@ use std::time::Duration;
 
 use rudzio::context;
 use rudzio::runtime::Runtime;
+use rudzio::runtime::tokio::Multithread;
+use rudzio::tokio_util::sync::CancellationToken;
 use tokio::sync::{Barrier, BarrierWaitResult};
 use tokio::time::timeout;
 
@@ -56,7 +58,7 @@ where
 
 impl<'suite_context, R> context::Suite<'suite_context, R> for ParallelSuite<'suite_context, R>
 where
-    R: for<'r> Runtime<'r> + Sync,
+    R: for<'rt> Runtime<'rt> + Sync,
 {
     type ContextError = NeverFails;
     type SetupError = NeverFails;
@@ -68,7 +70,7 @@ where
 
     async fn context<'test_context>(
         &'test_context self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
         _config: &'test_context ::rudzio::Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Ok(ParallelTest {
@@ -79,7 +81,7 @@ where
 
     async fn setup(
         _rt: &'suite_context R,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
         _config: &'suite_context ::rudzio::Config,
     ) -> Result<Self, Self::SetupError> {
         Ok(Self {
@@ -90,7 +92,7 @@ where
 
     async fn teardown(
         self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
     ) -> Result<(), Self::TeardownError> {
         Ok(())
     }
@@ -134,7 +136,7 @@ where
 
     async fn teardown(
         self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
     ) -> Result<(), Self::TeardownError> {
         Ok(())
     }
@@ -142,7 +144,7 @@ where
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
+        runtime = Multithread::new,
         suite = ParallelSuite,
         test = ParallelTest,
     ),

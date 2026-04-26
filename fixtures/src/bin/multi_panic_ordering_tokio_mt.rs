@@ -5,10 +5,11 @@
 //!   - the final summary counts across multiple panics are correct.
 
 use rudzio::common::context::Test;
+use rudzio::runtime::tokio::Multithread;
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
+        runtime = Multithread::new,
         suite = rudzio::common::context::Suite,
         test = rudzio::common::context::Test,
     ),
@@ -22,6 +23,11 @@ mod tests {
     }
 
     #[rudzio::test]
+    #[expect(
+        clippy::panic,
+        clippy::unnecessary_wraps,
+        reason = "this fixture interleaves panicking and passing tests to verify panic isolation works for every panic, not just the first; the framework requires the test fn signature to return anyhow::Result<()>"
+    )]
     fn step_2_panic(_ctx: &Test) -> anyhow::Result<()> {
         panic!("first planned panic");
     }
@@ -32,6 +38,11 @@ mod tests {
     }
 
     #[rudzio::test]
+    #[expect(
+        clippy::panic,
+        clippy::unnecessary_wraps,
+        reason = "this fixture interleaves panicking and passing tests to verify panic isolation works for every panic, not just the first; the framework requires the test fn signature to return anyhow::Result<()>"
+    )]
     fn step_4_panic(_ctx: &Test) -> anyhow::Result<()> {
         panic!("second planned panic");
     }

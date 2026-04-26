@@ -15,27 +15,57 @@ use std::marker::PhantomData;
 
 use rudzio::context;
 use rudzio::runtime::Runtime;
+use rudzio::runtime::tokio::Multithread;
 use rudzio::tokio_util::sync::CancellationToken;
 
-pub struct MutableSuite<'suite_context, R>
+/// Suite context with no shared state beyond a runtime borrow.
+struct MutableSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
+    /// Ties the struct to the runtime lifetime without carrying any state.
     _marker: PhantomData<&'suite_context R>,
+}
+
+/// Per-test context exposing a private `u32` counter mutated by the test
+/// body via `&mut self` accessors. The fixture verifies the suite macro
+/// preserves the `mut` qualifier when binding the per-test context.
+struct MutableTest<'test_context, R>
+where
+    R: Runtime<'test_context> + Sync,
+{
+    /// Ties the struct to the runtime lifetime without carrying any state.
+    _marker: PhantomData<&'test_context R>,
+    /// Counter mutated by the test body; reset to 0 by every fresh
+    /// `Suite::context` invocation so per-test isolation can be asserted.
+    counter: u32,
 }
 
 impl<'suite_context, R> fmt::Debug for MutableSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MutableSuite").finish_non_exhaustive()
     }
 }
 
+impl<'test_context, R> fmt::Debug for MutableTest<'test_context, R>
+where
+    R: Runtime<'test_context> + Sync,
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MutableTest")
+            .field("counter", &self.counter)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'suite_context, R> context::Suite<'suite_context, R> for MutableSuite<'suite_context, R>
 where
-    R: for<'r> Runtime<'r> + Sync,
+    R: for<'rt> Runtime<'rt> + Sync,
 {
     type ContextError = Infallible;
     type SetupError = Infallible;
@@ -45,6 +75,7 @@ where
     where
         Self: 'test_context;
 
+    #[inline]
     async fn context<'test_context>(
         &'test_context self,
         _cancel: CancellationToken,
@@ -56,6 +87,7 @@ where
         })
     }
 
+    #[inline]
     async fn setup(
         _rt: &'suite_context R,
         _cancel: CancellationToken,
@@ -66,30 +98,33 @@ where
         })
     }
 
+    #[inline]
     async fn teardown(
         self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
     ) -> Result<(), Self::TeardownError> {
         Ok(())
     }
 }
 
-pub struct MutableTest<'test_context, R>
+impl<'test_context, R> MutableTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
 {
-    _marker: PhantomData<&'test_context R>,
-    pub counter: u32,
-}
+    /// Read the current counter value (used by test bodies to assert
+    /// isolation and the result of mutations).
+    const fn counter(&self) -> u32 {
+        self.counter
+    }
 
-impl<'test_context, R> fmt::Debug for MutableTest<'test_context, R>
-where
-    R: Runtime<'test_context> + Sync,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MutableTest")
-            .field("counter", &self.counter)
-            .finish_non_exhaustive()
+    /// Increment the counter by 1 using saturating arithmetic.
+    const fn increment(&mut self) {
+        self.counter = self.counter.saturating_add(1);
+    }
+
+    /// Replace the counter with the given value.
+    const fn set_counter(&mut self, value: u32) {
+        self.counter = value;
     }
 }
 
@@ -99,9 +134,10 @@ where
 {
     type TeardownError = Infallible;
 
+    #[inline]
     async fn teardown(
         self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
     ) -> Result<(), Self::TeardownError> {
         Ok(())
     }
@@ -109,7 +145,7 @@ where
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
+        runtime = Multithread::new,
         suite = MutableSuite,
         test = MutableTest,
     ),
@@ -118,22 +154,22 @@ mod tests {
     use super::MutableTest;
 
     /// Mutate the per-test counter via `&mut` and assert the new value.
-    /// Each test gets a fresh ctx, so this should always read 0 → 3.
+    /// Each test gets a fresh ctx, so this should always read 0 -> 3.
     #[rudzio::test]
     async fn mutates_via_mut_borrow(ctx: &mut MutableTest) -> anyhow::Result<()> {
-        anyhow::ensure!(ctx.counter == 0, "fresh ctx should start at 0");
-        ctx.counter += 1;
-        ctx.counter += 1;
-        ctx.counter += 1;
-        anyhow::ensure!(ctx.counter == 3, "counter must reflect mutations");
+        anyhow::ensure!(ctx.counter() == 0, "fresh ctx should start at 0");
+        ctx.increment();
+        ctx.increment();
+        ctx.increment();
+        anyhow::ensure!(ctx.counter() == 3, "counter must reflect mutations");
         Ok(())
     }
 
     /// Sync test body still gets `&mut` access.
     #[rudzio::test]
     fn sync_mutates_via_mut_borrow(ctx: &mut MutableTest) -> anyhow::Result<()> {
-        ctx.counter = 42;
-        anyhow::ensure!(ctx.counter == 42, "sync &mut must work too");
+        ctx.set_counter(42);
+        anyhow::ensure!(ctx.counter() == 42, "sync &mut must work too");
         Ok(())
     }
 
@@ -143,9 +179,9 @@ mod tests {
     #[rudzio::test]
     async fn fresh_ctx_per_test(ctx: &mut MutableTest) -> anyhow::Result<()> {
         anyhow::ensure!(
-            ctx.counter == 0,
+            ctx.counter() == 0,
             "each test should get a fresh ctx — got counter={}",
-            ctx.counter,
+            ctx.counter(),
         );
         Ok(())
     }

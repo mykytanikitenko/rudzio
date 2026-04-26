@@ -12,6 +12,8 @@ use std::marker::PhantomData;
 
 use rudzio::context;
 use rudzio::runtime::Runtime;
+use rudzio::runtime::tokio::Multithread;
+use rudzio::tokio_util::sync::CancellationToken;
 
 /// Error type used to fail teardown on purpose.
 #[derive(Debug)]
@@ -48,7 +50,7 @@ where
 impl<'suite_context, R> context::Suite<'suite_context, R>
     for FailingTeardownSuite<'suite_context, R>
 where
-    R: for<'r> Runtime<'r> + Sync,
+    R: for<'rt> Runtime<'rt> + Sync,
 {
     type ContextError = TeardownErr;
     type SetupError = TeardownErr;
@@ -60,7 +62,7 @@ where
 
     async fn context<'test_context>(
         &'test_context self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
         _config: &'test_context ::rudzio::Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Ok(TrivialTest {
@@ -70,7 +72,7 @@ where
 
     async fn setup(
         _rt: &'suite_context R,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
         _config: &'suite_context ::rudzio::Config,
     ) -> Result<Self, Self::SetupError> {
         Ok(Self {
@@ -80,7 +82,7 @@ where
 
     async fn teardown(
         self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
     ) -> Result<(), Self::TeardownError> {
         Err(TeardownErr)
     }
@@ -114,7 +116,7 @@ where
 
     async fn teardown(
         self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
     ) -> Result<(), Self::TeardownError> {
         Ok(())
     }
@@ -122,7 +124,7 @@ where
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
+        runtime = Multithread::new,
         suite = FailingTeardownSuite,
         test = TrivialTest,
     ),
@@ -131,6 +133,10 @@ mod tests {
     use super::TrivialTest;
 
     #[rudzio::test]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "this fixture's body must succeed (Ok(())) so suite teardown failure is the unambiguous failure point; the framework requires the test fn signature to return anyhow::Result<()>"
+    )]
     fn body_runs_then_teardown_fails(_ctx: &TrivialTest) -> anyhow::Result<()> {
         Ok(())
     }

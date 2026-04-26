@@ -13,7 +13,10 @@ use std::marker::PhantomData;
 
 use rudzio::context;
 use rudzio::runtime::Runtime;
+use rudzio::runtime::tokio::Multithread;
+use rudzio::tokio_util::sync::CancellationToken;
 
+/// Suite whose per-test [`context::Suite::context`] always panics.
 struct PanickingContextSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
@@ -35,7 +38,7 @@ where
 impl<'suite_context, R> context::Suite<'suite_context, R>
     for PanickingContextSuite<'suite_context, R>
 where
-    R: for<'r> Runtime<'r> + Sync,
+    R: for<'rt> Runtime<'rt> + Sync,
 {
     type ContextError = Infallible;
     type SetupError = Infallible;
@@ -45,9 +48,13 @@ where
     where
         Self: 'test_context;
 
+    #[expect(
+        clippy::panic,
+        reason = "this fixture exercises the catch_unwind wrapper around Suite::context (per-test setup); the body must panic to verify the runner reports the failure as TestOutcome::SetupFailed with the panic message"
+    )]
     async fn context<'test_context>(
         &'test_context self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
         _config: &'test_context ::rudzio::Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         panic!("test_setup_panicked_by_design")
@@ -55,7 +62,7 @@ where
 
     async fn setup(
         _rt: &'suite_context R,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
         _config: &'suite_context ::rudzio::Config,
     ) -> Result<Self, Self::SetupError> {
         Ok(Self {
@@ -65,12 +72,14 @@ where
 
     async fn teardown(
         self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
     ) -> Result<(), Self::TeardownError> {
         Ok(())
     }
 }
 
+/// Per-test context placeholder; never actually constructed because
+/// [`PanickingContextSuite::context`] panics.
 struct NeverBuiltTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
@@ -96,7 +105,7 @@ where
 
     async fn teardown(
         self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+        _cancel: CancellationToken,
     ) -> Result<(), Self::TeardownError> {
         Ok(())
     }
@@ -104,7 +113,7 @@ where
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
+        runtime = Multithread::new,
         suite = PanickingContextSuite,
         test = NeverBuiltTest,
     ),
@@ -113,6 +122,10 @@ mod tests {
     use super::NeverBuiltTest;
 
     #[rudzio::test]
+    #[expect(
+        clippy::unreachable,
+        reason = "this fixture exercises panic_in_test_setup; Suite::context panics before the body runs, so the body must be unreachable to confirm the runner never invoked it"
+    )]
     fn body_never_runs(_ctx: &NeverBuiltTest) -> anyhow::Result<()> {
         unreachable!("body must not run when context() panicked")
     }

@@ -10,18 +10,24 @@
 use std::time::Duration;
 
 use rudzio::common::context::Test;
+use rudzio::runtime::tokio::Multithread;
+use tokio::time::sleep;
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
+        runtime = Multithread::new,
         suite = rudzio::common::context::Suite,
         test = rudzio::common::context::Test,
     ),
 ])]
 mod tests {
-    use super::{Duration, Test};
+    use super::{Duration, Test, sleep};
 
     #[rudzio::test]
+    #[expect(
+        clippy::print_stdout,
+        reason = "this fixture verifies that a tracked task's cleanup marker reaches stdout before the process exits even when the root cancel token fires mid-task; integration tests grep for the marker"
+    )]
     async fn task_cleans_up_on_cancel(ctx: &Test) -> anyhow::Result<()> {
         let token = ctx.cancel_token().clone();
         // `spawn_tracked` is eager: the inner `rt.spawn` runs synchronously,
@@ -30,7 +36,7 @@ mod tests {
         drop(ctx.spawn_tracked(async move {
             token.cancelled().await;
             // Simulate a little graceful shutdown work before the marker.
-            ::tokio::time::sleep(Duration::from_millis(50)).await;
+            sleep(Duration::from_millis(50)).await;
             println!("gradual_cancel_cleanup_marker");
         }));
 
@@ -39,7 +45,7 @@ mod tests {
         let _unused = ctx
             .cancel_token()
             .run_until_cancelled(async {
-                ::tokio::time::sleep(Duration::from_secs(30)).await;
+                sleep(Duration::from_secs(30)).await;
             })
             .await;
 

@@ -1,8 +1,9 @@
 use rudzio::common::context::Test;
+use rudzio::runtime::embassy::Runtime;
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::embassy::Runtime::new,
+        runtime = Runtime::new,
         suite = rudzio::common::context::Suite,
         test = rudzio::common::context::Test,
     ),
