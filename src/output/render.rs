@@ -24,9 +24,9 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, select};
 
-use super::color::ColorPolicy;
+use super::color::Policy as ColorPolicy;
 use super::events::{LifecycleEvent, PipeChunk, StdStream, TestId, TestState, TestStateKind};
-use crate::bench::{BenchProgressSnapshot, HISTOGRAM_BUCKETS};
+use crate::bench::{ProgressSnapshot, HISTOGRAM_BUCKETS};
 use crate::config::{Format, OutputMode};
 use crate::runner::{normalize_module_path, qualified_test_name};
 use crate::suite::{TeardownResult, TestOutcome};
@@ -251,7 +251,7 @@ impl Drawer {
             self.handle_lifecycle(ev);
         }
         while let Ok(chunk) = self.pipe_rx.try_recv() {
-            self.handle_pipe(chunk);
+            self.handle_pipe(&chunk);
         }
     }
 
@@ -288,7 +288,12 @@ impl Drawer {
                     | StatusLabel::Timeout
                     | StatusLabel::Cancel
                     | StatusLabel::Hang => self.color.red(&body),
-                    _ => body,
+                    StatusLabel::Bench
+                    | StatusLabel::BenchErr
+                    | StatusLabel::Ignore
+                    | StatusLabel::Ok
+                    | StatusLabel::Run
+                    | StatusLabel::SetupOk => body,
                 };
                 drop(self.terminal.write_all(painted.as_bytes()));
             }
@@ -524,7 +529,7 @@ impl Drawer {
                 // wrote just before the runtime thread flushed land
                 // in the correct test's buffer.
                 while let Ok(chunk) = self.pipe_rx.try_recv() {
-                    self.handle_pipe(chunk);
+                    self.handle_pipe(&chunk);
                 }
                 self.summary.record_outcome(&outcome);
                 if let Some(state) = self.tests.remove(&test_id) {
@@ -556,7 +561,7 @@ impl Drawer {
 
     /// Attribute a captured pipe chunk to the appropriate in-flight test
     /// and either buffer or pass it through to the terminal.
-    fn handle_pipe(&mut self, chunk: PipeChunk) {
+    fn handle_pipe(&mut self, chunk: &PipeChunk) {
         // Attribution: the reader thread has no producer-thread info.
         // When exactly one test is running, attribute to it. When
         // multiple are running concurrently, attribute to the
@@ -888,7 +893,7 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
                     Err(_) => break,
                 },
                 recv(self.pipe_rx) -> msg => match msg {
-                    Ok(chunk) => self.handle_pipe(chunk),
+                    Ok(chunk) => self.handle_pipe(&chunk),
                     Err(_) => break,
                 },
                 recv(timer) -> _ => self.redraw_live_region(),
@@ -1077,15 +1082,24 @@ fn terminal_height() -> usize {
 /// likely-terminal FDs and returning `(None, None)` when none answer.
 #[cfg(unix)]
 fn terminal_size_unix() -> (Option<usize>, Option<usize>) {
-    // SAFETY: ioctl TIOCGWINSZ writes a `winsize` we allocated; we
-    // only read it on success. The drawer doesn't redirect FD 2
-    // after the capture swap (FD 2 points at the write end of the
-    // stderr capture pipe, so it's not useful) — we walk likely-
-    // terminal FDs until one answers.
-    #[expect(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "zero-initialised winsize for FFI; see SAFETY comment below"
+    )]
+    // SAFETY: zeroing a libc::winsize is safe — it's a plain C struct
+    // of integers with no validity invariants beyond bit-pattern.
     let mut ws: libc::winsize = unsafe { mem::zeroed() };
+    // The drawer doesn't redirect FD 2 after the capture swap (FD 2
+    // points at the write end of the stderr capture pipe, so it's not
+    // useful) — we walk likely-terminal FDs until one answers.
     for fd in [libc::STDERR_FILENO, libc::STDIN_FILENO, libc::STDOUT_FILENO] {
-        #[expect(unsafe_code)]
+        #[expect(
+            unsafe_code,
+            reason = "ioctl TIOCGWINSZ FFI call; see SAFETY comment below"
+        )]
+        // SAFETY: ioctl TIOCGWINSZ writes into the `winsize` we
+        // allocated above; the pointer is properly aligned and
+        // exclusively owned. Result is read only on success.
         let ioctl_ret = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &raw mut ws) };
         if ioctl_ret == 0 && ws.ws_col > 0 {
             let cols = Some(usize::from(ws.ws_col));
@@ -1256,7 +1270,7 @@ fn bar_render(done: usize, total: usize, width: usize) -> String {
 #[must_use]
 #[inline]
 pub fn bench_progress_trailing(
-    snap: &BenchProgressSnapshot,
+    snap: &ProgressSnapshot,
     cols: usize,
     _elapsed: Duration,
 ) -> String {
@@ -1386,7 +1400,10 @@ pub fn running_output_lines(
     // 1 col of right-edge slack — same DECAWM defence as
     // `running_line`'s display clip.
     let line_budget = cols.saturating_sub(1).max(1);
-    state.recent_output[start..]
+    state
+        .recent_output
+        .get(start..)
+        .unwrap_or(&[])
         .iter()
         .map(|line| color.dim(&clip_to_cols(line, line_budget)))
         .collect()
@@ -1408,7 +1425,7 @@ pub fn running_output_lines(
 #[must_use]
 #[inline]
 pub fn bench_histogram_lines(
-    snap: &BenchProgressSnapshot,
+    snap: &ProgressSnapshot,
     color: ColorPolicy,
     cols: usize,
     height_budget: usize,

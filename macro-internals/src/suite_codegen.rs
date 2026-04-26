@@ -422,19 +422,19 @@ fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream
         #[::rudzio::linkme::distributed_slice(::rudzio::token::TEST_TOKENS)]
         #[linkme(crate = ::rudzio::linkme)]
         #[doc(hidden)]
-        static #token_static_ident: ::rudzio::token::TestToken = ::rudzio::token::TestToken::new(
-            ::rudzio::token::TestTokenSource::new(
+        static #token_static_ident: ::rudzio::token::Token = ::rudzio::token::Token::new(
+            ::rudzio::token::Source::new(
                 ::std::file!(),
                 #source_line,
                 ::core::module_path!(),
                 #test_name_str,
             ),
-            ::rudzio::token::TestTokenAttrs::new(
+            ::rudzio::token::Attrs::new(
                 #has_benchmark,
                 #ignore_reason,
                 #ignored,
             ),
-            ::rudzio::token::TestTokenDispatch::new(
+            ::rudzio::token::Dispatch::new(
                 #run_test_fn,
                 ::rudzio::suite::RuntimeGroupKey(::rudzio::suite::fnv1a64(#group_key_source)),
                 &#owner_static,
@@ -463,7 +463,7 @@ fn owner_dispatch_loop_quote(suite_base: &Path, runtime_type: &Path) -> TokenStr
         let mut in_flight = FuturesUnordered::new();
         let mut queued = active.into_iter();
 
-        let dispatch = |tok: &'static ::rudzio::token::TestToken| {
+        let dispatch = |tok: &'static ::rudzio::token::Token| {
             // SAFETY: `tok.run_test` was emitted by the same
             // suite macro that emitted this owner; its
             // `runtime_group_key` matches `self.group_key()`,
@@ -489,7 +489,7 @@ fn owner_dispatch_loop_quote(suite_base: &Path, runtime_type: &Path) -> TokenStr
                 let fut: ::std::pin::Pin<::std::boxed::Box<
                     dyn ::std::future::Future<
                         Output = (
-                            &'static ::rudzio::token::TestToken,
+                            &'static ::rudzio::token::Token,
                             ::rudzio::suite::TestOutcome,
                         ),
                     > + '_,
@@ -527,7 +527,7 @@ fn owner_dispatch_loop_quote(suite_base: &Path, runtime_type: &Path) -> TokenStr
                 let fut: ::std::pin::Pin<::std::boxed::Box<
                     dyn ::std::future::Future<
                         Output = (
-                            &'static ::rudzio::token::TestToken,
+                            &'static ::rudzio::token::Token,
                             ::rudzio::suite::TestOutcome,
                         ),
                     > + '_,
@@ -572,7 +572,7 @@ fn owner_runtime_init_quote(
                 reporter.report_warning(&::std::format!(
                     "FATAL: failed to create runtime: {}", e,
                 ));
-                let mut summary = ::rudzio::suite::SuiteSummary::zero();
+                let mut summary = ::rudzio::suite::Summary::zero();
                 summary.total = req.tokens.len();
                 summary.panicked = req.tokens.len();
                 return summary;
@@ -598,9 +598,9 @@ fn owner_runtime_init_quote(
         // are reported as ignored (with a short reason) when
         // `--no-bench` is set, so the final summary still accounts
         // for every declared test.
-        let mut summary = ::rudzio::suite::SuiteSummary::zero();
+        let mut summary = ::rudzio::suite::Summary::zero();
         summary.total = req.tokens.len();
-        let mut active: ::std::vec::Vec<&'static ::rudzio::token::TestToken> =
+        let mut active: ::std::vec::Vec<&'static ::rudzio::token::Token> =
             ::std::vec::Vec::with_capacity(req.tokens.len());
         for tok in req.tokens {
             let ignore_skip = match req.config.run_ignored {
@@ -856,10 +856,10 @@ fn run_test_fn_quote(args: &RunTestFnArgs<'_>) -> TokenStream {
             runtime_ptr: *const (),
             suite_ptr: *const (),
             _phantom: ::std::marker::PhantomData<&'s ()>,
-            token: &'static ::rudzio::token::TestToken,
+            token: &'static ::rudzio::token::Token,
             test_timeout: ::std::option::Option<::std::time::Duration>,
             root_token: ::rudzio::tokio_util::sync::CancellationToken,
-            reporter: &'s dyn ::rudzio::suite::SuiteReporter,
+            reporter: &'s dyn ::rudzio::suite::Reporter,
         ) -> ::std::pin::Pin<::std::boxed::Box<
             dyn ::std::future::Future<Output = ::rudzio::suite::TestOutcome> + 's
         >> {
@@ -1159,9 +1159,9 @@ fn runtime_group_owner_impl(
 
             fn run_group(
                 &self,
-                req: ::rudzio::suite::SuiteRunRequest<'_>,
-                reporter: &dyn ::rudzio::suite::SuiteReporter,
-            ) -> ::rudzio::suite::SuiteSummary {
+                req: ::rudzio::suite::RunRequest<'_>,
+                reporter: &dyn ::rudzio::suite::Reporter,
+            ) -> ::rudzio::suite::Summary {
                 use ::rudzio::context::Suite as _;
                 use ::rudzio::context::Test as _;
                 use ::rudzio::runtime::Runtime as _;
@@ -1174,7 +1174,7 @@ fn runtime_group_owner_impl(
                 // Step 3: drive the suite under the runtime's own block_on.
                 // Borrows of `&rt` and `&suite` are scoped to this call;
                 // every lifetime here is tied to the local stack frame.
-                let async_summary: ::rudzio::suite::SuiteSummary =
+                let async_summary: ::rudzio::suite::Summary =
                     ::rudzio::runtime::Runtime::block_on(&rt, async {
                         let mut summary = summary;
 

@@ -7,7 +7,7 @@
 //! also a valid regular test without changing anything.
 //!
 //! The strategy interface is a single [`Strategy::run`] method that takes a
-//! closure producing a fresh future per call and returns a [`BenchReport`]
+//! closure producing a fresh future per call and returns a [`Report`]
 //! aggregating per-iteration timings plus failure and panic counts. Two
 //! primitive strategies ship with rudzio: [`strategy::Sequential`] (N
 //! one-after-another iterations) and [`strategy::Concurrent`] (N
@@ -25,7 +25,7 @@ use std::time::Duration;
 use crate::test_case::BoxError;
 
 /// Number of linear histogram buckets carried in a
-/// [`BenchProgressSnapshot`].
+/// [`ProgressSnapshot`].
 pub const HISTOGRAM_BUCKETS: usize = 32;
 
 /// Cheap, fixed-size summary of a benchmark's progress.
@@ -39,7 +39,7 @@ pub const HISTOGRAM_BUCKETS: usize = 32;
 /// so the drawer doesn't need to keep the raw per-iteration sample
 /// vector around.
 #[derive(Debug, Clone, Copy)]
-pub struct BenchProgressSnapshot {
+pub struct ProgressSnapshot {
     /// Coefficient of variation (σ / mean) of the successful samples.
     /// `f32::NAN` when fewer than two samples are available; renderers
     /// must guard with `is_finite()`.
@@ -74,7 +74,7 @@ pub struct BenchProgressSnapshot {
 /// and the last iteration finishing — not the sum of sample durations
 /// (those overlap for concurrent strategies).
 #[derive(Debug, Clone)]
-pub struct BenchReport {
+pub struct Report {
     /// Error strings from iterations that returned `Err(_)`.
     pub failures: Vec<String>,
     /// Total number of iterations the strategy attempted.
@@ -94,7 +94,7 @@ pub struct BenchReport {
 /// A strategy decides how many times, and with what concurrency, to call
 /// the test body. `body` is a closure that produces a fresh future per
 /// call; the strategy invokes it repeatedly and aggregates per-iteration
-/// timings into a [`BenchReport`].
+/// timings into a [`Report`].
 ///
 /// The trait is deliberately minimal: writing a new strategy is just a
 /// new `impl`. Composition (warm-up then measure, repeat K rounds,
@@ -104,7 +104,7 @@ pub struct BenchReport {
 /// concrete type the macro-generated code calls `.run(...)` on.
 pub trait Strategy {
     /// Run the body according to this strategy, collecting per-iteration
-    /// timings into a [`BenchReport`].
+    /// timings into a [`Report`].
     ///
     /// `body` is called afresh for every iteration — the future it
     /// returns is polled to completion (or panic) inside a
@@ -114,18 +114,18 @@ pub trait Strategy {
     /// `on_progress` is invoked at strategy entry (with a zero-progress
     /// placeholder so the live-region renderer can flip the row tag
     /// from `[RUN]` to `[BENCH]` immediately) and roughly every 1% of
-    /// iterations thereafter, with the latest [`BenchProgressSnapshot`].
+    /// iterations thereafter, with the latest [`ProgressSnapshot`].
     /// Implementations that omit progress should still call it once
     /// at entry — a `|_| ()` no-op closure is acceptable from callers
     /// that don't care.
-    fn run<B, Fut, P>(&self, body: B, on_progress: P) -> impl Future<Output = BenchReport>
+    fn run<B, Fut, P>(&self, body: B, on_progress: P) -> impl Future<Output = Report>
     where
         B: FnMut() -> Fut,
         Fut: Future<Output = Result<(), BoxError>>,
-        P: FnMut(BenchProgressSnapshot);
+        P: FnMut(ProgressSnapshot);
 }
 
-impl BenchProgressSnapshot {
+impl ProgressSnapshot {
     /// Build a snapshot by cloning + sorting `samples` and binning
     /// them into `HISTOGRAM_BUCKETS` linear buckets over `[min, max]`.
     ///
@@ -146,7 +146,7 @@ impl BenchProgressSnapshot {
         let min = sorted[0];
         let max = sorted[n.saturating_sub(1)];
 
-        // Nearest-rank percentile, matching `BenchReport::percentile`.
+        // Nearest-rank percentile, matching `Report::percentile`.
         #[expect(
             clippy::cast_precision_loss,
             clippy::cast_possible_truncation,
@@ -233,7 +233,7 @@ impl BenchProgressSnapshot {
     }
 }
 
-impl BenchReport {
+impl Report {
     /// Render a horizontal ASCII histogram with `buckets` bars of `width`
     /// characters each.
     ///

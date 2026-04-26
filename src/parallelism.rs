@@ -130,10 +130,10 @@ impl HardLimit {
     /// downstream users.
     #[doc(hidden)]
     #[inline]
-    pub fn with_sink(
-        limit: Option<NonZeroUsize>,
-        sink: impl Fn(&str) + Send + Sync + 'static,
-    ) -> Self {
+    pub fn with_sink<S>(limit: Option<NonZeroUsize>, sink: S) -> Self
+    where
+        S: Fn(&str) + Send + Sync + 'static,
+    {
         Self {
             inner: limit.map(|max| Inner {
                 state: Mutex::new(State {

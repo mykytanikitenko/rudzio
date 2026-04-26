@@ -15,7 +15,7 @@ use futures_util::FutureExt as _;
 use futures_util::StreamExt as _;
 use futures_util::stream::FuturesUnordered;
 
-use super::{BenchProgressSnapshot, BenchReport, Strategy};
+use super::{ProgressSnapshot, Report, Strategy};
 use crate::test_case::BoxError;
 
 /// Run the body `N` times sequentially, awaiting each iteration before
@@ -30,11 +30,11 @@ pub struct Sequential(pub usize);
 
 impl Strategy for Sequential {
     #[inline]
-    async fn run<B, Fut, P>(&self, mut body: B, mut on_progress: P) -> BenchReport
+    async fn run<B, Fut, P>(&self, mut body: B, mut on_progress: P) -> Report
     where
         B: FnMut() -> Fut,
         Fut: Future<Output = Result<(), BoxError>>,
-        P: FnMut(BenchProgressSnapshot),
+        P: FnMut(ProgressSnapshot),
     {
         let iterations = self.0;
         let stride = (iterations / 100).max(1);
@@ -43,7 +43,7 @@ impl Strategy for Sequential {
         let mut panics: usize = 0;
         let start = Instant::now();
         // Iter 0: paint [BENCH] tag immediately, before any sample lands.
-        on_progress(BenchProgressSnapshot::initial(iterations));
+        on_progress(ProgressSnapshot::initial(iterations));
         for idx in 0..iterations {
             let fut = body();
             let iter_start = Instant::now();
@@ -56,12 +56,12 @@ impl Strategy for Sequential {
             }
             let done = idx.saturating_add(1);
             if done % stride == 0 || done == iterations {
-                on_progress(BenchProgressSnapshot::from_samples(
+                on_progress(ProgressSnapshot::from_samples(
                     &samples, done, iterations,
                 ));
             }
         }
-        BenchReport {
+        Report {
             strategy: format!("Sequential({iterations})"),
             iterations,
             samples,
@@ -87,11 +87,11 @@ pub struct Concurrent(pub usize);
 
 impl Strategy for Concurrent {
     #[inline]
-    async fn run<B, Fut, P>(&self, mut body: B, mut on_progress: P) -> BenchReport
+    async fn run<B, Fut, P>(&self, mut body: B, mut on_progress: P) -> Report
     where
         B: FnMut() -> Fut,
         Fut: Future<Output = Result<(), BoxError>>,
-        P: FnMut(BenchProgressSnapshot),
+        P: FnMut(ProgressSnapshot),
     {
         let iterations = self.0;
         let stride = (iterations / 100).max(1);
@@ -117,7 +117,7 @@ impl Strategy for Concurrent {
         let mut failures = Vec::new();
         let mut panics: usize = 0;
         let mut done: usize = 0;
-        on_progress(BenchProgressSnapshot::initial(iterations));
+        on_progress(ProgressSnapshot::initial(iterations));
         while let Some((iter_elapsed, result)) = in_flight.next().await {
             match result {
                 Ok(Ok(())) => samples.push(iter_elapsed),
@@ -126,12 +126,12 @@ impl Strategy for Concurrent {
             }
             done = done.saturating_add(1);
             if done.is_multiple_of(stride) || done == iterations {
-                on_progress(BenchProgressSnapshot::from_samples(
+                on_progress(ProgressSnapshot::from_samples(
                     &samples, done, iterations,
                 ));
             }
         }
-        BenchReport {
+        Report {
             strategy: format!("Concurrent({iterations})"),
             iterations,
             samples,

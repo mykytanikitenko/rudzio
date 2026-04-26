@@ -82,13 +82,23 @@ impl SavedFds {
         let stdout = self.stdout.swap(-1, Ordering::AcqRel);
         let stderr = self.stderr.swap(-1, Ordering::AcqRel);
         if stdout != -1 {
+            // SAFETY: stdout was obtained from libc::dup at construction time
+            // and won the AcqRel swap above, so we hold the only live
+            // reference to it. dup2 with STDOUT_FILENO is a defined syscall.
             let _stdout_dup_ret: libc::c_int =
                 unsafe { libc::dup2(stdout, libc::STDOUT_FILENO) };
+            // SAFETY: same exclusive ownership as the dup2 above; close on a
+            // valid FD is defined.
             let _stdout_close_ret: libc::c_int = unsafe { libc::close(stdout) };
         }
         if stderr != -1 {
+            // SAFETY: stderr was obtained from libc::dup at construction time
+            // and won the AcqRel swap above, so we hold the only live
+            // reference to it. dup2 with STDERR_FILENO is a defined syscall.
             let _stderr_dup_ret: libc::c_int =
                 unsafe { libc::dup2(stderr, libc::STDERR_FILENO) };
+            // SAFETY: same exclusive ownership as the dup2 above; close on a
+            // valid FD is defined.
             let _stderr_close_ret: libc::c_int = unsafe { libc::close(stderr) };
         }
     }
@@ -230,6 +240,8 @@ fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     // other owners; wrapping them in OwnedFd takes ownership so Drop
     // closes them.
     let read = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+    // SAFETY: same as above — fds[1] was just produced by libc::pipe
+    // with no other owners.
     let write = unsafe { OwnedFd::from_raw_fd(fds[1]) };
     Ok((read, write))
 }

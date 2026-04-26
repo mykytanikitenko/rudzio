@@ -14,7 +14,7 @@ pub mod suite;
 pub mod test_case;
 pub mod token;
 
-pub use bench::{BenchReport, Strategy};
+pub use bench::{Report, Strategy};
 pub use config::{BenchMode, CargoMeta, ColorMode, Config, Format, OutputMode, RunIgnoredMode};
 pub use context::{Suite, Test};
 pub use futures_util;
@@ -26,8 +26,8 @@ pub use runner::{
 };
 pub use runtime::{JoinError, Runtime};
 pub use suite::{
-    RuntimeGroupKey, RuntimeGroupOwner, SuiteId, SuiteReporter, SuiteRunRequest, SuiteSummary,
-    TestOutcome, TestRunFn, fnv1a64,
+    Id as SuiteId, Reporter as SuiteReporter, RunRequest as SuiteRunRequest,
+    RuntimeGroupKey, RuntimeGroupOwner, Summary as SuiteSummary, TestOutcome, TestRunFn, fnv1a64,
 };
 pub use test_case::{BoxError, IntoRudzioResult, TestCase, TestFn, box_error};
 /// Re-export of the `tokio` runtime crate. Available whenever any of
@@ -45,7 +45,7 @@ pub use test_case::{BoxError, IntoRudzioResult, TestCase, TestFn, box_error};
 pub use tokio;
 #[doc(hidden)]
 pub use tokio_util;
-pub use token::{TEST_TOKENS, TestToken};
+pub use token::{TEST_TOKENS, Token as TestToken};
 
 /// Resolve a `[[bin]]` target's executable path at a test call site,
 /// returning a [`PathBuf`](std::path::PathBuf).

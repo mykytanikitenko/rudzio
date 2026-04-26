@@ -11,16 +11,16 @@ use crate::config::ColorMode;
 
 /// Whether ANSI colour escapes should be emitted by the renderer.
 ///
-/// Obtain one via [`ColorPolicy::resolve`] at runner startup; pass it
+/// Obtain one via [`Policy::resolve`] at runner startup; pass it
 /// around instead of re-querying the environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ColorPolicy {
+pub struct Policy {
     /// Whether ANSI colour escapes should be emitted by the wrap
     /// helpers.
     use_color: bool,
 }
 
-impl ColorPolicy {
+impl Policy {
     /// Wrap `text` in bold (`\x1b[1m`). Returns `text` unchanged when
     /// colour is off.
     #[must_use]

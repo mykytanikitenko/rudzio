@@ -65,7 +65,7 @@ mod phase_wrapper_tests {
     #[rudzio::test]
     async fn phase_panics_returns_panicked_with_message(_ctx: &Test) -> anyhow::Result<()> {
         let token = CancellationToken::new();
-        let outcome = run_phase_with_timeout_and_cancel::<_, (), _>(
+        let outcome = run_phase_with_timeout_and_cancel::<_, (), _, _>(
             async { panic!("boom_in_phase") },
             Some(Duration::from_secs(5)),
             None,
@@ -94,7 +94,7 @@ mod phase_wrapper_tests {
     ) -> anyhow::Result<()> {
         let token = CancellationToken::new();
         let observer = token.clone();
-        let outcome = run_phase_with_timeout_and_cancel::<_, (), _>(
+        let outcome = run_phase_with_timeout_and_cancel::<_, (), _, _>(
             async {
                 ::rudzio::tokio::time::sleep(Duration::from_secs(30)).await;
             },
@@ -130,7 +130,7 @@ mod phase_wrapper_tests {
             ::rudzio::tokio::time::sleep(Duration::from_millis(20)).await;
             parent_for_task.cancel();
         });
-        let outcome = run_phase_with_timeout_and_cancel::<_, (), _>(
+        let outcome = run_phase_with_timeout_and_cancel::<_, (), _, _>(
             async {
                 ::rudzio::tokio::time::sleep(Duration::from_secs(30)).await;
             },
@@ -180,7 +180,7 @@ mod phase_wrapper_tests {
             ::rudzio::tokio::time::sleep(Duration::from_millis(20)).await;
             parent_for_task.cancel();
         });
-        let outcome = run_phase_with_timeout_and_cancel::<_, (), _>(
+        let outcome = run_phase_with_timeout_and_cancel::<_, (), _, _>(
             async {
                 ::rudzio::tokio::time::sleep(Duration::from_secs(30)).await;
             },
@@ -208,7 +208,7 @@ mod phase_wrapper_tests {
         let token = CancellationToken::new();
         token.cancel();
         let start = ::std::time::Instant::now();
-        let outcome = run_phase_with_timeout_and_cancel::<_, (), _>(
+        let outcome = run_phase_with_timeout_and_cancel::<_, (), _, _>(
             async {
                 ::rudzio::tokio::time::sleep(Duration::from_secs(30)).await;
             },

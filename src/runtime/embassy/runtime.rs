@@ -186,9 +186,11 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
         let mut slot: Option<F::Output> = None;
         let slot_ptr: SlotPtr<F::Output> = SlotPtr(ptr::from_mut(&mut slot));
 
-        // Lifetime extension: the `drive_until` loop below blocks this thread
-        // until the task has completed, so the task can never outlive borrows
-        // captured by `fut`.
+        // SAFETY: lifetime extension from `'rt` to `'static`. The
+        // `drive_until` loop below blocks this thread until the task has
+        // completed, so the task can never outlive borrows captured by
+        // `fut`. The transmute changes only the lifetime parameter; the
+        // boxed future's layout is unchanged.
         let fut_static: Pin<Box<dyn Future<Output = F::Output> + 'static>> = unsafe {
             mem::transmute::<
                 Pin<Box<dyn Future<Output = F::Output> + 'rt>>,
@@ -320,12 +322,14 @@ where
         spawner.spawn(token);
     }
     async move {
-        match rx.recv() {
-            Ok(wrapped) => Ok(wrapped.take()),
-            Err(_) => Err(JoinError::cancelled(io::Error::other(
-                "embassy local task dropped",
-            ))),
-        }
+        rx.recv().map_or_else(
+            |_| {
+                Err(JoinError::cancelled(io::Error::other(
+                    "embassy local task dropped",
+                )))
+            },
+            |wrapped| Ok(wrapped.take()),
+        )
     }
 }
 

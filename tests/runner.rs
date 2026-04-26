@@ -83,7 +83,7 @@ mod config_parser {
     #[rudzio::test]
     fn joined_argv_form_is_parsed(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--test-threads=4"]),
+            &argv(&["--test-threads=4"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -94,7 +94,7 @@ mod config_parser {
     #[rudzio::test]
     fn split_argv_form_is_parsed(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--test-threads", "8"]),
+            &argv(&["--test-threads", "8"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -104,7 +104,7 @@ mod config_parser {
 
     #[rudzio::test]
     fn env_var_alone_is_used(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(argv(&[]), env_with(Some("3")), rudzio::cargo_meta!());
+        let c = Config::from_argv_and_env(&argv(&[]), env_with(Some("3")), rudzio::cargo_meta!());
         anyhow::ensure!(c.threads == 3);
         Ok(())
     }
@@ -112,7 +112,7 @@ mod config_parser {
     #[rudzio::test]
     fn argv_takes_precedence_over_env(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--test-threads=2"]),
+            &argv(&["--test-threads=2"]),
             env_with(Some("7")),
             rudzio::cargo_meta!(),
         );
@@ -123,7 +123,7 @@ mod config_parser {
     #[rudzio::test]
     fn zero_threads_falls_through_to_available_parallelism(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--test-threads=0"]),
+            &argv(&["--test-threads=0"]),
             env_with(Some("0")),
             rudzio::cargo_meta!(),
         );
@@ -134,7 +134,7 @@ mod config_parser {
     #[rudzio::test]
     fn garbage_threads_falls_through(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--test-threads=abc"]),
+            &argv(&["--test-threads=abc"]),
             env_with(Some("xyz")),
             rudzio::cargo_meta!(),
         );
@@ -145,7 +145,7 @@ mod config_parser {
     #[rudzio::test]
     fn zero_in_env_is_ignored_when_argv_is_valid(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--test-threads=5"]),
+            &argv(&["--test-threads=5"]),
             env_with(Some("0")),
             rudzio::cargo_meta!(),
         );
@@ -156,7 +156,7 @@ mod config_parser {
     #[rudzio::test]
     fn unknown_flags_are_preserved_in_unparsed(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&[
+            &argv(&[
                 "--nocapture",
                 "--color=always",
                 "--test-threads=3",
@@ -177,7 +177,7 @@ mod config_parser {
     #[rudzio::test]
     fn split_form_without_value_falls_through(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--test-threads"]),
+            &argv(&["--test-threads"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -187,7 +187,7 @@ mod config_parser {
 
     #[rudzio::test]
     fn both_unset_uses_available_parallelism(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(argv(&[]), env_with(None), rudzio::cargo_meta!());
+        let c = Config::from_argv_and_env(&argv(&[]), env_with(None), rudzio::cargo_meta!());
         anyhow::ensure!(c.threads >= 1);
         Ok(())
     }
@@ -195,7 +195,7 @@ mod config_parser {
     #[rudzio::test]
     fn filter_substring_is_captured(_ctx: &Test) -> anyhow::Result<()> {
         let c =
-            Config::from_argv_and_env(argv(&["my_filter"]), env_with(None), rudzio::cargo_meta!());
+            Config::from_argv_and_env(&argv(&["my_filter"]), env_with(None), rudzio::cargo_meta!());
         anyhow::ensure!(c.filter.as_deref() == Some("my_filter"));
         Ok(())
     }
@@ -203,7 +203,7 @@ mod config_parser {
     #[rudzio::test]
     fn skip_filters_accumulate(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--skip=foo", "--skip", "bar"]),
+            &argv(&["--skip=foo", "--skip", "bar"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -214,7 +214,7 @@ mod config_parser {
     #[rudzio::test]
     fn concurrency_limit_defaults_to_threads(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--test-threads=4"]),
+            &argv(&["--test-threads=4"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -226,7 +226,7 @@ mod config_parser {
     #[rudzio::test]
     fn concurrency_limit_is_independent_when_set(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8", "--concurrency-limit=2"]),
+            &argv(&["--test-threads=8", "--concurrency-limit=2"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -238,7 +238,7 @@ mod config_parser {
     #[rudzio::test]
     fn concurrency_limit_split_form(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--concurrency-limit", "3"]),
+            &argv(&["--concurrency-limit", "3"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -249,7 +249,7 @@ mod config_parser {
     #[rudzio::test]
     fn parallel_hardlimit_defaults_to_threads(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8"]),
+            &argv(&["--test-threads=8"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -264,7 +264,7 @@ mod config_parser {
     #[rudzio::test]
     fn parallel_hardlimit_equals_form(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8", "--threads-parallel-hardlimit=3"]),
+            &argv(&["--test-threads=8", "--threads-parallel-hardlimit=3"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -275,7 +275,7 @@ mod config_parser {
     #[rudzio::test]
     fn parallel_hardlimit_split_form(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8", "--threads-parallel-hardlimit", "3"]),
+            &argv(&["--test-threads=8", "--threads-parallel-hardlimit", "3"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -286,7 +286,7 @@ mod config_parser {
     #[rudzio::test]
     fn parallel_hardlimit_none_disables_equals_form(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8", "--threads-parallel-hardlimit=none"]),
+            &argv(&["--test-threads=8", "--threads-parallel-hardlimit=none"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -297,7 +297,7 @@ mod config_parser {
     #[rudzio::test]
     fn parallel_hardlimit_none_disables_split_form(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8", "--threads-parallel-hardlimit", "none"]),
+            &argv(&["--test-threads=8", "--threads-parallel-hardlimit", "none"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -308,7 +308,7 @@ mod config_parser {
     #[rudzio::test]
     fn parallel_hardlimit_threads_keyword(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8", "--threads-parallel-hardlimit=threads"]),
+            &argv(&["--test-threads=8", "--threads-parallel-hardlimit=threads"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -319,7 +319,7 @@ mod config_parser {
     #[rudzio::test]
     fn parallel_hardlimit_zero_falls_back_to_default(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8", "--threads-parallel-hardlimit=0"]),
+            &argv(&["--test-threads=8", "--threads-parallel-hardlimit=0"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -330,7 +330,7 @@ mod config_parser {
     #[rudzio::test]
     fn parallel_hardlimit_invalid_falls_back_to_default(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8", "--threads-parallel-hardlimit=foo"]),
+            &argv(&["--test-threads=8", "--threads-parallel-hardlimit=foo"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -341,7 +341,7 @@ mod config_parser {
     #[rudzio::test]
     fn parallel_hardlimit_bench_auto_disables_when_unset(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8", "--bench"]),
+            &argv(&["--test-threads=8", "--bench"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -356,7 +356,7 @@ mod config_parser {
     #[rudzio::test]
     fn parallel_hardlimit_explicit_survives_bench(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&[
+            &argv(&[
                 "--test-threads=8",
                 "--bench",
                 "--threads-parallel-hardlimit=4",
@@ -371,7 +371,7 @@ mod config_parser {
     #[rudzio::test]
     fn parallel_hardlimit_explicit_none_survives_non_bench(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8", "--threads-parallel-hardlimit=none"]),
+            &argv(&["--test-threads=8", "--threads-parallel-hardlimit=none"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -381,14 +381,14 @@ mod config_parser {
 
     #[rudzio::test]
     fn env_is_propagated_into_config(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(argv(&[]), env_with(Some("4")), rudzio::cargo_meta!());
+        let c = Config::from_argv_and_env(&argv(&[]), env_with(Some("4")), rudzio::cargo_meta!());
         anyhow::ensure!(c.env.get("RUST_TEST_THREADS").map(String::as_str) == Some("4"));
         Ok(())
     }
 
     #[rudzio::test]
     fn bench_mode_defaults_to_smoke(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(argv(&[]), env_with(None), rudzio::cargo_meta!());
+        let c = Config::from_argv_and_env(&argv(&[]), env_with(None), rudzio::cargo_meta!());
         anyhow::ensure!(c.bench_mode == rudzio::BenchMode::Smoke);
         Ok(())
     }
@@ -396,7 +396,7 @@ mod config_parser {
     #[rudzio::test]
     fn bench_flag_sets_full_mode(_ctx: &Test) -> anyhow::Result<()> {
         let c =
-            Config::from_argv_and_env(argv(&["--bench"]), env_with(None), rudzio::cargo_meta!());
+            Config::from_argv_and_env(&argv(&["--bench"]), env_with(None), rudzio::cargo_meta!());
         anyhow::ensure!(c.bench_mode == rudzio::BenchMode::Full);
         Ok(())
     }
@@ -404,7 +404,7 @@ mod config_parser {
     #[rudzio::test]
     fn no_bench_flag_sets_skip_mode(_ctx: &Test) -> anyhow::Result<()> {
         let c =
-            Config::from_argv_and_env(argv(&["--no-bench"]), env_with(None), rudzio::cargo_meta!());
+            Config::from_argv_and_env(&argv(&["--no-bench"]), env_with(None), rudzio::cargo_meta!());
         anyhow::ensure!(c.bench_mode == rudzio::BenchMode::Skip);
         Ok(())
     }
@@ -415,7 +415,7 @@ mod config_parser {
     #[rudzio::test]
     fn parses_suite_setup_timeout_flag(_ctx: &Test) -> anyhow::Result<()> {
         let equals = Config::from_argv_and_env(
-            argv(&["--suite-setup-timeout=12"]),
+            &argv(&["--suite-setup-timeout=12"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -425,7 +425,7 @@ mod config_parser {
             equals.suite_setup_timeout
         );
         let split = Config::from_argv_and_env(
-            argv(&["--suite-setup-timeout", "7"]),
+            &argv(&["--suite-setup-timeout", "7"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -442,7 +442,7 @@ mod config_parser {
     #[rudzio::test]
     fn parses_suite_teardown_timeout_flag(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--suite-teardown-timeout=4"]),
+            &argv(&["--suite-teardown-timeout=4"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -460,7 +460,7 @@ mod config_parser {
     #[rudzio::test]
     fn parses_test_setup_timeout_flag(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--test-setup-timeout=3"]),
+            &argv(&["--test-setup-timeout=3"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -477,7 +477,7 @@ mod config_parser {
     #[rudzio::test]
     fn parses_test_teardown_timeout_flag(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--test-teardown-timeout=9"]),
+            &argv(&["--test-teardown-timeout=9"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -497,7 +497,7 @@ mod config_parser {
         _ctx: &Test,
     ) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--suite-setup-timeout=banana"]),
+            &argv(&["--suite-setup-timeout=banana"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -514,7 +514,7 @@ mod config_parser {
     /// unbounded behaviour.
     #[rudzio::test]
     fn defaults_are_none_for_all_phase_timeouts(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(argv(&[]), env_with(None), rudzio::cargo_meta!());
+        let c = Config::from_argv_and_env(&argv(&[]), env_with(None), rudzio::cargo_meta!());
         anyhow::ensure!(c.suite_setup_timeout.is_none());
         anyhow::ensure!(c.suite_teardown_timeout.is_none());
         anyhow::ensure!(c.test_setup_timeout.is_none());
@@ -528,7 +528,7 @@ mod config_parser {
     #[rudzio::test]
     fn parses_cancel_grace_period_flag(_ctx: &Test) -> anyhow::Result<()> {
         let equals = Config::from_argv_and_env(
-            argv(&["--cancel-grace-period=12"]),
+            &argv(&["--cancel-grace-period=12"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -538,7 +538,7 @@ mod config_parser {
             equals.cancel_grace_period
         );
         let split = Config::from_argv_and_env(
-            argv(&["--cancel-grace-period", "7"]),
+            &argv(&["--cancel-grace-period", "7"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -557,7 +557,7 @@ mod config_parser {
     #[rudzio::test]
     fn cancel_grace_period_zero_disables_watchdog(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--cancel-grace-period=0"]),
+            &argv(&["--cancel-grace-period=0"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -576,7 +576,7 @@ mod config_parser {
     /// allow before they SIGKILL the runner themselves.
     #[rudzio::test]
     fn cancel_grace_period_defaults_to_five_seconds(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(argv(&[]), env_with(None), rudzio::cargo_meta!());
+        let c = Config::from_argv_and_env(&argv(&[]), env_with(None), rudzio::cargo_meta!());
         anyhow::ensure!(
             c.cancel_grace_period == Some(std::time::Duration::from_secs(5)),
             "default must be Some(5s), got {:?}",
@@ -590,7 +590,7 @@ mod config_parser {
     #[rudzio::test]
     fn cancel_grace_period_garbage_falls_through_to_default(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--cancel-grace-period=banana"]),
+            &argv(&["--cancel-grace-period=banana"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -608,7 +608,7 @@ mod config_parser {
     #[rudzio::test]
     fn parses_phase_hang_grace_flag(_ctx: &Test) -> anyhow::Result<()> {
         let equals = Config::from_argv_and_env(
-            argv(&["--phase-hang-grace=4"]),
+            &argv(&["--phase-hang-grace=4"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -618,7 +618,7 @@ mod config_parser {
             equals.phase_hang_grace
         );
         let split = Config::from_argv_and_env(
-            argv(&["--phase-hang-grace", "9"]),
+            &argv(&["--phase-hang-grace", "9"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -636,7 +636,7 @@ mod config_parser {
     #[rudzio::test]
     fn phase_hang_grace_zero_disables_layer2(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
-            argv(&["--phase-hang-grace=0"]),
+            &argv(&["--phase-hang-grace=0"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
@@ -659,7 +659,7 @@ mod config_parser {
     /// `--phase-hang-grace=<secs>`.
     #[rudzio::test]
     fn phase_hang_grace_defaults_to_none(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(argv(&[]), env_with(None), rudzio::cargo_meta!());
+        let c = Config::from_argv_and_env(&argv(&[]), env_with(None), rudzio::cargo_meta!());
         anyhow::ensure!(
             c.phase_hang_grace.is_none(),
             "default must be None (Layer-2 opt-in), got {:?}",
@@ -813,7 +813,7 @@ mod config_parser {
 ])]
 mod bench_strategies {
     use rudzio::bench::{
-        BenchReport, Strategy as _,
+        Report, Strategy as _,
         strategy::{Concurrent, Sequential},
     };
     use rudzio::common::context::Test;
@@ -821,7 +821,7 @@ mod bench_strategies {
     #[rudzio::test]
     async fn sequential_runs_body_n_times(_ctx: &Test) -> anyhow::Result<()> {
         let count = std::sync::atomic::AtomicUsize::new(0);
-        let report: BenchReport = Sequential(7)
+        let report: Report = Sequential(7)
             .run(
                 || async {
                     let _prev = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -843,7 +843,7 @@ mod bench_strategies {
     #[rudzio::test]
     async fn concurrent_runs_body_n_times(_ctx: &Test) -> anyhow::Result<()> {
         let count = std::sync::atomic::AtomicUsize::new(0);
-        let report: BenchReport = Concurrent(5)
+        let report: Report = Concurrent(5)
             .run(
                 || async {
                     let _prev = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

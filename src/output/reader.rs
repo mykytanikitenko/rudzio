@@ -50,7 +50,7 @@ pub fn spawn(fd: OwnedFd, stream: StdStream, tx: Sender<PipeChunk>) -> io::Resul
                 Ok(n) => {
                     let chunk = PipeChunk {
                         stream,
-                        bytes: buf[..n].to_vec(),
+                        bytes: buf.get(..n).unwrap_or(&buf).to_vec(),
                     };
                     if tx.send(chunk).is_err() {
                         // Drawer hung up; no point reading any more.

@@ -27,7 +27,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crossbeam_channel::{Sender, bounded, unbounded};
 
 use rudzio::config::{Format, OutputMode};
-use rudzio::output::color::ColorPolicy;
+use rudzio::output::color::Policy as ColorPolicy;
 use rudzio::output::events::{
     LifecycleEvent, PipeChunk, StdStream, TestId, TestState, TestStateKind,
 };

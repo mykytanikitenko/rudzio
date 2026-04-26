@@ -24,9 +24,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossbeam_channel::{Sender, bounded, unbounded};
 
-use rudzio::bench::{BenchProgressSnapshot, BenchReport, HISTOGRAM_BUCKETS};
+use rudzio::bench::{ProgressSnapshot, Report, HISTOGRAM_BUCKETS};
 use rudzio::config::{Format, OutputMode};
-use rudzio::output::color::ColorPolicy;
+use rudzio::output::color::Policy as ColorPolicy;
 use rudzio::output::events::{LifecycleEvent, PipeChunk, TestId, TestState, TestStateKind};
 use rudzio::output::render::{
     Drawer, bench_histogram_lines, bench_progress_trailing, running_line, spawn_drawer,
@@ -36,7 +36,7 @@ use rudzio::suite::TestOutcome;
 /// Synthetic snapshot with a non-trivial histogram so
 /// `bench_histogram_lines` actually paints bars. `cov` is a sane
 /// finite value so the wide trailing block exercises the cov branch.
-const fn fake_snapshot(done: usize, total: usize) -> BenchProgressSnapshot {
+const fn fake_snapshot(done: usize, total: usize) -> ProgressSnapshot {
     let mut histogram = [0_u32; HISTOGRAM_BUCKETS];
     histogram[3] = 4;
     histogram[7] = 12;
@@ -45,7 +45,7 @@ const fn fake_snapshot(done: usize, total: usize) -> BenchProgressSnapshot {
     histogram[19] = 28;
     histogram[23] = 12;
     histogram[27] = 4;
-    BenchProgressSnapshot {
+    ProgressSnapshot {
         done,
         total,
         p50: Duration::from_micros(12),
@@ -57,7 +57,7 @@ const fn fake_snapshot(done: usize, total: usize) -> BenchProgressSnapshot {
     }
 }
 
-fn fake_bench_state(snapshot: BenchProgressSnapshot) -> TestState {
+fn fake_bench_state(snapshot: ProgressSnapshot) -> TestState {
     TestState {
         module_path: "rudzio::bench_live",
         test_name: "demo",
@@ -72,15 +72,15 @@ fn fake_bench_state(snapshot: BenchProgressSnapshot) -> TestState {
     }
 }
 
-/// Build a `BenchReport` rich enough that
+/// Build a `Report` rich enough that
 /// `emit_completion_block` paints `samples:`, `percentiles:`, `p50:`,
 /// `histogram:` headers below the post-completion `[BENCH]` row.
-fn fake_bench_report(samples: usize) -> BenchReport {
+fn fake_bench_report(samples: usize) -> Report {
     let mut s: Vec<Duration> = Vec::with_capacity(samples);
     for i in 0..samples {
         s.push(Duration::from_micros((10 + (i % 7) * 2) as u64));
     }
-    BenchReport {
+    Report {
         strategy: format!("Sequential({samples})"),
         iterations: samples,
         samples: s,

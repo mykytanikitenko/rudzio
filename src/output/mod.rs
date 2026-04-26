@@ -184,7 +184,7 @@ fn init_unix(config: &Config) -> io::Result<CaptureGuard> {
     // FDs — afterwards `is_terminal()` on FD 1 reports the pipe, not
     // the terminal.
     let stdout_is_tty = io::stdout().is_terminal();
-    let color = color::ColorPolicy::resolve(config.color, stdout_is_tty, &config.env);
+    let color = color::Policy::resolve(config.color, stdout_is_tty, &config.env);
 
     let capture = pipe::init()?;
     let (lifecycle_tx, lifecycle_rx) = unbounded::<LifecycleEvent>();

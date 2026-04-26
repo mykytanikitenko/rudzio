@@ -111,7 +111,7 @@ by custom runtimes or test helpers \u{2014} they do not produce an error.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BenchMode {
     /// `--bench`: dispatch each bench-annotated test through its
-    /// strategy and render the resulting [`crate::bench::BenchReport`].
+    /// strategy and render the resulting [`crate::bench::Report`].
     /// Regular (non-benched) tests still run normally in this mode.
     Full,
     /// `--no-bench`: skip bench-annotated tests entirely (they're
@@ -336,6 +336,38 @@ pub enum Format {
     Terse,
 }
 
+/// Resolution outcome for `--threads-parallel-hardlimit=<value>`.
+///
+/// `Default` is [`Self::Unset`], meaning "no flag observed, fall back to the
+/// per-bench-mode default at resolution time".
+#[derive(Clone, Copy, Default)]
+enum HardlimitArg {
+    /// `--threads-parallel-hardlimit=none`: gate is disabled outright.
+    Disabled,
+    /// `--threads-parallel-hardlimit=<N>` with N>0: pin the gate at exactly N.
+    Explicit(NonZeroUsize),
+    /// `--threads-parallel-hardlimit=threads`: pin the gate at the resolved
+    /// thread count (explicit spelling of the default).
+    Threads,
+    /// Flag not observed; resolve to the per-bench-mode default.
+    #[default]
+    Unset,
+}
+
+/// Resolution outcome for a `--flag=<secs>` flag where `0` means disabled.
+///
+/// Distinguishes the three cases the parser cares about:
+/// "wasn't this flag at all", "was this flag, value 0 = disabled",
+/// and "was this flag, here's the duration".
+enum OptionalDurationParse {
+    /// Flag matched with explicit `0`, meaning the feature is disabled.
+    Disabled,
+    /// Flag did not match; caller should try the next handler.
+    NotMatched,
+    /// Flag matched with a non-zero duration.
+    Set(Duration),
+}
+
 /// Test-output rendering strategy.
 ///
 /// `Live` drives a bottom-of-terminal live region with one row pair per
@@ -354,6 +386,68 @@ pub enum OutputMode {
     Live,
     /// Linear append-only output, one line per event.
     Plain,
+}
+
+/// Mutable bag carrying the partial parsing state for a single argv pass.
+///
+/// Splitting the long `from_argv_and_env` flag-loop into `parse_argv` plus
+/// per-flag-family helpers keeps cognitive complexity inside the parser
+/// loop bounded — each helper handles one category of flag.
+#[derive(Default)]
+struct ParsedArgs {
+    /// Resolved bench mode from `--bench` / `--no-bench`.
+    bench_mode: BenchMode,
+    /// Layer-1 process-exit watchdog grace from
+    /// `--cancel-grace-period=<secs>`. `Some(Duration::ZERO)` is preserved
+    /// only as a sentinel that gets remapped to `None` (disabled) at the
+    /// final `Config` resolution.
+    cancel_grace_period: Option<Duration>,
+    /// Colour policy from `--color=<auto|always|never>`.
+    color: ColorMode,
+    /// In-flight test cap from `--concurrency-limit=<N>`. `None` means the
+    /// flag was absent — `Config` defaults this to `threads` at resolution.
+    concurrency_limit: Option<usize>,
+    /// Positional substring filter (the first non-flag argument that survives
+    /// every flag handler).
+    filter: Option<String>,
+    /// Output format from `--format=pretty|terse`.
+    format: Format,
+    /// Result of `--threads-parallel-hardlimit=<value>` parsing; combined
+    /// with `bench_mode` and `threads` later to produce the final hardlimit.
+    hardlimit_arg: HardlimitArg,
+    /// `true` if `--help`/`-h` was seen.
+    help: bool,
+    /// `true` if `--list` was seen.
+    list: bool,
+    /// Explicit `--output=<live|plain>` / `--plain` choice. `None` means
+    /// fall through to the auto-detection rule in [`OutputMode::resolve`].
+    output_mode_explicit: Option<OutputMode>,
+    /// Layer-2 phase-hang grace from `--phase-hang-grace=<secs>`. `None`
+    /// means disabled (explicit `=0`); inherits `Config`'s default when the
+    /// flag is absent.
+    phase_hang_grace: Option<Duration>,
+    /// `--include-ignored` / `--ignored` selection for ignored tests.
+    run_ignored: RunIgnoredMode,
+    /// Whole-run wall-clock cap from `--run-timeout=<secs>`.
+    run_timeout: Option<Duration>,
+    /// Substring filters from each `--skip=<text>` flag, in order.
+    skip_filters: Vec<String>,
+    /// Per-suite setup phase budget from `--suite-setup-timeout=<secs>`.
+    suite_setup_timeout: Option<Duration>,
+    /// Per-suite teardown phase budget from `--suite-teardown-timeout=<secs>`.
+    suite_teardown_timeout: Option<Duration>,
+    /// Per-test setup phase budget from `--test-setup-timeout=<secs>`.
+    test_setup_timeout: Option<Duration>,
+    /// Per-test teardown phase budget from `--test-teardown-timeout=<secs>`.
+    test_teardown_timeout: Option<Duration>,
+    /// Per-test body budget from `--test-timeout=<secs>`.
+    test_timeout: Option<Duration>,
+    /// Worker-pool size request from `--test-threads=<N>`. `None` lets
+    /// `RUST_TEST_THREADS` / `available_parallelism()` decide later.
+    threads: Option<usize>,
+    /// CLI args the rudzio parser didn't recognise — preserved verbatim
+    /// for downstream parsing by user code / custom runtimes.
+    unparsed: Vec<String>,
 }
 
 /// How `#[ignore]`d tests should be treated for this run.
@@ -385,11 +479,11 @@ impl Config {
     #[must_use]
     #[inline]
     pub fn from_argv_and_env(
-        argv: Vec<String>,
+        argv: &[String],
         env: BTreeMap<String, String>,
         cargo: CargoMeta,
     ) -> Self {
-        let parsed = parse_argv(&argv);
+        let parsed = parse_argv(argv);
 
         let resolved_threads = parsed
             .threads
@@ -453,21 +547,29 @@ impl Config {
     pub fn parse(cargo: CargoMeta) -> Self {
         let argv: Vec<String> = env::args().skip(1).collect();
         let env_snapshot: BTreeMap<String, String> = env::vars().collect();
-        Self::from_argv_and_env(argv, env_snapshot, cargo)
+        Self::from_argv_and_env(&argv, env_snapshot, cargo)
     }
 }
 
-/// Resolution outcome for `--threads-parallel-hardlimit=<value>`.
-///
-/// `Default` is [`Self::Unset`], meaning "no flag observed, fall back to the
-/// per-bench-mode default at resolution time".
-#[derive(Clone, Copy, Default)]
-enum HardlimitArg {
-    Disabled,
-    Explicit(NonZeroUsize),
-    Threads,
-    #[default]
-    Unset,
+impl OutputMode {
+    /// Pick an [`OutputMode`] from an explicit user choice plus the
+    /// ambient environment. `explicit` comes from `--output=` / `--plain`;
+    /// `env` is the snapshot captured at startup (the `CI` key is used as
+    /// a "definitely not a human terminal" hint even when stdout IS a
+    /// TTY, because CI log capture frequently makes ANSI cursor-moves
+    /// unreadable downstream).
+    #[must_use]
+    #[inline]
+    pub fn resolve(explicit: Option<Self>, env: &BTreeMap<String, String>) -> Self {
+        if let Some(mode) = explicit {
+            return mode;
+        }
+        if io::stdout().is_terminal() && !env.contains_key("CI") {
+            Self::Live
+        } else {
+            Self::Plain
+        }
+    }
 }
 
 /// Map a `--threads-parallel-hardlimit=<value>` string to a [`HardlimitArg`].
@@ -502,36 +604,6 @@ fn resolve_parallel_hardlimit(
         HardlimitArg::Threads => Some(threads_nz),
         HardlimitArg::Explicit(n) => Some(n),
     }
-}
-
-/// Mutable bag carrying the partial parsing state for a single argv pass.
-///
-/// Splitting the long `from_argv_and_env` flag-loop into `parse_argv` plus
-/// per-flag-family helpers keeps cognitive complexity inside the parser
-/// loop bounded — each helper handles one category of flag.
-#[derive(Default)]
-struct ParsedArgs {
-    bench_mode: BenchMode,
-    cancel_grace_period: Option<Duration>,
-    color: ColorMode,
-    concurrency_limit: Option<usize>,
-    filter: Option<String>,
-    format: Format,
-    hardlimit_arg: HardlimitArg,
-    help: bool,
-    list: bool,
-    output_mode_explicit: Option<OutputMode>,
-    phase_hang_grace: Option<Duration>,
-    run_ignored: RunIgnoredMode,
-    run_timeout: Option<Duration>,
-    skip_filters: Vec<String>,
-    suite_setup_timeout: Option<Duration>,
-    suite_teardown_timeout: Option<Duration>,
-    test_setup_timeout: Option<Duration>,
-    test_teardown_timeout: Option<Duration>,
-    test_timeout: Option<Duration>,
-    threads: Option<usize>,
-    unparsed: Vec<String>,
 }
 
 /// Read the value belonging to a long flag whose syntax is either
@@ -587,23 +659,30 @@ fn parse_duration_secs_flag(
 }
 
 /// Parse a `--flag=<secs>` / `--flag <secs>` duration flag where `secs == 0`
-/// disables the feature (returns `None` inside the outer `Some(_)`). Returns
-/// `Some(Some(d))` for non-zero values, `Some(None)` for explicit `0`, and
-/// `None` when the flag wasn't matched at all.
+/// disables the feature.
+///
+/// Returns [`OptionalDurationParse::Set`] for a non-zero value,
+/// [`OptionalDurationParse::Disabled`] for an explicit `0`, and
+/// [`OptionalDurationParse::NotMatched`] when the flag wasn't matched at all
+/// (or when its value didn't parse as `u64`).
 fn parse_optional_duration_secs_flag(
     arg: &str,
     flag_name: &str,
     prefix_eq: &str,
     argv: &[String],
     i: &mut usize,
-) -> Option<Option<Duration>> {
-    let value = flag_value(arg, flag_name, prefix_eq, argv, i)?;
-    let secs = value.parse::<u64>().ok()?;
-    Some(if secs == 0 {
-        None
+) -> OptionalDurationParse {
+    let Some(value) = flag_value(arg, flag_name, prefix_eq, argv, i) else {
+        return OptionalDurationParse::NotMatched;
+    };
+    let Ok(secs) = value.parse::<u64>() else {
+        return OptionalDurationParse::NotMatched;
+    };
+    if secs == 0 {
+        OptionalDurationParse::Disabled
     } else {
-        Some(Duration::from_secs(secs))
-    })
+        OptionalDurationParse::Set(Duration::from_secs(secs))
+    }
 }
 
 /// Try to consume a flag that selects a thread/concurrency knob. Returns
@@ -641,8 +720,8 @@ fn handle_concurrency_flag(
 
 /// Parse a `ColorMode` from its CLI string spelling, defaulting unknown
 /// values to [`ColorMode::Auto`].
-fn color_mode_from_str(s: &str) -> ColorMode {
-    match s {
+fn color_mode_from_str(text: &str) -> ColorMode {
+    match text {
         "always" => ColorMode::Always,
         "never" => ColorMode::Never,
         _ => ColorMode::Auto,
@@ -693,65 +772,87 @@ fn handle_presentation_flag(
 /// Try to consume one of the `Option<Duration>` timeout flags. Returns
 /// `true` on match.
 fn handle_timeout_flag(state: &mut ParsedArgs, arg: &str, argv: &[String], i: &mut usize) -> bool {
-    if let Some(d) = parse_duration_secs_flag(arg, "--test-timeout", "--test-timeout=", argv, i) {
-        state.test_timeout = Some(d);
+    if let Some(duration) =
+        parse_duration_secs_flag(arg, "--test-timeout", "--test-timeout=", argv, i)
+    {
+        state.test_timeout = Some(duration);
         return true;
     }
-    if let Some(d) = parse_duration_secs_flag(arg, "--run-timeout", "--run-timeout=", argv, i) {
-        state.run_timeout = Some(d);
+    if let Some(duration) =
+        parse_duration_secs_flag(arg, "--run-timeout", "--run-timeout=", argv, i)
+    {
+        state.run_timeout = Some(duration);
         return true;
     }
-    if let Some(d) = parse_duration_secs_flag(
+    if let Some(duration) = parse_duration_secs_flag(
         arg,
         "--suite-setup-timeout",
         "--suite-setup-timeout=",
         argv,
         i,
     ) {
-        state.suite_setup_timeout = Some(d);
+        state.suite_setup_timeout = Some(duration);
         return true;
     }
-    if let Some(d) = parse_duration_secs_flag(
+    if let Some(duration) = parse_duration_secs_flag(
         arg,
         "--suite-teardown-timeout",
         "--suite-teardown-timeout=",
         argv,
         i,
     ) {
-        state.suite_teardown_timeout = Some(d);
+        state.suite_teardown_timeout = Some(duration);
         return true;
     }
-    if let Some(d) =
+    if let Some(duration) =
         parse_duration_secs_flag(arg, "--test-setup-timeout", "--test-setup-timeout=", argv, i)
     {
-        state.test_setup_timeout = Some(d);
+        state.test_setup_timeout = Some(duration);
         return true;
     }
-    if let Some(d) = parse_duration_secs_flag(
+    if let Some(duration) = parse_duration_secs_flag(
         arg,
         "--test-teardown-timeout",
         "--test-teardown-timeout=",
         argv,
         i,
     ) {
-        state.test_teardown_timeout = Some(d);
+        state.test_teardown_timeout = Some(duration);
         return true;
     }
-    if let Some(value) =
-        parse_optional_duration_secs_flag(arg, "--phase-hang-grace", "--phase-hang-grace=", argv, i)
-    {
-        state.phase_hang_grace = value;
-        return true;
+    match parse_optional_duration_secs_flag(
+        arg,
+        "--phase-hang-grace",
+        "--phase-hang-grace=",
+        argv,
+        i,
+    ) {
+        OptionalDurationParse::Set(duration) => {
+            state.phase_hang_grace = Some(duration);
+            return true;
+        }
+        OptionalDurationParse::Disabled => {
+            state.phase_hang_grace = None;
+            return true;
+        }
+        OptionalDurationParse::NotMatched => {}
     }
-    if let Some(value) = parse_optional_duration_secs_flag(
+    match parse_optional_duration_secs_flag(
         arg,
         "--cancel-grace-period",
         "--cancel-grace-period=",
         argv,
         i,
     ) {
-        state.cancel_grace_period = value;
-        return true;
+        OptionalDurationParse::Set(duration) => {
+            state.cancel_grace_period = Some(duration);
+            return true;
+        }
+        OptionalDurationParse::Disabled => {
+            state.cancel_grace_period = None;
+            return true;
+        }
+        OptionalDurationParse::NotMatched => {}
     }
     false
 }
@@ -775,10 +876,10 @@ fn handle_filter_or_unparsed(
         }
         return true;
     }
-    if !arg.starts_with('-') {
-        state.filter = Some(arg.to_owned());
-    } else {
+    if arg.starts_with('-') {
         state.unparsed.push(arg.to_owned());
+    } else {
+        state.filter = Some(arg.to_owned());
     }
     true
 }
@@ -809,23 +910,3 @@ fn parse_argv(argv: &[String]) -> ParsedArgs {
     state
 }
 
-impl OutputMode {
-    /// Pick an [`OutputMode`] from an explicit user choice plus the
-    /// ambient environment. `explicit` comes from `--output=` / `--plain`;
-    /// `env` is the snapshot captured at startup (the `CI` key is used as
-    /// a "definitely not a human terminal" hint even when stdout IS a
-    /// TTY, because CI log capture frequently makes ANSI cursor-moves
-    /// unreadable downstream).
-    #[must_use]
-    #[inline]
-    pub fn resolve(explicit: Option<Self>, env: &BTreeMap<String, String>) -> Self {
-        if let Some(mode) = explicit {
-            return mode;
-        }
-        if io::stdout().is_terminal() && !env.contains_key("CI") {
-            Self::Live
-        } else {
-            Self::Plain
-        }
-    }
-}

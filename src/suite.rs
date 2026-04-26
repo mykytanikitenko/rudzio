@@ -26,10 +26,10 @@ use std::time::Duration;
 use futures_util::future::{AbortHandle, Aborted};
 use tokio_util::sync::CancellationToken;
 
-use crate::bench::BenchReport;
+use crate::bench::Report;
 use crate::config::Config;
 use crate::test_case::BoxError;
-use crate::token::TestToken;
+use crate::token::Token as TestToken;
 
 /// Outcome of a phase wrapped by [`run_phase_with_timeout_and_cancel`].
 ///
@@ -78,13 +78,13 @@ enum Stage1Trigger {
 
 /// Legacy id retained for the public re-export surface. Now unused
 /// internally but kept as a thin newtype around `TypeId` for callers that
-/// reach for `rudzio::SuiteId`.
+/// reach for `rudzio::suite::Id`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct SuiteId(pub TypeId);
+pub struct Id(pub TypeId);
 
 /// Inputs handed to [`RuntimeGroupOwner::run_group`].
 #[derive(Debug)]
-pub struct SuiteRunRequest<'req> {
+pub struct RunRequest<'req> {
     /// Resolved CLI / environment configuration for this run. Shared by
     /// every group; runtime constructors may inspect it (e.g. to size
     /// worker pools).
@@ -95,7 +95,7 @@ pub struct SuiteRunRequest<'req> {
 
 /// Aggregated per-group counts.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct SuiteSummary {
+pub struct Summary {
     pub cancelled: usize,
     pub failed: usize,
     /// Number of tests escalated from `TimedOut` to `Hung` because
@@ -146,7 +146,7 @@ pub enum TestOutcome {
     /// decides whether the overall outcome counts as passed or failed.
     Benched {
         elapsed: Duration,
-        report: BenchReport,
+        report: Report,
     },
     Cancelled,
     Failed {
@@ -201,7 +201,7 @@ pub type TestRunFn = for<'suite> unsafe fn(
     token: &'static TestToken,
     test_timeout: Option<Duration>,
     root_token: CancellationToken,
-    reporter: &'suite dyn SuiteReporter,
+    reporter: &'suite dyn Reporter,
 ) -> Pin<Box<dyn Future<Output = TestOutcome> + 'suite>>;
 
 /// Per-`(runtime_type, suite_type)` lifecycle owner.
@@ -219,13 +219,13 @@ pub trait RuntimeGroupOwner: Send + Sync + 'static {
     /// Drive the whole group: create runtime, set up suite, dispatch every
     /// `req.tokens` entry via its [`TestToken::run_test`] fn pointer, tear
     /// down. Called from a dedicated OS thread.
-    fn run_group(&self, req: SuiteRunRequest<'_>, reporter: &dyn SuiteReporter) -> SuiteSummary;
+    fn run_group(&self, req: RunRequest<'_>, reporter: &dyn Reporter) -> Summary;
 }
 
 /// Sink the [`RuntimeGroupOwner`] uses to publish per-test progress and
 /// non-fatal warnings as soon as they happen, so the runner can render
 /// `--format=pretty` lines and `--format=terse` dots in real time.
-pub trait SuiteReporter: Send + Sync {
+pub trait Reporter: Send + Sync {
     /// A test was queued but never started because the run was cancelled
     /// mid-stream.
     fn report_cancelled(&self, token: &'static TestToken, runtime_name: &'static str);
@@ -280,7 +280,7 @@ pub trait SuiteReporter: Send + Sync {
     fn report_warning(&self, message: &str);
 }
 
-impl SuiteSummary {
+impl Summary {
     #[inline]
     #[must_use]
     pub const fn merge(self, other: Self) -> Self {
@@ -358,17 +358,18 @@ impl SuiteSummary {
 /// pattern.
 #[doc(hidden)]
 #[inline]
-pub async fn drive_per_test_spawn<JoinFut, T, S>(
+pub async fn drive_per_test_spawn<JoinFut, T, S, Sleep>(
     join_fut: JoinFut,
     abort_handle: AbortHandle,
     outer_budget: Option<Duration>,
     outer_grace: Option<Duration>,
     phase_token: CancellationToken,
-    sleep: impl Fn(Duration) -> S,
+    sleep: Sleep,
 ) -> PhaseOutcome<T>
 where
     JoinFut: Future<Output = Result<T, Aborted>>,
     S: Future<Output = ()>,
+    Sleep: Fn(Duration) -> S,
 {
     use futures_util::future::{Either, select};
 
@@ -514,7 +515,9 @@ pub fn fill_elapsed(outcome: TestOutcome, elapsed: Duration) -> TestOutcome {
         TestOutcome::Panicked { .. } => TestOutcome::Panicked { elapsed },
         TestOutcome::Hung { .. } => TestOutcome::Hung { elapsed },
         TestOutcome::Benched { report, .. } => TestOutcome::Benched { elapsed, report },
-        other => other,
+        other @ (TestOutcome::Cancelled
+        | TestOutcome::SetupFailed { .. }
+        | TestOutcome::TimedOut) => other,
     }
 }
 
@@ -547,37 +550,39 @@ pub const fn fnv1a64(text: &str) -> u64 {
 #[must_use]
 #[inline]
 pub fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
-    if let Some(text) = payload.downcast_ref::<&'static str>() {
-        (*text).to_owned()
-    } else if let Some(text) = payload.downcast_ref::<String>() {
-        text.clone()
-    } else {
-        "panic with non-string payload".to_owned()
-    }
+    payload.downcast_ref::<&'static str>().map_or_else(
+        || {
+            payload
+                .downcast_ref::<String>()
+                .map_or_else(|| "panic with non-string payload".to_owned(), Clone::clone)
+        },
+        |text| (*text).to_owned(),
+    )
 }
 
 /// Drive a benchmark future under the per-test cancellation token and the
-/// optional per-test timeout, wrapping the resulting [`BenchReport`] into
+/// optional per-test timeout, wrapping the resulting [`Report`] into
 /// a [`TestOutcome::Benched`] (or one of the terminal variants if the
 /// bench timed out, was cancelled, or panicked).
 ///
 /// Mirrors [`run_test_with_timeout_and_cancel`] but for the bench path —
-/// the inner future yields a `BenchReport` rather than a
+/// the inner future yields a `Report` rather than a
 /// `Result<(), BoxError>`, so the classification logic is subtly
 /// different (there's no "failed" variant here: per-iteration failures
 /// are already captured inside the report).
 #[doc(hidden)]
 #[inline]
-pub async fn run_bench_with_timeout_and_cancel<F, S>(
+pub async fn run_bench_with_timeout_and_cancel<F, S, Sleep>(
     bench_fut: F,
     test_timeout: Option<Duration>,
     phase_hang_grace: Option<Duration>,
     per_test_token: CancellationToken,
-    sleep: impl Fn(Duration) -> S,
+    sleep: Sleep,
 ) -> TestOutcome
 where
-    F: Future<Output = BenchReport>,
+    F: Future<Output = Report>,
     S: Future<Output = ()>,
+    Sleep: Fn(Duration) -> S,
 {
     match run_phase_with_timeout_and_cancel(
         bench_fut,
@@ -621,16 +626,17 @@ where
 /// the wrapper depending on any one runtime crate.
 #[doc(hidden)]
 #[inline]
-pub async fn run_phase_with_timeout_and_cancel<F, T, S>(
+pub async fn run_phase_with_timeout_and_cancel<F, T, S, Sleep>(
     phase_fut: F,
     phase_timeout: Option<Duration>,
     phase_hang_grace: Option<Duration>,
     phase_token: CancellationToken,
-    sleep: impl Fn(Duration) -> S,
+    sleep: Sleep,
 ) -> PhaseOutcome<T>
 where
     F: Future<Output = T>,
     S: Future<Output = ()>,
+    Sleep: Fn(Duration) -> S,
 {
     use futures_util::FutureExt as _;
     use futures_util::future::{Either, select};
@@ -693,16 +699,17 @@ where
 /// test bodies on them) work too.
 #[doc(hidden)]
 #[inline]
-pub async fn run_test_with_timeout_and_cancel<F, S>(
+pub async fn run_test_with_timeout_and_cancel<F, S, Sleep>(
     test_fut: F,
     test_timeout: Option<Duration>,
     phase_hang_grace: Option<Duration>,
     per_test_token: CancellationToken,
-    sleep: impl Fn(Duration) -> S,
+    sleep: Sleep,
 ) -> TestOutcome
 where
     F: Future<Output = Result<(), BoxError>>,
     S: Future<Output = ()>,
+    Sleep: Fn(Duration) -> S,
 {
     match run_phase_with_timeout_and_cancel(
         test_fut,

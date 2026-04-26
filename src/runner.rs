@@ -19,10 +19,10 @@ use crate::output;
 use crate::output::events::LifecycleEvent;
 use crate::output::{write_stderr, write_stdout};
 use crate::suite::{
-    RuntimeGroupKey, RuntimeGroupOwner, SuiteReporter, SuiteRunRequest, SuiteSummary,
-    TeardownResult, TestOutcome,
+    Reporter as SuiteReporter, RunRequest as SuiteRunRequest, RuntimeGroupKey, RuntimeGroupOwner,
+    Summary as SuiteSummary, TeardownResult, TestOutcome,
 };
-use crate::token::{TEST_TOKENS, TestToken};
+use crate::token::{TEST_TOKENS, Token as TestToken};
 
 // ---------------------------------------------------------------------------
 // Constants for new-format rendering
@@ -376,7 +376,12 @@ impl SuiteReporter for ModeReporter {
                     message,
                 });
             }
-            _ => {}
+            TestOutcome::Benched { .. }
+            | TestOutcome::Cancelled
+            | TestOutcome::Hung { .. }
+            | TestOutcome::Panicked { .. }
+            | TestOutcome::Passed { .. }
+            | TestOutcome::TimedOut => {}
         }
     }
 
@@ -784,19 +789,25 @@ fn bold(text: &str, colored: bool) -> String {
 /// normal env-var lookup applies.
 fn enable_full_backtrace_default() {
     if env::var_os("RUST_BACKTRACE").is_none() {
+        #[expect(
+            unsafe_code,
+            reason = "single-threaded entry point; see SAFETY comment below"
+        )]
         // SAFETY: rudzio's entry point runs before any test threads spawn,
         // so no other thread is mutating the environment concurrently.
         // `env::set_var` is sound under that single-threaded invariant.
-        #[expect(unsafe_code)]
         unsafe {
             env::set_var("RUST_BACKTRACE", "full");
         }
     }
     if env::var_os("RUST_LIB_BACKTRACE").is_none() {
+        #[expect(
+            unsafe_code,
+            reason = "single-threaded entry point; see SAFETY comment below"
+        )]
         // SAFETY: rudzio's entry point runs before any test threads spawn,
         // so no other thread is mutating the environment concurrently.
         // `env::set_var` is sound under that single-threaded invariant.
-        #[expect(unsafe_code)]
         unsafe {
             env::set_var("RUST_LIB_BACKTRACE", "full");
         }
@@ -1102,6 +1113,9 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
                     main may be sync-blocked, so cooperative ExitCode return cannot \
                     reach the process exit. _exit avoids the clippy::exit lint while \
                     preserving the deliberate force-exit semantics.")]
+                // SAFETY: libc::_exit immediately terminates the process
+                // without running destructors. It has no preconditions and
+                // never returns; force-exit semantics are intentional.
                 unsafe {
                     libc::_exit(2);
                 }
@@ -1283,12 +1297,21 @@ fn status_tag(outcome_label: StatusLabel, colored: bool) -> (String, usize) {
 #[cfg(unix)]
 fn terminal_width() -> usize {
     use std::os::fd::AsRawFd as _;
-    // SAFETY: ioctl TIOCGWINSZ writes a `winsize` struct; we supply a
-    // zero-initialised one and only read it when ioctl returns 0.
-    #[expect(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "zero-initialised winsize; FFI; see SAFETY comment below"
+    )]
+    // SAFETY: zeroing a libc::winsize is safe — it's a plain C struct
+    // of integers with no validity invariants beyond bit-pattern.
     let mut ws: libc::winsize = unsafe { mem::zeroed() };
     let fd = io::stdout().as_raw_fd();
-    #[expect(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "ioctl TIOCGWINSZ FFI call; see SAFETY comment below"
+    )]
+    // SAFETY: ioctl TIOCGWINSZ writes into the `winsize` we allocated
+    // above; the pointer is properly aligned and exclusively owned.
+    // Result is read only on success.
     let ioctl_ret = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &raw mut ws) };
     if ioctl_ret == 0 && ws.ws_col > 0 {
         return usize::from(ws.ws_col);

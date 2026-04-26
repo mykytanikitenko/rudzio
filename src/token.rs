@@ -19,7 +19,7 @@ use crate::suite::{RuntimeGroupKey, RuntimeGroupOwner, TestRunFn};
 /// pointed-to types match the owner's `group_key`.
 #[derive(Clone, Copy)]
 #[non_exhaustive]
-pub struct TestToken {
+pub struct Token {
     /// Source file path, used to sort tests into stable source order.
     pub file: &'static str,
     /// `true` when the test was declared with
@@ -66,23 +66,23 @@ pub struct TestToken {
 }
 
 /// Source-location metadata block — file, line, module path, and test
-/// fn name. Bundled so [`TestToken::new`] takes one struct instead of
+/// fn name. Bundled so [`Token::new`] takes one struct instead of
 /// four positional args, sidestepping `clippy::too_many_arguments`.
 #[derive(Clone, Copy, Debug)]
 #[doc(hidden)]
 #[non_exhaustive]
-pub struct TestTokenSource {
-    /// See [`TestToken::file`].
+pub struct Source {
+    /// See [`Token::file`].
     pub file: &'static str,
-    /// See [`TestToken::line`].
+    /// See [`Token::line`].
     pub line: u32,
-    /// See [`TestToken::module_path`].
+    /// See [`Token::module_path`].
     pub module_path: &'static str,
-    /// See [`TestToken::name`].
+    /// See [`Token::name`].
     pub name: &'static str,
 }
 
-impl TestTokenSource {
+impl Source {
     /// Pack the four source-location fields. Macro-only.
     #[doc(hidden)]
     #[inline]
@@ -101,16 +101,16 @@ impl TestTokenSource {
 #[derive(Clone, Copy, Debug)]
 #[doc(hidden)]
 #[non_exhaustive]
-pub struct TestTokenAttrs {
-    /// See [`TestToken::has_benchmark`].
+pub struct Attrs {
+    /// See [`Token::has_benchmark`].
     pub has_benchmark: bool,
-    /// See [`TestToken::ignore_reason`].
+    /// See [`Token::ignore_reason`].
     pub ignore_reason: &'static str,
-    /// See [`TestToken::ignored`].
+    /// See [`Token::ignored`].
     pub ignored: bool,
 }
 
-impl TestTokenAttrs {
+impl Attrs {
     /// Pack the three attribute-derived fields. Macro-only.
     #[doc(hidden)]
     #[inline]
@@ -125,16 +125,16 @@ impl TestTokenAttrs {
 #[derive(Clone, Copy)]
 #[doc(hidden)]
 #[non_exhaustive]
-pub struct TestTokenDispatch {
-    /// See [`TestToken::run_test`].
+pub struct Dispatch {
+    /// See [`Token::run_test`].
     pub run_test: TestRunFn,
-    /// See [`TestToken::runtime_group_key`].
+    /// See [`Token::runtime_group_key`].
     pub runtime_group_key: RuntimeGroupKey,
-    /// See [`TestToken::runtime_group_owner`].
+    /// See [`Token::runtime_group_owner`].
     pub runtime_group_owner: &'static dyn RuntimeGroupOwner,
 }
 
-impl TestTokenDispatch {
+impl Dispatch {
     /// Pack the three dispatch fields. Macro-only.
     #[doc(hidden)]
     #[inline]
@@ -148,30 +148,30 @@ impl TestTokenDispatch {
     }
 }
 
-impl fmt::Debug for TestTokenDispatch {
+impl fmt::Debug for Dispatch {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TestTokenDispatch")
+        f.debug_struct("Dispatch")
             .field("runtime_group_key", &self.runtime_group_key)
             .finish_non_exhaustive()
     }
 }
 
-impl TestToken {
-    /// Construct a `TestToken` from its three sub-bundles.
+impl Token {
+    /// Construct a `Token` from its three sub-bundles.
     /// Macro-generated code calls this so the struct can stay
     /// `#[non_exhaustive]`.
     #[doc(hidden)]
     #[inline]
     #[must_use]
     pub const fn new(
-        source: TestTokenSource,
-        attrs: TestTokenAttrs,
-        dispatch: TestTokenDispatch,
+        source: Source,
+        attrs: Attrs,
+        dispatch: Dispatch,
     ) -> Self {
-        let TestTokenSource { file, line, module_path, name } = source;
-        let TestTokenAttrs { has_benchmark, ignore_reason, ignored } = attrs;
-        let TestTokenDispatch { run_test, runtime_group_key, runtime_group_owner } = dispatch;
+        let Source { file, line, module_path, name } = source;
+        let Attrs { has_benchmark, ignore_reason, ignored } = attrs;
+        let Dispatch { run_test, runtime_group_key, runtime_group_owner } = dispatch;
         Self {
             file,
             has_benchmark,
@@ -187,10 +187,10 @@ impl TestToken {
     }
 }
 
-impl fmt::Debug for TestToken {
+impl fmt::Debug for Token {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TestToken")
+        f.debug_struct("Token")
             .field("name", &self.name)
             .field("module_path", &self.module_path)
             .field("ignored", &self.ignored)
@@ -205,4 +205,4 @@ impl fmt::Debug for TestToken {
 
 #[::linkme::distributed_slice]
 #[doc(hidden)]
-pub static TEST_TOKENS: [TestToken] = [..];
+pub static TEST_TOKENS: [Token] = [..];

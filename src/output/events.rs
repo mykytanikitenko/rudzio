@@ -11,7 +11,7 @@
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
-use crate::bench::BenchProgressSnapshot;
+use crate::bench::ProgressSnapshot;
 use crate::suite::{TeardownResult, TestOutcome};
 
 /// Unique id for a test *dispatch*.
@@ -66,7 +66,7 @@ pub enum LifecycleEvent {
     /// can travel through the lifecycle channel without overhead.
     BenchProgress {
         test_id: TestId,
-        snapshot: BenchProgressSnapshot,
+        snapshot: ProgressSnapshot,
     },
     /// `Suite::setup` returned. `error` is `None` on success and
     /// `Some(message)` on failure (the error's `Display` form).
@@ -177,7 +177,7 @@ pub enum TestStateKind {
     /// Under a bench strategy; the most recent progress snapshot
     /// drives the trailing block + mini-histogram in the renderer.
     Bench {
-        snapshot: BenchProgressSnapshot,
+        snapshot: ProgressSnapshot,
     },
     /// Ordinary test body running (no bench strategy).
     Running,
