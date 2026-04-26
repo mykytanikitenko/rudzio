@@ -10,8 +10,9 @@
 
 pub mod generate;
 
-/// Sentinel env var name read by `rudzio::build::expose_bins` to detect
-/// re-entry. Kept in sync with the constant of the same value in
+/// Sentinel env var name read by `rudzio::build::expose_bins` to detect re-entry.
+///
+/// Kept in sync with the constant of the same value in
 /// `rudzio/src/build.rs`. When `cargo rudzio test` spawns cargo, it
 /// sets this env var so that any nested `expose_bins` call (e.g. from a
 /// member's own `build.rs` running under the aggregator chain)
@@ -19,6 +20,8 @@ pub mod generate;
 /// — which would otherwise accumulate nested `rudzio-bin-cache/...`
 /// target dirs indefinitely.
 pub const EXPOSE_BINS_SENTINEL_ENV: &str = "__RUDZIO_EXPOSE_BINS_ACTIVE";
+/// Value the [`EXPOSE_BINS_SENTINEL_ENV`] env var is set to when a
+/// `cargo rudzio test` spawn is in progress.
 pub const EXPOSE_BINS_SENTINEL_VALUE: &str = "1";
 
 /// Env vars to set when spawning cargo for the aggregator build inside
@@ -32,6 +35,7 @@ pub const EXPOSE_BINS_SENTINEL_VALUE: &str = "1";
 /// compile unit that needs the cfg (the aggregator and every bridge)
 /// emits `cargo:rustc-cfg=rudzio_test` from its own `build.rs` — see
 /// `generate::build_build_rs` and `generate::build_bridge_build_rs`.
+#[inline]
 #[must_use]
 pub fn spawn_env() -> Vec<(&'static str, String)> {
     vec![(

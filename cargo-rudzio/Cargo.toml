@@ -33,7 +33,15 @@ toml_edit = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
-rudzio = { path = "..", features = ["common", "runtime-tokio-multi-thread"] }
+rudzio = { path = "..", features = [
+  "common",
+  "runtime-tokio-multi-thread",
+  "runtime-tokio-current-thread",
+  "runtime-tokio-local",
+  "runtime-compio",
+  "runtime-embassy",
+  "runtime-futures",
+] }
 tempfile = "=3.27.0"
 
 [lints]

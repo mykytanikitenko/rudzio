@@ -1,15 +1,25 @@
+//! `cargo-rudzio` subcommand binary.
+//!
+//! Wraps three operations behind a single cargo subcommand: generate the
+//! aggregator crate (`generate-runner`), generate-and-run the aggregator
+//! (`test`), and forward to `rudzio-migrate`.
+
 #![allow(
     unused_results,
     clippy::needless_pass_by_value,
     reason = "toml_edit's insert/push API routinely returns the previous value; CLI glue does not care about the dropped option"
 )]
 
+use std::env;
+use std::io::{Result as IoResult, Write as _, stderr, stdout};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use anyhow::{Context as _, Result, bail};
 use cargo_rudzio::{generate, spawn_env};
+use rudzio_migrate::run::entry_with_args as rudzio_migrate_entry;
 
+/// Top-level usage string printed for `--help` / unknown subcommands.
 const USAGE: &str = "\
 cargo-rudzio - Cargo subcommand: single-binary test aggregation + rudzio-migrate
 
@@ -30,50 +40,66 @@ COMMANDS:
     help, --help, -h                 Print this message.
 ";
 
+/// Write `text` to stdout, ignoring any I/O error.
+fn write_stdout(text: &str) {
+    let _io_result: IoResult<()> = stdout().lock().write_all(text.as_bytes());
+}
+
+/// Write `text` to stderr, ignoring any I/O error.
+fn write_stderr(text: &str) {
+    let _io_result: IoResult<()> = stderr().lock().write_all(text.as_bytes());
+}
+
 fn main() -> ExitCode {
-    let argv: Vec<String> = std::env::args().collect();
+    let argv: Vec<String> = env::args().collect();
     match dispatch(&argv) {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("cargo-rudzio: {err:#}");
+            write_stderr(&format!("cargo-rudzio: {err:#}\n"));
             ExitCode::from(1)
         }
     }
 }
 
+/// Match the user-supplied argv against the command grammar and dispatch to one of the per-subcommand handlers.
 fn dispatch(argv: &[String]) -> Result<ExitCode> {
-    let mut args = argv.iter().skip(1);
-    let first = args.next().map(String::as_str);
+    let mut walker = argv.iter().skip(1);
+    let first = walker.next().map(String::as_str);
     let subcommand = match first {
-        Some("rudzio") => args.next().map(String::as_str),
+        Some("rudzio") => walker.next().map(String::as_str),
         other => other,
     };
-    let rest: Vec<String> = args.cloned().collect();
+    let rest: Vec<String> = walker.cloned().collect();
     match subcommand {
         None | Some("help" | "--help" | "-h") => {
-            print!("{USAGE}");
+            write_stdout(USAGE);
             Ok(ExitCode::SUCCESS)
         }
         Some("generate-runner") => run_generate(&rest).map(|()| ExitCode::SUCCESS),
         Some("test") => run_test(&rest),
         Some("migrate") => Ok(run_migrate(&rest)),
         Some(cmd) => {
-            eprint!("cargo-rudzio: unknown subcommand `{cmd}`\n\n{USAGE}");
+            write_stderr(&format!("cargo-rudzio: unknown subcommand `{cmd}`\n\n{USAGE}"));
             Ok(ExitCode::from(2))
         }
     }
 }
 
+/// Handler for `cargo rudzio generate-runner`: produce an aggregator crate at the requested output directory.
 fn run_generate(rest: &[String]) -> Result<()> {
     let output = parse_output_flag(rest)?;
     let plan = generate::plan_from_cwd()?;
     emit_diagnostic_warnings(&plan);
     let target = output.unwrap_or_else(|| plan.default_output_dir());
     generate::write_runner(&plan, &target)?;
-    println!("cargo-rudzio: generated aggregator at {}", target.display());
+    write_stdout(&format!(
+        "cargo-rudzio: generated aggregator at {}\n",
+        target.display()
+    ));
     Ok(())
 }
 
+/// Handler for `cargo rudzio test`: generate the aggregator crate then `cargo run` it with the user's runner args.
 fn run_test(rest: &[String]) -> Result<ExitCode> {
     let (path_args, runner_args) = split_path_args(rest);
     let mut plan = generate::plan_from_cwd()?;
@@ -84,7 +110,7 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
     let target = plan.default_output_dir();
     generate::write_runner(&plan, &target)?;
     let manifest = target.join("Cargo.toml");
-    let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    let mut cmd = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     for (key, value) in &spawn_env() {
         cmd.env(key, value);
     }
@@ -101,10 +127,10 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
                 manifest.display()
             )
         })?;
-    Ok(match status.code() {
-        Some(code) => ExitCode::from(u8::try_from(code & 0xFF).unwrap_or(1)),
-        None => ExitCode::from(1),
-    })
+    Ok(status.code().map_or_else(
+        || ExitCode::from(1),
+        |code| ExitCode::from(u8::try_from(code & 0xFF_i32).unwrap_or(1)),
+    ))
 }
 
 /// Split positional `cargo rudzio test` args into directory paths
@@ -129,10 +155,14 @@ fn split_path_args(rest: &[String]) -> (Vec<PathBuf>, Vec<String>) {
     (paths, runner)
 }
 
-fn is_existing_dir_path_arg(s: &str) -> bool {
-    let path_shaped =
-        s == "." || s == ".." || s.starts_with("./") || s.starts_with("../") || s.starts_with('/');
-    path_shaped && Path::new(s).is_dir()
+/// Return `true` iff `arg` looks path-shaped AND points at an existing directory.
+fn is_existing_dir_path_arg(arg: &str) -> bool {
+    let path_shaped = arg == "."
+        || arg == ".."
+        || arg.starts_with("./")
+        || arg.starts_with("../")
+        || arg.starts_with('/');
+    path_shaped && Path::new(arg).is_dir()
 }
 
 /// Print warnings from the src-scan diagnostic pass before the
@@ -140,32 +170,34 @@ fn is_existing_dir_path_arg(s: &str) -> bool {
 /// the build on them, because silent failure is worse than visible
 /// warnings for the rare false-positive case.
 fn emit_diagnostic_warnings(plan: &generate::Plan) {
-    for w in generate::scan_unbroadened_cfg_test_mods_in_plan(plan) {
-        eprintln!("warning: {w}");
+    for warning in generate::scan_unbroadened_cfg_test_mods_in_plan(plan) {
+        write_stderr(&format!("warning: {warning}\n"));
     }
 }
 
+/// Handler for `cargo rudzio migrate`: forward every arg verbatim into `rudzio_migrate::run::entry_with_args`.
 fn run_migrate(rest: &[String]) -> ExitCode {
-    let mut argv: Vec<String> = Vec::with_capacity(rest.len() + 1);
+    let mut argv: Vec<String> = Vec::with_capacity(rest.len().saturating_add(1));
     argv.push("rudzio-migrate".to_owned());
     argv.extend(rest.iter().cloned());
-    rudzio_migrate::run::entry_with_args(argv)
+    rudzio_migrate_entry(argv)
 }
 
+/// Parse the `--output DIR` / `-o DIR` / `--output=DIR` flag from the args list.
 fn parse_output_flag(rest: &[String]) -> Result<Option<PathBuf>> {
     let mut out: Option<PathBuf> = None;
     let mut idx = 0;
-    while idx < rest.len() {
-        let arg = &rest[idx];
+    while let Some(arg) = rest.get(idx) {
         if arg == "--output" || arg == "-o" {
+            let next_idx = idx.saturating_add(1);
             let val = rest
-                .get(idx + 1)
+                .get(next_idx)
                 .ok_or_else(|| anyhow::anyhow!("`{arg}` requires a value"))?;
             out = Some(PathBuf::from(val));
-            idx += 2;
+            idx = idx.saturating_add(2);
         } else if let Some(val) = arg.strip_prefix("--output=") {
             out = Some(PathBuf::from(val));
-            idx += 1;
+            idx = idx.saturating_add(1);
         } else {
             bail!("unexpected argument: `{arg}`");
         }

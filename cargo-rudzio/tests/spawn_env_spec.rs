@@ -1,35 +1,44 @@
+//! Pin tests for the `spawn_env` recursion-guard contract.
+
 use cargo_rudzio::{EXPOSE_BINS_SENTINEL_ENV, spawn_env};
+use rudzio::common::context::Suite;
+use rudzio::runtime::compio::Runtime as CompioRuntime;
+use rudzio::runtime::embassy::Runtime as EmbassyRuntime;
+use rudzio::runtime::futures::ThreadPool as FuturesThreadPool;
+use rudzio::runtime::tokio::{
+    CurrentThread as TokioCurrentThread, Local as TokioLocal, Multithread as TokioMultithread,
+};
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
+        runtime = TokioMultithread::new,
+        suite = Suite,
+        test = Test,
     ),
     (
-        runtime = rudzio::runtime::tokio::CurrentThread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
+        runtime = TokioCurrentThread::new,
+        suite = Suite,
+        test = Test,
     ),
     (
-        runtime = rudzio::runtime::tokio::Local::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
+        runtime = TokioLocal::new,
+        suite = Suite,
+        test = Test,
     ),
     (
-        runtime = rudzio::runtime::compio::Runtime::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
+        runtime = CompioRuntime::new,
+        suite = Suite,
+        test = Test,
     ),
     (
-        runtime = rudzio::runtime::embassy::Runtime::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
+        runtime = EmbassyRuntime::new,
+        suite = Suite,
+        test = Test,
     ),
     (
-        runtime = rudzio::runtime::futures::ThreadPool::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
+        runtime = FuturesThreadPool::new,
+        suite = Suite,
+        test = Test,
     ),
 ])]
 mod tests {
@@ -45,8 +54,8 @@ mod tests {
         let env = spawn_env();
         let sentinel = env
             .iter()
-            .find(|(k, _)| *k == EXPOSE_BINS_SENTINEL_ENV)
-            .map(|(_, v)| v.as_str());
+            .find(|(key, _)| *key == EXPOSE_BINS_SENTINEL_ENV)
+            .map(|(_, value)| value.as_str());
         anyhow::ensure!(
             sentinel == Some("1"),
             "spawn_env must set the expose-bins re-entry sentinel to \"1\", got {sentinel:?}"
