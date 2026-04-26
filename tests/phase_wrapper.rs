@@ -264,9 +264,7 @@ mod phase_wrapper_tests {
         let join_fut = async move {
             match join.await {
                 ::std::result::Result::Ok(inner) => inner,
-                ::std::result::Result::Err(err) => {
-                    ::std::panic::resume_unwind(err.into_panic())
-                }
+                ::std::result::Result::Err(err) => ::std::panic::resume_unwind(err.into_panic()),
             }
         };
         let token = CancellationToken::new();
@@ -301,9 +299,7 @@ mod phase_wrapper_tests {
     /// observes "spawn never finishes within budget+grace", which is
     /// what `Hung` is supposed to detect.
     #[rudzio::test]
-    async fn drive_per_test_spawn_hung_uncooperative_body(
-        _ctx: &Test,
-    ) -> anyhow::Result<()> {
+    async fn drive_per_test_spawn_hung_uncooperative_body(_ctx: &Test) -> anyhow::Result<()> {
         let rt = ::rudzio::tokio::runtime::Handle::current();
         let (abort_handle, abort_reg) = AbortHandle::new_pair();
         let body = async {
@@ -414,9 +410,7 @@ mod phase_wrapper_tests {
     /// users who'd rather rely on Layer 1 (`process::exit(2)`) for
     /// hardkill.
     #[rudzio::test]
-    async fn drive_per_test_spawn_no_grace_returns_timed_out(
-        _ctx: &Test,
-    ) -> anyhow::Result<()> {
+    async fn drive_per_test_spawn_no_grace_returns_timed_out(_ctx: &Test) -> anyhow::Result<()> {
         let rt = ::rudzio::tokio::runtime::Handle::current();
         let (abort_handle, abort_reg) = AbortHandle::new_pair();
         let body = async {
@@ -526,9 +520,7 @@ mod phase_wrapper_tests {
     /// `Abortable` future (post-driver) must yield `Err(Aborted)` —
     /// i.e. the abort was signalled.
     #[rudzio::test]
-    async fn drive_per_test_spawn_hung_fires_abort_handle(
-        _ctx: &Test,
-    ) -> anyhow::Result<()> {
+    async fn drive_per_test_spawn_hung_fires_abort_handle(_ctx: &Test) -> anyhow::Result<()> {
         let rt = ::rudzio::tokio::runtime::Handle::current();
         let (abort_handle, abort_reg) = AbortHandle::new_pair();
         let observed_abort = Arc::new(AtomicBool::new(false));
@@ -604,9 +596,7 @@ mod phase_wrapper_tests {
         let join_fut = async move {
             match join.await {
                 ::std::result::Result::Ok(inner) => inner,
-                ::std::result::Result::Err(err) => {
-                    ::std::panic::resume_unwind(err.into_panic())
-                }
+                ::std::result::Result::Err(err) => ::std::panic::resume_unwind(err.into_panic()),
             }
         };
         let token = CancellationToken::new();

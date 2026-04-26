@@ -658,7 +658,18 @@ fn generate_per_config(
                     ::rudzio::config::BenchMode::Full => {
                         use ::rudzio::bench::Strategy as _;
                         let __rudzio_strategy = #bench_expr;
-                        let bench_fut = __rudzio_strategy.run(#bench_body_closure);
+                        let __rudzio_progress_test_id = __rudzio_test_id;
+                        let bench_fut = __rudzio_strategy.run(
+                            #bench_body_closure,
+                            move |__rudzio_snapshot| {
+                                ::rudzio::output::send_lifecycle(
+                                    ::rudzio::output::events::LifecycleEvent::BenchProgress {
+                                        test_id: __rudzio_progress_test_id,
+                                        snapshot: __rudzio_snapshot,
+                                    },
+                                );
+                            },
+                        );
                         ::rudzio::suite::run_bench_with_timeout_and_cancel(
                             bench_fut,
                             test_timeout,

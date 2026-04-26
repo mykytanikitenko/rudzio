@@ -334,9 +334,7 @@ mod tests {
     }
 
     #[rudzio::test]
-    fn suite_setup_and_teardown_lines_appear_in_passing_run(
-        _ctx: &Test,
-    ) -> anyhow::Result<()> {
+    fn suite_setup_and_teardown_lines_appear_in_passing_run(_ctx: &Test) -> anyhow::Result<()> {
         // A normal passing run must emit visible setup/teardown
         // lifecycle lines so the user knows the suite phases happened
         // (the whole point of the new output: see *that* it's
@@ -387,7 +385,10 @@ mod tests {
         anyhow::ensure!(log.contains("teardown "), "output:\n{log}");
         anyhow::ensure!(log.contains("teardown_failed_by_design"), "output:\n{log}");
         // The test body itself ran successfully.
-        anyhow::ensure!(log.contains("body_runs_then_teardown_fails"), "output:\n{log}");
+        anyhow::ensure!(
+            log.contains("body_runs_then_teardown_fails"),
+            "output:\n{log}"
+        );
         anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
         anyhow::ensure!(log.contains("1 teardown failed"), "output:\n{log}");
         Ok(())
@@ -1254,9 +1255,7 @@ mod unix_tests {
         fn ordered<'a>(hay: &'a str, needles: &[&str]) -> anyhow::Result<()> {
             let mut last = 0_usize;
             for n in needles {
-                let pos = index_of(hay, n).map_err(|e| {
-                    anyhow::anyhow!("{e} in stream:\n{hay}")
-                })?;
+                let pos = index_of(hay, n).map_err(|e| anyhow::anyhow!("{e} in stream:\n{hay}"))?;
                 anyhow::ensure!(
                     pos >= last,
                     "`{n}` found at {pos} but expected at >= {last} (previous neighbour). Stream:\n{hay}",
@@ -1363,9 +1362,11 @@ mod unix_tests {
         let line = log
             .lines()
             .find(|l| l.contains("INVARIANTS_CHECK"))
-            .ok_or_else(|| anyhow::anyhow!(
-                "INVARIANTS_CHECK line missing — Suite::teardown never ran, output:\n{log}"
-            ))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "INVARIANTS_CHECK line missing — Suite::teardown never ran, output:\n{log}"
+                )
+            })?;
         let expected = "INVARIANTS_CHECK suite_setup=1 suite_teardown=1 test_setup=3 test_teardown=3 test_tasks_spawned=3 test_tasks_completed=3 suite_tasks_spawned=1 suite_tasks_completed=1";
         anyhow::ensure!(
             line.contains(expected),

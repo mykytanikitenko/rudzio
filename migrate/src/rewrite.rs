@@ -785,7 +785,8 @@ impl Rewriter<'_, '_> {
                     ::core::result::Result::Ok(())
                 }};
                 *f.block = new_block;
-                f.sig.output = syn::parse_quote! { -> ::core::result::Result<(), ::rudzio::BoxError> };
+                f.sig.output =
+                    syn::parse_quote! { -> ::core::result::Result<(), ::rudzio::BoxError> };
             }
         }
     }
@@ -990,12 +991,11 @@ fn rewrite_cfg_attr_test_attr(attr: &mut Attribute) -> bool {
     let Meta::List(list) = &attr.meta else {
         return false;
     };
-    let metas: Punctuated<Meta, syn::Token![,]> = match list
-        .parse_args_with(Punctuated::<Meta, syn::Token![,]>::parse_terminated)
-    {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
+    let metas: Punctuated<Meta, syn::Token![,]> =
+        match list.parse_args_with(Punctuated::<Meta, syn::Token![,]>::parse_terminated) {
+            Ok(m) => m,
+            Err(_) => return false,
+        };
     let first_is_bare_test = matches!(
         metas.first(),
         Some(Meta::Path(p)) if p.is_ident("test")

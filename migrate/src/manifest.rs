@@ -316,23 +316,22 @@ fn ensure_check_cfg_rudzio_test(doc: &mut DocumentMut) {
         // header, which is what the user would normally write by hand.
         lints_tbl.set_implicit(true);
     }
-    let rust = lints_tbl
-        .entry("rust")
-        .or_insert(Item::Table(Table::new()));
+    let rust = lints_tbl.entry("rust").or_insert(Item::Table(Table::new()));
     let Some(rust_tbl) = rust.as_table_mut() else {
         return;
     };
     let existed = rust_tbl.contains_key("unexpected_cfgs");
-    let unexpected = rust_tbl
-        .entry("unexpected_cfgs")
-        .or_insert(Item::Value(toml_edit::Value::InlineTable({
-            let mut t = InlineTable::new();
-            let _lvl = t.insert("level", "warn".into());
-            let mut arr = Array::new();
-            arr.push(CFG_ENTRY);
-            let _cc = t.insert("check-cfg", arr.into());
-            t
-        })));
+    let unexpected =
+        rust_tbl
+            .entry("unexpected_cfgs")
+            .or_insert(Item::Value(toml_edit::Value::InlineTable({
+                let mut t = InlineTable::new();
+                let _lvl = t.insert("level", "warn".into());
+                let mut arr = Array::new();
+                arr.push(CFG_ENTRY);
+                let _cc = t.insert("check-cfg", arr.into());
+                t
+            })));
     if !existed {
         return;
     }

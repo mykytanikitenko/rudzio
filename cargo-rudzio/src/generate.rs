@@ -3,9 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use cargo_metadata::{
-    Metadata, MetadataCommand, Package, TargetKind, camino::Utf8PathBuf,
-};
+use cargo_metadata::{Metadata, MetadataCommand, Package, TargetKind, camino::Utf8PathBuf};
 use toml_edit::{Array, DocumentMut, Formatted, InlineTable, Item, Table, Value, value};
 
 const RUDZIO_DEP: &str = "rudzio";
@@ -127,7 +125,10 @@ pub struct WorkspaceDepSpec {
 #[derive(Clone, Debug)]
 pub enum RudzioLocation {
     Path(PathBuf),
-    Git { url: String, reference: Option<GitRef> },
+    Git {
+        url: String,
+        reference: Option<GitRef>,
+    },
     Version(String),
 }
 
@@ -145,7 +146,6 @@ pub fn plan_from_cwd() -> Result<Plan> {
         .context("failed to run `cargo metadata --no-deps` from the current directory")?;
     build_plan(&metadata)
 }
-
 
 impl Plan {
     pub fn default_output_dir(&self) -> PathBuf {
@@ -188,8 +188,8 @@ fn canonicalize_or_keep(p: &Path) -> PathBuf {
 
 fn build_plan(metadata: &Metadata) -> Result<Plan> {
     let workspace_root_std = metadata.workspace_root.as_std_path();
-    let workspace_deps = read_workspace_deps(workspace_root_std)
-        .context("reading workspace root Cargo.toml")?;
+    let workspace_deps =
+        read_workspace_deps(workspace_root_std).context("reading workspace root Cargo.toml")?;
 
     let mut members: Vec<MemberPlan> = Vec::new();
     let mut runtime_features: BTreeSet<String> = BTreeSet::new();
@@ -223,8 +223,8 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
             .to_path_buf();
         let manifest_dir_std = manifest_dir.as_std_path().to_path_buf();
 
-        let exclude_list = load_rudzio_exclude_list(pkg.manifest_path.as_std_path())
-            .with_context(|| {
+        let exclude_list =
+            load_rudzio_exclude_list(pkg.manifest_path.as_std_path()).with_context(|| {
                 format!(
                     "loading `[package.metadata.rudzio].exclude` from {}",
                     pkg.manifest_path.as_std_path().display()
@@ -254,13 +254,12 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
 
         let edition = pkg.edition.to_string();
 
-        let dev_deps =
-            read_dev_deps(pkg.manifest_path.as_std_path()).with_context(|| {
-                format!(
-                    "reading dev-deps from {}",
-                    pkg.manifest_path.as_std_path().display()
-                )
-            })?;
+        let dev_deps = read_dev_deps(pkg.manifest_path.as_std_path()).with_context(|| {
+            format!(
+                "reading dev-deps from {}",
+                pkg.manifest_path.as_std_path().display()
+            )
+        })?;
 
         let has_src_rudzio_suite = has_lib
             && src_lib_path
@@ -275,13 +274,12 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
             .collect();
 
         let rudzio_activated_features =
-            load_rudzio_activated_features(pkg.manifest_path.as_std_path())
-                .with_context(|| {
-                    format!(
-                        "loading `[package.metadata.rudzio].features` from {}",
-                        pkg.manifest_path.as_std_path().display()
-                    )
-                })?;
+            load_rudzio_activated_features(pkg.manifest_path.as_std_path()).with_context(|| {
+                format!(
+                    "loading `[package.metadata.rudzio].features` from {}",
+                    pkg.manifest_path.as_std_path().display()
+                )
+            })?;
 
         members.push(MemberPlan {
             package_name: pkg.name.to_string(),
@@ -432,8 +430,9 @@ pub fn scan_unbroadened_cfg_test_mods(member: &MemberPlan) -> Vec<String> {
                 .filter(|l| !l.trim_start().is_empty())
                 .collect();
             let next_non_attr = tail.iter().find(|l| !l.trim_start().starts_with("#["));
-            let gates_a_mod = next_non_attr
-                .is_some_and(|l| l.trim_start().starts_with("mod ") || l.trim_start().starts_with("pub mod "));
+            let gates_a_mod = next_non_attr.is_some_and(|l| {
+                l.trim_start().starts_with("mod ") || l.trim_start().starts_with("pub mod ")
+            });
             if !gates_a_mod {
                 continue;
             }
@@ -550,8 +549,7 @@ pub fn collect_rudzio_spec(
                     git_ref: ws.git_ref.clone(),
                     version_req: ws.version_req.clone(),
                     features: feats,
-                    uses_default_features: dd.uses_default_features
-                        && ws.uses_default_features,
+                    uses_default_features: dd.uses_default_features && ws.uses_default_features,
                 });
             } else {
                 let version_req = if dd.version_req.is_empty() {
@@ -592,7 +590,10 @@ pub fn collect_rudzio_spec(
         bail!(
             "rudzio is declared inconsistently across workspace members: `{}` uses path={}, `{}` uses git={} — aggregator can't unify these",
             p.member,
-            p.path.as_ref().map(|x| x.display().to_string()).unwrap_or_default(),
+            p.path
+                .as_ref()
+                .map(|x| x.display().to_string())
+                .unwrap_or_default(),
             g.member,
             g.git.clone().unwrap_or_default(),
         );
@@ -665,10 +666,7 @@ pub fn build_rudzio_inline_table(spec: &RudzioSpec) -> InlineTable {
                     tbl.insert("rev", Value::String(Formatted::new(rev.clone())));
                 }
                 Some(GitRef::Branch(branch)) => {
-                    tbl.insert(
-                        "branch",
-                        Value::String(Formatted::new(branch.clone())),
-                    );
+                    tbl.insert("branch", Value::String(Formatted::new(branch.clone())));
                 }
                 Some(GitRef::Tag(tag)) => {
                     tbl.insert("tag", Value::String(Formatted::new(tag.clone())));
@@ -733,8 +731,8 @@ fn discover_test_files(
             return Ok(Vec::new());
         }
         let mut out: Vec<PathBuf> = Vec::new();
-        for entry in fs::read_dir(&tests_dir)
-            .with_context(|| format!("reading {}", tests_dir.display()))?
+        for entry in
+            fs::read_dir(&tests_dir).with_context(|| format!("reading {}", tests_dir.display()))?
         {
             let entry = entry?;
             let path = entry.path();
@@ -1015,7 +1013,9 @@ fn collect_dev_deps(
         let Some(next) = tbl.get(key) else { return };
         cur = next;
     }
-    let Some(deps_tbl) = cur.as_table() else { return };
+    let Some(deps_tbl) = cur.as_table() else {
+        return;
+    };
     for (name, item) in deps_tbl.iter() {
         if let Some(spec) = parse_dev_dep_entry(name, item, manifest_dir) {
             out.push(spec);
@@ -1149,13 +1149,11 @@ pub fn write_runner(plan: &Plan, out_dir: &Path) -> Result<()> {
         out_dir.join("build.rs"),
     ] {
         if path.exists() {
-            fs::remove_file(&path)
-                .with_context(|| format!("removing {}", path.display()))?;
+            fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
         }
     }
     if src_dir.exists() {
-        fs::remove_dir_all(&src_dir)
-            .with_context(|| format!("removing {}", src_dir.display()))?;
+        fs::remove_dir_all(&src_dir).with_context(|| format!("removing {}", src_dir.display()))?;
     }
     let members_dir = out_dir.join("members");
     if members_dir.exists() {
@@ -1230,19 +1228,16 @@ pub fn write_bridge_crate(plan: &Plan, member: &MemberPlan, out: &Path) -> Resul
     // Wipe any pre-existing bridge directory so stale symlinks from a
     // prior run (member entry renamed or removed) don't survive.
     if bridge_dir.exists() {
-        fs::remove_dir_all(&bridge_dir).with_context(|| {
-            format!("wiping stale bridge dir {}", bridge_dir.display())
-        })?;
+        fs::remove_dir_all(&bridge_dir)
+            .with_context(|| format!("wiping stale bridge dir {}", bridge_dir.display()))?;
     }
     fs::create_dir_all(&bridge_dir)
         .with_context(|| format!("creating bridge dir {}", bridge_dir.display()))?;
     let manifest = build_bridge_cargo_toml(plan, member)?;
-    fs::write(bridge_dir.join("Cargo.toml"), manifest).with_context(|| {
-        format!("writing bridge Cargo.toml at {}", bridge_dir.display())
-    })?;
-    fs::write(bridge_dir.join("build.rs"), build_bridge_build_rs(member)).with_context(|| {
-        format!("writing bridge build.rs at {}", bridge_dir.display())
-    })?;
+    fs::write(bridge_dir.join("Cargo.toml"), manifest)
+        .with_context(|| format!("writing bridge Cargo.toml at {}", bridge_dir.display()))?;
+    fs::write(bridge_dir.join("build.rs"), build_bridge_build_rs(member))
+        .with_context(|| format!("writing bridge build.rs at {}", bridge_dir.display()))?;
     symlink_member_tree_into_bridge(&member.manifest_dir, &bridge_dir)?;
     Ok(())
 }
@@ -1316,7 +1311,7 @@ pub fn build_bridge_build_rs(member: &MemberPlan) -> String {
     if member.bin_names.is_empty() {
         out.push_str("fn main() {\n");
         out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
-    out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
+        out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
         out.push_str("}\n");
         return out;
     }
@@ -1340,7 +1335,10 @@ pub fn build_bridge_build_rs(member: &MemberPlan) -> String {
 }
 
 pub fn bridge_package_name(member: &MemberPlan) -> String {
-    format!("{}_rudzio_bridge", crate_name_to_ident(&member.package_name))
+    format!(
+        "{}_rudzio_bridge",
+        crate_name_to_ident(&member.package_name)
+    )
 }
 
 pub fn bridge_dir_name(member: &MemberPlan) -> String {
@@ -1845,10 +1843,7 @@ fn build_tests_rs(plan: &Plan) -> String {
 
         let mut used_inner: BTreeSet<String> = BTreeSet::new();
         for file in &member.test_files {
-            let stem = file
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("test");
+            let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("test");
             let stem_ident = sanitize_ident(stem);
             let mut inner = stem_ident.clone();
             let mut d = 1u32;
@@ -1890,7 +1885,7 @@ fn build_build_rs(plan: &Plan) -> String {
     if bin_members.is_empty() {
         out.push_str("fn main() {\n");
         out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
-    out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
+        out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
         out.push_str("}\n");
         return out;
     }
@@ -1984,4 +1979,3 @@ fn paths_equal(a: &Path, b: &Path) -> bool {
         .is_some_and(|(x, y)| x == y)
         || a == b
 }
-

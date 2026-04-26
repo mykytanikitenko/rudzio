@@ -66,9 +66,7 @@ mod tests {
         ::core::result::Result::Ok(())
     }
     #[::rudzio::test]
-    async fn migrator_is_idempotent_on_already_migrated_crate(
-        _ctx: &Test,
-    ) -> ::anyhow::Result<()> {
+    async fn migrator_is_idempotent_on_already_migrated_crate(_ctx: &Test) -> ::anyhow::Result<()> {
         run_fixture_twice("plain_sync_test");
         ::core::result::Result::Ok(())
     }
@@ -93,16 +91,13 @@ mod tests {
                     let p = e.path();
                     if p.is_dir() {
                         walk_cargo_tomls(&p, out);
-                    } else if p.file_name().and_then(|s| s.to_str())
-                        == Some("Cargo.toml")
-                    {
+                    } else if p.file_name().and_then(|s| s.to_str()) == Some("Cargo.toml") {
                         out.push(p);
                     }
                 }
             }
         }
-        let fixtures_root =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+        let fixtures_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
         let mut manifests = Vec::new();
         walk_cargo_tomls(&fixtures_root, &mut manifests);
         ::anyhow::ensure!(
@@ -124,9 +119,7 @@ mod tests {
             for (line_idx, line) in text.lines().enumerate() {
                 let trimmed = line.trim_start();
                 // The mirror block header — exact match.
-                if trimmed.starts_with("[target")
-                    && trimmed.contains("cfg(rudzio_test)")
-                {
+                if trimmed.starts_with("[target") && trimmed.contains("cfg(rudzio_test)") {
                     offenders.push(format!(
                         "{}:{}: found target.cfg(rudzio_test) mirror block",
                         path.display(),
@@ -152,12 +145,9 @@ mod tests {
     /// `[dev-dependencies]` unless the user's own `[dependencies]` or
     /// `[dev-dependencies]` already had it.
     #[::rudzio::test]
-    async fn migrator_does_not_add_anyhow_to_dev_dependencies(
-        _ctx: &Test,
-    ) -> ::anyhow::Result<()> {
+    async fn migrator_does_not_add_anyhow_to_dev_dependencies(_ctx: &Test) -> ::anyhow::Result<()> {
         use std::fs;
-        let fixtures_root =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+        let fixtures_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
         for entry in fs::read_dir(&fixtures_root)? {
             let fixture = entry?.path();
             if !fixture.is_dir() {

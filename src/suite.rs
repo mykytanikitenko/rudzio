@@ -193,7 +193,9 @@ impl SuiteSummary {
             hung: self.hung.saturating_add(other.hung),
             ignored: self.ignored.saturating_add(other.ignored),
             total: self.total.saturating_add(other.total),
-            teardown_failures: self.teardown_failures.saturating_add(other.teardown_failures),
+            teardown_failures: self
+                .teardown_failures
+                .saturating_add(other.teardown_failures),
         }
     }
 }

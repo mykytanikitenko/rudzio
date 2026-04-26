@@ -63,7 +63,10 @@ where
         })
     }
 
-    async fn teardown(self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<(), Self::TeardownError> {
+    async fn teardown(
+        self,
+        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+    ) -> Result<(), Self::TeardownError> {
         Ok(())
     }
 }
@@ -93,7 +96,10 @@ where
 {
     type TeardownError = Infallible;
 
-    async fn teardown(self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<(), Self::TeardownError> {
+    async fn teardown(
+        self,
+        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+    ) -> Result<(), Self::TeardownError> {
         panic!("test_teardown_panicked_by_design")
     }
 }
@@ -109,9 +115,7 @@ mod tests {
     use super::PanickingTeardownTest;
 
     #[rudzio::test]
-    fn body_runs_then_teardown_panics(
-        _ctx: &PanickingTeardownTest,
-    ) -> anyhow::Result<()> {
+    fn body_runs_then_teardown_panics(_ctx: &PanickingTeardownTest) -> anyhow::Result<()> {
         Ok(())
     }
 }

@@ -88,11 +88,11 @@ pub enum LifecycleEvent {
     /// Periodic progress notification from a bench strategy.
     /// Strategies call the progress callback roughly every 1% of
     /// their iteration count; the drawer only renders the most
-    /// recent value.
+    /// recent value. The payload is `Copy` and allocation-free so it
+    /// can travel through the lifecycle channel without overhead.
     BenchProgress {
         test_id: TestId,
-        done: usize,
-        total: usize,
+        snapshot: crate::bench::BenchProgressSnapshot,
     },
     /// A suite is about to run `Suite::setup`. Emitted from the
     /// runtime group thread before the user's setup body executes.
@@ -167,10 +167,13 @@ pub struct TestState {
 }
 
 /// Current rendering state for a test's live-region slot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub enum TestStateKind {
     /// Ordinary test body running (no bench strategy).
     Running,
-    /// Under a bench strategy; `done` of `total` iterations complete.
-    Bench { done: usize, total: usize },
+    /// Under a bench strategy; the most recent progress snapshot
+    /// drives the trailing block + mini-histogram in the renderer.
+    Bench {
+        snapshot: crate::bench::BenchProgressSnapshot,
+    },
 }

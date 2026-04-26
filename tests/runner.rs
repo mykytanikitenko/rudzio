@@ -588,9 +588,7 @@ mod config_parser {
     /// L1.4b. A non-numeric value falls through to `unparsed`, like
     /// every other timeout flag. Field stays at the default (5s).
     #[rudzio::test]
-    fn cancel_grace_period_garbage_falls_through_to_default(
-        _ctx: &Test,
-    ) -> anyhow::Result<()> {
+    fn cancel_grace_period_garbage_falls_through_to_default(_ctx: &Test) -> anyhow::Result<()> {
         let c = Config::from_argv_and_env(
             argv(&["--cancel-grace-period=banana"]),
             env_with(None),
@@ -824,10 +822,13 @@ mod bench_strategies {
     async fn sequential_runs_body_n_times(_ctx: &Test) -> anyhow::Result<()> {
         let count = std::sync::atomic::AtomicUsize::new(0);
         let report: BenchReport = Sequential(7)
-            .run(|| async {
-                let _prev = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Ok(())
-            })
+            .run(
+                || async {
+                    let _prev = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                },
+                |_| {},
+            )
             .await;
         anyhow::ensure!(count.load(std::sync::atomic::Ordering::SeqCst) == 7);
         anyhow::ensure!(report.iterations == 7, "iterations = {}", report.iterations);
@@ -843,10 +844,13 @@ mod bench_strategies {
     async fn concurrent_runs_body_n_times(_ctx: &Test) -> anyhow::Result<()> {
         let count = std::sync::atomic::AtomicUsize::new(0);
         let report: BenchReport = Concurrent(5)
-            .run(|| async {
-                let _prev = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Ok(())
-            })
+            .run(
+                || async {
+                    let _prev = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                },
+                |_| {},
+            )
             .await;
         anyhow::ensure!(count.load(std::sync::atomic::Ordering::SeqCst) == 5);
         anyhow::ensure!(report.iterations == 5);
@@ -860,14 +864,17 @@ mod bench_strategies {
     async fn sequential_captures_failures(_ctx: &Test) -> anyhow::Result<()> {
         let counter = std::sync::atomic::AtomicUsize::new(0);
         let report = Sequential(4)
-            .run(|| async {
-                let i = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                if i % 2 == 0 {
-                    Ok(())
-                } else {
-                    Err(rudzio::test_case::box_error("even iteration required"))
-                }
-            })
+            .run(
+                || async {
+                    let i = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if i % 2 == 0 {
+                        Ok(())
+                    } else {
+                        Err(rudzio::test_case::box_error("even iteration required"))
+                    }
+                },
+                |_| {},
+            )
             .await;
         anyhow::ensure!(report.samples.len() == 2);
         anyhow::ensure!(report.failures.len() == 2);
@@ -878,7 +885,10 @@ mod bench_strategies {
     #[rudzio::test]
     async fn empty_samples_return_none_for_stats(_ctx: &Test) -> anyhow::Result<()> {
         let report = Sequential(0)
-            .run(|| async { Ok::<(), rudzio::test_case::BoxError>(()) })
+            .run(
+                || async { Ok::<(), rudzio::test_case::BoxError>(()) },
+                |_| {},
+            )
             .await;
         anyhow::ensure!(report.min().is_none());
         anyhow::ensure!(report.max().is_none());
@@ -892,7 +902,10 @@ mod bench_strategies {
     #[rudzio::test]
     async fn percentile_rejects_out_of_range(_ctx: &Test) -> anyhow::Result<()> {
         let report = Sequential(3)
-            .run(|| async { Ok::<(), rudzio::test_case::BoxError>(()) })
+            .run(
+                || async { Ok::<(), rudzio::test_case::BoxError>(()) },
+                |_| {},
+            )
             .await;
         anyhow::ensure!(report.percentile(-0.1).is_none());
         anyhow::ensure!(report.percentile(1.01).is_none());
@@ -960,8 +973,7 @@ mod build_sentinel {
     use std::ffi::OsStr;
 
     use rudzio::build::{
-        NESTED_SENTINEL_ENV, SentinelAction, decide_sentinel_action,
-        sentinel_indicates_nested_call,
+        NESTED_SENTINEL_ENV, SentinelAction, decide_sentinel_action, sentinel_indicates_nested_call,
     };
 
     #[rudzio::test]
@@ -1321,8 +1333,7 @@ mod path_normalize {
         // shim mounted as `mod main`) is rudzio convention, not user
         // code, so drop it.
         anyhow::ensure!(
-            normalize_module_path("agg::tests::crate_x::main::body::leaf")
-                == "crate_x::body::leaf"
+            normalize_module_path("agg::tests::crate_x::main::body::leaf") == "crate_x::body::leaf"
         );
         Ok(())
     }

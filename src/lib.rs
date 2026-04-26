@@ -80,7 +80,9 @@ macro_rules! cargo_meta {
     };
 }
 pub use context::{Suite, Test};
-pub use runner::{TestSummary, normalize_module_path, qualified_test_name, run, token_passes_filters};
+pub use runner::{
+    TestSummary, normalize_module_path, qualified_test_name, run, token_passes_filters,
+};
 pub use runtime::{JoinError, Runtime};
 pub use suite::{
     RuntimeGroupKey, RuntimeGroupOwner, SuiteId, SuiteReporter, SuiteRunRequest, SuiteSummary,

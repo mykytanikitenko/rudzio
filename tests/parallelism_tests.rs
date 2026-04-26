@@ -57,8 +57,8 @@ use rudzio::parallelism::HardLimit;
 ])]
 mod tests {
     use super::{
-        Arc, AtomicUsize, Barrier, Duration, HardLimit, Latch, Ordering, PoisonError,
-        collect_sink, mpsc, nz, thread,
+        Arc, AtomicUsize, Barrier, Duration, HardLimit, Latch, Ordering, PoisonError, collect_sink,
+        mpsc, nz, thread,
     };
 
     #[rudzio::test]
@@ -77,8 +77,7 @@ mod tests {
             })
             .collect();
         for h in handles {
-            h.join()
-                .map_err(|_| anyhow::anyhow!("worker panicked"))?;
+            h.join().map_err(|_| anyhow::anyhow!("worker panicked"))?;
         }
 
         let out = captured.lock().unwrap_or_else(PoisonError::into_inner);
@@ -142,8 +141,7 @@ mod tests {
         // the parked workers one-by-one.
         release.open();
         for h in handles {
-            h.join()
-                .map_err(|_| anyhow::anyhow!("worker panicked"))?;
+            h.join().map_err(|_| anyhow::anyhow!("worker panicked"))?;
         }
 
         // Peak must still be exactly 2 after the full run — no race
@@ -197,10 +195,7 @@ mod tests {
         drop(g2);
 
         let out = captured.lock().unwrap_or_else(PoisonError::into_inner);
-        anyhow::ensure!(
-            out.len() == 1,
-            "expected exactly one emit, got {out:?}"
-        );
+        anyhow::ensure!(out.len() == 1, "expected exactly one emit, got {out:?}");
         let line = &out[0];
         anyhow::ensure!(
             line.starts_with("rudzio: parked "),
@@ -243,8 +238,7 @@ mod tests {
             })
             .collect();
         for h in handles {
-            h.join()
-                .map_err(|_| anyhow::anyhow!("worker panicked"))?;
+            h.join().map_err(|_| anyhow::anyhow!("worker panicked"))?;
         }
 
         let out = captured.lock().unwrap_or_else(PoisonError::into_inner);
@@ -338,7 +332,10 @@ impl Latch {
     }
 }
 
-fn collect_sink() -> (Arc<StdMutex<Vec<String>>>, impl Fn(&str) + Send + Sync + 'static) {
+fn collect_sink() -> (
+    Arc<StdMutex<Vec<String>>>,
+    impl Fn(&str) + Send + Sync + 'static,
+) {
     let captured: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
     let sink_store = Arc::clone(&captured);
     let sink = move |line: &str| {

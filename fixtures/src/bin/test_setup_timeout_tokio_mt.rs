@@ -33,8 +33,7 @@ where
     }
 }
 
-impl<'suite_context, R> context::Suite<'suite_context, R>
-    for HangingContextSuite<'suite_context, R>
+impl<'suite_context, R> context::Suite<'suite_context, R> for HangingContextSuite<'suite_context, R>
 where
     R: for<'r> Runtime<'r> + Sync,
 {
@@ -75,10 +74,7 @@ where
         })
     }
 
-    async fn teardown(
-        self,
-        _cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
     }
 }
@@ -105,10 +101,7 @@ where
 {
     type TeardownError = Infallible;
 
-    async fn teardown(
-        self,
-        _cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         println!("test_teardown_must_not_run_marker");
         Ok(())
     }

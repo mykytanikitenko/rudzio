@@ -101,10 +101,7 @@ impl HardLimit {
             return HardLimitGuard { owner: None };
         };
 
-        let mut state = inner
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut state = inner.state.lock().unwrap_or_else(PoisonError::into_inner);
 
         if state.available > 0 {
             state.available -= 1;
@@ -133,7 +130,10 @@ impl HardLimit {
 impl std::fmt::Debug for HardLimit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.inner {
-            None => f.debug_struct("HardLimit").field("mode", &"disabled").finish(),
+            None => f
+                .debug_struct("HardLimit")
+                .field("mode", &"disabled")
+                .finish(),
             Some(inner) => f
                 .debug_struct("HardLimit")
                 .field("max", &inner.max.get())
@@ -146,10 +146,7 @@ impl Drop for HardLimitGuard<'_> {
     fn drop(&mut self) {
         let Some(owner) = self.owner else { return };
         let Some(inner) = &owner.inner else { return };
-        let mut state = inner
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut state = inner.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.available += 1;
         drop(state);
         inner.cvar.notify_one();

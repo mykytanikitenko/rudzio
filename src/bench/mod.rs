@@ -22,6 +22,158 @@ use std::time::Duration;
 
 use crate::test_case::BoxError;
 
+/// Number of linear histogram buckets carried in a
+/// [`BenchProgressSnapshot`].
+pub const HISTOGRAM_BUCKETS: usize = 32;
+
+/// Cheap, fixed-size summary of a benchmark's progress, emitted from
+/// [`Strategy::run`] roughly every 1% of iterations and consumed by
+/// the live-region renderer to draw a progress bar, p50 / p95 / cov,
+/// and a mini-histogram below the running row.
+///
+/// `Copy` so it travels through the lifecycle channel without
+/// allocation. The histogram is pre-binned (linear over `[min, max]`)
+/// so the drawer doesn't need to keep the raw per-iteration sample
+/// vector around.
+#[derive(Debug, Clone, Copy)]
+pub struct BenchProgressSnapshot {
+    /// Iterations completed so far (success + failure + panic).
+    pub done: usize,
+    /// Total iterations the strategy intends to run.
+    pub total: usize,
+    /// Median of the successful samples seen so far. `Duration::ZERO`
+    /// when no successful samples exist yet.
+    pub p50: Duration,
+    /// 95th percentile of the successful samples. `Duration::ZERO`
+    /// when no successful samples exist yet.
+    pub p95: Duration,
+    /// Smallest successful sample, or `Duration::ZERO` when empty.
+    pub min: Duration,
+    /// Largest successful sample, or `Duration::ZERO` when empty.
+    pub max: Duration,
+    /// Coefficient of variation (σ / mean) of the successful samples.
+    /// `f32::NAN` when fewer than two samples are available; renderers
+    /// must guard with `is_finite()`.
+    pub cov: f32,
+    /// Pre-binned histogram: 32 linear buckets over `[min, max]`.
+    /// All zero when no successful samples exist yet.
+    pub histogram: [u32; HISTOGRAM_BUCKETS],
+}
+
+impl BenchProgressSnapshot {
+    /// Zero-progress placeholder emitted at iteration 0 so the
+    /// renderer flips the running-row tag from `[RUN]` to `[BENCH]`
+    /// immediately on strategy entry — before any samples have
+    /// accumulated.
+    #[must_use]
+    pub const fn initial(total: usize) -> Self {
+        Self {
+            done: 0,
+            total,
+            p50: Duration::ZERO,
+            p95: Duration::ZERO,
+            min: Duration::ZERO,
+            max: Duration::ZERO,
+            cov: f32::NAN,
+            histogram: [0_u32; HISTOGRAM_BUCKETS],
+        }
+    }
+
+    /// Build a snapshot by cloning + sorting `samples` and binning
+    /// them into `HISTOGRAM_BUCKETS` linear buckets over `[min, max]`.
+    ///
+    /// Cost is `O(n log n)`. Strategies call this at most ~100 times
+    /// per run (capped by their stride), so total amortised cost is
+    /// bounded even for high iteration counts.
+    #[must_use]
+    pub fn from_samples(samples: &[Duration], done: usize, total: usize) -> Self {
+        if samples.is_empty() {
+            let mut snap = Self::initial(total);
+            snap.done = done;
+            return snap;
+        }
+        let mut sorted: Vec<Duration> = samples.to_vec();
+        sorted.sort_unstable();
+        let n = sorted.len();
+        let min = sorted[0];
+        let max = sorted[n.saturating_sub(1)];
+
+        // Nearest-rank percentile, matching `BenchReport::percentile`.
+        #[expect(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "Benchmark rank approximation; absolute precision not required."
+        )]
+        let rank = |p: f64| -> usize {
+            ((p * n as f64).ceil() as usize)
+                .saturating_sub(1)
+                .min(n.saturating_sub(1))
+        };
+        let p50 = sorted[rank(0.50)];
+        let p95 = sorted[rank(0.95)];
+
+        // Coefficient of variation: σ / mean. NaN when n<2 or mean=0.
+        let cov = if n < 2 {
+            f32::NAN
+        } else {
+            let total_nanos: u128 = sorted.iter().map(Duration::as_nanos).sum();
+            #[expect(
+                clippy::cast_precision_loss,
+                clippy::cast_possible_truncation,
+                reason = "Benchmark statistics; precision loss well within measurement noise."
+            )]
+            {
+                let mean = total_nanos as f64 / n as f64;
+                if mean == 0.0_f64 {
+                    f32::NAN
+                } else {
+                    let variance = sorted
+                        .iter()
+                        .map(|s| {
+                            let d = s.as_nanos() as f64 - mean;
+                            d * d
+                        })
+                        .sum::<f64>()
+                        / n as f64;
+                    (variance.sqrt() / mean) as f32
+                }
+            }
+        };
+
+        // Linear binning over [min, max] into HISTOGRAM_BUCKETS bins.
+        let mut histogram = [0_u32; HISTOGRAM_BUCKETS];
+        let min_ns = min.as_nanos();
+        let max_ns = max.as_nanos();
+        let span = max_ns.saturating_sub(min_ns).max(1);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "HISTOGRAM_BUCKETS fits in u128; bucket index always < HISTOGRAM_BUCKETS."
+        )]
+        let bucket_span = span.div_ceil(HISTOGRAM_BUCKETS as u128).max(1);
+        for s in &sorted {
+            let offset = s.as_nanos().saturating_sub(min_ns);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "Index clamped to HISTOGRAM_BUCKETS - 1 below."
+            )]
+            let idx = ((offset / bucket_span) as usize).min(HISTOGRAM_BUCKETS.saturating_sub(1));
+            histogram[idx] = histogram[idx].saturating_add(1);
+        }
+
+        Self {
+            done,
+            total,
+            p50,
+            p95,
+            min,
+            max,
+            cov,
+            histogram,
+        }
+    }
+}
+
 /// Per-iteration results gathered by a [`Strategy`] run.
 ///
 /// `samples` holds the elapsed time of every iteration that completed
@@ -412,8 +564,17 @@ pub trait Strategy {
     /// returns is polled to completion (or panic) inside a
     /// [`std::panic::catch_unwind`] boundary so one bad iteration
     /// doesn't abort the whole bench.
-    fn run<B, Fut>(&self, body: B) -> impl Future<Output = BenchReport>
+    ///
+    /// `on_progress` is invoked at strategy entry (with a zero-progress
+    /// placeholder so the live-region renderer can flip the row tag
+    /// from `[RUN]` to `[BENCH]` immediately) and roughly every 1% of
+    /// iterations thereafter, with the latest [`BenchProgressSnapshot`].
+    /// Implementations that omit progress should still call it once
+    /// at entry — a `|_| ()` no-op closure is acceptable from callers
+    /// that don't care.
+    fn run<B, Fut, P>(&self, body: B, on_progress: P) -> impl Future<Output = BenchReport>
     where
         B: FnMut() -> Fut,
-        Fut: Future<Output = Result<(), BoxError>>;
+        Fut: Future<Output = Result<(), BoxError>>,
+        P: FnMut(BenchProgressSnapshot);
 }

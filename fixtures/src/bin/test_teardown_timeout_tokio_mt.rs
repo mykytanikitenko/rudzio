@@ -65,10 +65,7 @@ where
         })
     }
 
-    async fn teardown(
-        self,
-        _cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
     }
 }
@@ -96,10 +93,7 @@ where
 {
     type TeardownError = Infallible;
 
-    async fn teardown(
-        self,
-        cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         let _unused = cancel
             .run_until_cancelled(async {
                 ::tokio::time::sleep(Duration::from_secs(30)).await;

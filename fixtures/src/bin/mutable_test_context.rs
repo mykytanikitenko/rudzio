@@ -66,7 +66,10 @@ where
         })
     }
 
-    async fn teardown(self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<(), Self::TeardownError> {
+    async fn teardown(
+        self,
+        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+    ) -> Result<(), Self::TeardownError> {
         Ok(())
     }
 }
@@ -96,7 +99,10 @@ where
 {
     type TeardownError = Infallible;
 
-    async fn teardown(self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<(), Self::TeardownError> {
+    async fn teardown(
+        self,
+        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
+    ) -> Result<(), Self::TeardownError> {
         Ok(())
     }
 }

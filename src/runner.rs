@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::env;
 use std::io::{self, IsTerminal as _, Write as _};
 use std::process;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -292,17 +292,13 @@ fn runtime_only_info(runtime_name: &str) -> String {
 fn outcome_inline_message(outcome: &TestOutcome) -> Option<String> {
     match outcome {
         TestOutcome::Failed { message, .. } => Some(message.clone()),
-        TestOutcome::SetupFailed { message, .. } => {
-            Some(format!("test setup failed: {message}"))
-        }
+        TestOutcome::SetupFailed { message, .. } => Some(format!("test setup failed: {message}")),
         TestOutcome::TimedOut => Some("test exceeded its timeout".to_owned()),
         TestOutcome::Hung { .. } => Some("hung; abort signal sent".to_owned()),
-        TestOutcome::Cancelled => {
-            Some("test was cancelled before completion".to_owned())
+        TestOutcome::Cancelled => Some("test was cancelled before completion".to_owned()),
+        TestOutcome::Panicked { .. } | TestOutcome::Passed { .. } | TestOutcome::Benched { .. } => {
+            None
         }
-        TestOutcome::Panicked { .. }
-        | TestOutcome::Passed { .. }
-        | TestOutcome::Benched { .. } => None,
     }
 }
 
@@ -646,7 +642,10 @@ impl SuiteReporter for ModeReporter {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 guard.push(FailureInfo {
                     name: "<suite setup>",
-                    message: format!("setup {} [{runtime_name}]: {msg}", normalize_module_path(suite)),
+                    message: format!(
+                        "setup {} [{runtime_name}]: {msg}",
+                        normalize_module_path(suite)
+                    ),
                 });
             }
             return;
@@ -1052,7 +1051,10 @@ pub fn run(cargo: crate::config::CargoMeta) -> ! {
     if config.list {
         drop(capture_guard);
         for token in &filtered_tokens {
-            println!("{}: test", qualified_test_name(token.module_path, token.name));
+            println!(
+                "{}: test",
+                qualified_test_name(token.module_path, token.name)
+            );
         }
         process::exit(0);
     }

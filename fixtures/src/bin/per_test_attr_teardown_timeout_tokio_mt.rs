@@ -27,13 +27,11 @@ where
     R: Runtime<'suite_context> + Sync,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AttrTeardownSuite")
-            .finish_non_exhaustive()
+        f.debug_struct("AttrTeardownSuite").finish_non_exhaustive()
     }
 }
 
-impl<'suite_context, R> context::Suite<'suite_context, R>
-    for AttrTeardownSuite<'suite_context, R>
+impl<'suite_context, R> context::Suite<'suite_context, R> for AttrTeardownSuite<'suite_context, R>
 where
     R: for<'r> Runtime<'r> + Sync,
 {
@@ -65,10 +63,7 @@ where
         })
     }
 
-    async fn teardown(
-        self,
-        _cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
     }
 }
@@ -96,10 +91,7 @@ where
 {
     type TeardownError = Infallible;
 
-    async fn teardown(
-        self,
-        cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         let _unused = cancel
             .run_until_cancelled(async {
                 ::tokio::time::sleep(Duration::from_secs(30)).await;

@@ -70,10 +70,7 @@ fn run_generate(rest: &[String]) -> Result<()> {
     emit_diagnostic_warnings(&plan);
     let target = output.unwrap_or_else(|| plan.default_output_dir());
     generate::write_runner(&plan, &target)?;
-    println!(
-        "cargo-rudzio: generated aggregator at {}",
-        target.display()
-    );
+    println!("cargo-rudzio: generated aggregator at {}", target.display());
     Ok(())
 }
 
@@ -98,7 +95,12 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
         .arg("--")
         .args(&runner_args)
         .status()
-        .with_context(|| format!("failed to spawn cargo run --manifest-path {}", manifest.display()))?;
+        .with_context(|| {
+            format!(
+                "failed to spawn cargo run --manifest-path {}",
+                manifest.display()
+            )
+        })?;
     Ok(match status.code() {
         Some(code) => ExitCode::from(u8::try_from(code & 0xFF).unwrap_or(1)),
         None => ExitCode::from(1),
@@ -128,11 +130,8 @@ fn split_path_args(rest: &[String]) -> (Vec<PathBuf>, Vec<String>) {
 }
 
 fn is_existing_dir_path_arg(s: &str) -> bool {
-    let path_shaped = s == "."
-        || s == ".."
-        || s.starts_with("./")
-        || s.starts_with("../")
-        || s.starts_with('/');
+    let path_shaped =
+        s == "." || s == ".." || s.starts_with("./") || s.starts_with("../") || s.starts_with('/');
     path_shaped && Path::new(s).is_dir()
 }
 

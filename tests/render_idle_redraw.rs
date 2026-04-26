@@ -28,7 +28,9 @@ use crossbeam_channel::{Sender, bounded, unbounded};
 
 use rudzio::config::{Format, OutputMode};
 use rudzio::output::color::ColorPolicy;
-use rudzio::output::events::{LifecycleEvent, PipeChunk, StdStream, TestId, TestState, TestStateKind};
+use rudzio::output::events::{
+    LifecycleEvent, PipeChunk, StdStream, TestId, TestState, TestStateKind,
+};
 use rudzio::output::render::{Drawer, running_line, running_output_lines, spawn_drawer};
 use rudzio::suite::TestOutcome;
 
@@ -353,8 +355,9 @@ mod tests {
             check_row_fits(&format!("running_line @ cols={cols}"), &row, cols)?;
 
             let height = 24;
-            for (idx, line) in
-                running_output_lines(&state, color, cols, height).iter().enumerate()
+            for (idx, line) in running_output_lines(&state, color, cols, height)
+                .iter()
+                .enumerate()
             {
                 check_row_fits(
                     &format!("running_output_lines[{idx}] @ cols={cols}"),
@@ -459,7 +462,6 @@ mod tests {
         Ok(())
     }
 }
-
 
 /// Tiny VT100-style emulator. Just enough to interpret what the
 /// drawer writes: printing chars, `\n`, `\r`, cursor-up (`ESC [ N A`),

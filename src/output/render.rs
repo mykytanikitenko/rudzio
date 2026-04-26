@@ -220,13 +220,9 @@ impl Drawer {
                     self.emit_plain_started(test_id);
                 }
             }
-            LifecycleEvent::BenchProgress {
-                test_id,
-                done,
-                total,
-            } => {
+            LifecycleEvent::BenchProgress { test_id, snapshot } => {
                 if let Some(state) = self.tests.get_mut(&test_id) {
-                    state.kind = TestStateKind::Bench { done, total };
+                    state.kind = TestStateKind::Bench { snapshot };
                 }
             }
             LifecycleEvent::TestIgnored {
@@ -259,7 +255,13 @@ impl Drawer {
                 thread,
                 at,
             } => {
-                self.handle_suite_lifecycle_start(LifecyclePhase::Setup, runtime_name, suite, thread, at);
+                self.handle_suite_lifecycle_start(
+                    LifecyclePhase::Setup,
+                    runtime_name,
+                    suite,
+                    thread,
+                    at,
+                );
             }
             LifecycleEvent::SuiteSetupFinished {
                 runtime_name,
@@ -358,8 +360,7 @@ impl Drawer {
                 let body = format!("  {label_text}: {message}\n");
                 let painted = self.color.red(&body);
                 let _unused = self.terminal.write_all(painted.as_bytes());
-                self.summary.teardown_failures =
-                    self.summary.teardown_failures.saturating_add(1);
+                self.summary.teardown_failures = self.summary.teardown_failures.saturating_add(1);
                 self.summary.failures.push(FailureRecord {
                     display_name: format!("teardown {display}"),
                     outcome_label: "TEST TEARDOWN FAILED",
@@ -432,9 +433,7 @@ impl Drawer {
                 LifecyclePhase::Teardown => "teardown",
             };
             let suite_disp = crate::runner::normalize_module_path(suite);
-            let line = format!(
-                "{phase_word:<8} {suite_disp} ... started <{runtime_name}>\n",
-            );
+            let line = format!("{phase_word:<8} {suite_disp} ... started <{runtime_name}>\n",);
             let _unused = self.terminal.write_all(line.as_bytes());
         }
     }
@@ -464,9 +463,7 @@ impl Drawer {
                 StatusLabel::Timeout
             }
             (LifecyclePhase::Setup, Some(LifecycleFailure::Hung(_)))
-            | (LifecyclePhase::Teardown, Some(LifecycleFailure::Hung(_))) => {
-                StatusLabel::Hang
-            }
+            | (LifecyclePhase::Teardown, Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
             (LifecyclePhase::Setup, None) => StatusLabel::SetupOk,
             // Suite-level setup failure renders as [FAIL]; the
             // [SETUP] tag is reserved for per-test SetupFailed.
@@ -647,9 +644,19 @@ impl Drawer {
                     Vec::new(),
                 )
             } else if let Some(state) = slot.current.and_then(|id| self.tests.get(&id)) {
+                let mut output_lines = running_output_lines(state, self.color, cols, rows_cap);
+                if let TestStateKind::Bench { snapshot } = state.kind {
+                    let used = output_lines.len().saturating_add(1);
+                    let remaining = rows_cap
+                        .saturating_sub(LIVE_REGION_RESERVED_ROWS)
+                        .saturating_sub(used);
+                    output_lines.extend(bench_histogram_lines(
+                        &snapshot, self.color, cols, remaining,
+                    ));
+                }
                 (
                     running_line(slot.runtime_name, state, self.color, cols),
-                    running_output_lines(state, self.color, cols, rows_cap),
+                    output_lines,
                 )
             } else {
                 continue;
@@ -1087,6 +1094,100 @@ fn append_complete_lines(dst: &mut Vec<String>, bytes: &[u8]) {
 
 const RUNTIME_PREFIX_WIDTH: usize = 14;
 
+/// Render a horizontal progress bar of `width` characters showing
+/// `done / total` filled. Solid block `█` for filled cells, light shade
+/// `░` for empty. Used by [`bench_progress_trailing`] for the inline
+/// trailing-block bar.
+fn bar_render(done: usize, total: usize, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let filled = if total == 0 {
+        0
+    } else {
+        (done.saturating_mul(width) / total).min(width)
+    };
+    let mut out = String::with_capacity(width.saturating_add(2));
+    out.push('[');
+    for _ in 0..filled {
+        out.push('█');
+    }
+    for _ in filled..width {
+        out.push('░');
+    }
+    out.push(']');
+    out
+}
+
+/// Build the trailing `<…>` block that follows a `[BENCH]` running
+/// row. The block adapts to the available terminal width so a narrow
+/// terminal still shows a useful summary instead of letting the row
+/// wrap (which would corrupt the live-region geometry).
+///
+/// Width thresholds (the `cols` here is the full terminal width, so
+/// the trailing budget is reduced internally by the runtime+tag
+/// prefix overhead):
+/// - `cols ≥ 100`: progress bar + percent + done/total + p50 + p95 + cov
+/// - `cols ≥  80`: progress bar + percent + done/total + p50 + p95
+/// - `cols ≥  60`: percent + done/total + p50
+/// - `cols ≥  50`: percent + done/total
+/// - else:         percent only (`<42%>`)
+///
+/// `cov` is silently dropped when non-finite (n < 2 or mean = 0).
+#[doc(hidden)]
+#[must_use]
+pub fn bench_progress_trailing(
+    snap: &crate::bench::BenchProgressSnapshot,
+    cols: usize,
+    _elapsed: Duration,
+) -> String {
+    let pct = if snap.total == 0 {
+        0
+    } else {
+        snap.done.saturating_mul(100) / snap.total
+    };
+    let bar = bar_render(snap.done, snap.total, 10);
+    let cov_finite = snap.cov.is_finite();
+    if cols >= 100 && cov_finite {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_precision_loss,
+            reason = "cov rendering; precision loss well within display rounding."
+        )]
+        {
+            let cov_pct = (f64::from(snap.cov) * 100.0_f64) as f32;
+            return format!(
+                "<{bar} {pct}% {}/{}  p50={p50:.0?}  p95={p95:.0?}  cov={cov_pct:.1}%>",
+                snap.done,
+                snap.total,
+                p50 = snap.p50,
+                p95 = snap.p95,
+            );
+        }
+    }
+    if cols >= 80 {
+        return format!(
+            "<{bar} {pct}% {}/{} p50={p50:.0?} p95={p95:.0?}>",
+            snap.done,
+            snap.total,
+            p50 = snap.p50,
+            p95 = snap.p95,
+        );
+    }
+    if cols >= 60 {
+        return format!(
+            "<{pct}% {}/{} p50={p50:.0?}>",
+            snap.done,
+            snap.total,
+            p50 = snap.p50,
+        );
+    }
+    if cols >= 50 {
+        return format!("<{pct}% {}/{}>", snap.done, snap.total);
+    }
+    format!("<{pct}%>")
+}
+
 /// Build the live-region status row for a running test. Public for
 /// in-tree integration tests that want to pin the "row never wraps"
 /// invariant against synthetic widths; production callers go through
@@ -1103,7 +1204,7 @@ pub fn running_line(runtime: &str, state: &TestState, color: ColorPolicy, cols: 
     let elapsed = state.started_at.elapsed();
     let trailing = match state.kind {
         TestStateKind::Running => format!("<{elapsed:.2?}>"),
-        TestStateKind::Bench { done, total } => format!("<{done}/{total}, {elapsed:.2?}>"),
+        TestStateKind::Bench { snapshot } => bench_progress_trailing(&snapshot, cols, elapsed),
     };
     // Clip `display` so the rendered row stays *strictly* inside
     // `cols` (we leave 1 col slack at the right edge): a row that
@@ -1131,7 +1232,12 @@ pub fn running_line(runtime: &str, state: &TestState, color: ColorPolicy, cols: 
         pad = " ".repeat(STATUS_TAG_WIDTH),
     );
     let lhs_rendered = format!("{prefix}{tag} {display}");
-    render_line(&lhs_naked, &lhs_rendered, &trailing, cols.saturating_sub(1).max(1))
+    render_line(
+        &lhs_naked,
+        &lhs_rendered,
+        &trailing,
+        cols.saturating_sub(1).max(1),
+    )
 }
 
 /// Number of viewport rows reserved for everything other than a
@@ -1175,6 +1281,70 @@ pub fn running_output_lines(
         .iter()
         .map(|line| color.dim(&clip_to_cols(line, line_budget)))
         .collect()
+}
+
+/// Mini-histogram rows painted under a `[BENCH]` status row: a row
+/// of `▁▂▃▄▅▆▇█` block-drawing chars (one per histogram bin, scaled
+/// to bin height) plus an axis row showing the rendered range
+/// `min … max`.
+///
+/// Same vertical-budget contract as [`running_output_lines`]: caller
+/// passes `height_budget` (rows still available below the running
+/// row + any stdout lines), this function returns at most 2 rows and
+/// nothing when there isn't room. Each row is prefixed with the
+/// runtime+tag indent so the histogram visually nests under the
+/// test name, and clipped to `cols-1` (DECAWM rule) so a paint never
+/// strands a wrap-overflow row in scrollback.
+#[doc(hidden)]
+#[must_use]
+pub fn bench_histogram_lines(
+    snap: &crate::bench::BenchProgressSnapshot,
+    color: ColorPolicy,
+    cols: usize,
+    height_budget: usize,
+) -> Vec<String> {
+    if height_budget < 2 || cols < 20 || snap.done == 0 || snap.max == snap.min {
+        return Vec::new();
+    }
+    let max_count = snap.histogram.iter().copied().max().unwrap_or(0);
+    if max_count == 0 {
+        return Vec::new();
+    }
+    let indent_width = RUNTIME_PREFIX_WIDTH
+        .saturating_add(STATUS_TAG_WIDTH)
+        .saturating_add(1);
+    let line_budget = cols.saturating_sub(1).max(1);
+    let body_budget = line_budget.saturating_sub(indent_width).max(1);
+    let bars_width = body_budget.min(crate::bench::HISTOGRAM_BUCKETS);
+    if bars_width == 0 {
+        return Vec::new();
+    }
+    let levels: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let mut bars = String::new();
+    for col in 0..bars_width {
+        let bin = col
+            .saturating_mul(crate::bench::HISTOGRAM_BUCKETS)
+            .checked_div(bars_width)
+            .unwrap_or(0)
+            .min(crate::bench::HISTOGRAM_BUCKETS.saturating_sub(1));
+        let count = snap.histogram[bin];
+        if count == 0 {
+            bars.push(' ');
+        } else {
+            let level = (count.saturating_mul(8) / max_count.max(1))
+                .min(8)
+                .saturating_sub(1) as usize;
+            bars.push(levels[level.min(7)]);
+        }
+    }
+    let bars_line = format!("{:width$}{bars}", "", width = indent_width);
+    let bars_line = clip_to_cols(&bars_line, line_budget);
+
+    let axis_text = format!("{:.0?} … {:.0?}", snap.min, snap.max);
+    let axis_line = format!("{:width$}{axis_text}", "", width = indent_width);
+    let axis_line = clip_to_cols(&axis_line, line_budget);
+
+    vec![color.dim(&bars_line), color.dim(&axis_line)]
 }
 
 /// Clip `s` to `cols` visible characters; appends `…` when truncated
@@ -1230,7 +1400,12 @@ fn lifecycle_line(
         pad = " ".repeat(STATUS_TAG_WIDTH),
     );
     let lhs_rendered = format!("{prefix}{tag} {display}");
-    render_line(&lhs_naked, &lhs_rendered, &trailing, cols.saturating_sub(1).max(1))
+    render_line(
+        &lhs_naked,
+        &lhs_rendered,
+        &trailing,
+        cols.saturating_sub(1).max(1),
+    )
 }
 
 /// Spawn the drawer thread. Returns the join handle; the caller

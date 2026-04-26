@@ -112,4 +112,3 @@ pub fn __resolve_at_runtime(bin_name: &str) -> Result<PathBuf, BinNotFound> {
         ),
     })
 }
-
