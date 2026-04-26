@@ -85,6 +85,10 @@ name = "multi_file_suite"
 test = false
 
 [[bin]]
+name = "hung_run_grace_tokio_mt"
+test = false
+
+[[bin]]
 name = "multi_panic_ordering_tokio_mt"
 test = false
 

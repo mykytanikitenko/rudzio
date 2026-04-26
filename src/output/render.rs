@@ -83,6 +83,10 @@ struct Summary {
     timed_out: usize,
     panicked: usize,
     cancelled: usize,
+    /// Tests escalated past `--phase-hang-grace`. Counted separately
+    /// so the summary line can show `N hung` distinct from `N timed
+    /// out` and the renderer can paint a red `[HANG]` tag.
+    hung: usize,
     benched: usize,
     teardown_failures: usize,
     failures: Vec<FailureRecord>,
@@ -279,6 +283,9 @@ impl Drawer {
                     TeardownResult::TimedOut => {
                         Some(LifecycleFailure::TimedOut("teardown timed out".to_owned()))
                     }
+                    TeardownResult::Hung => Some(LifecycleFailure::Hung(
+                        "teardown hung; abort signal sent".to_owned(),
+                    )),
                 };
                 if failure.is_some() {
                     self.summary.teardown_failures =
@@ -311,6 +318,11 @@ impl Drawer {
                         StatusLabel::Timeout,
                         "timeout",
                         "teardown timed out".to_owned(),
+                    ),
+                    TeardownResult::Hung => (
+                        StatusLabel::Hang,
+                        "hang",
+                        "teardown hung; abort signal sent".to_owned(),
                     ),
                 };
                 let tag_rendered = render_status_tag(label, self.color);
@@ -428,6 +440,10 @@ impl Drawer {
             | (LifecyclePhase::Teardown, Some(LifecycleFailure::TimedOut(_))) => {
                 StatusLabel::Timeout
             }
+            (LifecyclePhase::Setup, Some(LifecycleFailure::Hung(_)))
+            | (LifecyclePhase::Teardown, Some(LifecycleFailure::Hung(_))) => {
+                StatusLabel::Hang
+            }
             (LifecyclePhase::Setup, None) => StatusLabel::SetupOk,
             // Suite-level setup failure renders as [FAIL]; the
             // [SETUP] tag is reserved for per-test SetupFailed.
@@ -451,6 +467,7 @@ impl Drawer {
                 LifecycleFailure::Error(msg) => ("error", msg),
                 LifecycleFailure::Panicked(msg) => ("panic", msg),
                 LifecycleFailure::TimedOut(msg) => ("timeout", msg),
+                LifecycleFailure::Hung(msg) => ("hang", msg),
             };
             let body = format!("  {label_text}: {message}\n");
             let painted = self.color.red(&body);
@@ -551,7 +568,8 @@ impl Drawer {
                     | StatusLabel::Panic
                     | StatusLabel::Setup
                     | StatusLabel::Timeout
-                    | StatusLabel::Cancel => self.color.red(&body),
+                    | StatusLabel::Cancel
+                    | StatusLabel::Hang => self.color.red(&body),
                     _ => body,
                 };
                 let _unused = self.terminal.write_all(painted.as_bytes());
@@ -685,6 +703,7 @@ impl Drawer {
         let failed_total = self.summary.failed
             + self.summary.panicked
             + self.summary.timed_out
+            + self.summary.hung
             + self.summary.cancelled
             + self.summary.teardown_failures;
         let overall = if failed_total == 0 {
@@ -694,9 +713,10 @@ impl Drawer {
         };
         let summary_line = format!(
             "\ntest result: {overall}. {} passed; {failed_total} failed; \
-             {} benched; {} ignored; {} teardown failed; finished in {:.2}s\n",
+             {} benched; {} hung; {} ignored; {} teardown failed; finished in {:.2}s\n",
             self.summary.passed,
             self.summary.benched,
+            self.summary.hung,
             self.summary.ignored,
             self.summary.teardown_failures,
             total_elapsed.as_secs_f64(),
@@ -715,6 +735,7 @@ impl Summary {
             }
             TestOutcome::Panicked { .. } => self.panicked = self.panicked.saturating_add(1),
             TestOutcome::TimedOut => self.timed_out = self.timed_out.saturating_add(1),
+            TestOutcome::Hung { .. } => self.hung = self.hung.saturating_add(1),
             TestOutcome::Cancelled => self.cancelled = self.cancelled.saturating_add(1),
             TestOutcome::Benched { report, .. } => {
                 self.benched = self.benched.saturating_add(1);
@@ -732,6 +753,7 @@ fn is_failure(outcome: &TestOutcome) -> bool {
         | TestOutcome::Panicked { .. }
         | TestOutcome::SetupFailed { .. }
         | TestOutcome::TimedOut
+        | TestOutcome::Hung { .. }
         | TestOutcome::Cancelled => true,
         TestOutcome::Benched { report, .. } => !report.is_success(),
         TestOutcome::Passed { .. } => false,
@@ -767,6 +789,11 @@ enum StatusLabel {
     /// `Ok` reserved for lifecycle lines so they stand apart from the
     /// per-test stream.
     SetupOk,
+    /// Test or teardown blew its budget AND remained pending past the
+    /// Layer-2 grace window. The wrapper has fired its abort handle
+    /// and moved on. Painted **red** (failure-class) so it's distinct
+    /// from `Timeout`'s yellow (warn-class).
+    Hang,
 }
 
 /// What went wrong in a suite-lifecycle finish event.
@@ -775,6 +802,10 @@ enum LifecycleFailure {
     Error(String),
     Panicked(String),
     TimedOut(String),
+    /// Phase escalated past `--phase-hang-grace`. The wrapper fired
+    /// the abort handle; on tokio the spawned task drops on next
+    /// poll, on other runtimes it leaks until process exit.
+    Hung(String),
 }
 
 fn status_label_from_outcome(outcome: &TestOutcome) -> StatusLabel {
@@ -784,6 +815,7 @@ fn status_label_from_outcome(outcome: &TestOutcome) -> StatusLabel {
         TestOutcome::Panicked { .. } => StatusLabel::Panic,
         TestOutcome::SetupFailed { .. } => StatusLabel::Setup,
         TestOutcome::TimedOut => StatusLabel::Timeout,
+        TestOutcome::Hung { .. } => StatusLabel::Hang,
         TestOutcome::Cancelled => StatusLabel::Cancel,
         TestOutcome::Benched { report, .. } => {
             if report.failures.is_empty() && report.panics == 0 {
@@ -810,6 +842,7 @@ fn render_status_tag(label: StatusLabel, color: ColorPolicy) -> String {
         StatusLabel::Run => "RUN",
         StatusLabel::Idle => "IDLE",
         StatusLabel::Setup => "SETUP",
+        StatusLabel::Hang => "HANG",
     };
     let naked = format!("[{word}]");
     let visible = naked.chars().count();
@@ -818,7 +851,8 @@ fn render_status_tag(label: StatusLabel, color: ColorPolicy) -> String {
         StatusLabel::Fail
         | StatusLabel::Panic
         | StatusLabel::BenchErr
-        | StatusLabel::Setup => color.red(&naked),
+        | StatusLabel::Setup
+        | StatusLabel::Hang => color.red(&naked),
         StatusLabel::Timeout | StatusLabel::Cancel | StatusLabel::Run => color.yellow(&naked),
         StatusLabel::Ignore | StatusLabel::Idle => color.dim(&naked),
     };
@@ -837,6 +871,7 @@ fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
         TestOutcome::Passed { elapsed }
         | TestOutcome::Failed { elapsed, .. }
         | TestOutcome::Panicked { elapsed }
+        | TestOutcome::Hung { elapsed }
         | TestOutcome::SetupFailed { elapsed, .. } => {
             format!("<{runtime_name}, {elapsed:.2?}>")
         }
@@ -908,6 +943,7 @@ fn outcome_label(outcome: &TestOutcome) -> &'static str {
         TestOutcome::Panicked { .. } => "PANICKED",
         TestOutcome::SetupFailed { .. } => "SETUP FAILED",
         TestOutcome::TimedOut => "TIMED OUT",
+        TestOutcome::Hung { .. } => "HUNG",
         TestOutcome::Cancelled => "CANCELLED",
         TestOutcome::Benched { .. } => "bench had errors",
         TestOutcome::Passed { .. } => "",
@@ -921,6 +957,7 @@ fn outcome_message(outcome: &TestOutcome) -> String {
             format!("test setup failed: {message}")
         }
         TestOutcome::TimedOut => "test exceeded its timeout".to_owned(),
+        TestOutcome::Hung { .. } => "hung; abort signal sent".to_owned(),
         TestOutcome::Cancelled => "test was cancelled before completion".to_owned(),
         TestOutcome::Panicked { .. } | TestOutcome::Passed { .. } | TestOutcome::Benched { .. } => {
             String::new()

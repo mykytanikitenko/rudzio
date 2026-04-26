@@ -227,6 +227,7 @@ fn generate_per_config(
                                 #suite_base::<'_, #runtime_type> as ::rudzio::context::Suite<'_, #runtime_type>
                             >::setup(&rt, __rudzio_suite_setup_phase_token.clone(), req.config),
                             req.config.suite_setup_timeout,
+                            req.config.phase_hang_grace,
                             __rudzio_suite_setup_phase_token,
                             |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(&rt, dur),
                         ).await;
@@ -294,6 +295,28 @@ fn generate_per_config(
                                         ::rudzio::suite::TestOutcome::Cancelled,
                                     );
                                     summary.cancelled += 1;
+                                }
+                                return summary;
+                            }
+                            ::rudzio::suite::PhaseOutcome::Hung => {
+                                let __rudzio_hung_msg = ::std::string::String::from(
+                                    "setup hung; abort signal sent",
+                                );
+                                reporter.report_suite_setup_finished(
+                                    runtime_name,
+                                    suite_label,
+                                    __rudzio_setup_elapsed,
+                                    ::core::option::Option::Some(&__rudzio_hung_msg),
+                                );
+                                for tok in active.iter() {
+                                    reporter.report_outcome(
+                                        *tok,
+                                        runtime_name,
+                                        ::rudzio::suite::TestOutcome::Hung {
+                                            elapsed: ::std::time::Duration::ZERO,
+                                        },
+                                    );
+                                    summary.hung += 1;
                                 }
                                 return summary;
                             }
@@ -376,6 +399,7 @@ fn generate_per_config(
                                 }
                                 ::rudzio::suite::TestOutcome::Panicked { .. } => summary.panicked += 1,
                                 ::rudzio::suite::TestOutcome::TimedOut => summary.timed_out += 1,
+                                ::rudzio::suite::TestOutcome::Hung { .. } => summary.hung += 1,
                                 ::rudzio::suite::TestOutcome::Cancelled => summary.cancelled += 1,
                                 ::rudzio::suite::TestOutcome::Benched { report, .. } => {
                                     if report.is_success() {
@@ -426,6 +450,7 @@ fn generate_per_config(
                         let __rudzio_teardown_phase = ::rudzio::suite::run_phase_with_timeout_and_cancel(
                             suite.teardown(__rudzio_suite_teardown_phase_token.clone()),
                             req.config.suite_teardown_timeout,
+                            req.config.phase_hang_grace,
                             __rudzio_suite_teardown_phase_token,
                             |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(&rt, dur),
                         ).await;
@@ -445,6 +470,10 @@ fn generate_per_config(
                             ::rudzio::suite::PhaseOutcome::TimedOut => {
                                 summary.teardown_failures += 1;
                                 ::rudzio::suite::TeardownResult::TimedOut
+                            }
+                            ::rudzio::suite::PhaseOutcome::Hung => {
+                                summary.teardown_failures += 1;
+                                ::rudzio::suite::TeardownResult::Hung
                             }
                             ::rudzio::suite::PhaseOutcome::Cancelled => {
                                 summary.teardown_failures += 1;
@@ -598,6 +627,19 @@ fn generate_per_config(
         // without a benchmark take the single regular path; tests with
         // one gate on `config.bench_mode` at runtime so the same binary
         // serves both `cargo test` and `cargo test -- --bench`.
+        //
+        // Body dispatch stays inline — i.e. awaited on the dispatch
+        // loop's task — because spawning the body via Runtime::spawn
+        // would force `Future + Send + 'static`. Existing fixtures
+        // (see `repro_drop_barrier.rs`) intentionally produce body
+        // futures that borrow the runtime / suite contexts for non-
+        // 'static lifetimes, and substituting through HRTB into the
+        // 'static bound trips rust-lang/rust#100013. The Layer-1
+        // process-exit watchdog is the universal safety net for the
+        // sync-blocked-body scenario; Layer-2's `PhaseOutcome::Hung`
+        // surface is plumbed through the type system but only fires
+        // when a future caller spawns the body explicitly via
+        // `drive_per_test_spawn`.
         let test_outcome_expr = if let Some(bench_expr) = benchmark {
             quote! {
                 match config.bench_mode {
@@ -608,20 +650,18 @@ fn generate_per_config(
                         ::rudzio::suite::run_bench_with_timeout_and_cancel(
                             bench_fut,
                             test_timeout,
+                            config.phase_hang_grace,
                             per_test_token.clone(),
                             |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
                         ).await
                     }
                     ::rudzio::config::BenchMode::Smoke
                     | ::rudzio::config::BenchMode::Skip => {
-                        // `Skip` is handled at the runner filter level;
-                        // we should never be dispatched here in Skip
-                        // mode, but falling through to Smoke is the
-                        // safe degradation.
                         let test_fut = async { #dispatch_call };
                         ::rudzio::suite::run_test_with_timeout_and_cancel(
                             test_fut,
                             test_timeout,
+                            config.phase_hang_grace,
                             per_test_token.clone(),
                             |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
                         ).await
@@ -635,6 +675,7 @@ fn generate_per_config(
                     ::rudzio::suite::run_test_with_timeout_and_cancel(
                         test_fut,
                         test_timeout,
+                        config.phase_hang_grace,
                         per_test_token.clone(),
                         |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
                     ).await
@@ -739,6 +780,7 @@ fn generate_per_config(
                             ::rudzio::suite::run_phase_with_timeout_and_cancel(
                                 suite.context(per_test_token.clone(), config),
                                 __rudzio_setup_timeout,
+                                config.phase_hang_grace,
                                 per_test_token.clone(),
                                 |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
                             ).await;
@@ -767,6 +809,11 @@ fn generate_per_config(
                                     ),
                                 };
                             }
+                            ::rudzio::suite::PhaseOutcome::Hung => {
+                                break 'run ::rudzio::suite::TestOutcome::Hung {
+                                    elapsed: start.elapsed(),
+                                };
+                            }
                         };
 
                         let test_outcome = #test_outcome_expr;
@@ -789,6 +836,7 @@ fn generate_per_config(
                             ::rudzio::suite::run_phase_with_timeout_and_cancel(
                                 ctx.teardown(__rudzio_teardown_phase_token.clone()),
                                 __rudzio_teardown_timeout,
+                                config.phase_hang_grace,
                                 __rudzio_teardown_phase_token,
                                 |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
                             ).await;
@@ -804,6 +852,9 @@ fn generate_per_config(
                             }
                             ::rudzio::suite::PhaseOutcome::TimedOut => {
                                 ::rudzio::suite::TeardownResult::TimedOut
+                            }
+                            ::rudzio::suite::PhaseOutcome::Hung => {
+                                ::rudzio::suite::TeardownResult::Hung
                             }
                             ::rudzio::suite::PhaseOutcome::Cancelled => {
                                 ::rudzio::suite::TeardownResult::Err(

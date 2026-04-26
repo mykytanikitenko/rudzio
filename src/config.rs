@@ -262,6 +262,32 @@ pub struct Config {
     /// `Test::teardown`. Overridden per-test by
     /// `#[rudzio::test(teardown_timeout = ...)]`. `None` = unbounded.
     pub test_teardown_timeout: Option<Duration>,
+    /// `--phase-hang-grace=<secs>`. Layer-2 grace window applied
+    /// *after* a phase blows its budget: the wrapper cancels the
+    /// phase token, then waits this long for the phase future to
+    /// drop voluntarily before escalating to `Hung` and firing the
+    /// runtime abort handle. `None` (encoded by `--phase-hang-grace=0`)
+    /// disables the escalation — phases that exceed their budget
+    /// stop at `TimedOut` and the binary relies on Layer 1 for any
+    /// remaining cleanup.
+    ///
+    /// Defaults to `Some(2s)` — short enough that pathological hangs
+    /// don't slow the tear-down significantly, long enough that
+    /// real-world cooperative cancellation has time to land.
+    pub phase_hang_grace: Option<Duration>,
+    /// `--cancel-grace-period=<secs>`. Layer-1 process-exit
+    /// safety net: after `root_token.cancel()` fires (SIGINT,
+    /// SIGTERM, or `--run-timeout`), a watchdog thread sleeps this
+    /// long, then `process::exit(2)` if the binary hasn't already
+    /// terminated. Catches the case where a sync-blocked task can't
+    /// be unblocked by any cooperative mechanism. `None` (encoded by
+    /// `--cancel-grace-period=0`) disables the watchdog.
+    ///
+    /// Defaults to `Some(5s)` — comfortably above `--phase-hang-grace`'s
+    /// 2s default so Layer 2 has a real chance to land before Layer 1
+    /// fires, and below the 10s SIGKILL grace period most CI systems
+    /// apply.
+    pub cancel_grace_period: Option<Duration>,
     /// CLI arguments the runner did not recognise, preserved verbatim for
     /// downstream parsing by user code / custom runtimes.
     pub unparsed: Vec<String>,
@@ -336,6 +362,20 @@ impl Config {
         let mut suite_teardown_timeout: Option<Duration> = None;
         let mut test_setup_timeout: Option<Duration> = None;
         let mut test_teardown_timeout: Option<Duration> = None;
+        // Layer-2 grace defaults to OFF (`None`). When set, a phase
+        // that exceeds its budget is given the grace window to drop
+        // cooperatively before escalating to `Hung`. Off-by-default
+        // because the grace step polls the cancellable past
+        // `phase_token.cancel()`, which can let cooperative bodies
+        // observe their cancellation and run cleanup before the
+        // wrapper drops them — a behaviour change vs the
+        // pre-Layer-2 "drop on cancel immediately" semantic that
+        // existing fixtures rely on.
+        let mut phase_hang_grace: Option<Duration> = None;
+        // Layer-1 process-exit grace defaults to 5s; sync-blocked
+        // tasks ignoring SIGINT have always-on protection from
+        // `process::exit(2)` so the binary can't hang forever.
+        let mut cancel_grace_period: Option<Duration> = Some(Duration::from_secs(5));
         let mut unparsed: Vec<String> = Vec::new();
 
         let mut i = 0_usize;
@@ -500,6 +540,44 @@ impl Config {
                 {
                     test_teardown_timeout = Some(Duration::from_secs(secs));
                 }
+            } else if let Some(rest) = arg.strip_prefix("--phase-hang-grace=") {
+                if let Ok(secs) = rest.parse::<u64>() {
+                    phase_hang_grace = if secs == 0 {
+                        None
+                    } else {
+                        Some(Duration::from_secs(secs))
+                    };
+                }
+            } else if arg == "--phase-hang-grace" {
+                i += 1;
+                if let Some(next) = argv.get(i)
+                    && let Ok(secs) = next.parse::<u64>()
+                {
+                    phase_hang_grace = if secs == 0 {
+                        None
+                    } else {
+                        Some(Duration::from_secs(secs))
+                    };
+                }
+            } else if let Some(rest) = arg.strip_prefix("--cancel-grace-period=") {
+                if let Ok(secs) = rest.parse::<u64>() {
+                    cancel_grace_period = if secs == 0 {
+                        None
+                    } else {
+                        Some(Duration::from_secs(secs))
+                    };
+                }
+            } else if arg == "--cancel-grace-period" {
+                i += 1;
+                if let Some(next) = argv.get(i)
+                    && let Ok(secs) = next.parse::<u64>()
+                {
+                    cancel_grace_period = if secs == 0 {
+                        None
+                    } else {
+                        Some(Duration::from_secs(secs))
+                    };
+                }
             } else if let Some(rest) = arg.strip_prefix("--skip=") {
                 skip_filters.push(rest.to_owned());
             } else if arg == "--skip" {
@@ -570,6 +648,8 @@ impl Config {
             suite_teardown_timeout,
             test_setup_timeout,
             test_teardown_timeout,
+            phase_hang_grace,
+            cancel_grace_period,
             unparsed,
             env,
             cargo,
@@ -630,6 +710,19 @@ OPTIONS:
     --run-timeout <SECS>        Whole-run budget. Cancels the root token;
                                 in-flight tests wind down, queued tests are
                                 reported as cancelled, teardowns run.
+    --phase-hang-grace <SECS>   Layer-2 grace after a phase exceeds its
+                                budget. The phase token is cancelled and
+                                the future is given this long to drop
+                                voluntarily before the wrapper escalates
+                                to [HANG] and fires the abort handle.
+                                Default 2s. Set to 0 to disable.
+    --cancel-grace-period <SECS>
+                                Layer-1 process-exit safety net. After
+                                root cancellation (SIGINT / SIGTERM /
+                                --run-timeout), the watchdog sleeps this
+                                long, then process::exit(2) if the binary
+                                hasn't already terminated. Default 5s.
+                                Set to 0 to disable.
     -h, --help                  Print this message and exit.
 
 ENVIRONMENT:

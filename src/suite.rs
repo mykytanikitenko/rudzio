@@ -84,6 +84,16 @@ pub enum TestOutcome {
     },
     TimedOut,
     Cancelled,
+    /// The test (body, per-test setup, or per-test teardown) blew its
+    /// per-phase budget AND was still pending after `--phase-hang-grace`.
+    /// The wrapper has fired its abort handle (cooperatively cancelling
+    /// the spawned task on tokio) and moved on so subsequent tests can
+    /// still run. Distinct from `TimedOut`: `[HANG]` (red) means the
+    /// task ignored cooperative cancellation entirely; `[TIMEOUT]`
+    /// (yellow) means it cancelled cleanly.
+    Hung {
+        elapsed: Duration,
+    },
     /// The test ran under a [`crate::bench::Strategy`]. `report.is_success()`
     /// decides whether the overall outcome counts as passed or failed.
     Benched {
@@ -108,6 +118,12 @@ pub enum TeardownResult {
     /// timeout fired. Distinct from `Err` so the renderer can show
     /// `[TIMEOUT teardown]` instead of `[FAIL] teardown`.
     TimedOut,
+    /// The teardown blew its budget AND remained pending past the
+    /// Layer-2 grace window. The driver fired its abort handle and
+    /// moved on; on tokio the spawned task is gone, on other runtimes
+    /// it leaks until process exit. Rendered as `[HANG teardown]`
+    /// (red) — distinct from `[TIMEOUT teardown]` (yellow).
+    Hung,
 }
 
 /// Extract a human-readable message from a `catch_unwind` panic
@@ -134,6 +150,11 @@ pub struct SuiteSummary {
     pub panicked: usize,
     pub timed_out: usize,
     pub cancelled: usize,
+    /// Number of tests escalated from `TimedOut` to `Hung` because
+    /// they remained pending after `--phase-hang-grace`. Counted
+    /// separately so the summary line can show `N hung` and the
+    /// renderer can paint a distinct `[HANG]` tag.
+    pub hung: usize,
     pub ignored: usize,
     pub total: usize,
     /// Number of suite-level teardown calls that returned `Err` or
@@ -153,6 +174,7 @@ impl SuiteSummary {
             panicked: 0,
             timed_out: 0,
             cancelled: 0,
+            hung: 0,
             ignored: 0,
             total: 0,
             teardown_failures: 0,
@@ -168,6 +190,7 @@ impl SuiteSummary {
             panicked: self.panicked.saturating_add(other.panicked),
             timed_out: self.timed_out.saturating_add(other.timed_out),
             cancelled: self.cancelled.saturating_add(other.cancelled),
+            hung: self.hung.saturating_add(other.hung),
             ignored: self.ignored.saturating_add(other.ignored),
             total: self.total.saturating_add(other.total),
             teardown_failures: self.teardown_failures.saturating_add(other.teardown_failures),
@@ -304,6 +327,13 @@ pub enum PhaseOutcome<T> {
     Panicked(String),
     Cancelled,
     TimedOut,
+    /// The phase blew its budget AND remained pending after
+    /// `--phase-hang-grace`. The wrapper has fired its abort handle
+    /// (where applicable) and stopped awaiting; on tokio the spawned
+    /// task drops on next poll, on other runtimes it leaks until
+    /// process exit. Surfaced through [`TestOutcome::Hung`] /
+    /// [`TeardownResult::Hung`] downstream.
+    Hung,
 }
 
 /// Race a phase future against an optional per-phase timeout, while
@@ -326,8 +356,9 @@ pub enum PhaseOutcome<T> {
 pub async fn run_phase_with_timeout_and_cancel<F, T, S>(
     phase_fut: F,
     phase_timeout: Option<Duration>,
+    phase_hang_grace: Option<Duration>,
     phase_token: CancellationToken,
-    sleep: impl FnOnce(Duration) -> S,
+    sleep: impl Fn(Duration) -> S,
 ) -> PhaseOutcome<T>
 where
     F: Future<Output = T>,
@@ -339,25 +370,43 @@ where
     let catch_fut = std::panic::AssertUnwindSafe(phase_fut).catch_unwind();
     let cancellable = std::pin::pin!(phase_token.run_until_cancelled(catch_fut));
 
-    if let Some(dur) = phase_timeout {
-        let sleep_fut = std::pin::pin!(sleep(dur));
-        match select(cancellable, sleep_fut).await {
-            Either::Left((Some(Ok(value)), _)) => PhaseOutcome::Completed(value),
-            Either::Left((Some(Err(payload)), _)) => {
-                PhaseOutcome::Panicked(panic_payload_message(&*payload))
-            }
-            Either::Left((None, _)) => PhaseOutcome::Cancelled,
-            Either::Right(_) => {
-                phase_token.cancel();
-                PhaseOutcome::TimedOut
-            }
-        }
-    } else {
-        match cancellable.await {
+    let Some(dur) = phase_timeout else {
+        return match cancellable.await {
             Some(Ok(value)) => PhaseOutcome::Completed(value),
             Some(Err(payload)) => PhaseOutcome::Panicked(panic_payload_message(&*payload)),
             None => PhaseOutcome::Cancelled,
+        };
+    };
+
+    let sleep_fut = std::pin::pin!(sleep(dur));
+    let still_pending = match select(cancellable, sleep_fut).await {
+        Either::Left((Some(Ok(value)), _)) => return PhaseOutcome::Completed(value),
+        Either::Left((Some(Err(payload)), _)) => {
+            return PhaseOutcome::Panicked(panic_payload_message(&*payload));
         }
+        Either::Left((None, _)) => return PhaseOutcome::Cancelled,
+        Either::Right((_, still_pending)) => still_pending,
+    };
+
+    // Timeout fired. Cancel the phase token so cooperative phase
+    // futures bail on next yield. Then enter the Layer-2 grace step.
+    phase_token.cancel();
+
+    let Some(grace) = phase_hang_grace else {
+        // Layer-2 disabled: stop here with TimedOut (the phase future is
+        // dropped with the surrounding `still_pending` going out of scope).
+        return PhaseOutcome::TimedOut;
+    };
+
+    let grace_timer = std::pin::pin!(sleep(grace));
+    match select(still_pending, grace_timer).await {
+        // Phase completed cooperatively within the grace window —
+        // either it returned, panicked, or honoured the cancel signal.
+        // All three end as `TimedOut` (the budget WAS still blown);
+        // `Hung` is reserved for the case where no progress was
+        // observed at all.
+        Either::Left(_) => PhaseOutcome::TimedOut,
+        Either::Right(_) => PhaseOutcome::Hung,
     }
 }
 
@@ -378,14 +427,23 @@ where
 pub async fn run_test_with_timeout_and_cancel<F, S>(
     test_fut: F,
     test_timeout: Option<Duration>,
+    phase_hang_grace: Option<Duration>,
     per_test_token: CancellationToken,
-    sleep: impl FnOnce(Duration) -> S,
+    sleep: impl Fn(Duration) -> S,
 ) -> TestOutcome
 where
     F: Future<Output = Result<(), BoxError>>,
     S: Future<Output = ()>,
 {
-    match run_phase_with_timeout_and_cancel(test_fut, test_timeout, per_test_token, sleep).await {
+    match run_phase_with_timeout_and_cancel(
+        test_fut,
+        test_timeout,
+        phase_hang_grace,
+        per_test_token,
+        sleep,
+    )
+    .await
+    {
         PhaseOutcome::Completed(Ok(())) => TestOutcome::Passed {
             elapsed: Duration::ZERO,
         },
@@ -398,6 +456,9 @@ where
         },
         PhaseOutcome::Cancelled => TestOutcome::Cancelled,
         PhaseOutcome::TimedOut => TestOutcome::TimedOut,
+        PhaseOutcome::Hung => TestOutcome::Hung {
+            elapsed: Duration::ZERO,
+        },
     }
 }
 
@@ -410,6 +471,7 @@ pub fn fill_elapsed(outcome: TestOutcome, elapsed: Duration) -> TestOutcome {
         TestOutcome::Passed { .. } => TestOutcome::Passed { elapsed },
         TestOutcome::Failed { message, .. } => TestOutcome::Failed { elapsed, message },
         TestOutcome::Panicked { .. } => TestOutcome::Panicked { elapsed },
+        TestOutcome::Hung { .. } => TestOutcome::Hung { elapsed },
         TestOutcome::Benched { report, .. } => TestOutcome::Benched { elapsed, report },
         other => other,
     }
@@ -429,14 +491,23 @@ pub fn fill_elapsed(outcome: TestOutcome, elapsed: Duration) -> TestOutcome {
 pub async fn run_bench_with_timeout_and_cancel<F, S>(
     bench_fut: F,
     test_timeout: Option<Duration>,
+    phase_hang_grace: Option<Duration>,
     per_test_token: CancellationToken,
-    sleep: impl FnOnce(Duration) -> S,
+    sleep: impl Fn(Duration) -> S,
 ) -> TestOutcome
 where
     F: Future<Output = BenchReport>,
     S: Future<Output = ()>,
 {
-    match run_phase_with_timeout_and_cancel(bench_fut, test_timeout, per_test_token, sleep).await {
+    match run_phase_with_timeout_and_cancel(
+        bench_fut,
+        test_timeout,
+        phase_hang_grace,
+        per_test_token,
+        sleep,
+    )
+    .await
+    {
         PhaseOutcome::Completed(report) => TestOutcome::Benched {
             elapsed: Duration::ZERO,
             report,
@@ -446,5 +517,201 @@ where
         },
         PhaseOutcome::Cancelled => TestOutcome::Cancelled,
         PhaseOutcome::TimedOut => TestOutcome::TimedOut,
+        PhaseOutcome::Hung => TestOutcome::Hung {
+            elapsed: Duration::ZERO,
+        },
+    }
+}
+
+/// Drive a *spawned* phase future to completion or escalate it to
+/// [`PhaseOutcome::Hung`] when it ignores cooperative cancellation.
+///
+/// `join_fut` is the awaitable returned by `Runtime::spawn` (or
+/// equivalent), already wrapping the user's phase future in
+/// [`futures_util::future::Abortable`]. `abort_handle` is the matching
+/// abort half — calling it sets a flag the `Abortable` wrapper checks
+/// at every poll, so on tokio the spawned task drops on its next
+/// scheduler pass and the `join_fut` resolves promptly.
+///
+/// Why we need this distinct from
+/// [`run_phase_with_timeout_and_cancel`]: the inline wrapper awaits
+/// `phase_fut` on the *current* task. A sync-blocked phase (e.g.
+/// `std::thread::sleep`) starves the wrapper's own poll loop, so the
+/// timeout `select!` arm cannot fire — Layer-2's grace is meaningless.
+/// `drive_per_test_spawn` runs on a separate task from the spawned
+/// body, so the grace timer can always fire and we can move on.
+///
+/// Three-stage escalation:
+///
+/// 1. **Race phase** — race `join_fut` against `phase_token.cancelled()`
+///    and `outer_budget`. Body completion → `Completed`. External
+///    cancellation (parent) → fire `abort_handle`, return `Cancelled`.
+///    Budget expiry → enter Stage 2.
+/// 2. **Cooperative grace** — driver cancels `phase_token` (signalling
+///    bodies that listen to it) and waits up to `outer_grace` for the
+///    spawn to complete. If it does → `TimedOut`. If it doesn't →
+///    Stage 3.
+/// 3. **Forced abort** — fire `abort_handle` (sets the `Abortable`
+///    flag, wakes the spawn's task, forcing the wrapper to return
+///    `Aborted` on its next poll) and return `Hung`. The spawned
+///    task is left to complete its drop on whatever schedule the
+///    runtime decides.
+///
+/// Note that the driver itself **does not cancel `phase_token` on
+/// parent cancellation** — `phase_token.cancelled()` already gives
+/// us the signal, and re-cancelling would race with cooperative
+/// listeners. The driver only cancels `phase_token` to communicate
+/// "your budget is up" to bodies that opted into the token-listening
+/// pattern.
+#[doc(hidden)]
+pub async fn drive_per_test_spawn<JoinFut, T, S>(
+    join_fut: JoinFut,
+    abort_handle: futures_util::future::AbortHandle,
+    outer_budget: Option<Duration>,
+    outer_grace: Option<Duration>,
+    phase_token: CancellationToken,
+    sleep: impl Fn(Duration) -> S,
+) -> PhaseOutcome<T>
+where
+    JoinFut: Future<Output = Result<T, futures_util::future::Aborted>>,
+    S: Future<Output = ()>,
+{
+    use futures_util::future::{Either, select};
+
+    let mut join_fut = std::pin::pin!(join_fut);
+
+    // Stage 1: race join, parent cancel, and budget.
+    //
+    // `futures_util::future::select` polls its first argument before
+    // its second, so we put the cancel/budget side first to bias
+    // toward "parent cancel wins ties with body completion". Without
+    // the bias a body that returns immediately on parent cancel
+    // (cooperative) would race the driver and sometimes show up as
+    // `Completed` even though the parent pulled the plug.
+    if let Some(budget) = outer_budget {
+        // Race parent_cancel against budget_timer to know which
+        // outer trigger fired.
+        let parent_or_budget = async {
+            let parent = std::pin::pin!(phase_token.cancelled());
+            let timer = std::pin::pin!(sleep(budget));
+            match select(parent, timer).await {
+                Either::Left(_) => Stage1Trigger::Parent,
+                Either::Right(_) => Stage1Trigger::Budget,
+            }
+        };
+        let parent_or_budget = std::pin::pin!(parent_or_budget);
+        match select(parent_or_budget, join_fut.as_mut()).await {
+            Either::Left((Stage1Trigger::Parent, _)) => {
+                // Run-level cancel (SIGINT / --run-timeout). Fire
+                // abort so the spawned body doesn't outlive the
+                // dispatch loop, then report Cancelled.
+                abort_handle.abort();
+                return PhaseOutcome::Cancelled;
+            }
+            Either::Left((Stage1Trigger::Budget, _)) => {
+                // Fall through to Stage 2.
+            }
+            Either::Right((Ok(value), _)) => return PhaseOutcome::Completed(value),
+            Either::Right((Err(_aborted), _)) => {
+                // Inner phase wrapper inside the spawn fired Aborted
+                // (e.g. its own per-phase timeout aborted its inner
+                // future). The body responded, the spawn finished —
+                // surface as TimedOut so the user sees "test exceeded
+                // its budget" rather than a no-info cancellation.
+                return PhaseOutcome::TimedOut;
+            }
+        }
+    } else {
+        // No outer budget: race parent_cancel against join.
+        match select(std::pin::pin!(phase_token.cancelled()), join_fut.as_mut()).await {
+            Either::Left(_) => {
+                abort_handle.abort();
+                return PhaseOutcome::Cancelled;
+            }
+            Either::Right((Ok(value), _)) => return PhaseOutcome::Completed(value),
+            Either::Right((Err(_aborted), _)) => return PhaseOutcome::TimedOut,
+        }
+    }
+
+    // Stage 2: budget fired. Signal cooperative cancel by cancelling
+    // phase_token (bodies listening to it bail out on next yield),
+    // then wait the grace window for the spawn to finish.
+    phase_token.cancel();
+
+    let Some(grace) = outer_grace else {
+        // Layer-2 disabled: fire abort immediately so the leaked
+        // spawn doesn't outlive us, return TimedOut.
+        abort_handle.abort();
+        return PhaseOutcome::TimedOut;
+    };
+
+    let grace_timer = std::pin::pin!(sleep(grace));
+    match select(join_fut, grace_timer).await {
+        // Body finished within the grace window — either Ok(value),
+        // Aborted (inner phase wrapper aborted), or wall-cancelled
+        // via the now-cancelled phase_token returned by an inner
+        // wrapper. All three end as TimedOut: the budget WAS blown,
+        // but the body cooperated.
+        Either::Left((Ok(_), _)) | Either::Left((Err(_), _)) => PhaseOutcome::TimedOut,
+        // Stage 3: grace expired. Body did not respond to phase_token
+        // cancellation. Fire abort_handle (Layer-3 forced kill —
+        // takes effect on tokio for tasks that yield, leaks for
+        // sync-blocked tasks until process::exit) and return Hung.
+        Either::Right(_) => {
+            abort_handle.abort();
+            PhaseOutcome::Hung
+        }
+    }
+}
+
+/// Outcome of the parent-cancel-vs-budget inner race in
+/// [`drive_per_test_spawn`]. Carried as a value so the outer race
+/// can branch on which trigger fired without a second token check.
+enum Stage1Trigger {
+    Parent,
+    Budget,
+}
+
+/// Helper for the macro's Layer-2/Layer-3 spawn pipeline: extends a
+/// `Future + Send + 'a` into the `'static`-bound shape that
+/// `Runtime::spawn` requires, by Box::pin'ing and transmuting the
+/// trait object's lifetime.
+///
+/// # Safety
+///
+/// The transmute is sound only when the caller guarantees the future
+/// is awaited (or its drop is otherwise observed) before any borrow
+/// captured by the future expires. The macro arranges this by
+/// awaiting the resulting handle through [`drive_per_test_spawn`]
+/// before the per-test fn returns. On the Hung path the spawn handle
+/// is dropped without being awaited; soundness then relies on the
+/// runtime's `Drop` impl aborting non-blocking spawned tasks (which
+/// drops their futures, releasing the captured borrows) BEFORE the
+/// runtime memory itself is freed. Tokio's runtime drop satisfies
+/// this for non-blocking tasks; sync-blocked tasks (e.g. via
+/// `spawn_blocking`) that ignore their abort are caught by Layer-1's
+/// `process::exit(2)` watchdog instead.
+///
+/// Using a free function here (rather than emitting the transmute
+/// inline in the macro) sidesteps a known rustc HRTB limitation
+/// (#100013) when the source type uses `'_` inside the macro's
+/// HRTB-using emission.
+#[doc(hidden)]
+#[allow(unsafe_code, reason = "scoped spawn — see fn docstring")]
+pub unsafe fn extend_phase_future_lifetime<'a, F, T>(
+    fut: F,
+) -> Pin<Box<dyn Future<Output = T> + Send + 'static>>
+where
+    F: Future<Output = T> + Send + 'a,
+    T: Send + 'static,
+{
+    let pinned: Pin<Box<dyn Future<Output = T> + Send + 'a>> = Box::pin(fut);
+    // SAFETY: see fn-level docstring — caller awaits or runtime-aborts
+    // before any captured borrow expires.
+    unsafe {
+        std::mem::transmute::<
+            Pin<Box<dyn Future<Output = T> + Send + 'a>>,
+            Pin<Box<dyn Future<Output = T> + Send + 'static>>,
+        >(pinned)
     }
 }

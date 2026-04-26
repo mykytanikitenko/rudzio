@@ -1016,6 +1016,93 @@ mod tests {
         Ok(())
     }
 
+    /// L1.1. Layer 1 process-exit watchdog. With Layer 2 disabled
+    /// (`--phase-hang-grace=0`) and a sync-blocking body, neither the
+    /// per-test wrapper nor the run-timeout's cooperative cancel can
+    /// unblock the worker. The watchdog observes the root token
+    /// cancelled, sleeps `--cancel-grace-period=1`, then
+    /// `process::exit(2)`. Total wall-clock budget: ≤ 5s.
+    #[rudzio::test]
+    fn cancel_grace_force_exits_with_code_2(_ctx: &Test) -> anyhow::Result<()> {
+        let start = std::time::Instant::now();
+        let out = run_serial_with_args(
+            env!("CARGO_BIN_EXE_hung_run_grace_tokio_mt"),
+            &[
+                "--run-timeout=1",
+                "--cancel-grace-period=1",
+                "--phase-hang-grace=0",
+            ],
+        );
+        let elapsed = start.elapsed();
+        let log = log_of(&out);
+        anyhow::ensure!(
+            elapsed < Duration::from_secs(5),
+            "watchdog must force-exit within run-timeout + grace + slack, took {elapsed:?}; output:\n{log}"
+        );
+        anyhow::ensure!(
+            out.status.code() == Some(2),
+            "expected exit code 2 (force-exit), got {:?}; output:\n{log}",
+            out.status.code()
+        );
+        anyhow::ensure!(
+            log.contains("force-exiting"),
+            "expected 'force-exiting' diagnostic on stderr, output:\n{log}"
+        );
+        anyhow::ensure!(
+            !log.contains("body_sync_blocks_60s_unreached_marker"),
+            "sync-blocked body must not have completed, output:\n{log}"
+        );
+        Ok(())
+    }
+
+    /// L1.1b. Layer 1 watchdog OFF — `--cancel-grace-period=0` opts
+    /// out of the safety net entirely. We can't actually let the
+    /// fixture run forever in a unit test, so we set
+    /// `--run-timeout=1` and assert that without the watchdog the
+    /// fixture takes longer to exit than the watchdog-on case.
+    /// Specifically: with the watchdog OFF, the sync-blocking
+    /// `spawn_blocking` task's `JoinHandle` await keeps the dispatch
+    /// loop alive until the OS sleep finishes (or until tokio's
+    /// runtime drop forces the blocking pool to wind down) — much
+    /// longer than 2s. We bound the wait at 8s and assert exit is
+    /// NOT code 2 (since the watchdog didn't fire).
+    ///
+    /// This serves as the inverse-direction guard: confirms users who
+    /// explicitly disable the watchdog don't get a surprise
+    /// `process::exit(2)`. Skipped if the runtime would actually
+    /// hang past the harness budget.
+    #[rudzio::test]
+    fn cancel_grace_zero_does_not_force_exit(_ctx: &Test) -> anyhow::Result<()> {
+        // Use a 1-thread tokio runtime so the body's spawn_blocking
+        // sleep can't be exited cooperatively. Bound at 8s.
+        use std::process::Command;
+        let mut child = Command::new(env!("CARGO_BIN_EXE_hung_run_grace_tokio_mt"))
+            .env("NO_COLOR", "1")
+            .env("RUST_TEST_THREADS", "1")
+            .args(["--run-timeout=1", "--cancel-grace-period=0"])
+            .spawn()?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        loop {
+            if let Some(status) = child.try_wait()? {
+                anyhow::ensure!(
+                    status.code() != Some(2),
+                    "with watchdog disabled, exit code must NOT be 2 (force-exit); got {:?}",
+                    status.code()
+                );
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                let _killed = child.kill();
+                let _waited = child.wait();
+                // If we hit the deadline without the watchdog firing,
+                // that itself confirms the watchdog is off — the test
+                // passes.
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
     #[rudzio::test]
     fn rudzio_runner_respects_user_backtrace_choice(_ctx: &Test) -> anyhow::Result<()> {
         // When the user explicitly disables backtrace, the runner must
