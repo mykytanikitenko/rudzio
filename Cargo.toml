@@ -162,6 +162,10 @@ linkme = "=0.3.36"
 # ===========================================================================
 [workspace.lints.rust]
 warnings = "deny"
+# `#[cfg(rudzio_test)]` is set by the migrate crate's integration-test runner
+# to gate test-only behavior in the binary's source. Declaring it here keeps
+# `unexpected_cfgs` quiet across the workspace without site-local allows.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rudzio_test)"] }
 
 future_incompatible = { level = "deny", priority = -1 }
 keyword_idents = { level = "deny", priority = -1 }
