@@ -72,7 +72,7 @@ pub struct ProgressSnapshot {
 /// args, sidestepping `clippy::too_many_arguments`.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
-pub struct BenchStats {
+pub struct DistSummary {
     /// See [`ProgressSnapshot::cov_permille`].
     pub cov_permille: Option<u16>,
     /// See [`ProgressSnapshot::histogram`].
@@ -87,7 +87,7 @@ pub struct BenchStats {
     pub p95: Duration,
 }
 
-impl BenchStats {
+impl DistSummary {
     /// Pack the distribution-summary fields.
     #[inline]
     #[must_use]
@@ -284,13 +284,13 @@ impl ProgressSnapshot {
     }
 
     /// Construct a `ProgressSnapshot` from progress counters and a
-    /// pre-computed [`BenchStats`] block. Bundled to keep the
-    /// constructor signature short — see [`BenchStats`] for the
+    /// pre-computed [`DistSummary`] block. Bundled to keep the
+    /// constructor signature short — see [`DistSummary`] for the
     /// distribution-summary fields.
     #[inline]
     #[must_use]
-    pub const fn new(done: usize, total: usize, stats: BenchStats) -> Self {
-        let BenchStats { cov_permille, histogram, max, min, p50, p95 } = stats;
+    pub const fn new(done: usize, total: usize, stats: DistSummary) -> Self {
+        let DistSummary { cov_permille, histogram, max, min, p50, p95 } = stats;
         Self {
             cov_permille,
             done,

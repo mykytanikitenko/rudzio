@@ -10,10 +10,15 @@
 //! The whole module is Unix-only — the live-output feature falls back
 //! to plain mode with no capture on Windows (see
 //! [`crate::output::init`]). `libc` FFI requires a module-level
-//! `#![allow(unsafe_code)]`; the pattern mirrors the runtime-local
+//! `#![expect(unsafe_code, …)]`; the pattern mirrors the runtime-local
 //! allow in `src/runtime/embassy.rs`.
 
-#![allow(unsafe_code)]
+#![expect(
+    unsafe_code,
+    reason = "live-output pipe replumbing requires libc::pipe2/dup2/fcntl/splice \
+              for atomic stdout/stderr capture; module-level expect documents \
+              the FFI boundary in one place rather than annotating every call site"
+)]
 
 use std::io;
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};

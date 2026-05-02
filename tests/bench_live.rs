@@ -48,7 +48,7 @@ const fn fake_snapshot(done: usize, total: usize) -> ProgressSnapshot {
     ProgressSnapshot::new(
         done,
         total,
-        rudzio::bench::BenchStats::new(
+        rudzio::bench::DistSummary::new(
             Some(43_u16),
             histogram,
             Duration::from_micros(50),

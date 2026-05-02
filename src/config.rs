@@ -159,7 +159,7 @@ impl CargoMeta {
     /// Macro-generated code calls this via [`cargo_meta!`](crate::cargo_meta).
     #[inline]
     #[must_use]
-    pub fn new(
+    pub const fn new(
         crate_name: String,
         manifest_dir: PathBuf,
         pkg_name: String,
@@ -634,13 +634,13 @@ fn resolve_parallel_hardlimit(
 ///
 /// `prefix_eq` must include the trailing `=` (e.g. `"--test-threads="`);
 /// `flag_name` is the bare form (e.g. `"--test-threads"`).
-fn flag_value<'a>(
-    arg: &'a str,
+fn flag_value<'argv>(
+    arg: &'argv str,
     flag_name: &str,
     prefix_eq: &str,
-    argv: &'a [String],
+    argv: &'argv [String],
     i: &mut usize,
-) -> Option<&'a str> {
+) -> Option<&'argv str> {
     if let Some(rest) = arg.strip_prefix(prefix_eq) {
         return Some(rest);
     }

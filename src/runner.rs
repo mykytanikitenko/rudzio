@@ -346,6 +346,10 @@ impl SuiteReporter for ModeReporter {
                         };
                         buf.push_str(&painted);
                     }
+                } else {
+                    // Outcome has no extra detail to inline (Passed,
+                    // Ignored, etc.); the status line is the whole
+                    // payload.
                 }
                 write_stdout(&format!("{buf}\n"));
             }

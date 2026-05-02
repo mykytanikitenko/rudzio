@@ -7,11 +7,12 @@
 
 use std::time::Duration;
 
-/// Format `dur` as `xx.yy<unit>` with two decimal places, picking the
-/// largest unit (`s` / `ms` / `µs` / `ns`) whose integer value is
-/// non-zero. The output mirrors the `{d:.2?}` Debug rendering so call
-/// sites that previously used Debug formatting can swap to this helper
-/// without changing the rendered string.
+/// Format `dur` as `xx.yy<unit>` with two decimal places.
+///
+/// Picks the largest unit (`s` / `ms` / `µs` / `ns`) whose integer
+/// value is non-zero. The output mirrors the `{d:.2?}` Debug rendering
+/// so call sites that previously used Debug formatting can swap to this
+/// helper without changing the rendered string.
 ///
 /// All arithmetic is performed in `u128` integer space — there is no
 /// floating-point conversion and no fallible operation, so the helper
