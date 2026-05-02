@@ -741,6 +741,31 @@ fn format_elapsed(elapsed: Duration) -> String {
     fmt_duration(elapsed)
 }
 
+/// Print a one-shot stderr notice listing every CLI argument the rudzio
+/// parser did not consume. The args are still available to downstream
+/// code via [`crate::Config::unparsed`]; this notice exists so a typo of
+/// a known flag (e.g. `--treads-parallel-hardlimit=none`) doesn't
+/// silently no-op while looking like the real flag was honored.
+///
+/// No-op when `unparsed` is empty, so legitimate runs don't see noise.
+fn warn_on_unparsed_args(unparsed: &[String]) {
+    if unparsed.is_empty() {
+        return;
+    }
+    let plural = if unparsed.len() == 1_usize {
+        "argument"
+    } else {
+        "arguments"
+    };
+    write_stderr(&format!(
+        "rudzio: warning: {count} unrecognised CLI {plural}: {joined}\n  \
+         (preserved in Config::unparsed for downstream parsers; if a typo, \
+         run with --help to see supported flags)\n",
+        count = unparsed.len(),
+        joined = unparsed.join(", "),
+    ));
+}
+
 /// Wrap `text` with the green ANSI SGR code when `colored` is true.
 fn green(text: &str, colored: bool) -> String {
     paint(text, "32", colored)
@@ -1162,6 +1187,16 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
     enable_full_backtrace_default();
 
     let config = Config::parse(cargo);
+
+    // Surface anything the rudzio parser didn't recognise. The args are
+    // still preserved in `Config::unparsed` for downstream consumers
+    // (custom runtimes, test helpers), so this is a notice rather than
+    // an error — but emitting it prevents typos like
+    // `--treads-parallel-hardlimit=none` from silently no-opping. Goes
+    // to stderr before the help check so `--help --foo` still flags the
+    // typo, and before the output-capture pipe is installed so it
+    // reaches the user's terminal directly.
+    warn_on_unparsed_args(&config.unparsed);
 
     // --help / -h: print USAGE to real stdout and exit before the
     // output-capture pipe is installed, so the help text reaches the

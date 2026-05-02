@@ -65,9 +65,38 @@ OPTIONS:
                                 format) and exit without running anything.
     --test-threads <N>          OS worker-thread count runtimes size their
                                 pool to. Defaults to RUST_TEST_THREADS, else
-                                std::thread::available_parallelism().
-    --concurrency-limit <N>     Max in-flight tests per runtime group.
-                                Defaults to --test-threads.
+                                std::thread::available_parallelism(). The
+                                executor knob; pairs with --concurrency-limit
+                                (scheduler) and --threads-parallel-hardlimit
+                                (process-wide gate).
+    --concurrency-limit <N>     Max in-flight tests per runtime group
+                                (scheduler knob; --test-threads sizes the
+                                executor underneath). Defaults to
+                                --test-threads, so single-flag invocations
+                                match libtest semantics: N workers, N tests
+                                in-flight per group.
+    --threads-parallel-hardlimit=<VALUE>
+                                Process-wide cap on test bodies actively
+                                polling at once, across every runtime group.
+                                Composes with --test-threads and
+                                --concurrency-limit (caps the product across
+                                groups). When the gate is full, callers
+                                yield cooperatively through a runtime-
+                                agnostic async semaphore \u{2014} no thread parks,
+                                so timer/IO/spawned-subtask wakers held by
+                                permit-holders stay pollable. Accepted
+                                values:
+                                  <N>     pin the gate at N permits.
+                                  threads pin at the resolved --test-threads
+                                          (the default when the flag is
+                                          absent and --bench is not set).
+                                  none    disable the gate entirely.
+                                Under --bench (without an explicit value
+                                here) the gate auto-disables so benchmark
+                                timing isn't perturbed by gate-induced
+                                yields. An explicit value passed here wins
+                                over the bench-mode default in either
+                                direction.
     --format <pretty|terse>     Output format. Default: pretty.
     --color <auto|always|never> ANSI colour policy. Default: auto.
     --output <live|plain>       Output rendering. 'live' = bottom-of-terminal
@@ -75,11 +104,31 @@ OPTIONS:
                                 with CI unset). 'plain' = linear append-only
                                 (default off-TTY or under CI).
     --plain                     Shorthand for --output=plain.
-    --test-timeout <SECS>       Per-test budget. On expiry, the per-test
-                                cancellation token fires and teardown runs.
+    --test-timeout <SECS>       Per-test budget for the test body. On
+                                expiry, the per-test cancellation token
+                                fires and teardown runs. Unbounded when
+                                absent. Override per test with
+                                #[rudzio::test(timeout = ...)].
     --run-timeout <SECS>        Whole-run budget. Cancels the root token;
                                 in-flight tests wind down, queued tests are
                                 reported as cancelled, teardowns run.
+                                Unbounded when absent.
+    --suite-setup-timeout <SECS>
+                                Default budget for Suite::setup. Unbounded
+                                when absent.
+    --suite-teardown-timeout <SECS>
+                                Default budget for Suite::teardown.
+                                Unbounded when absent.
+    --test-setup-timeout <SECS>
+                                Default budget for per-test setup
+                                (Suite::context). Unbounded when absent.
+                                Override per test with
+                                #[rudzio::test(setup_timeout = ...)].
+    --test-teardown-timeout <SECS>
+                                Default budget for per-test teardown
+                                (Test::teardown). Unbounded when absent.
+                                Override per test with
+                                #[rudzio::test(teardown_timeout = ...)].
     --phase-hang-grace <SECS>   Layer-2 grace after a phase exceeds its
                                 budget. The phase token is cancelled and
                                 the future is given this long to drop
@@ -105,6 +154,13 @@ ENVIRONMENT:
     CI                          If set and --output is absent, selects
                                 --output=plain even on a TTY (CI log
                                 capture often can't render the live region).
+    RUST_BACKTRACE              Standard libstd backtrace toggle. The runner
+                                sets it to 'full' if unset on entry, so panic
+                                messages always carry an actionable
+                                backtrace. Export it explicitly to override.
+    RUST_LIB_BACKTRACE          Same shape as RUST_BACKTRACE but for
+                                library-level panics (anyhow, etc.). Also
+                                defaulted to 'full' by the runner.
 
 EXIT STATUS:
     0   every test passed (or none ran).
@@ -112,8 +168,11 @@ EXIT STATUS:
         or a teardown failure fired.
     2   runner setup error (output capture init, etc.).
 
-Unknown flags are preserved in Config::unparsed for downstream parsing
-by custom runtimes or test helpers \u{2014} they do not produce an error.
+Unknown flags and extra positional arguments are preserved in
+Config::unparsed for downstream parsing by custom runtimes or test
+helpers. The rudzio runner prints a one-line stderr notice listing them
+on startup so that typos of known flags don't silently no-op, but they
+do not abort the run.
 ";
 
 /// How `#[rudzio::test(benchmark = ...)]`-annotated tests should be run.
