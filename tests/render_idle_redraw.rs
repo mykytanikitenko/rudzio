@@ -17,42 +17,99 @@
 //! lifecycle / pipe events, and then read the captured bytes back to
 //! assert on what the drawer wrote.
 
-use std::fs::{File, OpenOptions};
-use std::io::SeekFrom;
+use std::env::temp_dir;
+use std::fs::{self, File, OpenOptions};
+use std::mem::take;
 use std::path::PathBuf;
+use std::process;
+use std::str;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossbeam_channel::{Sender, bounded, unbounded};
 
+use rudzio::common::context::Suite;
 use rudzio::config::{Format, OutputMode};
 use rudzio::output::color::Policy as ColorPolicy;
 use rudzio::output::events::{
-    LifecycleEvent, PipeChunk, StdStream, TestId, TestState, TestStateKind,
+    LifecycleEvent, PipeChunk, StdStream, TestId, TestState, TestStateBuffers, TestStateIdent,
+    TestStateKind,
 };
 use rudzio::output::render::{Drawer, running_line, running_output_lines, spawn_drawer};
+use rudzio::runtime::compio;
+use rudzio::runtime::embassy;
+use rudzio::runtime::futures::ThreadPool;
+use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
 use rudzio::suite::TestOutcome;
 
+/// Pre-rendered "── running ──" banner the live region paints above
+/// the active running rows. Kept as a string constant so post-completion
+/// scrollback assertions can search for it byte-for-byte without
+/// reimporting the renderer's private formatting helpers.
 const RUNNING_HEADER: &str = "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500} running \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}";
 
 /// Handles for driving a synthetic `Drawer` from a test. Drop the
 /// `life_tx` + `shutdown_tx` and the drawer winds down; the test then
 /// joins via [`Harness::finish`] and reads the captured bytes back.
 struct Harness {
-    path: PathBuf,
-    reader: File,
-    life_tx: Sender<LifecycleEvent>,
-    pipe_tx: Sender<PipeChunk>,
-    shutdown_tx: Sender<()>,
+    /// Join handle for the spawned drawer thread; consumed in
+    /// `finish` so the drawer can wind down before the file is read.
     drawer_thread: thread::JoinHandle<()>,
+    /// Lifecycle event channel; sending on it is how a test
+    /// announces synthetic `TestStarted`/`TestCompleted` to the drawer.
+    life_tx: Sender<LifecycleEvent>,
+    /// Path of the on-disk file the drawer writes its terminal bytes
+    /// to; deleted by `finish` once the contents have been read back.
+    path: PathBuf,
+    /// Pipe-chunk channel; sending on it is how a test feeds
+    /// synthetic stdout/stderr lines into the drawer.
+    pipe_tx: Sender<PipeChunk>,
+    /// Read handle on the same `path` the drawer writes to (a separate
+    /// fd via `try_clone`); kept alive for the duration of the run so
+    /// the file isn't unlinked under it.
+    reader: File,
+    /// Bounded shutdown signal; dropping the sender unblocks the
+    /// drawer's outer select on the shutdown channel.
+    shutdown_tx: Sender<()>,
 }
 
 impl Harness {
+    /// Drop the synthetic channels, join the drawer thread, then
+    /// slurp the captured terminal bytes back from the on-disk
+    /// file. Removes the file after reading.
+    fn finish(self) -> anyhow::Result<String> {
+        let Self {
+            drawer_thread,
+            life_tx,
+            path,
+            pipe_tx,
+            reader,
+            shutdown_tx,
+        } = self;
+        drop(life_tx);
+        drop(pipe_tx);
+        drop(shutdown_tx);
+        // Joining a panicked drawer would obscure the assertion error
+        // we actually want to surface; ignore the join result.
+        let _join_result = drawer_thread.join();
+        drop(reader);
+        let captured = fs::read_to_string(&path)?;
+        let _removed = fs::remove_file(&path);
+        Ok(captured)
+    }
+
+    /// Spawn a `Drawer` against an on-disk synthetic terminal at the
+    /// drawer's natural detected size. Equivalent to
+    /// `spawn_with_size(None)`.
     fn spawn() -> anyhow::Result<Self> {
         Self::spawn_with_size(None)
     }
 
+    /// Spawn a `Drawer` against an on-disk synthetic terminal,
+    /// optionally forcing `(cols, rows)` so width-sensitive tests can
+    /// pin exact viewport geometry instead of inheriting whatever the
+    /// host environment exposes.
     fn spawn_with_size(size: Option<(usize, usize)>) -> anyhow::Result<Self> {
         let path = unique_terminal_path();
         let writer = OpenOptions::new()
@@ -80,86 +137,61 @@ impl Harness {
         }
         let drawer_thread = spawn_drawer(drawer)?;
         Ok(Self {
+            drawer_thread,
+            life_tx,
             path,
+            pipe_tx,
             reader: writer,
-            life_tx,
-            pipe_tx,
             shutdown_tx,
-            drawer_thread,
         })
-    }
-
-    fn finish(self) -> anyhow::Result<String> {
-        use std::io::{Read as _, Seek as _};
-        let Self {
-            path,
-            mut reader,
-            life_tx,
-            pipe_tx,
-            shutdown_tx,
-            drawer_thread,
-        } = self;
-        drop(life_tx);
-        drop(pipe_tx);
-        drop(shutdown_tx);
-        // Joining a panicked drawer would obscure the assertion error
-        // we actually want to surface; ignore the join result.
-        let _join_result = drawer_thread.join();
-        let mut captured = String::new();
-        let _seek = reader.seek(SeekFrom::Start(0))?;
-        let _bytes_read = reader.read_to_string(&mut captured)?;
-        let _removed = std::fs::remove_file(&path);
-        Ok(captured)
     }
 }
 
 #[rudzio::suite([
-    (
-        runtime = rudzio::runtime::tokio::Multithread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::tokio::CurrentThread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::tokio::Local::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::compio::Runtime::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::embassy::Runtime::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::futures::ThreadPool::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
+    (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
 ])]
 mod tests {
     use super::{
         ColorPolicy, Duration, Harness, Instant, LifecycleEvent, PipeChunk, RUNNING_HEADER,
-        StdStream, TestId, TestOutcome, TestState, TestStateKind, Vt100, running_line,
-        running_output_lines, strip_ansi, thread,
+        StdStream, TestId, TestOutcome, TestState, TestStateBuffers, TestStateIdent, TestStateKind,
+        Vt100, running_line, running_output_lines, strip_ansi, thread,
     };
+
+    /// Helper: assert that `row` fits inside `cols` visible columns and
+    /// contains no embedded newlines. Wraps both invariants the live
+    /// region depends on so the cursor-up clear can find every row it
+    /// painted last tick.
+    fn check_row_fits(label: &str, row: &str, cols: usize) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !row.contains('\n'),
+            "{label}: rendered row contains an embedded newline:\n{row:?}",
+        );
+        let stripped = strip_ansi(row);
+        let visible = stripped.chars().count();
+        anyhow::ensure!(
+            visible <= cols,
+            "{label}: visible width {visible} > cols {cols}\n\
+             a row wider than `cols` auto-wraps in the terminal, but \
+             `last_live_rows` only counts logical lines, so the cursor-up \
+             clear can't reach the wrap-overflow row — it stays in \
+             scrollback as a stale `[RUN]` stripe. Rendered:\n{row:?}",
+        );
+        Ok(())
+    }
 
     #[rudzio::test]
     fn live_redraw_drops_running_header_when_all_slots_idle() -> anyhow::Result<()> {
         // Phase 1 — one in-flight test on a Multithread slot. The
         // drawer paints the per-slot status on every 50ms tick.
-        let h = Harness::spawn()?;
+        let harness = Harness::spawn()?;
         let test_id = TestId::next();
-        let drawer_owner_thread = h.drawer_thread.thread().id();
-        h.life_tx.send(LifecycleEvent::TestStarted {
+        let drawer_owner_thread = harness.drawer_thread.thread().id();
+        harness.life_tx.send(LifecycleEvent::TestStarted {
             test_id,
             module_path: "synthetic::module",
             test_name: "demo",
@@ -171,7 +203,7 @@ mod tests {
 
         // Phase 2 — test completes. From this point onwards no slot
         // is active; subsequent ticks are pure idle ticks.
-        h.life_tx.send(LifecycleEvent::TestCompleted {
+        harness.life_tx.send(LifecycleEvent::TestCompleted {
             test_id,
             outcome: TestOutcome::Passed {
                 elapsed: Duration::from_millis(100),
@@ -183,14 +215,16 @@ mod tests {
         // nothing.
         thread::sleep(Duration::from_millis(280));
 
-        let captured = h.finish()?;
+        let captured = harness.finish()?;
 
         let completion_idx = captured.find("[OK]").ok_or_else(|| {
             anyhow::anyhow!(
                 "drawer never emitted the test-completion line; captured bytes:\n{captured}",
             )
         })?;
-        let post_completion = &captured[completion_idx..];
+        let post_completion = captured.get(completion_idx..).ok_or_else(|| {
+            anyhow::anyhow!("completion index out of bounds; captured bytes:\n{captured}")
+        })?;
 
         let stray = post_completion.matches(RUNNING_HEADER).count();
         anyhow::ensure!(
@@ -219,11 +253,11 @@ mod tests {
         // tag, the qualified test name, and the most recent stdout
         // lines as `↳` hint rows. This is the "I want to see status
         // of the test in realtime with its stdout/stderr" guarantee.
-        let h = Harness::spawn()?;
+        let harness = Harness::spawn()?;
         let test_id = TestId::next();
-        let drawer_owner_thread = h.drawer_thread.thread().id();
+        let drawer_owner_thread = harness.drawer_thread.thread().id();
 
-        h.life_tx.send(LifecycleEvent::TestStarted {
+        harness.life_tx.send(LifecycleEvent::TestStarted {
             test_id,
             module_path: "synthetic::module",
             test_name: "with_output",
@@ -236,14 +270,14 @@ mod tests {
         // and the next redraw streams it untruncated below the
         // running status row — that's the "test status line + live
         // stdio/stderr below it" guarantee.
-        h.pipe_tx.send(PipeChunk::new(
+        harness.pipe_tx.send(PipeChunk::new(
             b"hello from synthetic test\n".to_vec(),
             StdStream::Stdout,
         ))?;
         // Allow at least one full redraw cycle (50ms tick).
         thread::sleep(Duration::from_millis(140));
 
-        h.life_tx.send(LifecycleEvent::TestCompleted {
+        harness.life_tx.send(LifecycleEvent::TestCompleted {
             test_id,
             outcome: TestOutcome::Passed {
                 elapsed: Duration::from_millis(140),
@@ -252,7 +286,7 @@ mod tests {
         // A short idle window so we can split the capture cleanly.
         thread::sleep(Duration::from_millis(80));
 
-        let captured = h.finish()?;
+        let captured = harness.finish()?;
         let completion_idx = captured.find("[OK]").ok_or_else(|| {
             anyhow::anyhow!(
                 "drawer never emitted the test-completion line; captured bytes:\n{captured}",
@@ -261,7 +295,9 @@ mod tests {
         // Everything before the completion is the in-flight live
         // region (cleared + repainted in place; raw bytes accumulate
         // each tick). That's where we expect to find the running row.
-        let pre_completion = &captured[..completion_idx];
+        let pre_completion = captured.get(..completion_idx).ok_or_else(|| {
+            anyhow::anyhow!("completion index out of bounds; captured bytes:\n{captured}")
+        })?;
 
         anyhow::ensure!(
             pre_completion.contains("[RUN]"),
@@ -278,24 +314,6 @@ mod tests {
         anyhow::ensure!(
             pre_completion.contains("hello from synthetic test"),
             "captured stdout line missing from live region below running row; captured pre-completion:\n{pre_completion:?}",
-        );
-        Ok(())
-    }
-
-    fn check_row_fits(label: &str, row: &str, cols: usize) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            !row.contains('\n'),
-            "{label}: rendered row contains an embedded newline:\n{row:?}",
-        );
-        let stripped = strip_ansi(row);
-        let visible = stripped.chars().count();
-        anyhow::ensure!(
-            visible <= cols,
-            "{label}: visible width {visible} > cols {cols}\n\
-             a row wider than `cols` auto-wraps in the terminal, but \
-             `last_live_rows` only counts logical lines, so the cursor-up \
-             clear can't reach the wrap-overflow row — it stays in \
-             scrollback as a stale `[RUN]` stripe. Rendered:\n{row:?}",
         );
         Ok(())
     }
@@ -325,17 +343,19 @@ mod tests {
         let long_test_name = "live_redraw_drops_running_header_when_all_slots_idle";
         let long_module = "rudzio::render_idle_redraw";
         let long_stdout: String = "x".repeat(200);
-        let started_at = Instant::now().checked_sub(Duration::from_millis(220)).unwrap();
+        let started_at = Instant::now()
+            .checked_sub(Duration::from_millis(220))
+            .ok_or_else(|| anyhow::anyhow!("clock cannot wind back 220ms from now"))?;
 
         let mut state = TestState::new(
-            rudzio::output::events::TestStateIdent::new(
+            TestStateIdent::new(
                 long_module,
                 "tokio::Multithread",
                 started_at,
                 long_test_name,
                 thread::current().id(),
             ),
-            rudzio::output::events::TestStateBuffers::new(
+            TestStateBuffers::new(
                 long_stdout.clone(),
                 vec![long_stdout],
                 Vec::new(),
@@ -353,12 +373,12 @@ mod tests {
         // + 1 + MIN_TRAILING_PAD + trailing-len`, the smallest width
         // that fits the framework overhead) plus the typical 80/100/
         // 120 terminals plus the user's reported ~95.
-        for cols in [40, 60, 80, 95, 100, 120, 200] {
+        for cols in [40_usize, 60, 80, 95, 100, 120, 200] {
             let color = ColorPolicy::off();
             let row = running_line("tokio::Multithread", &state, color, cols);
             check_row_fits(&format!("running_line @ cols={cols}"), &row, cols)?;
 
-            let height = 24;
+            let height = 24_usize;
             for (idx, line) in running_output_lines(&state, color, cols, height)
                 .iter()
                 .enumerate()
@@ -412,12 +432,17 @@ mod tests {
         Ok(())
     }
 
+    /// Drive one repaint scenario at `cols` × `height`: spawn a
+    /// drawer, simulate one in-flight test that emits 6 stdout lines,
+    /// let the drawer tick, complete the test, then replay the
+    /// captured bytes into a Vt100 emulator and assert the scrollback
+    /// is `[RUN]`-stripe-free.
     fn run_repaint_scenario(cols: usize, height: usize) -> anyhow::Result<()> {
-        let h = Harness::spawn_with_size(Some((cols, height)))?;
+        let harness = Harness::spawn_with_size(Some((cols, height)))?;
         let test_id = TestId::next();
-        let drawer_owner_thread = h.drawer_thread.thread().id();
+        let drawer_owner_thread = harness.drawer_thread.thread().id();
 
-        h.life_tx.send(LifecycleEvent::TestStarted {
+        harness.life_tx.send(LifecycleEvent::TestStarted {
             test_id,
             module_path: "rudzio::render_idle_redraw",
             test_name: "live_redraw_drops_running_header_when_all_slots_idle",
@@ -425,15 +450,15 @@ mod tests {
             thread: drawer_owner_thread,
             at: Instant::now(),
         })?;
-        for i in 0..6 {
-            h.pipe_tx.send(PipeChunk::new(
-                format!("output line {i}\n").into_bytes(),
+        for index in 0_u32..6_u32 {
+            harness.pipe_tx.send(PipeChunk::new(
+                format!("output line {index}\n").into_bytes(),
                 StdStream::Stdout,
             ))?;
         }
         thread::sleep(Duration::from_millis(180));
 
-        h.life_tx.send(LifecycleEvent::TestCompleted {
+        harness.life_tx.send(LifecycleEvent::TestCompleted {
             test_id,
             outcome: TestOutcome::Passed {
                 elapsed: Duration::from_millis(180),
@@ -441,10 +466,10 @@ mod tests {
         })?;
         thread::sleep(Duration::from_millis(80));
 
-        let captured = h.finish()?;
+        let captured = harness.finish()?;
 
         let mut term = Vt100::new(cols, height);
-        term.feed(captured.as_bytes());
+        term.feed(captured.as_bytes())?;
 
         let stripes: Vec<String> = term
             .scrollback
@@ -474,42 +499,92 @@ mod tests {
 /// off the top of the viewport lands in `scrollback`.
 #[derive(Debug)]
 struct Vt100 {
+    /// Configured viewport width in columns; printing chars beyond
+    /// `cols` triggers DECAWM auto-wrap onto the next row.
     cols: usize,
-    rows: Vec<String>,
-    scrollback: Vec<String>,
-    cur_row: usize,
+    /// Cursor column position within the current row.
     cur_col: usize,
+    /// Cursor row position within the viewport.
+    cur_row: usize,
+    /// Configured viewport height in rows; rows past `height` push
+    /// the topmost row into `scrollback`.
     height: usize,
+    /// Logical viewport rows (always exactly `height` entries while
+    /// the emulator is alive).
+    rows: Vec<String>,
+    /// Rows that have scrolled off the top of the viewport, in order
+    /// of eviction. The post-run assertion scans this for stripes.
+    scrollback: Vec<String>,
 }
 
 impl Vt100 {
-    fn new(cols: usize, height: usize) -> Self {
-        Self {
-            cols,
-            rows: vec![String::new(); height],
-            scrollback: Vec::new(),
-            cur_row: 0,
-            cur_col: 0,
-            height,
+    /// Advance the cursor down one row. If we were already on the
+    /// bottom row, evict the topmost row into `scrollback` and shift
+    /// the rest up, leaving an empty new bottom row.
+    fn advance_row(&mut self) {
+        if self.cur_row.saturating_add(1) < self.height {
+            self.cur_row = self.cur_row.saturating_add(1);
+            return;
+        }
+        if self.rows.is_empty() {
+            return;
+        }
+        self.rows.rotate_left(1);
+        let Some(last) = self.rows.last_mut() else {
+            return;
+        };
+        self.scrollback.push(take(last));
+    }
+
+    /// Handle a parsed CSI sequence (`ESC [ params final_byte`).
+    /// Implements the few escapes the drawer actually emits: `A`
+    /// (cursor up) and `J` (erase-in-display from cursor onward).
+    /// Other final bytes (SGR `m`, etc.) are ignored.
+    fn csi(&mut self, params: &str, final_byte: char) {
+        match final_byte {
+            'A' => {
+                let count = params.parse::<usize>().unwrap_or(1).max(1);
+                self.cur_row = self.cur_row.saturating_sub(count);
+            }
+            'J' => {
+                let mode = params.parse::<u32>().unwrap_or(0);
+                if mode == 0 {
+                    let Some(row) = self.rows.get_mut(self.cur_row) else {
+                        return;
+                    };
+                    let row_chars = row.chars().count();
+                    if self.cur_col < row_chars {
+                        let kept: String = row.chars().take(self.cur_col).collect();
+                        *row = kept;
+                    }
+                    let start = self.cur_row.saturating_add(1);
+                    self.rows.iter_mut().skip(start).for_each(String::clear);
+                }
+            }
+            // 'm' (SGR), and everything else: ignore for our purposes.
+            _ => {}
         }
     }
 
-    fn feed(&mut self, bytes: &[u8]) {
-        let s = std::str::from_utf8(bytes).expect("utf-8");
-        let mut chars = s.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '\x1b' {
+    /// Feed a byte slice to the emulator. Parses CSI sequences,
+    /// advances the cursor on `\n`/`\r`, and writes printable chars.
+    /// Returns an error if `bytes` is not valid UTF-8.
+    fn feed(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
+        let text = str::from_utf8(bytes)?;
+        let mut chars = text.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\x1b' {
                 if chars.peek() == Some(&'[') {
-                    let _ = chars.next();
+                    let _: Option<char> = chars.next();
                     let mut params = String::new();
                     let mut final_byte = '\0';
-                    while let Some(&ch) = chars.peek() {
-                        if ch.is_ascii_digit() || ch == ';' {
-                            params.push(ch);
-                            let _ = chars.next();
-                        } else if ('@'..='~').contains(&ch) {
-                            final_byte = ch;
-                            let _ = chars.next();
+                    while let Some(&peeked) = chars.peek() {
+                        if peeked.is_ascii_digit() || peeked == ';' {
+                            params.push(peeked);
+                            let _: Option<char> = chars.next();
+                        } else if ('@'..='~').contains(&peeked) {
+                            final_byte = peeked;
+                            let _: Option<char> = chars.next();
                             break;
                         } else {
                             break;
@@ -519,27 +594,47 @@ impl Vt100 {
                 }
                 continue;
             }
-            if c == '\n' {
+            if ch == '\n' {
                 self.advance_row();
                 self.cur_col = 0;
                 continue;
             }
-            if c == '\r' {
+            if ch == '\r' {
                 self.cur_col = 0;
                 continue;
             }
-            self.put_char(c);
+            self.put_char(ch);
+        }
+        Ok(())
+    }
+
+    /// Construct a fresh emulator with `height` empty rows of `cols`
+    /// nominal width. The cursor starts at row 0, col 0; scrollback
+    /// starts empty.
+    fn new(cols: usize, height: usize) -> Self {
+        Self {
+            cols,
+            cur_col: 0,
+            cur_row: 0,
+            height,
+            rows: vec![String::new(); height],
+            scrollback: Vec::new(),
         }
     }
 
-    fn put_char(&mut self, c: char) {
+    /// Print one character at the current cursor position. If the
+    /// cursor is past `cols`, DECAWM auto-wrap fires before writing
+    /// (advance row, reset col to 0).
+    fn put_char(&mut self, ch: char) {
         if self.cur_col >= self.cols {
             // DECAWM auto-wrap: deferred wrap fires when the next
             // printing char arrives past the rightmost column.
             self.advance_row();
             self.cur_col = 0;
         }
-        let row = &mut self.rows[self.cur_row];
+        let Some(row) = self.rows.get_mut(self.cur_row) else {
+            return;
+        };
         // Pad with spaces if we're inserting past the row's current
         // end (CSI cursor-up keeps cur_col high but the row may be
         // short).
@@ -548,60 +643,21 @@ impl Vt100 {
             for _ in row_chars..self.cur_col {
                 row.push(' ');
             }
-            row.push(c);
+            row.push(ch);
         } else {
             // Overwrite at column. Simple replace at byte level by
             // rebuild — this is test-only, perf doesn't matter.
             let mut rebuilt = String::new();
-            for (i, ch) in row.chars().enumerate() {
-                if i == self.cur_col {
-                    rebuilt.push(c);
-                } else {
+            for (index, existing) in row.chars().enumerate() {
+                if index == self.cur_col {
                     rebuilt.push(ch);
+                } else {
+                    rebuilt.push(existing);
                 }
             }
             *row = rebuilt;
         }
-        self.cur_col += 1;
-    }
-
-    fn advance_row(&mut self) {
-        if self.cur_row + 1 < self.height {
-            self.cur_row += 1;
-        } else {
-            // Scroll: top row leaves the viewport and lands in scrollback.
-            let evicted = std::mem::take(&mut self.rows[0]);
-            self.scrollback.push(evicted);
-            for r in 0..(self.height - 1) {
-                self.rows[r] = std::mem::take(&mut self.rows[r + 1]);
-            }
-            self.rows[self.height - 1].clear();
-        }
-    }
-
-    fn csi(&mut self, params: &str, final_byte: char) {
-        match final_byte {
-            'A' => {
-                let n = params.parse::<usize>().unwrap_or(1).max(1);
-                self.cur_row = self.cur_row.saturating_sub(n);
-            }
-            'J' => {
-                let mode = params.parse::<u32>().unwrap_or(0);
-                if mode == 0 {
-                    let row = &mut self.rows[self.cur_row];
-                    let row_chars = row.chars().count();
-                    if self.cur_col < row_chars {
-                        let kept: String = row.chars().take(self.cur_col).collect();
-                        *row = kept;
-                    }
-                    for r in (self.cur_row + 1)..self.height {
-                        self.rows[r].clear();
-                    }
-                }
-            }
-            // 'm' (SGR), and everything else: ignore for our purposes.
-            _ => {}
-        }
+        self.cur_col = self.cur_col.saturating_add(1);
     }
 }
 
@@ -609,12 +665,12 @@ impl Vt100 {
 /// count the *visible* width of a rendered row. Production output
 /// uses dim/colour escapes for the runtime prefix, status tag, and
 /// stdio hints; only the printing characters consume terminal cells.
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c != '\x1b' {
-            out.push(c);
+fn strip_ansi(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\x1b' {
+            out.push(ch);
             continue;
         }
         // ESC; only handle the CSI form `ESC [ … <final 0x40-0x7e>`,
@@ -623,8 +679,8 @@ fn strip_ansi(s: &str) -> String {
         if chars.next() != Some('[') {
             continue;
         }
-        for ch in chars.by_ref() {
-            if ('@'..='~').contains(&ch) {
+        for csi_byte in chars.by_ref() {
+            if ('@'..='~').contains(&csi_byte) {
                 break;
             }
         }
@@ -632,12 +688,15 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
+/// Mint a unique on-disk path for a synthetic terminal file. PID +
+/// nanos + a process-local atomic counter so two parallel rudzio runs
+/// (or two tests in the same process) never collide.
 fn unique_terminal_path() -> PathBuf {
     static SEQ: AtomicU64 = AtomicU64::new(0);
-    let pid = std::process::id();
+    let pid = process::id();
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    let n = SEQ.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("rudzio-render-test-{pid}-{nanos}-{n}.log"))
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    temp_dir().join(format!("rudzio-render-test-{pid}-{nanos}-{seq}.log"))
 }
