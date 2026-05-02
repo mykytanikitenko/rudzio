@@ -49,7 +49,7 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
 
     let repo_root = match preflight::git_root(&args.path) {
         Ok(p) => p,
-        Err(preflight::PreflightError::NotAGitRepo(p)) => {
+        Err(preflight::Failure::NotAGitRepo(p)) => {
             eprintln!(
                 "rudzio-migrate: not inside a git repository (checked from {}).",
                 p.display()
@@ -64,7 +64,7 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
 
     match preflight::require_clean_tree(&repo_root) {
         Ok(()) => {}
-        Err(preflight::PreflightError::DirtyTree) => {
+        Err(preflight::Failure::DirtyTree) => {
             print!("{}", preflight::DIRTY_TREE_MESSAGE);
             return Ok(ExitCode::from(1));
         }
@@ -75,7 +75,7 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
     stdout_locked.flush()?;
     match preflight::require_acknowledgement(&mut stdin_locked, &mut stdout_locked) {
         Ok(()) => {}
-        Err(preflight::PreflightError::WrongAcknowledgement) => {
+        Err(preflight::Failure::WrongAcknowledgement) => {
             writeln!(stdout_locked, "aborted: acknowledgement did not match.")?;
             return Ok(ExitCode::from(1));
         }
