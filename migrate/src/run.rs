@@ -126,11 +126,11 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
     };
 
     for pkg in &packages {
-        let mut pkg_edits = manifest::ManifestEdits {
+        let mut pkg_edits = manifest::Edits {
             workspace_dep_names: workspace_dep_names.clone(),
             has_lib_rs: pkg.root.join("src/lib.rs").is_file(),
             bin_names: pkg.bin_names.clone(),
-            ..manifest::ManifestEdits::default()
+            ..manifest::Edits::default()
         };
         let mut pkg_had_conversions = false;
         // Suite roots (`tests/<suite>/mod.rs`) whose subtree had
@@ -152,7 +152,7 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
                     pkg_edits
                         .runtimes
                         .extend(rewrite.runtimes_used.iter().copied());
-                    pkg_edits.needs_anyhow |= rewrite.needs_anyhow;
+                    pkg_edits.needs.anyhow |= rewrite.needs_anyhow;
                     // `runtimes_used` is non-empty iff the rewriter
                     // actually promoted a `#[cfg(test)]` module into a
                     // `#[rudzio::suite(...)]`. A file whose only
@@ -284,7 +284,7 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
             }
         }
         if pkg_had_conversions {
-            pkg_edits.needs_rudzio_test_cfg = true;
+            pkg_edits.needs.rudzio_test_cfg = true;
         }
         if !args.run.dry_run && pkg_had_conversions {
             match manifest::apply(&pkg.manifest_path, &pkg_edits) {
