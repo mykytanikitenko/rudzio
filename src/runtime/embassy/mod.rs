@@ -8,18 +8,4 @@
 /// Embassy backend wired to a dedicated thread.
 mod runtime;
 
-use std::io::Result as IoResult;
-
-use crate::config::Config;
-
 pub use runtime::Runtime;
-
-/// Create a new embassy runtime instance.
-///
-/// # Errors
-///
-/// Returns an error if the background executor thread cannot be started.
-#[inline]
-pub fn new(config: &Config) -> IoResult<Runtime> {
-    Runtime::new(config)
-}

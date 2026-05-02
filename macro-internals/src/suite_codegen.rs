@@ -184,6 +184,27 @@ fn dispatch_call_quotes(
     (dispatch_call, bench_body_closure)
 }
 
+/// Token-level entry point for the `#[rudzio::suite(...)]` proc-macro:
+/// parses raw `args` / `input` token streams and dispatches to
+/// [`expand_suite`].
+///
+/// Lives in this crate so the parsing + error-rendering logic stays
+/// out of the `proc-macro = true` wrapper crate (whose `lib.rs` is
+/// constrained by the Rust language to host the entry-point function
+/// signatures and nothing else).
+///
+/// # Errors
+///
+/// - `args` does not parse as a [`MainArgs`].
+/// - `input` does not parse as an [`ItemMod`].
+/// - [`expand_suite`] returns an error.
+#[inline]
+pub fn expand_entry(args: TokenStream, input: TokenStream) -> syn::Result<TokenStream> {
+    let parsed_args: MainArgs = syn::parse2(args)?;
+    let input_mod: ItemMod = syn::parse2(input)?;
+    expand_suite(&parsed_args, input_mod)
+}
+
 /// Expand a `#[rudzio::suite([...])] mod ... { ... }` invocation into the
 /// fully wired per-runtime helper items, lifecycle/test statics, and
 /// rewritten test module.

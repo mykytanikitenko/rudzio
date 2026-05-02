@@ -8,18 +8,4 @@
 /// Internal wiring for the `futures::executor::ThreadPool` backend.
 mod runtime;
 
-use std::io::Result as IoResult;
-
-use crate::config::Config;
-
 pub use runtime::ThreadPool;
-
-/// Create a new `futures::executor::ThreadPool`-backed runtime.
-///
-/// # Errors
-///
-/// Returns an error if the underlying `ThreadPool` cannot be built.
-#[inline]
-pub fn new(config: &Config) -> IoResult<ThreadPool> {
-    ThreadPool::new(config)
-}

@@ -1,8 +1,8 @@
 //! Resolve a `[[bin]]` target's executable path at test call sites.
 //!
 //! The primary entry point is the [`crate::bin!`] macro; this module
-//! holds the runtime backing that the macro falls back to when cargo
-//! hasn't populated `CARGO_BIN_EXE_<name>`.
+//! also holds the runtime backing that the macro falls back to when
+//! cargo hasn't populated `CARGO_BIN_EXE_<name>`.
 //!
 //! # Why this exists
 //!
@@ -35,6 +35,48 @@ use std::error::Error;
 use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;
+
+/// Resolve a `[[bin]]` target's executable path at a test call site,
+/// returning a [`PathBuf`](std::path::PathBuf).
+///
+/// Drop-in replacement for `PathBuf::from(env!("CARGO_BIN_EXE_<name>"))`
+/// that also works in the two layouts cargo doesn't populate
+/// `CARGO_BIN_EXE_*` for on its own:
+///
+/// - **Shared runner** — an aggregator crate hosting tests that spawn
+///   another crate's bins. Requires [`crate::build::expose_bins`] in
+///   the aggregator's `build.rs`.
+/// - **`cargo test --lib`** — `#[cfg(test)] #[rudzio::main]` in
+///   `src/lib.rs`. Either add [`crate::build::expose_self_bins`] to the
+///   crate's `build.rs`, or pre-build with `cargo build --bins`.
+///
+/// Resolution chain:
+///
+/// 1. `option_env!(concat!("CARGO_BIN_EXE_", <name>))` at compile time.
+/// 2. Runtime walk from `std::env::current_exe()` to
+///    `target/<profile>/<name>` if step 1 missed.
+/// 3. Panic with an actionable message (which fix to apply) if both
+///    miss.
+///
+/// ```rust,ignore
+/// let mut child = std::process::Command::new(rudzio::bin!("my-server"))
+///     .arg("--port=0")
+///     .spawn()?;
+/// ```
+///
+/// The argument must be a string literal (the bin's Cargo target name).
+#[macro_export]
+macro_rules! bin {
+    ($name:literal) => {{
+        match ::core::option_env!(::core::concat!("CARGO_BIN_EXE_", $name)) {
+            ::core::option::Option::Some(path) => ::std::path::PathBuf::from(path),
+            ::core::option::Option::None => match $crate::bin::__resolve_at_runtime($name) {
+                ::core::result::Result::Ok(path) => path,
+                ::core::result::Result::Err(err) => ::core::panic!("{err}"),
+            },
+        }
+    }};
+}
 
 /// Error reported by the runtime fallback behind the [`crate::bin!`]
 /// macro. Exposed so the macro can render its `Display` form in a

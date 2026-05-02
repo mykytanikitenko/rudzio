@@ -17,6 +17,35 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+/// Resolve the original member's `CARGO_MANIFEST_DIR` even when the
+/// caller is `#[path]`-included into the cargo-rudzio aggregator.
+///
+/// Stock `cargo test -p <member>` builds a per-crate test binary whose
+/// `env!("CARGO_MANIFEST_DIR")` points at the member — fine. Under
+/// `cargo rudzio test` the same source is included into the aggregator
+/// crate, where `env!("CARGO_MANIFEST_DIR")` instead returns
+/// `<target-dir>/rudzio-auto-runner/`. Harnesses that locate fixtures
+/// relative to the member's dir then break.
+///
+/// Returns the per-member dir from the rudzio runtime registry the
+/// aggregator populates at startup; falls back to
+/// `env!("CARGO_MANIFEST_DIR")` when the registry is empty (per-crate
+/// test runs) or when `module_path!()` isn't aggregator-shaped (any
+/// caller outside `#[path]`-included member tests).
+///
+/// ```rust,ignore
+/// let fixtures = rudzio::manifest_dir!().join("fixtures");
+/// ```
+#[macro_export]
+macro_rules! manifest_dir {
+    () => {
+        $crate::member_meta::resolve_member_manifest_dir(
+            ::std::module_path!(),
+            env!("CARGO_MANIFEST_DIR"),
+        )
+    };
+}
+
 /// Marker module name used by the cargo-rudzio aggregator's
 /// `src/main.rs` to host every member's `#[path]`-included tests.
 ///

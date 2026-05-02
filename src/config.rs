@@ -18,6 +18,25 @@ use std::time::Duration;
 
 use crate::parallelism::{HardLimit, HardLimitGuard};
 
+/// Expand to a [`CargoMeta`] populated from the caller crate's
+/// `env!(...)` values. Use this when you need to build a [`Config`]
+/// outside `#[rudzio::main]` — for example in a unit test:
+///
+/// ```rust,ignore
+/// let config = rudzio::Config::parse(rudzio::cargo_meta!());
+/// ```
+#[macro_export]
+macro_rules! cargo_meta {
+    () => {
+        $crate::CargoMeta::new(
+            env!("CARGO_CRATE_NAME").to_owned(),
+            ::std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+            env!("CARGO_PKG_NAME").to_owned(),
+            env!("CARGO_PKG_VERSION").to_owned(),
+        )
+    };
+}
+
 /// Human-readable usage string emitted by `--help` / `-h`. Lives on
 /// `Config` so the runner and any custom aggregator (hand-rolled
 /// `#[rudzio::main]` call site) print the same canonical text.

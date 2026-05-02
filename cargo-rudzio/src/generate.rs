@@ -1,3 +1,9 @@
+#![allow(
+    unused_results,
+    clippy::needless_pass_by_value,
+    reason = "toml_edit's insert/push API routinely returns the previous value; CLI glue does not care about the dropped option"
+)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Result as FmtResult, Write as _};
 use std::fs;

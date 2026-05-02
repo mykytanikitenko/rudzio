@@ -1,4 +1,4 @@
-//! Primitive [`Strategy`] implementations.
+//! Composable benchmark [`Strategy`] trait plus primitive implementations.
 //!
 //! [`Sequential`] runs the body N times one after another; [`Concurrent`]
 //! produces N futures and drives them via `futures::join_all` on the same
@@ -15,8 +15,44 @@ use futures_util::FutureExt as _;
 use futures_util::StreamExt as _;
 use futures_util::stream::FuturesUnordered;
 
-use super::{ProgressSnapshot, Report, Strategy};
+use super::{ProgressSnapshot, Report};
 use crate::test_case::BoxError;
+
+/// Composable benchmark strategy.
+///
+/// A strategy decides how many times, and with what concurrency, to call
+/// the test body. `body` is a closure that produces a fresh future per
+/// call; the strategy invokes it repeatedly and aggregates per-iteration
+/// timings into a [`Report`].
+///
+/// The trait is deliberately minimal: writing a new strategy is just a
+/// new `impl`. Composition (warm-up then measure, repeat K rounds,
+/// sequence A-then-B) is a matter of wrapping one or more inner
+/// strategies in a new type and delegating. No runtime registry, no
+/// magic — whatever the user writes at `benchmark = <expr>` is the
+/// concrete type the macro-generated code calls `.run(...)` on.
+pub trait Strategy {
+    /// Run the body according to this strategy, collecting per-iteration
+    /// timings into a [`Report`].
+    ///
+    /// `body` is called afresh for every iteration — the future it
+    /// returns is polled to completion (or panic) inside a
+    /// [`std::panic::catch_unwind`] boundary so one bad iteration
+    /// doesn't abort the whole bench.
+    ///
+    /// `on_progress` is invoked at strategy entry (with a zero-progress
+    /// placeholder so the live-region renderer can flip the row tag
+    /// from `[RUN]` to `[BENCH]` immediately) and roughly every 1% of
+    /// iterations thereafter, with the latest [`ProgressSnapshot`].
+    /// Implementations that omit progress should still call it once
+    /// at entry — a `|_| ()` no-op closure is acceptable from callers
+    /// that don't care.
+    fn run<B, Fut, P>(&self, body: B, on_progress: P) -> impl Future<Output = Report>
+    where
+        B: FnMut() -> Fut,
+        Fut: Future<Output = Result<(), BoxError>>,
+        P: FnMut(ProgressSnapshot);
+}
 
 /// Run the body `N` times sequentially, awaiting each iteration before
 /// starting the next.
