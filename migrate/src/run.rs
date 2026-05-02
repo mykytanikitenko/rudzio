@@ -90,7 +90,7 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
     let workspace_dep_names = collect_workspace_dep_names(&args.path);
 
     let mut report = report::Report::new();
-    let emit_opts = emit::EmitOptions {
+    let emit_opts = emit::Options {
         default_runtime: args.runtime,
         preserve_originals: !args.generation.no_preserve_originals,
         dry_run: args.run.dry_run,
@@ -191,7 +191,7 @@ fn process_package(
     pkg: &discovery::Package,
     want_shared_runner: bool,
     workspace_dep_names: &BTreeSet<String>,
-    emit_opts: &emit::EmitOptions<'_>,
+    emit_opts: &emit::Options<'_>,
     report: &mut report::Report,
 ) {
     let mut pkg_edits = manifest::Edits {
@@ -248,7 +248,7 @@ fn process_package(
 fn process_package_files(
     args: &cli::Cli,
     pkg: &discovery::Package,
-    emit_opts: &emit::EmitOptions<'_>,
+    emit_opts: &emit::Options<'_>,
     pkg_edits: &mut manifest::Edits,
     suite_roots_needing_main: &mut BTreeSet<PathBuf>,
     report: &mut report::Report,
