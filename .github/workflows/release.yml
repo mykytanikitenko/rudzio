@@ -20,11 +20,15 @@ jobs:
     name: Publish to crates.io
     runs-on: [self-hosted, linux, nix, rust]
     container:
-      image: registry-local:5000/porfiry/ci-base:d6d0d3de1f5b
+      image: registry-local:5000/porfiry/ci-base:ce3d50dd5fdf
+      # The ws-runner entrypoint sources CARGO_REGISTRY_TOKEN from the
+      # runner host's .env into the runner's process env. `container.env`
+      # forwards it into the job container so `cargo publish` finds it.
+      env:
+        CARGO_REGISTRY_TOKEN: ${{ env.CARGO_REGISTRY_TOKEN }}
     env:
-      # The ws-runner entrypoint also injects this from the runner host
-      # env; declaring it here is belt-and-suspenders so `cargo publish`
-      # finds a token regardless of which path lit up.
+      # Belt-and-suspenders: also expose via repo secret so `gh secret`-
+      # driven flows work even when the host-env channel hasn't lit up.
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
     steps:
       - uses: actions/checkout@v4
