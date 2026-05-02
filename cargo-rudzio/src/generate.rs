@@ -1955,6 +1955,30 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
         doc.insert("features", Item::Table(features_tbl));
     }
 
+    // [lints.rust] block registers `cfg(rudzio_test)` so member src
+    // that uses `cfg_attr(any(test, rudzio_test), ...)` doesn't draw
+    // `unexpected cfg condition name: rudzio_test` warnings. The
+    // bridge's build.rs already emits
+    // `cargo::rustc-check-cfg=cfg(rudzio_test)`, but in practice
+    // downstream cargo/rustc combinations have produced the warning
+    // anyway during the metadata / pre-build phase — likely against
+    // the member's original Cargo.toml before the bridge build script
+    // runs. Belt-and-suspenders: declare the cfg directly in the
+    // bridge manifest where rustc can't miss it.
+    let mut lints_rust = Table::new();
+    let mut unexpected_cfgs = InlineTable::new();
+    unexpected_cfgs.insert("level", Value::String(Formatted::new("warn".to_owned())));
+    let mut check_cfg = Array::new();
+    check_cfg.push(Value::String(Formatted::new("cfg(rudzio_test)".to_owned())));
+    unexpected_cfgs.insert("check-cfg", Value::Array(check_cfg));
+    lints_rust.insert(
+        "unexpected_cfgs",
+        Item::Value(Value::InlineTable(unexpected_cfgs)),
+    );
+    let mut lints_tbl = Table::new();
+    lints_tbl.insert("rust", Item::Table(lints_rust));
+    doc.insert("lints", Item::Table(lints_tbl));
+
     Ok(doc.to_string())
 }
 
