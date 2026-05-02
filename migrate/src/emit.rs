@@ -102,7 +102,7 @@ pub fn process_file(
     if !opts.dry_run {
         let bak = backup::copy_before_write(path)
             .with_context(|| format!("backing up {}", path.display()))?;
-        if matches!(bak, backup::BackupOutcome::Created(_)) {
+        if matches!(bak, backup::Outcome::Created(_)) {
             report.backed_up(bak.path().to_path_buf());
         }
         fs::write(path, &output).with_context(|| format!("writing {}", path.display()))?;

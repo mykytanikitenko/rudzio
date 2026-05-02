@@ -259,5 +259,5 @@ fn collect_rs(dir: &Path) -> Vec<PathBuf> {
 fn is_backup_file(p: &Path) -> bool {
     p.file_name()
         .and_then(|s| s.to_str())
-        .is_some_and(|s| s.ends_with(crate::backup::BACKUP_SUFFIX))
+        .is_some_and(|s| s.ends_with(crate::backup::SUFFIX))
 }
