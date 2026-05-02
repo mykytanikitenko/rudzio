@@ -1,14 +1,13 @@
-//! Display-side helpers that don't fit elsewhere.
+//! Display-side helpers for `Duration`.
 //!
 //! [`fmt_duration`] is the integer-arithmetic counterpart to the
-//! `{d:.2?}` Debug specifier on `Duration` — same `xx.yy<unit>` shape,
-//! but produced through `u128` math so the call sites don't trip
-//! `clippy::use_debug` (and so the formatter cannot panic on
-//! pathological inputs).
+//! `{d:.2?}` Debug specifier on `Duration`: same `xx.yy<unit>` shape,
+//! produced through `u128` math so call sites don't trip
+//! `clippy::use_debug` and the formatter cannot panic.
 
 use std::time::Duration;
 
-/// Format `d` as `xx.yy<unit>` with two decimal places, picking the
+/// Format `dur` as `xx.yy<unit>` with two decimal places, picking the
 /// largest unit (`s` / `ms` / `µs` / `ns`) whose integer value is
 /// non-zero. The output mirrors the `{d:.2?}` Debug rendering so call
 /// sites that previously used Debug formatting can swap to this helper
@@ -19,8 +18,8 @@ use std::time::Duration;
 /// is total over `Duration`.
 #[must_use]
 #[inline]
-pub fn fmt_duration(d: Duration) -> String {
-    let nanos = d.as_nanos();
+pub fn fmt_duration(dur: Duration) -> String {
+    let nanos = dur.as_nanos();
     if nanos >= 1_000_000_000_u128 {
         let centi = nanos.checked_div(10_000_000_u128).unwrap_or(0_u128);
         let int_part = centi.checked_div(100_u128).unwrap_or(0_u128);
@@ -43,7 +42,8 @@ pub fn fmt_duration(d: Duration) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::fmt_duration;
+    use std::time::Duration;
 
     #[test]
     fn formats_seconds() {

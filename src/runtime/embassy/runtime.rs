@@ -68,8 +68,10 @@ impl Signaler {
 
     /// Set the latch and wake any thread parked in [`Self::wait`].
     fn signal(&self) {
-        let mut guard = self.flag.lock().unwrap_or_else(PoisonError::into_inner);
-        *guard = true;
+        {
+            let mut guard = self.flag.lock().unwrap_or_else(PoisonError::into_inner);
+            *guard = true;
+        }
         self.condvar.notify_one();
     }
 

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
 
-use crate::common::fmt::fmt_duration;
+use crate::common::time::fmt_duration;
 use crate::config::{CargoMeta, ColorMode, Config, Format, OutputMode, RunIgnoredMode, USAGE};
 use crate::output;
 use crate::output::events::LifecycleEvent;
@@ -90,6 +90,18 @@ struct PlainState {
     failures: Mutex<Vec<FailureInfo>>,
     /// Render format (terse `.` characters vs full pretty lines).
     fmt: Format,
+}
+
+impl PlainState {
+    /// Append a failure record to the shared list, holding the mutex
+    /// only for the duration of the push.
+    fn record_failure(&self, info: FailureInfo) {
+        let mut guard = self
+            .failures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        guard.push(info);
+    }
 }
 
 /// Status tag rendered before each result line in the plain-mode
@@ -341,30 +353,18 @@ impl SuiteReporter for ModeReporter {
 
         match outcome {
             TestOutcome::Failed { message, .. } => {
-                let mut guard = plain
-                    .failures
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                guard.push(FailureInfo {
+                plain.record_failure(FailureInfo {
                     name: token.name,
                     message,
                 });
             }
             TestOutcome::SetupFailed { message, .. } => {
-                let mut guard = plain
-                    .failures
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                guard.push(FailureInfo {
+                plain.record_failure(FailureInfo {
                     name: token.name,
                     message: format!("test setup failed: {message}"),
                 });
             }
             TestOutcome::Benched { report, .. } if !report.is_success() => {
-                let mut guard = plain
-                    .failures
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
                 let message = format!(
                     "benchmark {} reported {} failed iterations and {} panics:\n{}",
                     report.strategy,
@@ -372,7 +372,7 @@ impl SuiteReporter for ModeReporter {
                     report.panics,
                     report.failures.join("\n"),
                 );
-                guard.push(FailureInfo {
+                plain.record_failure(FailureInfo {
                     name: token.name,
                     message,
                 });
@@ -421,11 +421,7 @@ impl SuiteReporter for ModeReporter {
                 }
             }
             if let Some(msg) = error {
-                let mut guard = plain
-                    .failures
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                guard.push(FailureInfo {
+                plain.record_failure(FailureInfo {
                     name: "<suite setup>",
                     message: format!(
                         "setup {} [{runtime_name}]: {msg}",
@@ -516,31 +512,19 @@ impl SuiteReporter for ModeReporter {
             match result {
                 TeardownResult::Ok => {}
                 TeardownResult::Err(msg) => {
-                    let mut guard = plain
-                        .failures
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
-                    guard.push(FailureInfo {
+                    plain.record_failure(FailureInfo {
                         name: "<suite teardown>",
                         message: format!("teardown {suite_disp} [{runtime_name}]: {msg}"),
                     });
                 }
                 TeardownResult::Panicked(msg) => {
-                    let mut guard = plain
-                        .failures
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
-                    guard.push(FailureInfo {
+                    plain.record_failure(FailureInfo {
                         name: "<suite teardown>",
                         message: format!("teardown {suite_disp} [{runtime_name}]: panic: {msg}"),
                     });
                 }
                 TeardownResult::TimedOut => {
-                    let mut guard = plain
-                        .failures
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
-                    guard.push(FailureInfo {
+                    plain.record_failure(FailureInfo {
                         name: "<suite teardown>",
                         message: format!(
                             "teardown {suite_disp} [{runtime_name}]: timeout: teardown timed out"
@@ -548,11 +532,7 @@ impl SuiteReporter for ModeReporter {
                     });
                 }
                 TeardownResult::Hung => {
-                    let mut guard = plain
-                        .failures
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
-                    guard.push(FailureInfo {
+                    plain.record_failure(FailureInfo {
                         name: "<suite teardown>",
                         message: format!(
                             "teardown {suite_disp} [{runtime_name}]: hang: teardown hung; abort signal sent"
@@ -645,31 +625,19 @@ impl SuiteReporter for ModeReporter {
             match result {
                 TeardownResult::Ok => {}
                 TeardownResult::Err(msg) => {
-                    let mut guard = plain
-                        .failures
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
-                    guard.push(FailureInfo {
+                    plain.record_failure(FailureInfo {
                         name: token.name,
                         message: format!("test teardown failed [{runtime_name}]: {msg}"),
                     });
                 }
                 TeardownResult::Panicked(msg) => {
-                    let mut guard = plain
-                        .failures
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
-                    guard.push(FailureInfo {
+                    plain.record_failure(FailureInfo {
                         name: token.name,
                         message: format!("test teardown panicked [{runtime_name}]: {msg}"),
                     });
                 }
                 TeardownResult::TimedOut => {
-                    let mut guard = plain
-                        .failures
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
-                    guard.push(FailureInfo {
+                    plain.record_failure(FailureInfo {
                         name: token.name,
                         message: format!(
                             "test teardown timed out [{runtime_name}]: teardown timed out"
@@ -677,11 +645,7 @@ impl SuiteReporter for ModeReporter {
                     });
                 }
                 TeardownResult::Hung => {
-                    let mut guard = plain
-                        .failures
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
-                    guard.push(FailureInfo {
+                    plain.record_failure(FailureInfo {
                         name: token.name,
                         message: format!(
                             "test teardown hung [{runtime_name}]: hang: teardown hung; abort signal sent"

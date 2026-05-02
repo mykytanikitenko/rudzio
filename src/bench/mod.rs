@@ -22,7 +22,7 @@ use std::fmt;
 use std::fmt::Write as _;
 use std::time::Duration;
 
-use crate::common::fmt::fmt_duration;
+use crate::common::time::fmt_duration;
 use crate::test_case::BoxError;
 
 /// Number of linear histogram buckets carried in a

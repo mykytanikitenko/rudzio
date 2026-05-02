@@ -79,20 +79,28 @@ impl HardLimit {
             return HardLimitGuard { owner: None };
         };
 
-        let mut state = inner.state.lock().unwrap_or_else(PoisonError::into_inner);
-
-        if state.available > 0 {
-            state.available = state.available.saturating_sub(1);
+        let took_fast_path = {
+            let mut state = inner.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if state.available > 0 {
+                state.available = state.available.saturating_sub(1);
+                true
+            } else {
+                false
+            }
+        };
+        if took_fast_path {
             return HardLimitGuard { owner: Some(self) };
         }
 
         let parked_at = Instant::now();
-        let mut woken_state = inner
-            .cvar
-            .wait_while(state, |waiting| waiting.available == 0)
-            .unwrap_or_else(PoisonError::into_inner);
-        woken_state.available = woken_state.available.saturating_sub(1);
-        drop(woken_state);
+        {
+            let state = inner.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut woken_state = inner
+                .cvar
+                .wait_while(state, |waiting| waiting.available == 0)
+                .unwrap_or_else(PoisonError::into_inner);
+            woken_state.available = woken_state.available.saturating_sub(1);
+        }
         let parked = parked_at.elapsed();
 
         (self.sink)(&format!(
