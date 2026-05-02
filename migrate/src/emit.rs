@@ -12,7 +12,7 @@ use syn::spanned::Spanned as _;
 use crate::backup;
 use crate::cli::RuntimeChoice;
 use crate::report::Report;
-use crate::rewrite::{self, FileRewrite};
+use crate::rewrite::{self, Outcome};
 use crate::test_context::{self, Resolver as TestContextResolver};
 
 /// Prefix of the magic doc-comment sentinel the rewriter emits for each
@@ -71,9 +71,10 @@ pub fn process_file(
     path: &Path,
     opts: &Options<'_>,
     report: &mut Report,
-) -> Result<Option<FileRewrite>> {
-    let source: Arc<String> =
-        Arc::new(fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?);
+) -> Result<Option<Outcome>> {
+    let source: Arc<str> = Arc::from(
+        fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?,
+    );
     let mut tree: syn::File = match syn::parse_file(&source) {
         Ok(parsed) => parsed,
         Err(err) => {
@@ -86,7 +87,7 @@ pub fn process_file(
         }
     };
 
-    let rewrite = rewrite::rewrite_file(
+    let rewrite = rewrite::apply(
         Arc::clone(&source),
         &mut tree,
         opts.default_runtime,
@@ -135,7 +136,7 @@ pub fn process_file(
         }
         rendered
     } else {
-        (*source).clone()
+        source.to_string()
     };
     if opts.preserve_originals && rewrite.changed {
         output = splice_preserved_originals(&output, &rewrite.original_snippets);

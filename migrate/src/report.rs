@@ -38,7 +38,7 @@ pub struct Warning {
     /// Pre-rewrite file bytes, captured at warning time so the summary
     /// renders what the user actually wrote — not the post-rewrite
     /// output whose line numbers no longer line up.
-    pub source: Option<Arc<String>>,
+    pub source: Option<Arc<str>>,
     /// Pre-rewrite byte span (offset, length) of the attribute / fn
     /// that produced this warning. Together with `source` this lets
     /// the summary underline the exact snippet. `None` means the
@@ -165,7 +165,7 @@ impl Report {
         line: usize,
         byte_offset: usize,
         byte_len: usize,
-        source: Arc<String>,
+        source: Arc<str>,
         message: S,
     ) {
         self.warnings.push(Warning {
