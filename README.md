@@ -1,5 +1,10 @@
 # rudzio
 
+[![CI](https://github.com/mykytanikitenko/rudzio/actions/workflows/ci.yml/badge.svg)](https://github.com/mykytanikitenko/rudzio/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/rudzio.svg)](https://crates.io/crates/rudzio)
+[![docs.rs](https://img.shields.io/docsrs/rudzio)](https://docs.rs/rudzio)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
 Async test framework for Rust. Tests run against a three-layer lifecycle:
 one `Runtime` per `(runtime, suite)` group, one `Suite` value per group
 (shared across tests), one `Test` value per test (built in `Suite::context`
