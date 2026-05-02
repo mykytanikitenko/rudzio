@@ -21,7 +21,7 @@ use std::process::Command;
 use cargo_metadata::camino::Utf8PathBuf;
 use cargo_rudzio::generate::{
     DevDepSpec, MemberPlan, Plan, RudzioLocation, RudzioSpec, WorkspaceDepSpec,
-    build_bridge_cargo_toml,
+    build_bridge_cargo_toml, build_build_rs, build_main_rs,
 };
 use rudzio::common::context::Suite;
 use rudzio::runtime::tokio::Multithread as TokioMultithread;
@@ -165,8 +165,8 @@ fn generate_runner(cwd: &Path, out: &Path) -> anyhow::Result<()> {
 mod tests {
     use super::{
         BTreeMap, Item, Path, PathBuf, TempDir, WorkspaceDepSpec, bridged_member,
-        build_bridge_cargo_toml, generate_runner, make_plan, synthetic_root,
-        write_synthetic_workspace, DevDepSpec, DocumentMut, fs,
+        build_bridge_cargo_toml, build_build_rs, build_main_rs, generate_runner,
+        make_plan, synthetic_root, write_synthetic_workspace, DevDepSpec, DocumentMut, fs,
     };
 
     /// **Issue 1** — sibling-bridge dependency redirection.
@@ -433,6 +433,92 @@ rudzio = { workspace = true, features = [\"common\"] }
              `shared_rudzio_bridge`, producing two distinct `shared` rlibs and \
              trait-mismatch errors throughout the aggregator.",
             consumer_bridge.display()
+        );
+        Ok(())
+    }
+
+    /// **Manifest-dir gap (build.rs side).**
+    ///
+    /// Member integration tests get `#[path]`-included into the
+    /// aggregator, so `env!("CARGO_MANIFEST_DIR")` at the test file's
+    /// compile site resolves to the aggregator's manifest dir, not the
+    /// member's. The harness in `migrate/tests/golden.rs` is the
+    /// in-tree casualty (it's currently excluded via
+    /// `[package.metadata.rudzio] exclude` for that reason).
+    ///
+    /// To let `rudzio::manifest_dir!()` (or equivalent) resolve to the
+    /// original member's directory under `cargo rudzio test`, the
+    /// aggregator's `build.rs` must export a per-member compile-time
+    /// env var keyed by the sanitised member name. The test asserts
+    /// the directive lands for every member that contributes test
+    /// files — bridged or not — since `tests/*.rs` get
+    /// `#[path]`-included regardless of bridging.
+    #[rudzio::test]
+    fn aggregator_build_rs_emits_per_member_manifest_dir_env_var() -> anyhow::Result<()> {
+        let root = synthetic_root();
+        let mut alpha = bridged_member("alpha", &root);
+        alpha.test_files = vec![alpha.manifest_dir.join("tests").join("api.rs")];
+        let mut beta = bridged_member("beta", &root);
+        beta.test_files = vec![beta.manifest_dir.join("tests").join("ui.rs")];
+        let plan = make_plan(vec![alpha.clone(), beta.clone()], &root, BTreeMap::new());
+
+        let build_rs = build_build_rs(&plan);
+
+        let alpha_path = alpha.manifest_dir.to_string_lossy().into_owned();
+        let beta_path = beta.manifest_dir.to_string_lossy().into_owned();
+        anyhow::ensure!(
+            build_rs.contains(&format!(
+                "cargo:rustc-env=RUDZIO_MEMBER_MANIFEST_DIR_alpha={alpha_path}"
+            )),
+            "aggregator build.rs must emit \
+             `cargo:rustc-env=RUDZIO_MEMBER_MANIFEST_DIR_alpha=<abs path>` \
+             so member tests can resolve their original manifest dir at \
+             compile time. Got:\n{build_rs}"
+        );
+        anyhow::ensure!(
+            build_rs.contains(&format!(
+                "cargo:rustc-env=RUDZIO_MEMBER_MANIFEST_DIR_beta={beta_path}"
+            )),
+            "aggregator build.rs must emit \
+             `cargo:rustc-env=RUDZIO_MEMBER_MANIFEST_DIR_beta=<abs path>`. \
+             Got:\n{build_rs}"
+        );
+        Ok(())
+    }
+
+    /// **Manifest-dir gap (main.rs side).**
+    ///
+    /// Build-script env vars set via `cargo:rustc-env=` are resolved at
+    /// the aggregator's compile-time only — they do NOT propagate to
+    /// the runtime env. So the per-member `RUDZIO_MEMBER_MANIFEST_DIR_*`
+    /// values must be wired into the rudzio runtime registry from the
+    /// aggregator's `main.rs` (e.g. via an
+    /// `env!("RUDZIO_MEMBER_MANIFEST_DIR_<name>")` literal that feeds a
+    /// `register_manifest_dirs!` call) for `rudzio::manifest_dir!()` to
+    /// pick the right entry by `module_path!()` at runtime.
+    ///
+    /// The exact registration shape is the implementation's choice;
+    /// what's pinned here is that the env-var name reaches the
+    /// aggregator main source, since otherwise the runtime registry
+    /// can't be populated at all.
+    #[rudzio::test]
+    fn aggregator_main_rs_references_per_member_manifest_dir_env_var(
+    ) -> anyhow::Result<()> {
+        let root = synthetic_root();
+        let mut alpha = bridged_member("alpha", &root);
+        alpha.test_files = vec![alpha.manifest_dir.join("tests").join("api.rs")];
+        let plan = make_plan(vec![alpha], &root, BTreeMap::new());
+
+        let main_rs = build_main_rs(&plan);
+
+        anyhow::ensure!(
+            main_rs.contains("RUDZIO_MEMBER_MANIFEST_DIR_alpha"),
+            "aggregator main.rs must reference \
+             `RUDZIO_MEMBER_MANIFEST_DIR_alpha` (e.g. via \
+             `env!(\"RUDZIO_MEMBER_MANIFEST_DIR_alpha\")`) so the \
+             compile-time per-member dir reaches the rudzio runtime \
+             registry. Otherwise `rudzio::manifest_dir!()` has nothing \
+             to resolve to under `cfg(rudzio_test)`. Got:\n{main_rs}"
         );
         Ok(())
     }

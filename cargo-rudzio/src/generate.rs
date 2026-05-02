@@ -2557,7 +2557,9 @@ fn build_tests_rs(plan: &Plan) -> String {
 }
 
 /// Build the aggregator's `build.rs` content — emits `cargo:rustc-cfg=rudzio_test` and bin export shims.
-fn build_build_rs(plan: &Plan) -> String {
+#[inline]
+#[must_use]
+pub fn build_build_rs(plan: &Plan) -> String {
     let bin_members: Vec<&MemberPlan> = plan
         .members
         .iter()
