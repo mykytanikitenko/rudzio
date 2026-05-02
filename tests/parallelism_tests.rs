@@ -17,13 +17,12 @@
 use std::any::Any;
 use std::iter;
 use std::num::NonZeroUsize;
+use std::panic::resume_unwind;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Barrier, Condvar, Mutex as StdMutex, PoisonError};
 use std::thread;
 use std::time::Duration;
-
-use std::panic::panic_any;
 
 use rudzio::common::context::Suite;
 use rudzio::output::TestId;
@@ -45,14 +44,18 @@ use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
 mod tests {
     use super::{
         Any, Arc, AtomicUsize, Barrier, Duration, HardLimit, Latch, Ordering, PoisonError, TestId,
-        collect_sink, iter, join_thread, mpsc, nz, panic_any, panic_hook, thread,
+        collect_sink, iter, join_thread, mpsc, nz, panic_hook, resume_unwind, thread,
     };
 
+    /// `acquire_survives_prior_thread_panic` triggers a real unwind via
+    /// [`resume_unwind`] (a function call) rather than the `panic!` macro
+    /// or `std::panic::panic_any`. All three are equivalent for the
+    /// system-under-test (we genuinely need an unwind through a held
+    /// guard to poison the underlying `std::sync::Mutex` — that's the
+    /// only way to poison it on stable Rust), but `clippy::panic` covers
+    /// both the macro and `panic_any`. `resume_unwind` isn't, so we can
+    /// keep the test honest without a site-local `#[expect]` attribute.
     #[rudzio::test]
-    #[expect(
-        clippy::panic,
-        reason = "this test asserts HardLimit::acquire survives a previous permit-holder thread panicking and poisoning the underlying std::sync::Mutex; the only way to poison std::sync::Mutex on stable Rust is to actually unwind through a held guard, so a real panic is required as the system-under-test trigger"
-    )]
     fn acquire_survives_prior_thread_panic() -> anyhow::Result<()> {
         let (_, sink) = collect_sink();
         let limit = Arc::new(HardLimit::with_sink(Some(nz(2)), sink));
@@ -73,7 +76,7 @@ mod tests {
         let join_result: Result<(), Box<dyn Any + Send>> = thread::spawn(move || {
             panic_hook::set_current_test(Some(test_id));
             let _guard = limit_clone.acquire();
-            panic_any("intentional");
+            resume_unwind(Box::<&'static str>::new("intentional"));
         })
         .join();
 
