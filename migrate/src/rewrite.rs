@@ -19,7 +19,7 @@ use syn::{Attribute, Expr, ExprBlock, FnArg, Item, ItemFn, ItemMod, Meta, Return
 use crate::cli::RuntimeChoice;
 use crate::detect;
 use crate::report::Report;
-use crate::test_context::{TestContextPlan, TestContextResolver};
+use crate::test_context::{Plan as TestContextPlan, Resolver as TestContextResolver};
 
 #[derive(Debug)]
 pub struct FileRewrite {
