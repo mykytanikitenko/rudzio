@@ -2,6 +2,8 @@
 //! in [`rudzio_macro_internals`]; this crate is only the `proc-macro = true`
 //! wrapper that crosses the `proc_macro::TokenStream` boundary.
 
+use std::env;
+
 use proc_macro::TokenStream;
 
 use proc_macro2::Span;
@@ -71,4 +73,26 @@ pub fn suite(args: TokenStream, input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn test(_args: TokenStream, input: TokenStream) -> TokenStream {
     input
+}
+
+/// Internal helper: reads the env var named by `input` (a string
+/// literal) via `std::env::var` at expansion time and emits the value
+/// as a string literal. Used by rudzio's own tests to verify that
+/// `cargo:rustc-env=CARGO_MANIFEST_DIR=<override>` directives in a
+/// bridge `build.rs` reach proc-macros (which read env via
+/// `std::env::var` rather than the `env!` mechanism that bakes values
+/// in at rustc compile time).
+///
+/// Not a stability guarantee — `#[doc(hidden)]` and underscore-prefixed.
+#[doc(hidden)]
+#[inline]
+#[proc_macro]
+pub fn __proc_macro_env(input: TokenStream) -> TokenStream {
+    let var: syn::LitStr = match syn::parse(input) {
+        Ok(parsed) => parsed,
+        Err(err) => return err.to_compile_error().into(),
+    };
+    let value = env::var(var.value()).unwrap_or_default();
+    let lit = syn::LitStr::new(&value, var.span());
+    quote::quote! { #lit }.into()
 }

@@ -16,18 +16,25 @@ pub mod test_case;
 pub mod token;
 
 /// Captures `CARGO_MANIFEST_DIR` as rustc saw it when compiling
-/// rudzio's `src/lib.rs`.
-///
-/// Under the cargo-rudzio aggregator, that compile happens via the
-/// bridge crate, whose own manifest dir is `target/<...>/members/rudzio/`.
-/// The bridge `build.rs` emits `cargo:rustc-env=CARGO_MANIFEST_DIR=<...>`
-/// to redirect path-resolving proc-macros (`include_str!`,
-/// `sqlx::migrate!`, …) at the original member dir; if cargo silently
-/// strips that reserved env var, the redirect doesn't take effect and
-/// the value here lands as the bridge dir instead. Tests assert
-/// against this const to verify the override is respected end-to-end.
+/// rudzio's `src/lib.rs`, via the `env!` macro (the rustc-tracked
+/// compile-time env channel).
 #[doc(hidden)]
 pub const __BRIDGE_OBSERVED_MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
+
+/// Captures `CARGO_MANIFEST_DIR` as proc-macros saw it via
+/// `std::env::var` at expansion time of rudzio's `src/lib.rs`.
+///
+/// `cargo:rustc-env=CARGO_MANIFEST_DIR=<override>` from a bridge
+/// `build.rs` reaches `env!` (the channel above), but cargo may pass
+/// reserved env vars to rustc through a separate mechanism that
+/// proc-macros' `std::env::var` doesn't see. Third-party
+/// proc-macros like `refinery::embed_migrations!` and
+/// `sqlx::migrate!` resolve their path arguments via `std::env::var`,
+/// not `env!`, so this const exists to verify both channels carry
+/// the same override.
+#[doc(hidden)]
+pub const __BRIDGE_PROC_MACRO_OBSERVED_MANIFEST_DIR: &str =
+    __proc_macro_env!("CARGO_MANIFEST_DIR");
 
 pub use bench::{Report, Strategy};
 pub use config::{BenchMode, CargoMeta, ColorMode, Config, Format, OutputMode, RunIgnoredMode};
@@ -35,7 +42,7 @@ pub use context::{Suite, Test};
 pub use futures_util;
 #[doc(hidden)]
 pub use linkme;
-pub use rudzio_macro::{main, suite, test};
+pub use rudzio_macro::{__proc_macro_env, main, suite, test};
 pub use runner::{
     TestSummary, normalize_module_path, qualified_test_name, run, token_passes_filters,
 };

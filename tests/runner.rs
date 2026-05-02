@@ -1245,25 +1245,48 @@ mod path_normalize {
     }
 
     #[rudzio::test]
-    fn bridge_build_rs_overrides_cargo_manifest_dir_at_runtime(
+    fn bridge_build_rs_overrides_cargo_manifest_dir_for_env_macro(
         _ctx: &Test,
     ) -> anyhow::Result<()> {
         // Pin that the bridge `build.rs` directive
-        // `cargo:rustc-env=CARGO_MANIFEST_DIR=<member dir>` actually
-        // takes effect — cargo could silently strip overrides of
-        // reserved env vars, in which case the redirect wouldn't reach
-        // proc-macros that resolve paths relative to CARGO_MANIFEST_DIR.
-        // The const captures `env!("CARGO_MANIFEST_DIR")` at rudzio
-        // lib's compile site; under the aggregator that compile runs
-        // through the bridge.
+        // `cargo:rustc-env=CARGO_MANIFEST_DIR=<member dir>` reaches
+        // the `env!()` channel — cargo could silently strip overrides
+        // of reserved env vars there. The const captures
+        // `env!("CARGO_MANIFEST_DIR")` at rudzio lib's compile site;
+        // under the aggregator that compile runs through the bridge.
         let captured = ::rudzio::__BRIDGE_OBSERVED_MANIFEST_DIR;
         anyhow::ensure!(
             !captured.contains("rudzio-auto-runner"),
-            "bridge CARGO_MANIFEST_DIR override is being stripped by cargo: \
+            "bridge CARGO_MANIFEST_DIR override is being stripped from `env!()`: \
              rudzio's compile saw `{captured}` (the bridge dir under the \
-             aggregator's target), not the member's original manifest dir. \
-             Path-resolving proc-macros in member src will look in the wrong \
-             place under `cargo rudzio test`."
+             aggregator's target), not the member's original manifest dir."
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn bridge_build_rs_overrides_cargo_manifest_dir_for_proc_macros(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
+        // Same redirect, different observation channel: `std::env::var`
+        // at proc-macro expansion time. Third-party proc-macros like
+        // `refinery::embed_migrations!` and `sqlx::migrate!` resolve
+        // their path arguments through `std::env::var`. Cargo may pass
+        // build-script env overrides to rustc via a private channel
+        // that only `env!` reads — this test catches that case so we
+        // know whether the redirect actually closes the proc-macro
+        // path-resolution gap or only the compile-time `env!` one.
+        let captured = ::rudzio::__BRIDGE_PROC_MACRO_OBSERVED_MANIFEST_DIR;
+        anyhow::ensure!(
+            !captured.contains("rudzio-auto-runner"),
+            "bridge CARGO_MANIFEST_DIR override is not reaching proc-macros: \
+             `std::env::var(\"CARGO_MANIFEST_DIR\")` at rudzio lib's compile \
+             site saw `{captured}` (the bridge dir under the aggregator's \
+             target), so any path-resolving proc-macro in member src \
+             (`refinery::embed_migrations!`, `sqlx::migrate!`, askama, …) \
+             still looks in the wrong place. The bridge directory needs a \
+             different rerouting strategy (full-mirror symlink tree, or \
+             different env-passing approach)."
         );
         Ok(())
     }
