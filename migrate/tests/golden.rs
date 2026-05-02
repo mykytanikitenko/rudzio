@@ -34,7 +34,7 @@ use ::rudzio::runtime::tokio::Multithread;
 /// equality with what the binary expects.
 const ACK_PHRASE: &str = "I am not and idion and understand what I am doing in most cases at least";
 
-#[cfg(test)]
+#[cfg(any(test, rudzio_test))]
 #[rudzio::suite([(runtime = Multithread::new, suite = Suite, test = Test)])]
 mod tests {
     use super::{
@@ -102,7 +102,7 @@ mod tests {
                 }
             }
         }
-        let fixtures_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+        let fixtures_root = ::rudzio::manifest_dir!().join("fixtures");
         let mut manifests = Vec::new();
         walk_cargo_tomls(&fixtures_root, &mut manifests);
         anyhow::ensure!(
@@ -151,7 +151,7 @@ mod tests {
     #[rudzio::test]
     async fn migrator_does_not_add_anyhow_to_dev_dependencies(_ctx: &Test) -> anyhow::Result<()> {
         use std::fs;
-        let fixtures_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+        let fixtures_root = ::rudzio::manifest_dir!().join("fixtures");
         for entry in fs::read_dir(&fixtures_root)? {
             let fixture = entry?.path();
             if !fixture.is_dir() {
@@ -515,7 +515,7 @@ mod tests {
 /// `migrate/fixtures/<name>/expected/` byte-for-byte. Picks up optional
 /// `args.txt` and `stdin.txt` overrides from the fixture directory.
 fn run_fixture(name: &str) {
-    let fixtures_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    let fixtures_root = ::rudzio::manifest_dir!().join("fixtures");
     let input_dir = fixtures_root.join(name).join("input");
     let expected_dir = fixtures_root.join(name).join("expected");
     assert!(
@@ -585,7 +585,7 @@ fn run_fixture(name: &str) {
 /// must be a no-op — no further rewrites, no duplicated Cargo.toml
 /// entries, no double-wrapped cfg attrs.
 fn run_fixture_twice(name: &str) {
-    let fixtures_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    let fixtures_root = ::rudzio::manifest_dir!().join("fixtures");
     let input_dir = fixtures_root.join(name).join("input");
     let expected_dir = fixtures_root.join(name).join("expected");
     let tempdir = tempfile::tempdir().expect("tempdir");

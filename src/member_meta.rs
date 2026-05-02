@@ -17,6 +17,15 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+/// Marker module name used by the cargo-rudzio aggregator's
+/// `src/main.rs` to host every member's `#[path]`-included tests.
+///
+/// Has to be unique enough that it can't collide with a `mod tests`
+/// inside a bridged member's own src tree — otherwise the parser
+/// below would mistake an internal test mod for the aggregator's
+/// outer `tests` mod and lift the wrong segment.
+const AGGREGATOR_TESTS_MARKER: &str = "__rudzio_member_tests";
+
 /// Registry populated once at aggregator startup.
 ///
 /// Maps the sanitised member name (cargo's `[package].name` with `-`
@@ -61,15 +70,15 @@ pub fn resolve_member_manifest_dir(module_path: &str, fallback: &str) -> PathBuf
 
 /// Lift the member name out of an aggregator-style `module_path!()`.
 ///
-/// Returns `None` for module paths that don't contain a `tests` segment
-/// (per-crate test binaries, src code, etc.) so the resolver falls back
-/// to the call site's `CARGO_MANIFEST_DIR`.
+/// Returns `None` for module paths that don't contain the aggregator's
+/// marker segment (per-crate test binaries, src code, etc.) so the
+/// resolver falls back to the call site's `CARGO_MANIFEST_DIR`.
 #[doc(hidden)]
 #[inline]
 #[must_use]
 pub fn parse_member_segment(module_path: &str) -> Option<&str> {
     module_path
         .split("::")
-        .skip_while(|segment| *segment != "tests")
+        .skip_while(|segment| *segment != AGGREGATOR_TESTS_MARKER)
         .nth(1)
 }
