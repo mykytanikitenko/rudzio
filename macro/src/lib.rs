@@ -28,15 +28,20 @@ pub fn main(args: TokenStream, input: TokenStream) -> TokenStream {
         .into();
     }
 
-    let _unused: syn::ItemFn = match syn::parse(input) {
-        Ok(func) => func,
+    let func: syn::ItemFn = match syn::parse(input) {
+        Ok(parsed) => parsed,
         Err(err) => return err.to_compile_error().into(),
     };
+    let body = &func.block;
     quote::quote! {
         fn main() -> ::std::process::ExitCode {
+            // User-supplied body runs first, so init code (e.g. the
+            // per-member manifest-dir registry the cargo-rudzio
+            // aggregator installs) lands before the runner spins up.
             // `cargo_meta!()` expands to `env!(CARGO_MANIFEST_DIR)` etc.
             // at THIS call site (the user's crate), so `manifest_dir`
             // resolves to the user's package, not to rudzio's.
+            #body
             ::rudzio::run(::rudzio::cargo_meta!())
         }
     }

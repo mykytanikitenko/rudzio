@@ -2141,17 +2141,47 @@ pub fn build_main_rs(plan: &Plan) -> String {
         if !seen.insert(ident.clone()) {
             continue;
         }
-        let _ignored: FmtResult =writeln!(out, "extern crate {ident};");
+        let _ignored: FmtResult = writeln!(out, "extern crate {ident};");
     }
 
+    // The tests module gets a unique name (`__rudzio_member_tests`)
+    // rather than the natural `tests`. `rudzio::manifest_dir!()`
+    // identifies aggregator-context module paths by looking for that
+    // marker segment — the natural `tests` would collide with member
+    // src test mods (`mod tests` inside a bridged member's src), and
+    // the resolver couldn't distinguish them.
     out.push_str(
         "
-mod tests;
+#[path = \"tests.rs\"]
+mod __rudzio_member_tests;
 
 #[rudzio::main]
-fn main() {}
-",
+fn main() {",
     );
+
+    // Wire the per-member `RUDZIO_MEMBER_MANIFEST_DIR_<n>=<abs>` env
+    // vars build.rs emitted into the rudzio runtime registry so
+    // `rudzio::manifest_dir!()` can resolve them at the test's call
+    // site. `#[rudzio::main]` inlines this body before the runner.
+    let test_members: Vec<&MemberPlan> = plan
+        .members
+        .iter()
+        .filter(|member| !member.test_files.is_empty())
+        .collect();
+    if test_members.is_empty() {
+        out.push_str("}\n");
+        return out;
+    }
+    out.push_str("\n    ::rudzio::member_meta::register_member_manifest_dirs(&[\n");
+    for member in test_members {
+        let ident = sanitize_ident(&member.package_name);
+        let _ignored: FmtResult = writeln!(
+            out,
+            "        ({}, env!(\"RUDZIO_MEMBER_MANIFEST_DIR_{ident}\")),",
+            quote_str(&ident)
+        );
+    }
+    out.push_str("    ]);\n}\n");
     out
 }
 
@@ -2556,7 +2586,8 @@ fn build_tests_rs(plan: &Plan) -> String {
     out
 }
 
-/// Build the aggregator's `build.rs` content — emits `cargo:rustc-cfg=rudzio_test` and bin export shims.
+/// Build the aggregator's `build.rs` content — emits `cargo:rustc-cfg=rudzio_test`,
+/// per-member manifest-dir env vars, and bin-export shims.
 #[inline]
 #[must_use]
 pub fn build_build_rs(plan: &Plan) -> String {
@@ -2565,12 +2596,27 @@ pub fn build_build_rs(plan: &Plan) -> String {
         .iter()
         .filter(|member| !member.bin_names.is_empty())
         .collect();
+    let test_members: Vec<&MemberPlan> = plan
+        .members
+        .iter()
+        .filter(|member| !member.test_files.is_empty())
+        .collect();
     // The aggregator always emits `cargo:rustc-cfg=rudzio_test`: this is
     // where the cfg enters the aggregator's own compile unit. Cargo
     // scopes `cargo:rustc-cfg=` per-crate, so the emission here does NOT
     // leak into nested `cargo build --bins` invocations that
     // `expose_member_bins` may trigger below — each of those gets its
     // own untouched rustc.
+    //
+    // For each member that contributes integration-test sources (and
+    // therefore appears under a `mod <member>` block in the
+    // aggregator's `tests.rs`), emit
+    // `cargo:rustc-env=RUDZIO_MEMBER_MANIFEST_DIR_<sanitised>=<abs>` so
+    // the aggregator's `main.rs` can read these via `env!(...)` and
+    // wire them into `rudzio::member_meta::register_member_manifest_dirs`.
+    // `rudzio::manifest_dir!()` then resolves `module_path!()` at the
+    // test's call site to the original member's manifest dir instead
+    // of the aggregator's.
     //
     // For bin members, shell out to `cargo build --bins --manifest-path
     // <Cargo.toml>` into a sandboxed OUT_DIR target, then emit
@@ -2584,6 +2630,7 @@ pub fn build_build_rs(plan: &Plan) -> String {
         out.push_str("fn main() {\n");
         out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
         out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
+        emit_member_manifest_dir_env_vars(&mut out, &test_members);
         out.push_str("}\n");
         return out;
     }
@@ -2591,8 +2638,9 @@ pub fn build_build_rs(plan: &Plan) -> String {
     out.push_str("\nfn main() -> Result<(), String> {\n");
     out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
     out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
+    emit_member_manifest_dir_env_vars(&mut out, &test_members);
     for member in bin_members {
-        let _ignored: FmtResult =write!(
+        let _ignored: FmtResult = write!(
             out,
             "    expose_member_bins({}, {}, &[",
             quote_str(&member.package_name),
@@ -2608,6 +2656,44 @@ pub fn build_build_rs(plan: &Plan) -> String {
     }
     out.push_str("    Ok(())\n}\n");
     out
+}
+
+/// Emit a `println!(...)` line per member that exports the member's
+/// manifest dir as a `cargo:rustc-env=RUDZIO_MEMBER_MANIFEST_DIR_<n>=<abs>`
+/// directive.
+fn emit_member_manifest_dir_env_vars(out: &mut String, members: &[&MemberPlan]) {
+    for member in members {
+        let ident = sanitize_ident(&member.package_name);
+        let _ignored: FmtResult = writeln!(
+            out,
+            "    println!(\"cargo:rustc-env=RUDZIO_MEMBER_MANIFEST_DIR_{ident}={}\");",
+            escape_str_literal(&member.manifest_dir.to_string_lossy())
+        );
+    }
+}
+
+/// Escape `value` for safe inclusion inside a Rust `&str` literal whose
+/// surrounding quotes the caller already wrote. Mirrors `quote_str`'s
+/// inner-character handling but skips the leading/trailing quotes so
+/// the result can be spliced directly into a literal that's part of a
+/// larger string.
+fn escape_str_literal(value: &str) -> String {
+    let mut buf = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\\' => buf.push_str("\\\\"),
+            '"' => buf.push_str("\\\""),
+            '\n' => buf.push_str("\\n"),
+            '\r' => buf.push_str("\\r"),
+            '\t' => buf.push_str("\\t"),
+            '\0' => buf.push_str("\\0"),
+            other if u32::from(other) < 0x20 || other == '\u{7f}' => {
+                let _ignored: FmtResult = write!(buf, "\\u{{{:x}}}", u32::from(other));
+            }
+            other => buf.push(other),
+        }
+    }
+    buf
 }
 
 /// Replace any non `[a-zA-Z0-9_]` chars in `value` with `_`, prefixing a digit-starter with `_`.
