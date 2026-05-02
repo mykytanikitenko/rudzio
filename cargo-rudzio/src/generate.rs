@@ -213,6 +213,18 @@ pub struct MemberPlan {
     /// the same universe of feature names they would under the member's
     /// own `cargo test`.
     pub features: BTreeMap<String, Vec<String>>,
+    /// Opt-in from `[package.metadata.rudzio] force_bridge = true`.
+    ///
+    /// Forces bridge generation for a member whose own `src/**` carries
+    /// no rudzio surface (`#[rudzio::test]` / `#[cfg(any(test,
+    /// rudzio_test))]`). Used to bridge passthrough consumers of bridged
+    /// siblings: without bridging, the consumer's path-dep on a bridged
+    /// crate would link the original member alongside the bridge,
+    /// producing two distinct rlibs of the same crate and trait-
+    /// mismatch errors throughout the aggregator. Also bypasses the
+    /// "must depend on rudzio" filter in `build_plan`, so the consumer
+    /// no longer has to add a synthetic `rudzio = { ... }` dev-dep.
+    pub force_bridge: bool,
     /// `true` iff the member declares a `[lib]` target.
     ///
     /// (Or has the implicit `src/lib.rs`.) Bin-only crates can't be
@@ -360,6 +372,7 @@ impl MemberPlan {
             dev_deps: Vec::new(),
             edition: String::new(),
             features: BTreeMap::new(),
+            force_bridge: false,
             has_lib: false,
             has_src_rudzio_suite: false,
             manifest_dir,
@@ -499,13 +512,23 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
         if !member_ids.contains(&pkg.id) {
             continue;
         }
-        // Must depend on rudzio somewhere (normal or dev).
+        // Must depend on rudzio somewhere (normal or dev). The opt-in
+        // `[package.metadata.rudzio] force_bridge = true` bypasses this
+        // gate so passthrough consumers of bridged siblings don't have
+        // to add a synthetic rudzio dev-dep just to be eligible.
         let rudzio_deps: Vec<_> = pkg
             .dependencies
             .iter()
             .filter(|dep| dep.name == RUDZIO_DEP)
             .collect();
-        if rudzio_deps.is_empty() {
+        let force_bridge =
+            load_rudzio_force_bridge(pkg.manifest_path.as_std_path()).with_context(|| {
+                format!(
+                    "loading `[package.metadata.rudzio].force_bridge` from {}",
+                    pkg.manifest_path.as_std_path().display()
+                )
+            })?;
+        if rudzio_deps.is_empty() && !force_bridge {
             continue;
         }
         for rdep in &rudzio_deps {
@@ -609,6 +632,14 @@ fn build_member_plan(pkg: &Package) -> Result<Option<MemberPlan>> {
             )
         })?;
 
+    let force_bridge =
+        load_rudzio_force_bridge(pkg.manifest_path.as_std_path()).with_context(|| {
+            format!(
+                "loading `[package.metadata.rudzio].force_bridge` from {}",
+                pkg.manifest_path.as_std_path().display()
+            )
+        })?;
+
     Ok(Some(MemberPlan {
         package_name: pkg.name.to_string(),
         manifest_dir: manifest_dir_std,
@@ -619,6 +650,7 @@ fn build_member_plan(pkg: &Package) -> Result<Option<MemberPlan>> {
         edition,
         src_lib_path,
         has_src_rudzio_suite,
+        force_bridge,
         features,
         rudzio_activated_features,
     }))
@@ -1259,6 +1291,58 @@ pub fn load_rudzio_activated_features(manifest_path: &Path) -> Result<Vec<String
     Ok(out)
 }
 
+/// Load `[package.metadata.rudzio].force_bridge` from the member's Cargo.toml.
+///
+/// Members that opt in with `force_bridge = true` get bridged even when
+/// their own `src/**` carries no rudzio surface. Use this for workspace
+/// crates that path-dep on bridged siblings but expose no
+/// `#[rudzio::test]` of their own — without bridging, the consumer's
+/// path-dep would link the original sibling alongside the bridge,
+/// producing two distinct rlibs of the same crate and trait-mismatch
+/// errors throughout the aggregator. Setting this also bypasses
+/// `build_plan`'s "must depend on rudzio" filter, so the consumer no
+/// longer needs a synthetic `rudzio = { ... }` dev-dep just to be
+/// considered.
+///
+/// An absent section yields `false`; a present non-bool value is a hard
+/// error so misconfigurations surface at aggregator-generation time.
+///
+/// # Errors
+///
+/// Returns an error if the manifest cannot be read/parsed, or if the
+/// `[package.metadata.rudzio].force_bridge` value is present but not a
+/// bool.
+#[inline]
+pub fn load_rudzio_force_bridge(manifest_path: &Path) -> Result<bool> {
+    let text = fs::read_to_string(manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?;
+    let doc: DocumentMut = text
+        .parse()
+        .with_context(|| format!("parsing {}", manifest_path.display()))?;
+
+    let Some(package) = doc.get("package").and_then(Item::as_table) else {
+        return Ok(false);
+    };
+    let Some(metadata) = package.get("metadata").and_then(Item::as_table) else {
+        return Ok(false);
+    };
+    let Some(rudzio_meta) = metadata.get("rudzio").and_then(Item::as_table) else {
+        return Ok(false);
+    };
+    let Some(force_item) = rudzio_meta.get("force_bridge") else {
+        return Ok(false);
+    };
+    force_item
+        .as_value()
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            anyhow!(
+                "`[package.metadata.rudzio].force_bridge` in {} must be a bool",
+                manifest_path.display()
+            )
+        })
+}
+
 /// Parse the workspace root's `[workspace.dependencies]` table into a map of `WorkspaceDepSpec`.
 fn read_workspace_deps(workspace_root: &Path) -> Result<BTreeMap<String, WorkspaceDepSpec>> {
     let manifest_path = workspace_root.join("Cargo.toml");
@@ -1622,18 +1706,19 @@ pub fn write_runner(plan: &Plan, out_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Two gates a member must pass to get a bridge crate generated.
+/// Gates a member must pass to get a bridge crate generated.
 ///
 /// It has to be a lib (bridges re-point `[lib] path`, nothing to
-/// re-point for a bin-only crate) AND it has to have rudzio surface
-/// inside `src/**` (otherwise nothing in the member's own compilation
-/// unit needs dev-deps — integration tests in `tests/*.rs` are already
-/// pulled into the aggregator's compilation unit instead and see the
-/// aggregator's deps directly).
+/// re-point for a bin-only crate) AND either have rudzio surface in
+/// `src/**` (the usual case — gives the bridge a concrete reason to
+/// exist) OR opt in via `[package.metadata.rudzio] force_bridge = true`
+/// (the consumer-of-a-bridged-sibling escape hatch).
 #[inline]
 #[must_use]
 pub const fn bridge_applies_to(member: &MemberPlan) -> bool {
-    member.has_lib && member.has_src_rudzio_suite && member.src_lib_path.is_some()
+    member.has_lib
+        && member.src_lib_path.is_some()
+        && (member.has_src_rudzio_suite || member.force_bridge)
 }
 
 /// Emit `<out>/<normalized>/Cargo.toml` for a member's bridge crate.
