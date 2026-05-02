@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
 
+use crate::common::fmt::fmt_duration;
 use crate::config::{CargoMeta, ColorMode, Config, Format, OutputMode, RunIgnoredMode, USAGE};
 use crate::output;
 use crate::output::events::LifecycleEvent;
@@ -817,7 +818,7 @@ fn enable_full_backtrace_default() {
 /// Format `elapsed` for the trailing `<runtime, …>` block using a
 /// short `1.23s`-style representation.
 fn format_elapsed(elapsed: Duration) -> String {
-    format!("{elapsed:.2?}")
+    fmt_duration(elapsed)
 }
 
 /// Wrap `text` with the green ANSI SGR code when `colored` is true.
@@ -1079,8 +1080,9 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
         let _watchdog = thread::spawn(move || {
             thread::sleep(dur);
             if !watchdog_token.is_cancelled() {
+                let dur_text = fmt_duration(dur);
                 write_stderr(&format!(
-                    "\nrun timeout ({dur:.2?}) exceeded, cancelling run...\n"
+                    "\nrun timeout ({dur_text}) exceeded, cancelling run...\n"
                 ));
                 watchdog_token.cancel();
             }
@@ -1110,8 +1112,9 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
                     thread::sleep(Duration::from_millis(50));
                 }
                 thread::sleep(grace);
+                let grace_text = fmt_duration(grace);
                 write_stderr(&format!(
-                    "\nrudzio: {grace:.2?} grace period exceeded after cancellation, \
+                    "\nrudzio: {grace_text} grace period exceeded after cancellation, \
                      force-exiting (some phase ignored cooperative cancel)\n"
                 ));
                 #[expect(unsafe_code, reason = "watchdog runs on a spawned thread; \
@@ -1224,10 +1227,11 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
             bold(&red("FAILED", colored_plain), colored_plain)
         };
 
+        let elapsed_text = fmt_duration(elapsed);
         write_stdout(&format!(
             "test result: {}. {} passed; {} failed; {} panicked; {} timed out; \
              {} cancelled; {} ignored; {} teardown failed; 0 measured; {} total; \
-             {} filtered out; finished in {elapsed:.2?}\n",
+             {} filtered out; finished in {elapsed_text}\n",
             result_label,
             grand_total.passed,
             grand_total.failed,
@@ -1381,7 +1385,8 @@ fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
                 report.strategy,
             );
             if let Some(p50) = report.median() {
-                let _write_ret: Result<(), fmt::Error> = write!(inner, ", p50 {p50:.2?}");
+                let p50_text = fmt_duration(p50);
+                let _write_ret: Result<(), fmt::Error> = write!(inner, ", p50 {p50_text}");
             }
             format!("<{inner}>")
         }

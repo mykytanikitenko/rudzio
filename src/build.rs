@@ -412,11 +412,11 @@ pub fn expose_bins(bin_crate: &str) -> Result<()> {
     }
 
     let status = cmd.status().map_err(|err| {
+        let cargo_display = Path::new(&env.cargo).display();
         Error::with_source(
             format!(
                 "failed to spawn nested `cargo build --bins -p {bin_crate}` \
-                 (CARGO={:?})",
-                env.cargo
+                 (CARGO={cargo_display})"
             ),
             err,
         )

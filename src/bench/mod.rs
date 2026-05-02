@@ -22,6 +22,7 @@ use std::fmt;
 use std::fmt::Write as _;
 use std::time::Duration;
 
+use crate::common::fmt::fmt_duration;
 use crate::test_case::BoxError;
 
 /// Number of linear histogram buckets carried in a
@@ -351,9 +352,11 @@ impl Report {
                 .checked_div(max_count)
                 .unwrap_or(0);
             let bar = "#".repeat(bar_len);
+            let lo_text = fmt_duration(lo);
+            let hi_text = fmt_duration(hi);
             let _write_ret: Result<(), fmt::Error> = writeln!(
                 out,
-                "  [{lo:>9.2?} .. {hi:>9.2?}) |{bar:<width$}  {count}"
+                "  [{lo_text:>9} .. {hi_text:>9}) |{bar:<width$}  {count}"
             );
         }
         out
@@ -415,7 +418,7 @@ impl Report {
         let _samples_ret: Result<(), fmt::Error> =
             writeln!(out, "  samples:           {n}");
         let _wallclock_ret: Result<(), fmt::Error> =
-            writeln!(out, "  wall-clock:        {:.2?}", self.total_elapsed);
+            writeln!(out, "  wall-clock:        {}", fmt_duration(self.total_elapsed));
         if let Some(throughput_milli) = self.throughput_milli_per_sec() {
             // throughput_milli = iter/s × 1000; render `xxxx.yy iter/s`
             // by splitting into integer (÷1000) and centi-fractional
@@ -433,28 +436,35 @@ impl Report {
             );
         }
         if let (Some(min), Some(max)) = (self.min(), self.max()) {
+            let min_text = fmt_duration(min);
+            let max_text = fmt_duration(max);
             let _minmax_ret: Result<(), fmt::Error> =
-                writeln!(out, "  min / max:         {min:.2?} / {max:.2?}");
+                writeln!(out, "  min / max:         {min_text} / {max_text}");
         }
         if let Some(range) = self.range() {
+            let range_text = fmt_duration(range);
             let _range_ret: Result<(), fmt::Error> =
-                writeln!(out, "  range:             {range:.2?}");
+                writeln!(out, "  range:             {range_text}");
         }
         if let Some(mean) = self.mean() {
+            let mean_text = fmt_duration(mean);
             let _mean_ret: Result<(), fmt::Error> =
-                writeln!(out, "  mean:              {mean:.2?}");
+                writeln!(out, "  mean:              {mean_text}");
         }
         if let Some(median) = self.median() {
+            let median_text = fmt_duration(median);
             let _median_ret: Result<(), fmt::Error> =
-                writeln!(out, "  median:            {median:.2?}");
+                writeln!(out, "  median:            {median_text}");
         }
         if let Some(sd) = self.std_dev() {
+            let sd_text = fmt_duration(sd);
             let _sd_ret: Result<(), fmt::Error> =
-                writeln!(out, "  std dev:           {sd:.2?}");
+                writeln!(out, "  std dev:           {sd_text}");
         }
         if let Some(mad) = self.mad() {
+            let mad_text = fmt_duration(mad);
             let _mad_ret: Result<(), fmt::Error> =
-                writeln!(out, "  MAD:               {mad:.2?}");
+                writeln!(out, "  MAD:               {mad_text}");
         }
         if let Some(cv_micro) = self.coefficient_of_variation_micro() {
             // cv_micro carries cov × 10⁶; we render `xxxx.yyy` (3 decimals)
@@ -471,8 +481,9 @@ impl Report {
                 writeln!(out, "  coeff of variation:{cv_text:>8}");
         }
         if let Some(iqr) = self.iqr() {
+            let iqr_text = fmt_duration(iqr);
             let _iqr_ret: Result<(), fmt::Error> =
-                writeln!(out, "  IQR (p75 − p25):   {iqr:.2?}");
+                writeln!(out, "  IQR (p75 − p25):   {iqr_text}");
         }
         if let Some(outliers) = self.outlier_count(3_u32) {
             let _outliers_ret: Result<(), fmt::Error> =
@@ -492,8 +503,9 @@ impl Report {
             (999_u32, "p99.9"),
         ] {
             if let Some(value) = self.percentile_permille(permille) {
+                let value_text = fmt_duration(value);
                 let _percentile_ret: Result<(), fmt::Error> =
-                    writeln!(out, "    {label:>6}:         {value:.2?}");
+                    writeln!(out, "    {label:>6}:         {value_text}");
             }
         }
         if !self.failures.is_empty() {
@@ -701,12 +713,13 @@ impl Report {
         if n == 0 {
             return format!("no successful samples (iterations={})", self.iterations);
         }
+        let min_text = fmt_duration(self.min().unwrap_or_default());
+        let median_text = fmt_duration(self.median().unwrap_or_default());
+        let p95_text =
+            fmt_duration(self.percentile_permille(950_u32).unwrap_or_default());
+        let max_text = fmt_duration(self.max().unwrap_or_default());
         format!(
-            "min {:.2?}, p50 {:.2?}, p95 {:.2?}, max {:.2?} ({n} samples)",
-            self.min().unwrap_or_default(),
-            self.median().unwrap_or_default(),
-            self.percentile_permille(950_u32).unwrap_or_default(),
-            self.max().unwrap_or_default(),
+            "min {min_text}, p50 {median_text}, p95 {p95_text}, max {max_text} ({n} samples)"
         )
     }
 
