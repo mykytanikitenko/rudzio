@@ -27,6 +27,7 @@ use crossbeam_channel::{Receiver, Sender, select};
 use super::color::Policy as ColorPolicy;
 use super::events::{LifecycleEvent, PipeChunk, StdStream, TestId, TestState, TestStateKind};
 use crate::bench::{ProgressSnapshot, HISTOGRAM_BUCKETS};
+use crate::common::time::fmt_duration;
 use crate::config::{Format, OutputMode};
 use crate::runner::{normalize_module_path, qualified_test_name};
 use crate::suite::{TeardownResult, TestOutcome};
@@ -376,7 +377,7 @@ impl Drawer {
             }
             LifecycleEvent::BenchProgress { test_id, snapshot } => {
                 if let Some(state) = self.tests.get_mut(&test_id) {
-                    state.kind = TestStateKind::Bench { snapshot };
+                    state.kind = TestStateKind::Bench { snapshot: Box::new(snapshot) };
                 }
             }
             LifecycleEvent::TestIgnored {
@@ -835,13 +836,13 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
                 )
             } else if let Some(state) = slot.current.and_then(|id| self.tests.get(&id)) {
                 let mut output_lines = running_output_lines(state, self.color, cols, rows_cap);
-                if let TestStateKind::Bench { snapshot } = state.kind {
+                if let TestStateKind::Bench { snapshot } = &state.kind {
                     let used = output_lines.len().saturating_add(1);
                     let remaining = rows_cap
                         .saturating_sub(LIVE_REGION_RESERVED_ROWS)
                         .saturating_sub(used);
                     output_lines.extend(bench_histogram_lines(
-                        &snapshot, self.color, cols, remaining,
+                        snapshot, self.color, cols, remaining,
                     ));
                 }
                 (
@@ -1209,12 +1210,7 @@ fn update_last_line(dst: &mut String, bytes: &[u8]) {
     for line in text.split('\n') {
         if !line.is_empty() {
             dst.clear();
-            let truncated = if line.len() > HINT_MAX_WIDTH {
-                &line[..HINT_MAX_WIDTH]
-            } else {
-                line
-            };
-            dst.push_str(truncated);
+            dst.extend(line.chars().take(HINT_MAX_WIDTH));
         }
     }
 }
@@ -1328,15 +1324,18 @@ pub fn bench_progress_trailing(
 #[inline]
 pub fn running_line(runtime: &str, state: &TestState, color: ColorPolicy, cols: usize) -> String {
     let prefix = format!("{runtime:<RUNTIME_PREFIX_WIDTH$}");
-    let label = match state.kind {
+    let label = match &state.kind {
         TestStateKind::Running => StatusLabel::Run,
         TestStateKind::Bench { .. } => StatusLabel::Bench,
     };
     let tag = render_status_tag(label, color);
     let elapsed = state.started_at.elapsed();
-    let trailing = match state.kind {
-        TestStateKind::Running => format!("<{elapsed:.2?}>"),
-        TestStateKind::Bench { snapshot } => bench_progress_trailing(&snapshot, cols, elapsed),
+    let trailing = match &state.kind {
+        TestStateKind::Running => {
+            let elapsed_text = fmt_duration(elapsed);
+            format!("<{elapsed_text}>")
+        }
+        TestStateKind::Bench { snapshot } => bench_progress_trailing(snapshot, cols, elapsed),
     };
     // Clip `display` so the rendered row stays *strictly* inside
     // `cols` (we leave 1 col slack at the right edge): a row that

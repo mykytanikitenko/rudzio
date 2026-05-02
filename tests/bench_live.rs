@@ -70,7 +70,7 @@ fn fake_bench_state(snapshot: ProgressSnapshot) -> TestState {
             thread::current().id(),
         ),
         TestStateBuffers::empty(),
-        TestStateKind::Bench { snapshot },
+        TestStateKind::Bench { snapshot: Box::new(snapshot) },
     )
 }
 
@@ -194,9 +194,9 @@ impl Harness {
 ])]
 mod tests {
     use super::{
-        ColorPolicy, Duration, Harness, Instant, LifecycleEvent, TestId, TestOutcome,
-        TestStateKind, Vt100, bench_histogram_lines, bench_progress_trailing, fake_bench_report,
-        fake_bench_state, fake_snapshot, running_line, strip_ansi, thread,
+        ColorPolicy, Duration, Harness, Instant, LifecycleEvent, ProgressSnapshot, TestId,
+        TestOutcome, TestStateKind, Vt100, bench_histogram_lines, bench_progress_trailing,
+        fake_bench_report, fake_bench_state, fake_snapshot, running_line, strip_ansi, thread,
     };
 
     /// Trailing block at width ≥100 contains every component the user
@@ -313,12 +313,12 @@ mod tests {
                 visible <= cols,
                 "running_line @ cols={cols}: visible={visible} exceeds cols\n{row:?}",
             );
-            let snap = match state.kind {
+            let snap: &ProgressSnapshot = match &state.kind {
                 TestStateKind::Bench { snapshot } => snapshot,
                 TestStateKind::Running => unreachable!("test fixture sets Bench state"),
                 _ => unreachable!("test fixture sets Bench state"),
             };
-            for (i, line) in bench_histogram_lines(&snap, ColorPolicy::off(), cols, 24)
+            for (i, line) in bench_histogram_lines(snap, ColorPolicy::off(), cols, 24)
                 .iter()
                 .enumerate()
             {

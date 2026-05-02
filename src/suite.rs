@@ -471,9 +471,10 @@ pub async fn drive_per_test_spawn<JoinFut, T, S, Sleep>(
     sleep: Sleep,
 ) -> PhaseOutcome<T>
 where
-    JoinFut: Future<Output = Result<T, Aborted>>,
-    S: Future<Output = ()>,
-    Sleep: Fn(Duration) -> S,
+    JoinFut: Future<Output = Result<T, Aborted>> + Send,
+    T: Send,
+    S: Future<Output = ()> + Send,
+    Sleep: Fn(Duration) -> S + Send + Sync,
 {
     use futures_util::future::{Either, select};
 

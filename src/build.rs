@@ -27,7 +27,7 @@
 //!
 //! ```rust,no_run
 //! // my-runner/build.rs
-//! fn main() -> Result<(), rudzio::build::Error> {
+//! fn main() -> Result<(), rudzio::build::ExposeError> {
 //!     rudzio::build::expose_bins("my-bin-crate")
 //! }
 //! ```
@@ -47,7 +47,7 @@
 //!
 //! ```rust,no_run
 //! // build.rs of a crate that owns both the bins and the lib tests
-//! fn main() -> Result<(), rudzio::build::Error> {
+//! fn main() -> Result<(), rudzio::build::ExposeError> {
 //!     rudzio::build::expose_bins("my-crate")
 //! }
 //! ```
@@ -120,7 +120,7 @@
 //!
 //! Every failure (missing env var, package not in metadata, no bin
 //! targets, nested cargo exit != 0, missing expected output) surfaces
-//! as an explicit [`Error`] with context. There are no silent fallbacks:
+//! as an explicit [`ExposeError`] with context. There are no silent fallbacks:
 //! if the helper can't do its job, your build breaks loudly.
 
 use std::env;
@@ -157,14 +157,14 @@ pub const NESTED_SENTINEL_ENV: &str = "__RUDZIO_EXPOSE_BINS_ACTIVE";
 /// cause (missing env var, cargo metadata failure, nested build failure,
 /// etc.) with a human-readable message.
 #[derive(Debug)]
-pub struct Error {
+pub struct ExposeError {
     /// Human-readable description shown via [`fmt::Display`].
     message: String,
     /// Underlying cause when the failure wraps a lower-level error.
     source: Option<Box<dyn StdError + Send + Sync + 'static>>,
 }
 
-impl Error {
+impl ExposeError {
     /// Build a standalone error carrying only a message (no source).
     fn new(message: impl Into<String>) -> Self {
         Self {
@@ -185,14 +185,14 @@ impl Error {
     }
 }
 
-impl fmt::Display for Error {
+impl fmt::Display for ExposeError {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message)
     }
 }
 
-impl StdError for Error {
+impl StdError for ExposeError {
     #[inline]
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         // `Box<dyn Error + Send + Sync>::deref` yields `&(dyn Error + Send + Sync)`,
@@ -205,7 +205,7 @@ impl StdError for Error {
 }
 
 /// Convenience alias used across this crate's surface.
-pub type Result<T> = StdResult<T, Error>;
+pub type Result<T> = StdResult<T, ExposeError>;
 
 /// Required build-script environment variables, read up-front so errors
 /// surface in one place rather than at the site of first use.
@@ -268,7 +268,7 @@ impl BuildEnv {
             out_dir: require_path_env("OUT_DIR")?,
             profile: require_string_env("PROFILE")?,
             cargo: env::var_os("CARGO").ok_or_else(|| {
-                Error::new(
+                ExposeError::new(
                     "`CARGO` env var missing; `expose_bins` must be called \
                      from a cargo-driven build script",
                 )
@@ -292,7 +292,7 @@ impl ProfileFlag {
         match profile {
             "debug" => Ok(Self::Debug),
             "release" => Ok(Self::Release),
-            other => Err(Error::new(format!(
+            other => Err(ExposeError::new(format!(
                 "unrecognised `PROFILE={other}`; rudzio-build only knows how \
                  to forward `debug` or `release`. Custom profiles with \
                  non-standard `inherits` would need explicit handling."
@@ -364,14 +364,14 @@ pub fn expose_bins(bin_crate: &str) -> Result<()> {
     let metadata = MetadataCommand::new()
         .current_dir(&env.manifest_dir)
         .exec()
-        .map_err(|err| Error::with_source("`cargo metadata` failed", err))?;
+        .map_err(|err| ExposeError::with_source("`cargo metadata` failed", err))?;
 
     let pkg = metadata
         .packages
         .iter()
         .find(|pkg| pkg.name.as_str() == bin_crate)
         .ok_or_else(|| {
-            Error::new(format!(
+            ExposeError::new(format!(
                 "`cargo metadata` did not list a package named `{bin_crate}`. \
                  Add it to the aggregator's `[dependencies]` or \
                  `[dev-dependencies]` so it shows up in the metadata view."
@@ -384,7 +384,7 @@ pub fn expose_bins(bin_crate: &str) -> Result<()> {
         .filter(|target| target.kind.iter().any(|kind| matches!(kind, TargetKind::Bin)))
         .collect();
     if bin_targets.is_empty() {
-        return Err(Error::new(format!(
+        return Err(ExposeError::new(format!(
             "package `{bin_crate}` declares no `[[bin]]` targets"
         )));
     }
@@ -413,7 +413,7 @@ pub fn expose_bins(bin_crate: &str) -> Result<()> {
 
     let status = cmd.status().map_err(|err| {
         let cargo_display = Path::new(&env.cargo).display();
-        Error::with_source(
+        ExposeError::with_source(
             format!(
                 "failed to spawn nested `cargo build --bins -p {bin_crate}` \
                  (CARGO={cargo_display})"
@@ -422,7 +422,7 @@ pub fn expose_bins(bin_crate: &str) -> Result<()> {
         )
     })?;
     if !status.success() {
-        return Err(Error::new(format!(
+        return Err(ExposeError::new(format!(
             "nested `cargo build --bins -p {bin_crate}` exited with {status}"
         )));
     }
@@ -431,7 +431,7 @@ pub fn expose_bins(bin_crate: &str) -> Result<()> {
     for target in &bin_targets {
         let bin_path = bin_dir.join(&target.name);
         if !bin_path.exists() {
-            return Err(Error::new(format!(
+            return Err(ExposeError::new(format!(
                 "nested build reported success but bin `{}` is missing at `{}`",
                 target.name,
                 bin_path.display()
@@ -468,7 +468,7 @@ pub fn expose_bins(bin_crate: &str) -> Result<()> {
 /// ```rust,no_run
 /// // build.rs — make this crate's own bins reachable to tests run by
 /// // `cargo test --lib`.
-/// fn main() -> Result<(), rudzio::build::Error> {
+/// fn main() -> Result<(), rudzio::build::ExposeError> {
 ///     rudzio::build::expose_self_bins()
 /// }
 /// ```
@@ -521,7 +521,7 @@ pub fn sentinel_indicates_nested_call(value: Option<&OsStr>) -> bool {
 /// value to a contextful build-script error.
 fn require_string_env(name: &str) -> Result<String> {
     env::var(name).map_err(|err| {
-        Error::with_source(
+        ExposeError::with_source(
             format!(
                 "`{name}` env var missing; `expose_bins` must be called from \
                  a cargo-driven build script"

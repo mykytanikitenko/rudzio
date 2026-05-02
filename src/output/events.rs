@@ -294,13 +294,16 @@ impl TestState {
 }
 
 /// Current rendering state for a test's live-region slot.
-#[derive(Debug, Clone, Copy)]
+///
+/// `Bench`'s snapshot carries a 32-bucket histogram array, so it is
+/// boxed to keep the unit `Running` variant cheap.
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum TestStateKind {
     /// Under a bench strategy; the most recent progress snapshot
     /// drives the trailing block + mini-histogram in the renderer.
     Bench {
-        snapshot: ProgressSnapshot,
+        snapshot: Box<ProgressSnapshot>,
     },
     /// Ordinary test body running (no bench strategy).
     Running,
