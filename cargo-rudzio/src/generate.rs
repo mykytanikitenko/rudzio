@@ -926,6 +926,63 @@ fn resolve_rudzio_declarations(
     Ok(resolved)
 }
 
+/// Pick the right inline-table shape for the aggregator's rudzio dep:
+/// route through rudzio's bridge when rudzio is itself a bridged
+/// workspace member, otherwise fall back to the workspace-derived spec.
+#[inline]
+#[must_use]
+fn aggregator_rudzio_inline_table(plan: &Plan) -> InlineTable {
+    plan.members
+        .iter()
+        .find(|member| member.package_name == RUDZIO_DEP && bridge_applies_to(member))
+        .map_or_else(
+            || build_rudzio_inline_table(&plan.rudzio_spec),
+            |member| build_rudzio_bridge_inline_table(member, &plan.rudzio_spec),
+        )
+}
+
+/// Render the aggregator's rudzio dep as a sibling-bridge entry pointing
+/// at `rudzio_member`'s generated bridge crate.
+///
+/// Used when rudzio is itself a workspace member of the consumer's
+/// workspace (the rudzio repo dogfooding itself) — without this, the
+/// aggregator's `[dependencies] rudzio = { path = ... }` would compile a
+/// second rudzio rlib alongside the bridges' shared one, and at startup
+/// the linkme `#[distributed_slice]` machinery rudzio uses for test
+/// discovery panics with "duplicate `#[distributed_slice]`". Features
+/// and `default-features` carry over from `spec` so the union of every
+/// member's requested rudzio runtimes still reaches the bridge.
+#[inline]
+#[must_use]
+pub fn build_rudzio_bridge_inline_table(
+    rudzio_member: &MemberPlan,
+    spec: &RudzioSpec,
+) -> InlineTable {
+    let mut tbl = InlineTable::new();
+    tbl.insert(
+        "path",
+        Value::String(Formatted::new(format!(
+            "./members/{}",
+            bridge_dir_name(rudzio_member)
+        ))),
+    );
+    tbl.insert(
+        "package",
+        Value::String(Formatted::new(bridge_package_name(rudzio_member))),
+    );
+    if !spec.features.is_empty() {
+        let mut feats = Array::new();
+        for feat in &spec.features {
+            feats.push(Value::String(Formatted::new(feat.clone())));
+        }
+        tbl.insert("features", Value::Array(feats));
+    }
+    if !spec.uses_default_features {
+        tbl.insert("default-features", Value::Boolean(Formatted::new(false)));
+    }
+    tbl
+}
+
 /// Render a `RudzioSpec` as a Cargo dependency inline table.
 ///
 /// Emits the minimal correct shape: location keys (`path` / `git` + ref
@@ -1799,6 +1856,16 @@ fn build_bridge_dependencies(plan: &Plan, member: &MemberPlan) -> Result<Table> 
 
     let mut merged: BTreeMap<String, DevDepSpec> = BTreeMap::new();
     for dep in &member.dev_deps {
+        // Skip self-references in the member's own [dev-dependencies]
+        // (typical of dogfooding setups, e.g. rudzio's own root manifest
+        // declares `rudzio = { path = "." }` to test itself). Without
+        // this guard, the sibling-bridge redirect in `render_dev_dep`
+        // would point the bridge at its own package and cargo halts with
+        // a `cyclic package dependency` error. The rudzio-injection
+        // block below fills the entry back in from the workspace spec.
+        if dep.name == member.package_name {
+            continue;
+        }
         let entry_name = dep.rename.as_deref().unwrap_or(&dep.name).to_owned();
         merged
             .entry(entry_name)
@@ -1824,7 +1891,14 @@ fn build_bridge_dependencies(plan: &Plan, member: &MemberPlan) -> Result<Table> 
     // already surfaces it; if the member didn't declare rudzio at all
     // (defensive — we already filter to rudzio-using members) we inject
     // the aggregator's unified spec so `use ::rudzio::*` still resolves.
-    if !deps.contains_key(RUDZIO_DEP) {
+    //
+    // Skip the inject for rudzio's own bridge: a `rudzio` dep on the
+    // rudzio bridge would either self-loop (after sibling-bridge
+    // redirection) or pull in `/rudzio` as a second compile unit
+    // alongside the bridge, leading to duplicate `#[distributed_slice]`
+    // registrations at runtime. Rudzio's own src uses `crate::*` for
+    // self-references; an extern `rudzio` crate isn't needed.
+    if member.package_name != RUDZIO_DEP && !deps.contains_key(RUDZIO_DEP) {
         let tbl = build_rudzio_inline_table(&plan.rudzio_spec);
         deps.insert(RUDZIO_DEP, Item::Value(Value::InlineTable(tbl)));
     }
@@ -1954,11 +2028,18 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
     //
     // rudzio: derived from how workspace members declare it (path, git,
     // or version — never hardcoded to the workspace root, which is wrong
-    // for downstream users whose workspace root is NOT rudzio).
-    {
-        let tbl = build_rudzio_inline_table(&plan.rudzio_spec);
-        deps.insert("rudzio", Item::Value(Value::InlineTable(tbl)));
-    }
+    // for downstream users whose workspace root is NOT rudzio). When
+    // rudzio is itself a bridged workspace member (rudzio's own repo
+    // dogfooding), route through that member's bridge so the aggregator
+    // and the bridges link to a single rudzio rlib — otherwise the
+    // linkme `#[distributed_slice]` machinery rudzio uses for test
+    // discovery panics with `duplicate #[distributed_slice]` at startup
+    // because two distinct rudzio compile units each register the
+    // collection.
+    deps.insert(
+        "rudzio",
+        Item::Value(Value::InlineTable(aggregator_rudzio_inline_table(plan))),
+    );
 
     // Every rudzio-using member as a path dep with default features.
     // Skip the workspace root itself (already injected as
@@ -2058,8 +2139,77 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
     Ok(doc.to_string())
 }
 
+/// Render `dep` as a sibling-bridge dependency entry when its package
+/// name matches another bridged member of `plan`.
+///
+/// Without this redirection, the bridge's `[dependencies]` would point
+/// at the original member path/version while the aggregator's
+/// `[dependencies]` points at the sibling's bridge — cargo would then
+/// compile the same crate twice (different package IDs because the
+/// paths differ) and the aggregator would drown in
+/// `the trait bound X: Y is not satisfied` errors at link time.
+///
+/// Matches against `member.package_name` (cargo's `[package].name`) so
+/// renamed deps (`alias = { package = "real-pkg", ... }`) still resolve
+/// to the right sibling — `dep.name` is already the post-rename real
+/// package name (see `apply_dev_dep_field`'s `package` branch).
+/// Features and `default-features` propagate using the same merge rules
+/// as the workspace-inherited / direct branches in `render_dev_dep`, so
+/// feature flags reach the bridge's mirrored `[features]` table.
+fn render_sibling_bridge_dep(dep: &DevDepSpec, plan: &Plan) -> Option<Item> {
+    let sibling = plan
+        .members
+        .iter()
+        .find(|member| member.package_name == dep.name && bridge_applies_to(member))?;
+
+    let mut tbl = InlineTable::new();
+    tbl.insert(
+        "path",
+        Value::String(Formatted::new(format!("../{}", bridge_dir_name(sibling)))),
+    );
+    tbl.insert(
+        "package",
+        Value::String(Formatted::new(bridge_package_name(sibling))),
+    );
+
+    let ws_entry = if dep.workspace_inherited {
+        plan.workspace_deps.get(&dep.name)
+    } else {
+        None
+    };
+    let mut feats: Vec<String> = ws_entry
+        .map(|ws| ws.features.clone())
+        .unwrap_or_default();
+    feats.extend(dep.features.iter().cloned());
+    feats.sort();
+    feats.dedup();
+    if !feats.is_empty() {
+        let mut arr = Array::new();
+        for feat in feats {
+            arr.push(Value::String(Formatted::new(feat)));
+        }
+        tbl.insert("features", Value::Array(arr));
+    }
+
+    let uses_defaults =
+        ws_entry.is_none_or(|ws| ws.uses_default_features) && dep.uses_default_features;
+    if !uses_defaults {
+        tbl.insert("default-features", Value::Boolean(Formatted::new(false)));
+    }
+
+    if dep.optional {
+        tbl.insert("optional", Value::Boolean(Formatted::new(true)));
+    }
+
+    Some(Item::Value(Value::InlineTable(tbl)))
+}
+
 /// Render a single `DevDepSpec` as a TOML inline table (or bare version string for trivial entries).
 fn render_dev_dep(dep: &DevDepSpec, plan: &Plan) -> Result<Item> {
+    if let Some(item) = render_sibling_bridge_dep(dep, plan) {
+        return Ok(item);
+    }
+
     let mut tbl = InlineTable::new();
     if dep.workspace_inherited {
         // Expand the workspace-inherited dev-dep to a concrete path/version

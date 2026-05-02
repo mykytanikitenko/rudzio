@@ -181,19 +181,20 @@ mod tests {
     #[rudzio::test]
     fn sibling_bridge_redirection_in_bridge_dependencies() -> anyhow::Result<()> {
         let root = synthetic_root();
-        let mut a = bridged_member("A", &root);
-        let b = bridged_member("B", &root);
-        let mut a_dep_on_b = DevDepSpec::new("B".to_owned());
-        a_dep_on_b.workspace_inherited = true;
-        a.dev_deps = vec![a_dep_on_b];
+        let mut consumer = bridged_member("A", &root);
+        let provider = bridged_member("B", &root);
+        let mut consumer_dep_on_provider = DevDepSpec::new("B".to_owned());
+        consumer_dep_on_provider.workspace_inherited = true;
+        consumer.dev_deps = vec![consumer_dep_on_provider];
 
         let mut workspace_deps: BTreeMap<String, WorkspaceDepSpec> = BTreeMap::new();
-        let mut b_ws = WorkspaceDepSpec::new();
-        b_ws.path = Some(root.join("B"));
-        let _previous: Option<WorkspaceDepSpec> = workspace_deps.insert("B".to_owned(), b_ws);
+        let mut provider_ws = WorkspaceDepSpec::new();
+        provider_ws.path = Some(root.join("B"));
+        let _previous: Option<WorkspaceDepSpec> =
+            workspace_deps.insert("B".to_owned(), provider_ws);
 
-        let plan = make_plan(vec![a.clone(), b], &root, workspace_deps);
-        let toml = build_bridge_cargo_toml(&plan, &a)?;
+        let plan = make_plan(vec![consumer.clone(), provider], &root, workspace_deps);
+        let toml = build_bridge_cargo_toml(&plan, &consumer)?;
         let doc: DocumentMut = toml.parse()?;
 
         let entry = doc
@@ -232,9 +233,9 @@ mod tests {
     #[rudzio::test]
     fn bridge_cargo_toml_registers_rudzio_test_cfg() -> anyhow::Result<()> {
         let root = synthetic_root();
-        let a = bridged_member("A", &root);
-        let plan = make_plan(vec![a.clone()], &root, BTreeMap::new());
-        let toml = build_bridge_cargo_toml(&plan, &a)?;
+        let member = bridged_member("A", &root);
+        let plan = make_plan(vec![member.clone()], &root, BTreeMap::new());
+        let toml = build_bridge_cargo_toml(&plan, &member)?;
         let doc: DocumentMut = toml.parse()?;
 
         let lints_rust = doc
@@ -248,7 +249,7 @@ mod tests {
             })?;
         let unexpected_cfgs = lints_rust.get("unexpected_cfgs").ok_or_else(|| {
             anyhow::anyhow!(
-                "[lints.rust].unexpected_cfgs missing — required to register \
+                "[lints.rust].unexpected_cfgs missing -- required to register \
                  `cfg(rudzio_test)` so member src using `cfg_attr(rudzio_test, ...)` \
                  doesn't draw `unexpected cfg condition name` warnings"
             )
@@ -261,9 +262,12 @@ mod tests {
                     "[lints.rust].unexpected_cfgs.check-cfg missing or not an array"
                 )
             })?;
-        let registered: Vec<&str> = check_cfg.iter().filter_map(|v| v.as_str()).collect();
+        let registered: Vec<&str> = check_cfg
+            .iter()
+            .filter_map(toml_edit::Value::as_str)
+            .collect();
         anyhow::ensure!(
-            registered.iter().any(|entry| *entry == "cfg(rudzio_test)"),
+            registered.contains(&"cfg(rudzio_test)"),
             "[lints.rust].unexpected_cfgs.check-cfg must include `cfg(rudzio_test)`; \
              got {registered:?}"
         );
@@ -318,7 +322,7 @@ A = { workspace = true }
 [dev-dependencies]
 rudzio = { workspace = true, features = [\"common\"] }
 ";
-        let lib_rs = "// rudzio_test marker — triggers detect_src_rudzio_suite\n";
+        let lib_rs = "// rudzio_test marker -- triggers detect_src_rudzio_suite\n";
 
         write_synthetic_workspace(
             root,
