@@ -9,6 +9,7 @@ readme = "README.md"
 keywords = ["testing", "async", "migration", "cargo-test", "rudzio"]
 categories = ["development-tools::testing", "command-line-utilities"]
 autotests = false
+exclude = ["fixtures/"]
 
 [lib]
 name = "rudzio_migrate"

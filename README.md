@@ -15,40 +15,31 @@ per-test concerns.
 
 ## Status
 
-`0.1.x`. Not yet published to crates.io. The shape of `Suite`, `Test`,
-`Runtime`, and the suite macro is intentionally stable — there are tests
-asserting on rendered output format and on cancellation/teardown behaviour.
-Internals (`SuiteRunner`, `TestToken` layout, `RuntimeGroupKey` hashing)
-are `#[doc(hidden)]` and may change.
+`0.1.x`. The shape of `Suite`, `Test`, `Runtime`, and the suite macro is
+intentionally stable — there are tests asserting on rendered output
+format and on cancellation/teardown behaviour. Internals (`SuiteRunner`,
+`TestToken` layout, `RuntimeGroupKey` hashing) are `#[doc(hidden)]` and
+may change.
 
 ## Installation
 
-Add rudzio as a git dependency. Pin to a commit for reproducibility.
-
 ```toml
 [dev-dependencies]
-rudzio = { git = "https://github.com/mykytanikitenko/rudzio", features = ["common", "runtime-tokio-multi-thread"] }
+rudzio = { version = "0.1", features = ["common", "runtime-tokio-multi-thread"] }
 ```
 
 Install the `cargo-rudzio` subcommand (provides both `cargo rudzio test`
 and `cargo rudzio migrate`):
 
 ```sh
-cargo install --git https://github.com/mykytanikitenko/rudzio cargo-rudzio
-```
-
-Or from a clone:
-
-```sh
-git clone https://github.com/mykytanikitenko/rudzio
-cargo install --path rudzio/cargo-rudzio
+cargo install cargo-rudzio
 ```
 
 The migrator can also be installed standalone if you don't want the
 `cargo rudzio test` aggregator:
 
 ```sh
-cargo install --git https://github.com/mykytanikitenko/rudzio rudzio-migrate
+cargo install rudzio-migrate
 ```
 
 ### Features
@@ -160,7 +151,7 @@ path = "tests/main.rs"
 harness = false  # rudzio replaces libtest
 
 [dev-dependencies]
-rudzio = { git = "https://github.com/mykytanikitenko/rudzio", features = ["common", "runtime-tokio-multi-thread"] }
+rudzio = { version = "0.1", features = ["common", "runtime-tokio-multi-thread"] }
 ```
 
 `harness = false` is required — the `#[rudzio::main]` attribute installs
@@ -522,7 +513,7 @@ rudzio without adding a `tests/` directory. Two edits:
 harness = false            # opt out of libtest for the lib's own test target
 
 [dev-dependencies]
-rudzio = { git = "https://github.com/mykytanikitenko/rudzio", features = ["runtime-tokio-multi-thread", "common"] }
+rudzio = { version = "0.1", features = ["runtime-tokio-multi-thread", "common"] }
 ```
 
 ```rust
@@ -575,7 +566,7 @@ integration = []
 e2e         = []
 
 [dev-dependencies]
-rudzio = { git = "https://github.com/mykytanikitenko/rudzio", features = ["runtime-tokio-multi-thread", "common"] }
+rudzio = { version = "0.1", features = ["runtime-tokio-multi-thread", "common"] }
 ```
 
 ```rust
@@ -648,7 +639,7 @@ for you; if you hand-roll, call it once from your aggregator's `build.rs`:
 my-bin-crate = { path = "../my-bin-crate" }
 
 [build-dependencies]
-rudzio = { git = "https://github.com/mykytanikitenko/rudzio", default-features = false, features = ["build"] }
+rudzio = { version = "0.1", default-features = false, features = ["build"] }
 ```
 
 ```rust
