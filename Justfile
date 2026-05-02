@@ -8,6 +8,13 @@ default:
 nix:
     nix develop
 
+# Activate the in-repo git hooks (.githooks/) for this checkout.
+# Currently installs a commit-msg hook that rejects AI-attribution
+# trailers (`Co-Authored-By: Claude`, etc.). Run once per clone.
+setup-hooks:
+    git config core.hooksPath .githooks
+    @echo "Hooks active: .githooks/"
+
 # Format Rust code
 fix-fmt:
     cargo fmt --all
