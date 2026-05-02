@@ -1,0 +1,435 @@
+//! Reproducers for the four cross-bridge generation gaps documented in
+//! the workspace-wide `cargo rudzio test` blockers writeup. Each test
+//! fails with the current `cargo_rudzio::generate` pipeline and passes
+//! once the corresponding fix lands.
+//!
+//! Issues 1 and 4 are pure-shape assertions on `build_bridge_cargo_toml`
+//! and run as fast unit tests against directly-constructed `Plan`s.
+//! Issues 2 and 3 require driving the full pipeline through a synthetic
+//! tempdir workspace because their symptoms (dev-only sibling cycle
+//! elision; `force_bridge` opt-in for non-rudzio-test consumers) are
+//! observable only end-to-end, after `read_dev_deps` and member-plan
+//! construction. The end-to-end tests invoke the `cargo-rudzio` binary
+//! as a subprocess via `env!("CARGO_BIN_EXE_cargo-rudzio")` so they
+//! exercise the same code path a downstream user hits.
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use cargo_metadata::camino::Utf8PathBuf;
+use cargo_rudzio::generate::{
+    DevDepSpec, MemberPlan, Plan, RudzioLocation, RudzioSpec, WorkspaceDepSpec,
+    build_bridge_cargo_toml,
+};
+use rudzio::common::context::Suite;
+use rudzio::runtime::tokio::Multithread as TokioMultithread;
+use tempfile::TempDir;
+use toml_edit::{DocumentMut, Item};
+
+/// Construct a fully-bridged `MemberPlan` rooted at `<root>/<name>`.
+///
+/// The directory does not need to exist on disk; the pure-shape tests
+/// feed this straight into `build_bridge_cargo_toml`, which never stats
+/// its inputs.
+fn bridged_member(name: &str, root: &Path) -> MemberPlan {
+    let dir = root.join(name);
+    let mut member = MemberPlan::new(name.to_owned(), dir.clone());
+    member.has_lib = true;
+    member.has_src_rudzio_suite = true;
+    member.src_lib_path = Some(dir.join("src").join("lib.rs"));
+    "2024".clone_into(&mut member.edition);
+    member
+}
+
+/// Build a `Plan` over `members` rooted at `root`, with `workspace_deps`
+/// registered. The `target_directory` is set to `<root>/target`; rudzio
+/// is registered as a registry-version dep (the bridge's own
+/// `[dependencies]` injection only runs when no member already carries
+/// rudzio, which is not exercised by these shape tests).
+fn make_plan(
+    members: Vec<MemberPlan>,
+    root: &Path,
+    workspace_deps: BTreeMap<String, WorkspaceDepSpec>,
+) -> Plan {
+    let rudzio_spec = RudzioSpec::new(
+        RudzioLocation::Version("0.1".to_owned()),
+        Vec::new(),
+        true,
+    );
+    let mut plan = Plan::new(
+        Utf8PathBuf::from(root.to_string_lossy().into_owned()),
+        Utf8PathBuf::from(format!("{}/target", root.display())),
+        rudzio_spec,
+    );
+    plan.members = members;
+    plan.workspace_deps = workspace_deps;
+    plan
+}
+
+/// Synthetic workspace path used by the pure-shape tests. The directory
+/// does not exist on disk.
+fn synthetic_root() -> PathBuf {
+    PathBuf::from("/nonexistent/cross-bridge-spec-ws")
+}
+
+/// Materialise a synthetic workspace at `root`: writes
+/// `Cargo.toml` for the workspace, a stub `rudzio-stub/` package (named
+/// `rudzio` so the cargo-rudzio "must depend on rudzio" filter accepts
+/// the bridged members), then each entry in `members` as `<name>/Cargo.toml`
+/// + `<name>/src/lib.rs`.
+fn write_synthetic_workspace(
+    root: &Path,
+    members: &[(&str, &str, &str)],
+) -> anyhow::Result<()> {
+    let mut workspace_toml = String::from("[workspace]\nmembers = [");
+    let mut first = true;
+    for (name, _, _) in members {
+        if !first {
+            workspace_toml.push_str(", ");
+        }
+        first = false;
+        workspace_toml.push('"');
+        workspace_toml.push_str(name);
+        workspace_toml.push('"');
+    }
+    workspace_toml.push_str(", \"rudzio-stub\"]\nresolver = \"2\"\n\n");
+    workspace_toml.push_str("[workspace.dependencies]\n");
+    for (name, _, _) in members {
+        workspace_toml.push_str(name);
+        workspace_toml.push_str(" = { path = \"");
+        workspace_toml.push_str(name);
+        workspace_toml.push_str("\" }\n");
+    }
+    workspace_toml.push_str("rudzio = { path = \"rudzio-stub\" }\n");
+    fs::write(root.join("Cargo.toml"), &workspace_toml)?;
+
+    let stub_dir = root.join("rudzio-stub");
+    fs::create_dir_all(stub_dir.join("src"))?;
+    fs::write(
+        stub_dir.join("Cargo.toml"),
+        "[package]\n\
+         name = \"rudzio\"\n\
+         version = \"0.0.0\"\n\
+         edition = \"2021\"\n\
+         publish = false\n\
+         \n\
+         [features]\n\
+         common = []\n\
+         \n\
+         [lib]\n\
+         path = \"src/lib.rs\"\n",
+    )?;
+    fs::write(stub_dir.join("src").join("lib.rs"), "")?;
+
+    for (name, manifest, lib) in members {
+        let dir = root.join(name);
+        fs::create_dir_all(dir.join("src"))?;
+        fs::write(dir.join("Cargo.toml"), *manifest)?;
+        fs::write(dir.join("src").join("lib.rs"), *lib)?;
+    }
+    Ok(())
+}
+
+/// Run `cargo-rudzio generate-runner --output <out>` from `cwd`, surfacing
+/// captured stdout/stderr in the failure message when the subprocess
+/// returns non-zero. The binary path comes from
+/// `env!("CARGO_BIN_EXE_cargo-rudzio")`, which is set both by cargo's
+/// own integration-test machinery and by the rudzio aggregator's
+/// `expose_member_bins` build script.
+fn generate_runner(cwd: &Path, out: &Path) -> anyhow::Result<()> {
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-rudzio"))
+        .current_dir(cwd)
+        .arg("generate-runner")
+        .arg("--output")
+        .arg(out)
+        .output()?;
+    anyhow::ensure!(
+        output.status.success(),
+        "cargo-rudzio generate-runner failed (status {}):\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    Ok(())
+}
+
+#[rudzio::suite([
+    (
+        runtime = TokioMultithread::new,
+        suite = Suite,
+        test = Test,
+    ),
+])]
+mod tests {
+    use super::{
+        BTreeMap, Item, Path, PathBuf, TempDir, WorkspaceDepSpec, bridged_member,
+        build_bridge_cargo_toml, generate_runner, make_plan, synthetic_root,
+        write_synthetic_workspace, DevDepSpec, DocumentMut, fs,
+    };
+
+    /// **Issue 1** — sibling-bridge dependency redirection.
+    ///
+    /// When bridge `A`'s rendered `[dependencies]` includes a name that is
+    /// itself a bridged sibling, the entry must point at the SIBLING'S
+    /// bridge — `path = "../<sibling>"`, `package = "<sibling>_rudzio_bridge"`.
+    /// Today `render_dev_dep` copies the workspace dep's `path` verbatim,
+    /// so the original member rlib gets linked alongside the bridge rlib
+    /// and the aggregator drowns in `the trait bound X: Y is not satisfied`
+    /// errors at link time.
+    #[rudzio::test]
+    fn sibling_bridge_redirection_in_bridge_dependencies() -> anyhow::Result<()> {
+        let root = synthetic_root();
+        let mut a = bridged_member("A", &root);
+        let b = bridged_member("B", &root);
+        let mut a_dep_on_b = DevDepSpec::new("B".to_owned());
+        a_dep_on_b.workspace_inherited = true;
+        a.dev_deps = vec![a_dep_on_b];
+
+        let mut workspace_deps: BTreeMap<String, WorkspaceDepSpec> = BTreeMap::new();
+        let mut b_ws = WorkspaceDepSpec::new();
+        b_ws.path = Some(root.join("B"));
+        let _previous: Option<WorkspaceDepSpec> = workspace_deps.insert("B".to_owned(), b_ws);
+
+        let plan = make_plan(vec![a.clone(), b], &root, workspace_deps);
+        let toml = build_bridge_cargo_toml(&plan, &a)?;
+        let doc: DocumentMut = toml.parse()?;
+
+        let entry = doc
+            .get("dependencies")
+            .and_then(|item| item.get("B"))
+            .ok_or_else(|| anyhow::anyhow!("bridge A's [dependencies] missing key `B`"))?;
+        let path = entry
+            .get("path")
+            .and_then(Item::as_str)
+            .ok_or_else(|| anyhow::anyhow!("[dependencies].B.path missing"))?;
+        let package = entry.get("package").and_then(Item::as_str);
+
+        anyhow::ensure!(
+            path == "../B",
+            "bridge A → B should point at sibling bridge dir (path = \"../B\"), \
+             not the original member path; got {path:?}"
+        );
+        anyhow::ensure!(
+            package == Some("B_rudzio_bridge"),
+            "bridge A → B should declare package = \"B_rudzio_bridge\" so cargo \
+             unifies on a single B rlib; got {package:?}"
+        );
+        Ok(())
+    }
+
+    /// **Issue 4** — bridge `Cargo.toml` registers `cfg(rudzio_test)` via
+    /// `[lints.rust]`.
+    ///
+    /// Each bridge build.rs already emits
+    /// `cargo::rustc-check-cfg=cfg(rudzio_test)`, but downstream workspaces
+    /// still see `unexpected cfg condition name: rudzio_test` warnings during
+    /// the metadata / pre-build phase against `cfg_attr(any(test, rudzio_test), ...)`
+    /// in member src. Belt-and-suspenders: every bridge `Cargo.toml` carries
+    /// a `[lints.rust]` block that registers `rudzio_test` as a known cfg,
+    /// regardless of which cargo/rustc version is consuming the build script.
+    #[rudzio::test]
+    fn bridge_cargo_toml_registers_rudzio_test_cfg() -> anyhow::Result<()> {
+        let root = synthetic_root();
+        let a = bridged_member("A", &root);
+        let plan = make_plan(vec![a.clone()], &root, BTreeMap::new());
+        let toml = build_bridge_cargo_toml(&plan, &a)?;
+        let doc: DocumentMut = toml.parse()?;
+
+        let lints_rust = doc
+            .get("lints")
+            .and_then(|item| item.get("rust"))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "bridge Cargo.toml missing [lints.rust]; nothing registers \
+                     `cfg(rudzio_test)` as a known cfg name"
+                )
+            })?;
+        let unexpected_cfgs = lints_rust.get("unexpected_cfgs").ok_or_else(|| {
+            anyhow::anyhow!(
+                "[lints.rust].unexpected_cfgs missing — required to register \
+                 `cfg(rudzio_test)` so member src using `cfg_attr(rudzio_test, ...)` \
+                 doesn't draw `unexpected cfg condition name` warnings"
+            )
+        })?;
+        let check_cfg = unexpected_cfgs
+            .get("check-cfg")
+            .and_then(Item::as_array)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "[lints.rust].unexpected_cfgs.check-cfg missing or not an array"
+                )
+            })?;
+        let registered: Vec<&str> = check_cfg.iter().filter_map(|v| v.as_str()).collect();
+        anyhow::ensure!(
+            registered.iter().any(|entry| *entry == "cfg(rudzio_test)"),
+            "[lints.rust].unexpected_cfgs.check-cfg must include `cfg(rudzio_test)`; \
+             got {registered:?}"
+        );
+        Ok(())
+    }
+
+    /// **Issue 2** — dev-only sibling deps must be elided from the bridge.
+    ///
+    /// `A` carries `B` only under `[dev-dependencies]` (test-only). `B`
+    /// carries `A` under `[dependencies]` (production-required). Once
+    /// Issue 1's sibling-bridge redirection lands, naively merging dev-deps
+    /// into the bridge's `[dependencies]` gives both bridges a path-dep on
+    /// each other and cargo halts with `error: cyclic package dependency`.
+    /// The fix: track dev-only vs regular at parse time and skip dev-only
+    /// sibling deps when emitting bridge `[dependencies]` (the aggregator's
+    /// own `[dependencies]` already pulls in every bridged sibling, so the
+    /// test-time path stays sound).
+    #[rudzio::test]
+    fn dev_only_sibling_dep_is_dropped_from_bridge() -> anyhow::Result<()> {
+        let workspace = TempDir::new()?;
+        let root: &Path = workspace.path();
+
+        let a_toml = "\
+[package]
+name = \"A\"
+version = \"0.0.0\"
+edition = \"2021\"
+publish = false
+
+[lib]
+path = \"src/lib.rs\"
+
+[dependencies]
+
+[dev-dependencies]
+B = { workspace = true }
+rudzio = { workspace = true, features = [\"common\"] }
+";
+        let b_toml = "\
+[package]
+name = \"B\"
+version = \"0.0.0\"
+edition = \"2021\"
+publish = false
+
+[lib]
+path = \"src/lib.rs\"
+
+[dependencies]
+A = { workspace = true }
+
+[dev-dependencies]
+rudzio = { workspace = true, features = [\"common\"] }
+";
+        let lib_rs = "// rudzio_test marker — triggers detect_src_rudzio_suite\n";
+
+        write_synthetic_workspace(
+            root,
+            &[("A", a_toml, lib_rs), ("B", b_toml, lib_rs)],
+        )?;
+
+        let out: PathBuf = root.join("agg");
+        generate_runner(root, &out)?;
+
+        let bridge_toml_path = out.join("members").join("A").join("Cargo.toml");
+        let bridge_toml = fs::read_to_string(&bridge_toml_path).map_err(|err| {
+            anyhow::anyhow!(
+                "reading bridge A's Cargo.toml at {}: {err}",
+                bridge_toml_path.display()
+            )
+        })?;
+        let doc: DocumentMut = bridge_toml.parse()?;
+        let deps = doc
+            .get("dependencies")
+            .and_then(Item::as_table)
+            .ok_or_else(|| {
+                anyhow::anyhow!("bridge A is missing a [dependencies] table entirely")
+            })?;
+        anyhow::ensure!(
+            !deps.contains_key("B"),
+            "bridge A's [dependencies] must NOT include `B`: B was declared only \
+             under [dev-dependencies] in A's manifest, and B is a bridged sibling, \
+             so including it forms a cycle once sibling-bridge redirection (Issue 1) \
+             lands. Got [dependencies] keys: {:?}",
+            deps.iter().map(|(key, _)| key).collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    /// **Issue 3** — `[package.metadata.rudzio] force_bridge = true` opt-in.
+    ///
+    /// `consumer` has a regular `[dependencies] shared = ...`, where `shared`
+    /// is a bridged sibling. `consumer` itself carries no rudzio surface in
+    /// `src/**`, so `bridge_applies_to(consumer)` returns false today and
+    /// the aggregator gets `consumer → shared (original)` AND
+    /// `shared (bridge)`, producing two distinct `shared` rlibs at link
+    /// time. The fix: when `[package.metadata.rudzio] force_bridge = true`
+    /// is set, bridge the consumer regardless of whether its own src
+    /// references rudzio.
+    #[rudzio::test]
+    fn force_bridge_metadata_opts_a_consumer_into_bridging() -> anyhow::Result<()> {
+        let workspace = TempDir::new()?;
+        let root: &Path = workspace.path();
+
+        let consumer_toml = "\
+[package]
+name = \"consumer\"
+version = \"0.0.0\"
+edition = \"2021\"
+publish = false
+
+[package.metadata.rudzio]
+force_bridge = true
+
+[lib]
+path = \"src/lib.rs\"
+
+[dependencies]
+shared = { workspace = true }
+
+[dev-dependencies]
+rudzio = { workspace = true, features = [\"common\"] }
+";
+        // No `rudzio_test` substring anywhere — detect_src_rudzio_suite
+        // returns false, so the only path to bridging this member is the
+        // `force_bridge = true` opt-in.
+        let consumer_lib_rs = "pub fn _ok() {}\n";
+
+        let shared_toml = "\
+[package]
+name = \"shared\"
+version = \"0.0.0\"
+edition = \"2021\"
+publish = false
+
+[lib]
+path = \"src/lib.rs\"
+
+[dependencies]
+
+[dev-dependencies]
+rudzio = { workspace = true, features = [\"common\"] }
+";
+        let shared_lib_rs = "// rudzio_test marker\npub fn _ok() {}\n";
+
+        write_synthetic_workspace(
+            root,
+            &[
+                ("consumer", consumer_toml, consumer_lib_rs),
+                ("shared", shared_toml, shared_lib_rs),
+            ],
+        )?;
+
+        let out: PathBuf = root.join("agg");
+        generate_runner(root, &out)?;
+
+        let consumer_bridge = out.join("members").join("consumer").join("Cargo.toml");
+        anyhow::ensure!(
+            consumer_bridge.exists(),
+            "consumer's bridge Cargo.toml must exist at {} when \
+             `[package.metadata.rudzio] force_bridge = true` is set. Without \
+             bridging, `consumer`'s path-dep on `shared` is linked alongside \
+             `shared_rudzio_bridge`, producing two distinct `shared` rlibs and \
+             trait-mismatch errors throughout the aggregator.",
+            consumer_bridge.display()
+        );
+        Ok(())
+    }
+}
