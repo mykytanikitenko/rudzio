@@ -344,40 +344,19 @@ impl Drawer {
                 runtime_name,
                 thread,
                 at,
-            } => {
-                let state = TestState {
-                    module_path,
-                    test_name,
-                    runtime_name,
-                    thread,
-                    started_at: at,
-                    kind: TestStateKind::Running,
-                    stdout_buffer: Vec::new(),
-                    stderr_buffer: Vec::new(),
-                    last_output_line: String::new(),
-                    recent_output: Vec::new(),
-                };
-                drop(self.tests.insert(test_id, state));
-                let _previous_thread_test: Option<TestId> =
-                    self.thread_to_test.insert(thread, test_id);
-                let had_slot = self.slots.contains_key(&thread);
-                if !had_slot {
-                    self.slot_order.push(thread);
-                }
-                let entry = self.slots.entry(thread).or_insert(RuntimeSlot {
-                    runtime_name,
-                    current: None,
-                    lifecycle: None,
-                });
-                entry.runtime_name = runtime_name;
-                entry.current = Some(test_id);
-                if matches!(self.output_mode, OutputMode::Plain) {
-                    self.emit_plain_started(test_id);
-                }
-            }
+            } => self.handle_test_started(
+                test_id,
+                module_path,
+                test_name,
+                runtime_name,
+                thread,
+                at,
+            ),
             LifecycleEvent::BenchProgress { test_id, snapshot } => {
                 if let Some(state) = self.tests.get_mut(&test_id) {
-                    state.kind = TestStateKind::Bench { snapshot: Box::new(snapshot) };
+                    state.kind = TestStateKind::Bench {
+                        snapshot: Box::new(snapshot),
+                    };
                 }
             }
             LifecycleEvent::TestIgnored {
@@ -385,25 +364,7 @@ impl Drawer {
                 test_name,
                 runtime_name,
                 reason,
-            } => {
-                self.summary.ignored = self.summary.ignored.saturating_add(1);
-                let display = qualified_test_name(module_path, test_name);
-                if matches!(self.output_mode, OutputMode::Live) {
-                    self.clear_live_region();
-                }
-                let tag_rendered = render_status_tag(StatusLabel::Ignore, self.color);
-                let lhs_naked = format!("{:width$} {display}", "", width = STATUS_TAG_WIDTH);
-                let lhs_rendered = format!("{tag_rendered} {display}");
-                let trailing = if reason.is_empty() {
-                    format!("<{runtime_name}>")
-                } else {
-                    format!("<{runtime_name}, {reason}>")
-                };
-                let line = render_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
-                drop(self.terminal.write_all(line.as_bytes()));
-                drop(self.terminal.write_all(b"\n"));
-                self.last_live_rows = 0;
-            }
+            } => self.handle_test_ignored(module_path, test_name, runtime_name, reason),
             LifecycleEvent::SuiteSetupStarted {
                 runtime_name,
                 suite,
@@ -454,108 +415,21 @@ impl Drawer {
                 thread,
                 elapsed,
                 result,
-            } => {
-                let failure = match result {
-                    TeardownResult::Ok => None,
-                    TeardownResult::Err(msg) => Some(LifecycleFailure::Error(msg)),
-                    TeardownResult::Panicked(msg) => Some(LifecycleFailure::Panicked(msg)),
-                    TeardownResult::TimedOut => {
-                        Some(LifecycleFailure::TimedOut("teardown timed out".to_owned()))
-                    }
-                    TeardownResult::Hung => Some(LifecycleFailure::Hung(
-                        "teardown hung; abort signal sent".to_owned(),
-                    )),
-                };
-                if failure.is_some() {
-                    self.summary.teardown_failures =
-                        self.summary.teardown_failures.saturating_add(1);
-                }
-                self.handle_suite_lifecycle_finish(
-                    LifecyclePhase::Teardown,
-                    runtime_name,
-                    suite,
-                    thread,
-                    elapsed,
-                    failure,
-                );
-            }
+            } => self.handle_suite_teardown_finished(
+                runtime_name,
+                suite,
+                thread,
+                elapsed,
+                result,
+            ),
             LifecycleEvent::TestTeardownFailed {
                 module_path,
                 test_name,
                 runtime_name,
                 result,
-            } => {
-                if matches!(self.output_mode, OutputMode::Live) {
-                    self.clear_live_region();
-                }
-                let display = qualified_test_name(module_path, test_name);
-                let (label, label_text, message) = match result {
-                    TeardownResult::Ok => return,
-                    TeardownResult::Err(msg) => (StatusLabel::Fail, "error", msg),
-                    TeardownResult::Panicked(msg) => (StatusLabel::Panic, "panic", msg),
-                    TeardownResult::TimedOut => (
-                        StatusLabel::Timeout,
-                        "timeout",
-                        "teardown timed out".to_owned(),
-                    ),
-                    TeardownResult::Hung => (
-                        StatusLabel::Hang,
-                        "hang",
-                        "teardown hung; abort signal sent".to_owned(),
-                    ),
-                };
-                let tag_rendered = render_status_tag(label, self.color);
-                let lhs_display = format!("teardown {display}");
-                let trailing = format!("<{runtime_name}>");
-                let lhs_naked = format!("{:width$} {lhs_display}", "", width = STATUS_TAG_WIDTH);
-                let lhs_rendered = format!("{tag_rendered} {lhs_display}");
-                let header = render_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
-                drop(self.terminal.write_all(header.as_bytes()));
-                drop(self.terminal.write_all(b"\n"));
-                let body = format!("  {label_text}: {message}\n");
-                let painted = self.color.red(&body);
-                drop(self.terminal.write_all(painted.as_bytes()));
-                self.summary.teardown_failures = self.summary.teardown_failures.saturating_add(1);
-                self.summary.failures.push(FailureRecord {
-                    display_name: format!("teardown {display}"),
-                    outcome_label: "TEST TEARDOWN FAILED",
-                    message: format!("{label_text}: {message}"),
-                    captured_stderr: String::new(),
-                    captured_stdout: String::new(),
-                });
-                self.last_live_rows = 0;
-            }
+            } => self.handle_test_teardown_failed(module_path, test_name, runtime_name, result),
             LifecycleEvent::TestCompleted { test_id, outcome } => {
-                // Drain the pipe aggressively so any bytes the test
-                // wrote just before the runtime thread flushed land
-                // in the correct test's buffer.
-                while let Ok(chunk) = self.pipe_rx.try_recv() {
-                    self.handle_pipe(&chunk);
-                }
-                self.summary.record_outcome(&outcome);
-                if let Some(state) = self.tests.remove(&test_id) {
-                    if is_failure(&outcome) {
-                        self.summary.failures.push(FailureRecord {
-                            display_name: qualified_test_name(state.module_path, state.test_name),
-                            outcome_label: outcome_label(&outcome),
-                            message: outcome_message(&outcome),
-                            captured_stderr: String::from_utf8_lossy(&state.stderr_buffer)
-                                .into_owned(),
-                            captured_stdout: String::from_utf8_lossy(&state.stdout_buffer)
-                                .into_owned(),
-                        });
-                    }
-                    self.emit_completion_block(&state, &outcome);
-                    // Clear the thread and slot mappings *after*
-                    // emission so late-drained bytes attributed via
-                    // the thread map are already flushed.
-                    let _removed_thread_test: Option<TestId> =
-                        self.thread_to_test.remove(&state.thread);
-                    if let Some(slot) = self.slots.get_mut(&state.thread)
-                        && slot.current == Some(test_id) {
-                            slot.current = None;
-                        }
-                }
+                self.handle_test_completed(test_id, &outcome);
             }
         }
     }
@@ -710,6 +584,194 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
             let line = format!("{phase_word:<8} {suite_disp} ... started <{runtime_name}>\n");
             drop(self.terminal.write_all(line.as_bytes()));
         }
+    }
+
+    /// Translate a [`TeardownResult`] from a suite teardown into a
+    /// possibly-recorded lifecycle failure and forward it to the
+    /// shared lifecycle-finish handler.
+    fn handle_suite_teardown_finished(
+        &mut self,
+        runtime_name: &'static str,
+        suite: &'static str,
+        thread: ThreadId,
+        elapsed: Duration,
+        result: TeardownResult,
+    ) {
+        let failure = match result {
+            TeardownResult::Ok => None,
+            TeardownResult::Err(msg) => Some(LifecycleFailure::Error(msg)),
+            TeardownResult::Panicked(msg) => Some(LifecycleFailure::Panicked(msg)),
+            TeardownResult::TimedOut => {
+                Some(LifecycleFailure::TimedOut("teardown timed out".to_owned()))
+            }
+            TeardownResult::Hung => Some(LifecycleFailure::Hung(
+                "teardown hung; abort signal sent".to_owned(),
+            )),
+        };
+        if failure.is_some() {
+            self.summary.teardown_failures = self.summary.teardown_failures.saturating_add(1);
+        }
+        self.handle_suite_lifecycle_finish(
+            LifecyclePhase::Teardown,
+            runtime_name,
+            suite,
+            thread,
+            elapsed,
+            failure,
+        );
+    }
+
+    /// Drain late pipe bytes, record the outcome, emit the completion
+    /// block, and clear the thread/slot mapping for a finished test.
+    fn handle_test_completed(&mut self, test_id: TestId, outcome: &TestOutcome) {
+        // Drain the pipe aggressively so any bytes the test wrote
+        // just before the runtime thread flushed land in the correct
+        // test's buffer.
+        while let Ok(chunk) = self.pipe_rx.try_recv() {
+            self.handle_pipe(&chunk);
+        }
+        self.summary.record_outcome(outcome);
+        if let Some(state) = self.tests.remove(&test_id) {
+            if is_failure(outcome) {
+                self.summary.failures.push(FailureRecord {
+                    display_name: qualified_test_name(state.module_path, state.test_name),
+                    outcome_label: outcome_label(outcome),
+                    message: outcome_message(outcome),
+                    captured_stderr: String::from_utf8_lossy(&state.stderr_buffer).into_owned(),
+                    captured_stdout: String::from_utf8_lossy(&state.stdout_buffer).into_owned(),
+                });
+            }
+            self.emit_completion_block(&state, outcome);
+            // Clear the thread and slot mappings *after* emission so
+            // late-drained bytes attributed via the thread map are
+            // already flushed.
+            let _removed_thread_test: Option<TestId> = self.thread_to_test.remove(&state.thread);
+            if let Some(slot) = self.slots.get_mut(&state.thread)
+                && slot.current == Some(test_id)
+            {
+                slot.current = None;
+            }
+        }
+    }
+
+    /// Render the `[IGNORE]` status line for a test skipped via
+    /// `#[ignore]` and bump the ignored counter.
+    fn handle_test_ignored(
+        &mut self,
+        module_path: &'static str,
+        test_name: &'static str,
+        runtime_name: &'static str,
+        reason: &'static str,
+    ) {
+        self.summary.ignored = self.summary.ignored.saturating_add(1);
+        let display = qualified_test_name(module_path, test_name);
+        if matches!(self.output_mode, OutputMode::Live) {
+            self.clear_live_region();
+        }
+        let tag_rendered = render_status_tag(StatusLabel::Ignore, self.color);
+        let lhs_naked = format!("{:width$} {display}", "", width = STATUS_TAG_WIDTH);
+        let lhs_rendered = format!("{tag_rendered} {display}");
+        let trailing = if reason.is_empty() {
+            format!("<{runtime_name}>")
+        } else {
+            format!("<{runtime_name}, {reason}>")
+        };
+        let line = render_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
+        drop(self.terminal.write_all(line.as_bytes()));
+        drop(self.terminal.write_all(b"\n"));
+        self.last_live_rows = 0;
+    }
+
+    /// Register a freshly-started test in the lifecycle maps and emit
+    /// the plain-mode `... started` line if applicable.
+    fn handle_test_started(
+        &mut self,
+        test_id: TestId,
+        module_path: &'static str,
+        test_name: &'static str,
+        runtime_name: &'static str,
+        thread: ThreadId,
+        at: Instant,
+    ) {
+        let state = TestState {
+            module_path,
+            test_name,
+            runtime_name,
+            thread,
+            started_at: at,
+            kind: TestStateKind::Running,
+            stdout_buffer: Vec::new(),
+            stderr_buffer: Vec::new(),
+            last_output_line: String::new(),
+            recent_output: Vec::new(),
+        };
+        drop(self.tests.insert(test_id, state));
+        let _previous_thread_test: Option<TestId> = self.thread_to_test.insert(thread, test_id);
+        let had_slot = self.slots.contains_key(&thread);
+        if !had_slot {
+            self.slot_order.push(thread);
+        }
+        let entry = self.slots.entry(thread).or_insert(RuntimeSlot {
+            runtime_name,
+            current: None,
+            lifecycle: None,
+        });
+        entry.runtime_name = runtime_name;
+        entry.current = Some(test_id);
+        if matches!(self.output_mode, OutputMode::Plain) {
+            self.emit_plain_started(test_id);
+        }
+    }
+
+    /// Render the `teardown <name>` failure block for a per-test
+    /// teardown that didn't return `Ok`, and record the failure for
+    /// the end-of-run summary.
+    fn handle_test_teardown_failed(
+        &mut self,
+        module_path: &'static str,
+        test_name: &'static str,
+        runtime_name: &'static str,
+        result: TeardownResult,
+    ) {
+        if matches!(self.output_mode, OutputMode::Live) {
+            self.clear_live_region();
+        }
+        let display = qualified_test_name(module_path, test_name);
+        let (label, label_text, message) = match result {
+            TeardownResult::Ok => return,
+            TeardownResult::Err(msg) => (StatusLabel::Fail, "error", msg),
+            TeardownResult::Panicked(msg) => (StatusLabel::Panic, "panic", msg),
+            TeardownResult::TimedOut => (
+                StatusLabel::Timeout,
+                "timeout",
+                "teardown timed out".to_owned(),
+            ),
+            TeardownResult::Hung => (
+                StatusLabel::Hang,
+                "hang",
+                "teardown hung; abort signal sent".to_owned(),
+            ),
+        };
+        let tag_rendered = render_status_tag(label, self.color);
+        let lhs_display = format!("teardown {display}");
+        let trailing = format!("<{runtime_name}>");
+        let lhs_naked = format!("{:width$} {lhs_display}", "", width = STATUS_TAG_WIDTH);
+        let lhs_rendered = format!("{tag_rendered} {lhs_display}");
+        let header = render_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
+        drop(self.terminal.write_all(header.as_bytes()));
+        drop(self.terminal.write_all(b"\n"));
+        let body = format!("  {label_text}: {message}\n");
+        let painted = self.color.red(&body);
+        drop(self.terminal.write_all(painted.as_bytes()));
+        self.summary.teardown_failures = self.summary.teardown_failures.saturating_add(1);
+        self.summary.failures.push(FailureRecord {
+            display_name: format!("teardown {display}"),
+            outcome_label: "TEST TEARDOWN FAILED",
+            message: format!("{label_text}: {message}"),
+            captured_stderr: String::new(),
+            captured_stdout: String::new(),
+        });
+        self.last_live_rows = 0;
     }
 
     /// Build a drawer. Slots are allocated lazily as `TestStarted`

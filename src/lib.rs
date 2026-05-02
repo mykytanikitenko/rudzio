@@ -2,7 +2,6 @@ pub mod bench;
 pub mod bin;
 #[cfg(feature = "build")]
 pub mod build;
-#[cfg(feature = "common")]
 pub mod common;
 pub mod config;
 pub mod context;
