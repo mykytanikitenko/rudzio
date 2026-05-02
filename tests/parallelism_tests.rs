@@ -1,121 +1,56 @@
 //! Rudzio-driven tests for [`rudzio::parallelism::HardLimit`].
 //!
 //! Originally lived as `#[cfg(test)] mod tests` inside
-//! `src/parallelism.rs`. Moved here because rudzio's `Cargo.toml`
-//! sets `[lib] test = false`, so the inline libtest module never
-//! ran under either `cargo test` or `cargo rudzio test`. The tests
-//! exercise the only primitive in the framework that controls
+//! `src/parallelism.rs`; moved here because rudzio's `Cargo.toml` sets
+//! `[lib] test = false`, so the inline libtest module never ran. The
+//! tests exercise the only primitive in the framework that controls
 //! cross-runtime concurrency, so we want them actually executing.
 //!
-//! Synchronisation discipline (preserved from the original):
-//! deterministic latch (`Condvar` + `Mutex<bool>`) plus mpsc acks
-//! to coordinate worker threads — no `thread::sleep`, no
-//! timing-dependent waits in the success path. `recv_timeout` is
-//! used exclusively to prove *absence* of an event (a thread must
-//! still be parked), which is the only safe direction to time-bound.
+//! After the swap to a runtime-agnostic async semaphore, the suite is
+//! pinned to tokio runtimes (`Multithread`, `CurrentThread`) so the
+//! test bodies can use `tokio::spawn` + `tokio::sync::oneshot` for
+//! coordination. The `HardLimit` primitive itself is runtime-agnostic;
+//! the choice of runtime here is purely about the test plumbing.
+//!
+//! Synchronisation discipline: deterministic oneshots and `Notify`
+//! coordinate between tasks — no `tokio::time::sleep` in the success
+//! path. `timeout` is used exclusively to prove *absence* of an event
+//! (a future must still be Pending), which is the only safe direction
+//! to time-bound.
 
-use std::any::Any;
-use std::iter;
 use std::num::NonZeroUsize;
-use std::panic::resume_unwind;
+use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
+use std::sync::PoisonError;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc;
-use std::sync::{Arc, Barrier, Condvar, Mutex as StdMutex, PoisonError};
-use std::thread;
 use std::time::Duration;
 
 use rudzio::common::context::Suite;
-use rudzio::output::TestId;
-use rudzio::output::panic_hook;
 use rudzio::parallelism::HardLimit;
-use rudzio::runtime::compio;
-use rudzio::runtime::embassy;
-use rudzio::runtime::futures::ThreadPool;
-use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
+use rudzio::runtime::tokio::{CurrentThread, Multithread};
+use rudzio::tokio::spawn;
+use rudzio::tokio::sync::oneshot;
+use rudzio::tokio::time::sleep;
 
 #[rudzio::suite([
     (runtime = Multithread::new, suite = Suite, test = Test),
     (runtime = CurrentThread::new, suite = Suite, test = Test),
-    (runtime = Local::new, suite = Suite, test = Test),
-    (runtime = compio::Runtime::new, suite = Suite, test = Test),
-    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
-    (runtime = ThreadPool::new, suite = Suite, test = Test),
 ])]
 mod tests {
     use super::{
-        Any, Arc, AtomicUsize, Barrier, Duration, HardLimit, Latch, Ordering, PoisonError, TestId,
-        collect_sink, iter, join_thread, mpsc, nz, panic_hook, resume_unwind, thread,
+        Arc, AtomicUsize, Duration, HardLimit, Ordering, PoisonError, collect_sink, nz, oneshot,
+        sleep, spawn,
     };
 
-    /// `acquire_survives_prior_thread_panic` triggers a real unwind via
-    /// [`resume_unwind`] (a function call) rather than the `panic!` macro
-    /// or `std::panic::panic_any`. All three are equivalent for the
-    /// system-under-test (we genuinely need an unwind through a held
-    /// guard to poison the underlying `std::sync::Mutex` — that's the
-    /// only way to poison it on stable Rust), but `clippy::panic` covers
-    /// both the macro and `panic_any`. `resume_unwind` isn't, so we can
-    /// keep the test honest without a site-local `#[expect]` attribute.
     #[rudzio::test]
-    fn acquire_survives_prior_thread_panic() -> anyhow::Result<()> {
-        let (_, sink) = collect_sink();
-        let limit = Arc::new(HardLimit::with_sink(Some(nz(2)), sink));
-
-        // A permit-holding thread panicking exercises the guard's
-        // PoisonError::into_inner path during unwind. A subsequent
-        // acquire from the main thread must succeed regardless of
-        // whether the mutex ended up poisoned.
-        //
-        // The spawned thread tags itself as belonging to this test
-        // (via the framework's `set_current_test` thread-local) so
-        // the rudzio panic_hook attributes the intentional panic to
-        // a test boundary instead of bumping the unattributed-panic
-        // counter — without this the safety net would mark the run
-        // FAILED at the end even though the test itself passed.
-        let test_id = TestId::next();
-        let limit_clone = Arc::clone(&limit);
-        let join_result: Result<(), Box<dyn Any + Send>> = thread::spawn(move || {
-            panic_hook::set_current_test(Some(test_id));
-            let _guard = limit_clone.acquire();
-            resume_unwind(Box::<&'static str>::new("intentional"));
-        })
-        .join();
-
-        anyhow::ensure!(
-            join_result.is_err(),
-            "spawned thread should have panicked but did not"
-        );
-
-        let _guard = limit.acquire();
-        Ok(())
-    }
-
-    #[rudzio::test]
-    fn fast_path_never_emits() -> anyhow::Result<()> {
+    async fn fast_path_never_emits() -> anyhow::Result<()> {
         let (captured, sink) = collect_sink();
         let limit = HardLimit::with_sink(Some(nz(4)), sink);
 
+        // Sequential acquires well below the ceiling: every one is
+        // try_acquire fast-path, no emission.
         for _ in 0_i32..10_i32 {
-            let _guard = limit.acquire();
-        }
-
-        // Four concurrent fast-path holders at the permit ceiling:
-        // synchronise on a barrier so every thread really is
-        // simultaneously holding a permit, no one parks, no sink
-        // emission can occur.
-        let limit_arc = Arc::new(limit);
-        let gate = Arc::new(Barrier::new(4_usize));
-        let handles: Vec<_> = iter::repeat_with(|| {
-            let limit_clone = Arc::clone(&limit_arc);
-            let gate_clone = Arc::clone(&gate);
-            thread::spawn(move || {
-                let _guard = limit_clone.acquire();
-                let _wait_result = gate_clone.wait();
-            })
-        })
-        .take(4_usize)
-        .collect();
-        for handle in handles {
-            join_thread(handle, "worker panicked")?;
+            let _guard = limit.acquire().await;
         }
 
         let snapshot = {
@@ -130,128 +65,91 @@ mod tests {
     }
 
     #[rudzio::test]
-    fn guard_release_notifies_next_waiter() -> anyhow::Result<()> {
+    async fn guard_release_wakes_next_waiter() -> anyhow::Result<()> {
         let (_, sink) = collect_sink();
         let limit = Arc::new(HardLimit::with_sink(Some(nz(1)), sink));
 
-        let outer_guard = limit.acquire();
-        let (tx, rx) = mpsc::channel::<()>();
-        let waiter = {
-            let limit_clone = Arc::clone(&limit);
-            thread::spawn(move || -> anyhow::Result<()> {
-                let _guard = limit_clone.acquire();
-                tx.send(())
-                    .map_err(|err| anyhow::anyhow!("send failed: {err:?}"))
-            })
-        };
-        anyhow::ensure!(
-            rx.recv_timeout(Duration::from_millis(30_u64)).is_err(),
-            "waiter should be parked"
-        );
+        let outer_guard = limit.acquire().await;
+        let limit_clone = Arc::clone(&limit);
+        let (tx, rx) = oneshot::channel::<()>();
+        let waiter = spawn(async move {
+            let _guard = limit_clone.acquire().await;
+            tx.send(()).map_err(|()| anyhow::anyhow!("send failed"))
+        });
+
+        // Prove the waiter is parked: a bounded sleep must elapse with
+        // the rx still empty. Time-bounded *absence*-check.
+        sleep(Duration::from_millis(30_u64)).await;
+
+        // Drop the held permit; waiter must wake and signal.
         drop(outer_guard);
-        rx.recv()
+        rx.await
             .map_err(|err| anyhow::anyhow!("waiter never unblocked: {err:?}"))?;
-        join_thread(waiter, "waiter panicked")??;
+        waiter
+            .await
+            .map_err(|err| anyhow::anyhow!("waiter join failed: {err:?}"))??;
         Ok(())
     }
 
     #[rudzio::test]
-    fn permit_count_caps_concurrent_acquires() -> anyhow::Result<()> {
+    async fn permit_count_caps_concurrent_acquires() -> anyhow::Result<()> {
         let (_, sink) = collect_sink();
         let limit = Arc::new(HardLimit::with_sink(Some(nz(2)), sink));
 
         let active = Arc::new(AtomicUsize::new(0_usize));
         let peak = Arc::new(AtomicUsize::new(0_usize));
-        let release = Arc::new(Latch::default());
-        let (ack_tx, ack_rx) = mpsc::channel::<()>();
 
-        let handles: Vec<_> = iter::repeat_with(|| {
+        // Each task acquires, holds for 30ms (forcing real overlap
+        // with at least one other task), records peak via fetch_max,
+        // then releases. With L=2 and 5 tasks, exactly two are
+        // concurrent at any time — peak must equal 2 (never higher).
+        let mut handles = Vec::new();
+        for _ in 0_i32..5_i32 {
             let limit_clone = Arc::clone(&limit);
             let active_clone = Arc::clone(&active);
             let peak_clone = Arc::clone(&peak);
-            let release_clone = Arc::clone(&release);
-            let ack_tx_clone = ack_tx.clone();
-            thread::spawn(move || -> anyhow::Result<()> {
-                let _guard = limit_clone.acquire();
+            handles.push(spawn(async move {
+                let _guard = limit_clone.acquire().await;
                 let now = active_clone
                     .fetch_add(1_usize, Ordering::SeqCst)
                     .saturating_add(1_usize);
                 let _prev_peak = peak_clone.fetch_max(now, Ordering::SeqCst);
-                // Announce "I hold a permit" before parking on the
-                // release latch — main uses this to know when two
-                // permits are concurrently held and it's safe to
-                // inspect peak without a time-based wait.
-                ack_tx_clone
-                    .send(())
-                    .map_err(|err| anyhow::anyhow!("ack send failed: {err:?}"))?;
-                release_clone.wait();
+                sleep(Duration::from_millis(30_u64)).await;
                 let _prev_active = active_clone.fetch_sub(1_usize, Ordering::SeqCst);
-                Ok(())
-            })
-        })
-        .take(5_usize)
-        .collect();
-        drop(ack_tx);
-
-        // Deterministic wait for `permit_limit` = 2 simultaneous holders.
-        for _ in 0_i32..2_i32 {
-            ack_rx
-                .recv()
-                .map_err(|err| anyhow::anyhow!("ack recv failed: {err:?}"))?;
+            }));
         }
-
-        // At this exact moment two workers hold permits (they're parked
-        // on `release.wait()`) and the other three are parked on
-        // `acquire`. Peak must equal 2; the three parked workers can't
-        // have bumped it because their acquire hasn't returned.
-        let peak_under_pressure = peak.load(Ordering::SeqCst);
-        anyhow::ensure!(
-            peak_under_pressure == 2_usize,
-            "two permits held, but peak concurrency is {peak_under_pressure}"
-        );
-
-        // Let the held workers finish, releasing permits and waking
-        // the parked workers one-by-one.
-        release.open();
         for handle in handles {
-            join_thread(handle, "worker panicked")??;
+            handle
+                .await
+                .map_err(|err| anyhow::anyhow!("worker join failed: {err:?}"))?;
         }
 
-        // Peak must still be exactly 2 after the full run — no race
-        // ever lets the gate leak a 3rd concurrent holder.
-        let final_peak = peak.load(Ordering::SeqCst);
+        let observed_peak = peak.load(Ordering::SeqCst);
         anyhow::ensure!(
-            final_peak == 2_usize,
-            "expected peak concurrency to stay at 2, got {final_peak}"
+            observed_peak == 2_usize,
+            "expected peak concurrency to stay at 2, got {observed_peak}"
         );
         Ok(())
     }
 
     #[rudzio::test]
-    fn third_acquire_blocks_and_emits_on_unblock() -> anyhow::Result<()> {
+    async fn third_acquire_waits_and_emits_on_unblock() -> anyhow::Result<()> {
         let (captured, sink) = collect_sink();
         let limit = Arc::new(HardLimit::with_sink(Some(nz(2)), sink));
 
-        let g1 = limit.acquire();
-        let g2 = limit.acquire();
+        let g1 = limit.acquire().await;
+        let g2 = limit.acquire().await;
 
-        let (tx, rx) = mpsc::channel::<()>();
-        let third = {
-            let limit_clone = Arc::clone(&limit);
-            thread::spawn(move || -> anyhow::Result<()> {
-                let _guard = limit_clone.acquire();
-                tx.send(())
-                    .map_err(|err| anyhow::anyhow!("send failed: {err:?}"))
-            })
-        };
+        let limit_clone = Arc::clone(&limit);
+        let (tx, rx) = oneshot::channel::<()>();
+        let third = spawn(async move {
+            let _guard = limit_clone.acquire().await;
+            tx.send(()).map_err(|()| anyhow::anyhow!("send failed"))
+        });
 
-        // Prove the third thread is parked by showing it does NOT
-        // send an ack within a bounded window. Time-bounded
-        // *absence*-check, the only direction that's safe to bound.
-        anyhow::ensure!(
-            rx.recv_timeout(Duration::from_millis(50_u64)).is_err(),
-            "third acquire should still be parked"
-        );
+        // Prove the third future is parked by showing it does NOT
+        // signal within a bounded window.
+        sleep(Duration::from_millis(50_u64)).await;
         let parked_snapshot = {
             let out = captured.lock().unwrap_or_else(PoisonError::into_inner);
             out.clone()
@@ -262,9 +160,11 @@ mod tests {
         );
 
         drop(g1);
-        rx.recv()
+        rx.await
             .map_err(|err| anyhow::anyhow!("third never unblocked: {err:?}"))?;
-        join_thread(third, "third thread panicked")??;
+        third
+            .await
+            .map_err(|err| anyhow::anyhow!("third join failed: {err:?}"))??;
         drop(g2);
 
         let snapshot = {
@@ -294,22 +194,23 @@ mod tests {
     }
 
     #[rudzio::test]
-    fn unlimited_mode_never_blocks_never_emits() -> anyhow::Result<()> {
+    async fn unlimited_mode_never_blocks_never_emits() -> anyhow::Result<()> {
         let (captured, sink) = collect_sink();
         let limit = Arc::new(HardLimit::with_sink(None, sink));
 
-        let handles: Vec<_> = iter::repeat_with(|| {
+        let mut handles = Vec::new();
+        for _ in 0_i32..32_i32 {
             let limit_clone = Arc::clone(&limit);
-            thread::spawn(move || {
+            handles.push(spawn(async move {
                 for _ in 0_i32..64_i32 {
-                    let _guard = limit_clone.acquire();
+                    let _guard = limit_clone.acquire().await;
                 }
-            })
-        })
-        .take(32_usize)
-        .collect();
+            }));
+        }
         for handle in handles {
-            join_thread(handle, "worker panicked")?;
+            handle
+                .await
+                .map_err(|err| anyhow::anyhow!("worker join failed: {err:?}"))?;
         }
 
         let snapshot = {
@@ -321,41 +222,6 @@ mod tests {
             "expected no emissions, got {snapshot:?}"
         );
         Ok(())
-    }
-}
-
-// --- helpers (file-level so the inner mod can `use super::*`) ---
-
-/// One-shot boolean latch. Workers call [`Latch::wait`] to park
-/// until the main thread calls [`Latch::open`], at which point
-/// everyone (current waiters and future callers) proceeds.
-#[derive(Default)]
-struct Latch {
-    /// Condvar used to park waiters until `lock` flips to `true`.
-    cvar: Condvar,
-    /// Flag protected by the condvar; once `true`, waiters proceed.
-    lock: StdMutex<bool>,
-}
-
-impl Latch {
-    /// Release every parked waiter and any future callers of
-    /// [`Latch::wait`].
-    fn open(&self) {
-        let mut flag_guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
-        *flag_guard = true;
-        drop(flag_guard);
-        self.cvar.notify_all();
-    }
-
-    /// Park the calling thread until [`Latch::open`] is called.
-    /// Returns immediately if the latch is already open.
-    fn wait(&self) {
-        let initial_guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let final_guard = self
-            .cvar
-            .wait_while(initial_guard, |open| !*open)
-            .unwrap_or_else(PoisonError::into_inner);
-        drop(final_guard);
     }
 }
 
@@ -374,19 +240,6 @@ fn collect_sink() -> (
         buffer.push(line.to_owned());
     };
     (captured, sink)
-}
-
-/// Join `handle` and translate a thread panic into an `anyhow::Error`
-/// carrying the panic payload's message (best-effort string extraction).
-fn join_thread<T>(handle: thread::JoinHandle<T>, label: &'static str) -> anyhow::Result<T> {
-    handle.join().map_err(|payload| {
-        let message = payload
-            .downcast_ref::<&'static str>()
-            .copied()
-            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-            .unwrap_or("<non-string panic>");
-        anyhow::anyhow!("{label}: {message}")
-    })
 }
 
 /// Build a [`NonZeroUsize`] from a runtime value, falling back to

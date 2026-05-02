@@ -946,8 +946,12 @@ fn run_test_fn_quote(args: &RunTestFnArgs<'_>) -> TokenStream {
                 // just before the `TestCompleted` lifecycle emit, so
                 // any parking notice the primitive writes lands in
                 // this test's stdout-capture block and gets
-                // attributed to the right TestId.
-                let __rudzio_hardlimit_guard = config.acquire_hardlimit_permit();
+                // attributed to the right TestId. `.await` yields
+                // cooperatively when the gate is full so permit-
+                // holders awaiting timers / IO / spawned subtasks
+                // remain pollable.
+                let __rudzio_hardlimit_guard =
+                    config.acquire_hardlimit_permit().await;
 
                 let outcome = 'run: {
                     #setup_phase

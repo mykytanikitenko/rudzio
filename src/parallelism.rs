@@ -1,11 +1,18 @@
 //! Cross-runtime hard cap on concurrent test-body execution.
 //!
 //! [`HardLimit`] gates how many rudzio test bodies may be *actively polling*
-//! at once, across the whole run. The mechanism is deliberately primitive:
-//! [`std::sync::Mutex`] + [`std::sync::Condvar`]. No executor-specific
-//! semaphores — the gate has to work identically under tokio, compio,
-//! futures-executor, embassy, etc., and "honest" means a thread that can't
-//! acquire really parks on a Condvar, not on a runtime-specific yield.
+//! at once, across the whole run. The mechanism is a runtime-agnostic
+//! async semaphore ([`futures_intrusive::sync::Semaphore`]): when the gate
+//! is full, the calling task `.await`s and yields control back to the
+//! runtime instead of parking the OS thread. That way, permit-holders
+//! whose bodies await timers / IO / spawned subtasks remain pollable —
+//! historic deadlocks under multi-suite tokio contention and on
+//! single-thread runtimes (when `parallel_hardlimit < concurrency_limit`)
+//! are gone.
+//!
+//! Works identically under tokio (multi-thread / current-thread / local),
+//! compio, embassy, futures-executor, and any future runtime that polls
+//! futures and honors wakers. No executor-specific code path.
 //!
 //! The primitive is used from the generated per-test fn (see
 //! `macro-internals/src/suite_codegen.rs`), where each test acquires one
@@ -15,8 +22,9 @@
 
 use std::fmt;
 use std::num::NonZeroUsize;
-use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::Instant;
+
+use futures_intrusive::sync::{Semaphore, SemaphoreReleaser};
 
 use crate::output::write_stdout;
 
@@ -26,81 +34,72 @@ use crate::output::write_stdout;
 /// every generated per-test fn calls [`HardLimit::acquire`] before running
 /// its setup/body/teardown.
 ///
-/// See the [module-level docs](self) for the "why real Condvar, not an
-/// async semaphore" rationale.
+/// See the [module-level docs](self) for the "why an async semaphore, not
+/// a Condvar" rationale.
 pub struct HardLimit {
-    /// Backing slot pool; `None` means the gate is disabled and every
-    /// acquire is a no-op fast-path.
+    /// Backing semaphore + ceiling; `None` means the gate is disabled and
+    /// every acquire is a no-op fast-path.
     inner: Option<Inner>,
     /// Sink for one-line parking notices (production prints to stdout;
     /// tests inject their own).
     sink: Box<dyn Fn(&str) + Send + Sync>,
 }
 
-/// Backing pool shared by every [`HardLimitGuard`] — the mutex/condvar
-/// pair plus the configured maximum.
+/// Backing semaphore shared by every [`HardLimitGuard`] plus the
+/// configured maximum.
 struct Inner {
-    /// Condvar woken when a permit is released so a parked acquirer
-    /// can resume.
-    cvar: Condvar,
     /// Configured maximum number of concurrent permits.
     max: NonZeroUsize,
-    /// Mutable per-pool state behind a lock.
-    state: Mutex<State>,
+    /// Fair (FIFO) async semaphore; `try_acquire` is the fast-path,
+    /// `acquire` is the awaitable slow path that yields when the gate
+    /// is full.
+    sem: Semaphore,
 }
 
-/// Mutable counters guarded by `Inner::state`.
-struct State {
-    /// Number of permits currently free.
-    available: usize,
-}
-
-/// RAII permit. Dropping it returns the slot to the pool and wakes one
-/// waiter (if any). A guard from a disabled (`None`-mode) [`HardLimit`]
-/// is a no-op on drop.
-#[derive(Debug)]
+/// RAII permit returned by [`HardLimit::acquire`].
+///
+/// Dropping it returns the slot to the pool and wakes one waiter (if
+/// any) — both happen synchronously inside the releaser's own `Drop`. A
+/// guard from a disabled (`None`-mode) [`HardLimit`] is a no-op on drop.
 pub struct HardLimitGuard<'gate> {
-    /// Owning gate when this guard holds a real permit; `None` for
-    /// no-op guards from disabled-mode acquires.
-    owner: Option<&'gate HardLimit>,
+    /// `Some(_)` when this guard holds a real permit; `None` for no-op
+    /// guards from disabled-mode acquires. The releaser's own `Drop`
+    /// handles release + waker wakeup.
+    releaser: Option<SemaphoreReleaser<'gate>>,
+}
+
+impl fmt::Debug for HardLimitGuard<'_> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HardLimitGuard")
+            .field("active", &self.releaser.is_some())
+            .finish()
+    }
 }
 
 impl HardLimit {
-    /// Block the calling thread until a permit is available, then hand
-    /// back an RAII guard. Disabled-mode returns immediately with a
-    /// no-op guard.
+    /// Yield to the runtime until a permit is available, then hand back
+    /// an RAII guard. Disabled-mode returns immediately with a no-op
+    /// guard.
     ///
     /// A notice is emitted to the sink (stdout in production) **only if
-    /// the thread actually parked** on the Condvar — never on the
-    /// fast-path. The emitted line carries the measured parking duration.
+    /// the call actually had to wait** — never on the fast-path
+    /// (`try_acquire` succeeds). The emitted line carries the measured
+    /// wait duration.
     #[inline]
-    pub fn acquire(&self) -> HardLimitGuard<'_> {
+    pub async fn acquire(&self) -> HardLimitGuard<'_> {
         let Some(inner) = &self.inner else {
-            return HardLimitGuard { owner: None };
+            return HardLimitGuard { releaser: None };
         };
 
-        let took_fast_path = {
-            let mut state = inner.state.lock().unwrap_or_else(PoisonError::into_inner);
-            if state.available > 0 {
-                state.available = state.available.saturating_sub(1);
-                true
-            } else {
-                false
-            }
-        };
-        if took_fast_path {
-            return HardLimitGuard { owner: Some(self) };
+        if let Some(releaser) = inner.sem.try_acquire(1) {
+            return HardLimitGuard {
+                releaser: Some(releaser),
+            };
         }
 
         let parked_at = Instant::now();
-        {
-            let state = inner.state.lock().unwrap_or_else(PoisonError::into_inner);
-            let mut woken_state = inner
-                .cvar
-                .wait_while(state, |waiting| waiting.available == 0)
-                .unwrap_or_else(PoisonError::into_inner);
-            woken_state.available = woken_state.available.saturating_sub(1);
-        }
+        let releaser = inner.sem.acquire(1).await;
         let parked = parked_at.elapsed();
 
         (self.sink)(&format!(
@@ -109,23 +108,19 @@ impl HardLimit {
             max = inner.max.get(),
         ));
 
-        HardLimitGuard { owner: Some(self) }
+        HardLimitGuard {
+            releaser: Some(releaser),
+        }
     }
 
     /// `None` = gate disabled, acquire is a no-op. `Some(n)` = at most
-    /// `n` concurrent permits; additional acquirers park until one is
-    /// released.
+    /// `n` concurrent permits; additional acquirers `.await` until one
+    /// is released.
     #[must_use]
     #[inline]
     pub fn new(limit: Option<NonZeroUsize>) -> Self {
         Self {
-            inner: limit.map(|max| Inner {
-                state: Mutex::new(State {
-                    available: max.get(),
-                }),
-                cvar: Condvar::new(),
-                max,
-            }),
+            inner: limit.map(Inner::with_max),
             sink: Box::new(|msg| write_stdout(&format!("{msg}\n"))),
         }
     }
@@ -143,14 +138,20 @@ impl HardLimit {
         S: Fn(&str) + Send + Sync + 'static,
     {
         Self {
-            inner: limit.map(|max| Inner {
-                state: Mutex::new(State {
-                    available: max.get(),
-                }),
-                cvar: Condvar::new(),
-                max,
-            }),
+            inner: limit.map(Inner::with_max),
             sink: Box::new(sink),
+        }
+    }
+}
+
+impl Inner {
+    /// Build an `Inner` with a fair (FIFO) semaphore initialised to
+    /// `max` permits.
+    #[inline]
+    fn with_max(max: NonZeroUsize) -> Self {
+        Self {
+            max,
+            sem: Semaphore::new(true, max.get()),
         }
     }
 }
@@ -168,18 +169,6 @@ impl fmt::Debug for HardLimit {
                 .field("max", &inner.max.get())
                 .finish_non_exhaustive(),
         }
-    }
-}
-
-impl Drop for HardLimitGuard<'_> {
-    #[inline]
-    fn drop(&mut self) {
-        let Some(owner) = self.owner else { return };
-        let Some(inner) = &owner.inner else { return };
-        let mut state = inner.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.available = state.available.saturating_add(1);
-        drop(state);
-        inner.cvar.notify_one();
     }
 }
 

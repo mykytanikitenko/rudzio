@@ -291,11 +291,13 @@ pub struct Config {
     ///    the first two would otherwise allow `groups × concurrency_limit`
     ///    test bodies to run simultaneously, this one holds that back to
     ///    the value here.
-    /// 3. When the gate is hit, the polling OS thread **really parks** on
-    ///    a `std::sync::Condvar` (not a cooperative async semaphore). This
-    ///    is deliberate: it's the same backpressure mechanism the OS would
-    ///    apply at the thread level and is what the user-facing name "hard
-    ///    limit" is meant to convey.
+    /// 3. When the gate is hit, the calling test's future **yields
+    ///    cooperatively** through a runtime-agnostic async semaphore
+    ///    ([`futures_intrusive::sync::Semaphore`]). The OS thread is
+    ///    free to poll other ready tasks while the test waits — including
+    ///    any timers, IO, or spawned subtasks the permit-holders are
+    ///    awaiting. Works identically under tokio (multi-thread /
+    ///    current-thread / local), compio, embassy, and futures-executor.
     ///
     /// Resolution from `--threads-parallel-hardlimit=<value>`:
     ///
@@ -308,20 +310,9 @@ pub struct Config {
     /// | `=0` / garbage | falls back to default |
     ///
     /// When `--bench` is passed without an explicit hardlimit flag, the
-    /// gate auto-disables (`None`) so benchmark timing isn't perturbed by
-    /// `Condvar` wake-ups. An explicit `--threads-parallel-hardlimit=<N>`
+    /// gate auto-disables (`None`) so benchmark timing isn't perturbed
+    /// by gate-induced yields. An explicit `--threads-parallel-hardlimit=<N>`
     /// (or `=none`) wins over the auto-disable in either direction.
-    ///
-    /// # Caveat — current-thread runtimes
-    ///
-    /// On a single-thread runtime (`tokio::CurrentThread`,
-    /// `futures::LocalPool`, …) the gate can deadlock if you set
-    /// `parallel_hardlimit < concurrency_limit`: with N permits held, the
-    /// sole thread parks on the Condvar trying to acquire the (N+1)th
-    /// permit, and no other future on that thread can make progress to
-    /// release one. The honest implementation exposes the mis-config
-    /// rather than papering over it — set the hardlimit at least as high
-    /// as the largest current-thread `concurrency_limit` in your run.
     pub parallel_hardlimit: Option<NonZeroUsize>,
     /// `--phase-hang-grace=<secs>`. Layer-2 grace window applied
     /// *after* a phase blows its budget: the wrapper cancels the
@@ -510,13 +501,14 @@ pub enum RunIgnoredMode {
 impl Config {
     /// Acquire one permit from the process-wide parallel-execution gate.
     /// Intended for macro-generated per-test code — users shouldn't need
-    /// to call this directly. Returns a no-op guard when the gate is
-    /// disabled ([`Self::parallel_hardlimit`] is `None`).
+    /// to call this directly. Yields cooperatively (no OS-thread
+    /// parking) when the gate is full; returns immediately with a
+    /// no-op guard when the gate is disabled ([`Self::parallel_hardlimit`]
+    /// is `None`).
     #[doc(hidden)]
-    #[must_use]
     #[inline]
-    pub fn acquire_hardlimit_permit(&self) -> HardLimitGuard<'_> {
-        self.hardlimit.acquire()
+    pub async fn acquire_hardlimit_permit(&self) -> HardLimitGuard<'_> {
+        self.hardlimit.acquire().await
     }
 
     /// Test-friendly parser. Takes argv + env explicitly so unit tests can
