@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (e.g. v0.1.0)'
+        required: true
+
+# A publish is irrevocable — never cancel one in flight.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Publish to crates.io
+    runs-on: [self-hosted, linux, nix, rust]
+    container:
+      image: registry-local:5000/porfiry/ci-base:d6d0d3de1f5b
+    env:
+      # The ws-runner entrypoint also injects this from the runner host
+      # env; declaring it here is belt-and-suspenders so `cargo publish`
+      # finds a token regardless of which path lit up.
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Toolchain info
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Verify pipeline still green on the tag
+        run: just ci
+
+      # Subsequent releases (v0.1.1+) work straight through. The very
+      # first publish (v0.1.0) is a one-shot manual flow because every
+      # workspace member with a dev-dep on a sibling can't dry-run /
+      # publish until that sibling is on crates.io. See
+      # `docs/first-publish.md` (or run `just release-publish-first`
+      # locally for the strip-and-publish dance). Once the v0.1.0 chain
+      # lands on crates.io, this job takes over for every release after.
+      - name: Publish in dep order
+        run: |
+          set -euxo pipefail
+          publish() {
+            local crate="$1"
+            echo "::group::cargo publish -p $crate"
+            cargo publish -p "$crate"
+            echo "::endgroup::"
+            # Wait for crates.io index to propagate so the next crate's
+            # dep resolution sees the just-published version.
+            sleep 30
+          }
+          publish rudzio-macro-internals
+          publish rudzio-macro
+          publish rudzio
+          publish rudzio-migrate
+          publish cargo-rudzio
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          generate_release_notes: true

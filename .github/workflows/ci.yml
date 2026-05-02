@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Mon 06:00 UTC — re-run audit + deny against the latest RustSec
+    # advisory database so newly-disclosed vulnerabilities surface
+    # without waiting for the next push.
+    - cron: '0 6 * * 1'
+
+# Cancel in-flight runs on the same branch when a newer push lands.
+# Releases (release.yml) intentionally don't share this concurrency
+# group — we never want to cancel a mid-flight publish.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: just ci
+    runs-on: [self-hosted, linux, nix, rust]
+    container:
+      image: registry-local:5000/porfiry/ci-base:d6d0d3de1f5b
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so cargo-semver-checks can resolve prior tags
+          # once it's added back to the aggregate post-first-publish.
+          fetch-depth: 0
+
+      - name: Toolchain info
+        run: |
+          rustc --version
+          cargo --version
+          just --version
+          taplo --version
+          cargo audit --version
+          cargo deny --version
+
+      - name: just ci
+        run: just ci
