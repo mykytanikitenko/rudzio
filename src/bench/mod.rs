@@ -305,6 +305,33 @@ impl ProgressSnapshot {
 }
 
 impl Report {
+    /// Append the `percentiles:` block (heading + one line per
+    /// percentile that has a value) to `out`. Extracted from
+    /// [`Self::detailed_summary`] to keep that fn under
+    /// `clippy::too_many_lines`.
+    #[inline]
+    fn append_percentiles_block(&self, out: &mut String) {
+        out.push_str("  percentiles:\n");
+        for (permille, label) in [
+            (10_u32, "p1"),
+            (50_u32, "p5"),
+            (100_u32, "p10"),
+            (250_u32, "p25"),
+            (500_u32, "p50"),
+            (750_u32, "p75"),
+            (900_u32, "p90"),
+            (950_u32, "p95"),
+            (990_u32, "p99"),
+            (999_u32, "p99.9"),
+        ] {
+            if let Some(value) = self.percentile_permille(permille) {
+                let value_text = fmt_duration(value);
+                let _percentile_ret: Result<(), fmt::Error> =
+                    writeln!(out, "    {label:>6}:         {value_text}");
+            }
+        }
+    }
+
     /// Render a horizontal ASCII histogram with `buckets` bars of `width`
     /// characters each.
     ///
@@ -489,25 +516,7 @@ impl Report {
             let _outliers_ret: Result<(), fmt::Error> =
                 writeln!(out, "  outliers (>3σ):    {outliers}");
         }
-        out.push_str("  percentiles:\n");
-        for (permille, label) in [
-            (10_u32, "p1"),
-            (50_u32, "p5"),
-            (100_u32, "p10"),
-            (250_u32, "p25"),
-            (500_u32, "p50"),
-            (750_u32, "p75"),
-            (900_u32, "p90"),
-            (950_u32, "p95"),
-            (990_u32, "p99"),
-            (999_u32, "p99.9"),
-        ] {
-            if let Some(value) = self.percentile_permille(permille) {
-                let value_text = fmt_duration(value);
-                let _percentile_ret: Result<(), fmt::Error> =
-                    writeln!(out, "    {label:>6}:         {value_text}");
-            }
-        }
+        self.append_percentiles_block(&mut out);
         if !self.failures.is_empty() {
             let _failures_ret: Result<(), fmt::Error> =
                 writeln!(out, "  failed iterations: {}", self.failures.len());
