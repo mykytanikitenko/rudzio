@@ -5,6 +5,10 @@
 [![docs.rs](https://img.shields.io/docsrs/rudzio)](https://docs.rs/rudzio)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
+<p align="center">
+  <img src="assets/demo.gif" alt="cargo rudzio test running rudzio's own ~822-test suite, dispatching across tokio (multi-thread / current-thread / local), compio, embassy, and futures::ThreadPool runtimes simultaneously" width="900">
+</p>
+
 Async test framework for Rust. Tests run against a three-layer lifecycle:
 one `Runtime` per `(runtime, suite)` group, one `Suite` value per group
 (shared across tests), one `Test` value per test (built in `Suite::context`

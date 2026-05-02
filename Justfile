@@ -118,6 +118,29 @@ release-tag VERSION:
     @echo "Created tag v{{VERSION}}. Push it to trigger crates.io publish:"
     @echo "    git push origin v{{VERSION}}"
 
+# --- Demo ---
+
+# Regenerate assets/demo.gif from assets/demo.sh.
+#   * asciinema records the script to a .cast file (terminal-native, no
+#     headless browser involved — works on minimal nix shells).
+#   * agg (asciinema-agg) renders the cast as a gif.
+# Requires asciinema and agg on PATH. The gif is committed so consumers
+# don't need either tool to view the README.
+demo:
+    @command -v asciinema >/dev/null || { echo "missing: asciinema"; exit 1; }
+    @command -v agg       >/dev/null || { echo "missing: agg (asciinema-agg)"; exit 1; }
+    @# Make sure `cargo rudzio` resolves as a cargo subcommand during the
+    @# recording — otherwise the demo would have to fall back to `cargo run`.
+    cargo install --path cargo-rudzio --locked --quiet
+    asciinema rec --quiet --overwrite \
+        --cols 140 --rows 40 \
+        --command 'bash assets/demo.sh' \
+        /tmp/rudzio-demo.cast
+    agg --speed 2.0 --theme monokai --cols 140 --rows 40 \
+        /tmp/rudzio-demo.cast assets/demo.gif
+    rm -f /tmp/rudzio-demo.cast
+    @echo "→ assets/demo.gif regenerated ($(du -h assets/demo.gif | cut -f1))"
+
 # --- Aggregate ---
 
 # Apply all automatic fixes
