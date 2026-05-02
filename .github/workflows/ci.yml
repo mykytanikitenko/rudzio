@@ -24,7 +24,7 @@ jobs:
     name: just ci
     runs-on: [self-hosted, linux, nix, rust]
     container:
-      image: registry-local:5000/porfiry/ci-base:ce3d50dd5fdf
+      image: registry-local:5000/porfiry/ci-base:0505e3bdd7dd
     steps:
       - uses: actions/checkout@v4
         with:
