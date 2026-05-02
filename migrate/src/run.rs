@@ -82,7 +82,7 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
         Err(err) => anyhow::bail!("preflight error: {err}"),
     }
 
-    let want_shared_runner = if args.no_shared_runner {
+    let want_shared_runner = if args.generation.no_shared_runner {
         false
     } else {
         writeln!(
@@ -120,8 +120,8 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
     let mut report = report::Report::new();
     let emit_opts = emit::EmitOptions {
         default_runtime: args.runtime,
-        preserve_originals: !args.no_preserve_originals,
-        dry_run: args.dry_run,
+        preserve_originals: !args.generation.no_preserve_originals,
+        dry_run: args.run.dry_run,
         test_contexts: &test_contexts,
     };
 
@@ -140,7 +140,7 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
         // binary still needs a `fn main` to link. Fixed up below.
         let mut suite_roots_needing_main: std::collections::BTreeSet<PathBuf> =
             std::collections::BTreeSet::new();
-        let src_iter: Box<dyn Iterator<Item = &PathBuf>> = if args.tests_only {
+        let src_iter: Box<dyn Iterator<Item = &PathBuf>> = if args.run.tests_only {
             Box::new(std::iter::empty())
         } else {
             Box::new(pkg.src_files.iter())
@@ -192,7 +192,7 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
         // Demote `forbid` to `deny` when this package had any src
         // conversion, so the user's intent (no unsafe in their code)
         // is preserved while leaving room for the macro expansion.
-        if pkg_edits.had_src_conversion && !args.dry_run {
+        if pkg_edits.had_src_conversion && !args.run.dry_run {
             match demote_forbid_unsafe_in_lib(&pkg.root) {
                 Ok(Some(path)) => report.touched(path),
                 Ok(None) => {}
@@ -212,7 +212,7 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
         // fn main() {}` to src/lib.rs as the replacement entry
         // point. The cfg(test) gate keeps the fn out of library
         // consumers' builds.
-        if pkg_edits.had_src_conversion && !args.dry_run {
+        if pkg_edits.had_src_conversion && !args.run.dry_run {
             match ensure_lib_has_rudzio_main(&pkg.root) {
                 Ok(Some(path)) => report.touched(path),
                 Ok(None) => {}
@@ -225,7 +225,7 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
                 }
             }
         }
-        if !args.dry_run {
+        if !args.run.dry_run {
             for mod_rs in &suite_roots_needing_main {
                 match ensure_suite_root_has_main(mod_rs) {
                     Ok(true) => report.touched(mod_rs.clone()),
@@ -240,7 +240,7 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
                 }
             }
         }
-        if want_shared_runner && !args.dry_run && pkg_had_conversions {
+        if want_shared_runner && !args.run.dry_run && pkg_had_conversions {
             let tests_main = pkg.root.join("tests").join("main.rs");
             // Lib crate name uses hyphen→underscore per rustc's
             // "hyphens in crate names are normalized" rule.
@@ -286,7 +286,7 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
         if pkg_had_conversions {
             pkg_edits.needs_rudzio_test_cfg = true;
         }
-        if !args.dry_run && pkg_had_conversions {
+        if !args.run.dry_run && pkg_had_conversions {
             match manifest::apply(&pkg.manifest_path, &pkg_edits) {
                 Ok(true) => report.cargo_edit(pkg.manifest_path.clone()),
                 Ok(false) => {}
