@@ -64,6 +64,57 @@ test-stock:
     fi
     cargo test --workspace
 
+# --- Security & policy ---
+
+# Check for security advisories in the dep graph (RustSec)
+check-audit:
+    cargo audit
+
+# Check license / advisory / source / banned-crate policy (deny.toml)
+check-deny:
+    cargo deny check
+
+# Check API semver compatibility against the most recent crates.io release
+check-semver:
+    cargo semver-checks check-release --workspace \
+        --exclude rudzio-migrate \
+        --exclude rudzio-fixtures
+
+# --- CI/CD ---
+
+# Recent CI runs
+ci-status:
+    gh run list --workflow=ci.yml --limit 10
+
+# Trigger CI on the current branch
+ci-trigger:
+    gh workflow run ci.yml --ref "$(git rev-parse --abbrev-ref HEAD)"
+
+# Watch the most recent CI run
+ci-watch:
+    gh run watch
+
+# Recent release runs
+release-status:
+    gh run list --workflow=release.yml --limit 10
+
+# Watch the most recent release run
+release-watch:
+    gh run watch
+
+# Dry-run `cargo publish` in dep order — sanity check before tagging
+release-dry-run:
+    cargo publish --dry-run -p rudzio-macro-internals
+    cargo publish --dry-run -p rudzio-macro
+    cargo publish --dry-run -p rudzio
+    cargo publish --dry-run -p cargo-rudzio
+
+# Tag current commit and instruct on push, e.g. `just release-tag 0.2.0`
+release-tag VERSION:
+    git tag -a "v{{VERSION}}" -m "Release v{{VERSION}}"
+    @echo "Created tag v{{VERSION}}. Push it to trigger crates.io publish:"
+    @echo "    git push origin v{{VERSION}}"
+
 # --- Aggregate ---
 
 # Apply all automatic fixes
@@ -71,3 +122,6 @@ fix: fix-fmt fix-taplo fix-clippy
 
 # Run all checks and tests (pre-commit)
 pre-commit: check-fmt check-taplo check check-clippy check-udeps test
+
+# Mirror everything CI runs, locally
+ci: check-fmt check-taplo check-clippy check-audit check-deny check-semver test

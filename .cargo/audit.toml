@@ -1,0 +1,13 @@
+# Mirrors the `[advisories]` ignore list in /rudzio/deny.toml so
+# `just check-audit` and `just check-deny` agree on the same set of
+# acknowledged advisories.
+
+[advisories]
+ignore = [
+    # `paste` is archived and unmaintained, but no safe upgrade
+    # exists — pulled in transitively by `compio-driver`/`compio-runtime`.
+    # The advisory itself notes "no safe upgrade is available".
+    # Revisit when compio releases a paste-free version (or migrates
+    # to `pastey`).
+    "RUSTSEC-2024-0436",
+]
