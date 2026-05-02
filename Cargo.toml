@@ -160,55 +160,95 @@ linkme = "=0.3.36"
 # Rust compiler lints
 # ===========================================================================
 [workspace.lints.rust]
+# `warnings` stays at `deny` (not `forbid`) because the rudzio `#[suite]`
+# macro emits `#[allow(unused_mut)]` into user code; forbidding the
+# meta-warnings group would block that allow.
 warnings = "deny"
 # `#[cfg(rudzio_test)]` is set by the migrate crate's integration-test runner
 # to gate test-only behavior in the binary's source. Declaring it here keeps
 # `unexpected_cfgs` quiet across the workspace without site-local allows.
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rudzio_test)"] }
 
-future_incompatible = { level = "deny", priority = -1 }
-keyword_idents = { level = "deny", priority = -1 }
-let_underscore = { level = "deny", priority = -1 }
-nonstandard_style = { level = "deny", priority = -1 }
-refining_impl_trait = { level = "deny", priority = -1 }
-rust_2018_idioms = { level = "deny", priority = -1 }
-rust_2021_compatibility = { level = "deny", priority = -1 }
-rust_2024_compatibility = { level = "deny", priority = -1 }
+future_incompatible = { level = "forbid", priority = -1 }
+keyword_idents = { level = "forbid", priority = -1 }
+let_underscore = { level = "forbid", priority = -1 }
+nonstandard_style = { level = "forbid", priority = -1 }
+refining_impl_trait = { level = "forbid", priority = -1 }
+rust_2018_idioms = { level = "forbid", priority = -1 }
+rust_2021_compatibility = { level = "forbid", priority = -1 }
+rust_2024_compatibility = { level = "forbid", priority = -1 }
+# `unused` stays at `deny` (not `forbid`) because rudzio's `#[suite]`
+# macro emits `#[allow(unused_mut)]` into user code (the codegen can't
+# always prove that emitted bindings are mutated). Forbid would turn
+# every such `#[allow(unused_mut)]` into a hard error.
 unused = { level = "deny", priority = -1 }
 
+# `unsafe_code` stays at `deny` (not `forbid`) so the few documented
+# `#[expect(unsafe_code, reason = "…")]` blocks (`src/output/pipe.rs`,
+# `src/runtime/embassy/runtime.rs`, `src/suite.rs`, `src/runner.rs`)
+# keep working. Forbid would turn each into a hard compile error.
 unsafe_code = "deny"
 
-macro_use_extern_crate = "deny"
-meta_variable_misuse = "deny"
-missing_copy_implementations = "deny"
-missing_debug_implementations = "deny"
-non_ascii_idents = "deny"
-redundant_imports = "deny"
-redundant_lifetimes = "deny"
-trivial_casts = "deny"
-trivial_numeric_casts = "deny"
-unit_bindings = "deny"
+macro_use_extern_crate = "forbid"
+meta_variable_misuse = "forbid"
+missing_copy_implementations = "forbid"
+missing_debug_implementations = "forbid"
+non_ascii_idents = "forbid"
+redundant_imports = "forbid"
+redundant_lifetimes = "forbid"
+trivial_casts = "forbid"
+trivial_numeric_casts = "forbid"
+unit_bindings = "forbid"
+# `unreachable_pub` stays at `deny`: `migrate/src/lib.rs`,
+# `migrate/src/runner_scaffold.rs` (template), and
+# `migrate/tests/main.rs` `#![allow]` it because they recompile
+# `pub mod`s as test-only modules. Forbid would block those.
 unreachable_pub = "deny"
-unused_import_braces = "deny"
-unused_lifetimes = "deny"
-unused_qualifications = "deny"
+unused_import_braces = "forbid"
+unused_lifetimes = "forbid"
+unused_qualifications = "forbid"
+# `unused_results` stays at `deny`: `cargo-rudzio/src/{lib,main}.rs`
+# `#![allow]` it for `toml_edit::insert/push` calls whose previous-
+# value return is intentionally dropped. Forbid would block that.
 unused_results = "deny"
-variant_size_differences = "deny"
+variant_size_differences = "forbid"
 
 # ===========================================================================
 # Clippy lints
 # ===========================================================================
 [workspace.lints.clippy]
+# `correctness` / `complexity` / `perf` / `style` / `cargo` are flipped
+# to `forbid`: locking those in is the whole point of Phase 5. Nothing in
+# the workspace `#[allow]`s a lint from these groups, so the upgrade is
+# free.
+cargo = { level = "forbid", priority = -1 }
+complexity = { level = "forbid", priority = -1 }
+correctness = { level = "forbid", priority = -1 }
+perf = { level = "forbid", priority = -1 }
+style = { level = "forbid", priority = -1 }
+# `suspicious` stays at `deny` because `blanket_clippy_restriction_lints`
+# (which fires when `restriction` is denied wholesale) lives in this
+# group and we silence it with `allow` further down. Forbid here would
+# block that override.
+suspicious = { level = "deny", priority = -1 }
+# `all` is the alias for `correctness + suspicious + style + complexity
+# + perf`; keep it at `deny` so the `suspicious` exception above
+# survives — the higher-priority individual groups still win.
 all = { level = "deny", priority = -1 }
-cargo = { level = "deny", priority = -1 }
-complexity = { level = "deny", priority = -1 }
-correctness = { level = "deny", priority = -1 }
+# `pedantic` / `nursery` / `restriction` stay at `deny`, not `forbid`,
+# because a few specific lints in those groups are intentionally
+# `#[expect]`-ed in fixtures and the golden-test harness:
+#   • `pedantic`: `manual_assert` (test panic patterns)
+#   • `nursery`: `branches_sharing_code` (idiomatic match arms)
+#   • `restriction`: `panic`, `unreachable`, `exit`, `print_stdout`,
+#     `print_stderr`, `unnecessary_wraps`, `expect_used`,
+#     `format_push_string` — all required by `migrate/fixtures/**` and
+#     `migrate/tests/golden.rs`.
+# Forbid at the group level would turn those `#[expect]`s into hard
+# errors; `deny` keeps them as suppressible diagnostics.
 nursery = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
-perf = { level = "deny", priority = -1 }
 restriction = { level = "deny", priority = -1 }
-style = { level = "deny", priority = -1 }
-suspicious = { level = "deny", priority = -1 }
 
 blanket_clippy_restriction_lints = { level = "allow", priority = 1 }
 #cargo_common_metadata = { level = "allow", priority = 1 }
