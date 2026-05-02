@@ -341,23 +341,33 @@ pub fn expose_bins(bin_crate: &str) -> Result<()> {
         SentinelAction::Proceed => {}
         SentinelAction::SilentOk => return Ok(()),
         SentinelAction::WarnAndOk => {
-            // `cargo:warning=` is cargo's only in-tree surface for
-            // non-fatal build-script messages. Emit one so a genuine
-            // cycle isn't hidden behind a silent Ok — the user needs
-            // the signal to investigate.
-            write_stdout(&format!(
-                "cargo:warning=rudzio::build::expose_bins: detected a re-entrant \
-                 call for `{bin_crate}` while building `{}` (the \
-                 `{NESTED_SENTINEL_ENV}` sentinel is set, meaning an enclosing \
-                 `expose_bins` invocation spawned this build). Returning Ok \
-                 without a nested `cargo build` to prevent runaway recursion. \
-                 If you did not expect this, look for a build-script cycle \
-                 where two crates' `expose_bins` calls trigger one another.\n",
-                env.pkg_name
-            ));
+            emit_reentry_warning(bin_crate, &env.pkg_name);
             return Ok(());
         }
     }
+    expose_bins_after_sentinel(bin_crate, &env)
+}
+
+/// `cargo:warning=` is cargo's only in-tree surface for non-fatal
+/// build-script messages. Emit one so a genuine cycle isn't hidden
+/// behind a silent Ok — the user needs the signal to investigate.
+fn emit_reentry_warning(bin_crate: &str, host_pkg: &str) {
+    write_stdout(&format!(
+        "cargo:warning=rudzio::build::expose_bins: detected a re-entrant \
+         call for `{bin_crate}` while building `{host_pkg}` (the \
+         `{NESTED_SENTINEL_ENV}` sentinel is set, meaning an enclosing \
+         `expose_bins` invocation spawned this build). Returning Ok \
+         without a nested `cargo build` to prevent runaway recursion. \
+         If you did not expect this, look for a build-script cycle \
+         where two crates' `expose_bins` calls trigger one another.\n"
+    ));
+}
+
+/// Post-sentinel body of [`expose_bins`]: resolve `bin_crate` via
+/// `cargo metadata`, run the nested `cargo build --bins -p <bin_crate>`,
+/// and emit `cargo:rustc-env=CARGO_BIN_EXE_*` per bin target plus
+/// `cargo:rerun-if-changed=` for the package's manifest and `src/`.
+fn expose_bins_after_sentinel(bin_crate: &str, env: &BuildEnv) -> Result<()> {
     // NOT `.no_deps()`: when the aggregator is its own workspace, the
     // bin crate shows up only as a dependency in this view, and
     // `no_deps()` would filter it out.
@@ -381,7 +391,12 @@ pub fn expose_bins(bin_crate: &str) -> Result<()> {
     let bin_targets: Vec<&cargo_metadata::Target> = pkg
         .targets
         .iter()
-        .filter(|target| target.kind.iter().any(|kind| matches!(kind, TargetKind::Bin)))
+        .filter(|target| {
+            target
+                .kind
+                .iter()
+                .any(|kind| matches!(kind, TargetKind::Bin))
+        })
         .collect();
     if bin_targets.is_empty() {
         return Err(ExposeError::new(format!(
@@ -492,7 +507,7 @@ pub fn expose_self_bins() -> Result<()> {
 /// then feeds them through here.
 #[doc(hidden)]
 #[inline]
-#[must_use] 
+#[must_use]
 pub fn decide_sentinel_action(
     sentinel: Option<&OsStr>,
     bin_crate: &str,
@@ -512,7 +527,7 @@ pub fn decide_sentinel_action(
 /// an enclosing `expose_bins` invocation (present and non-empty).
 #[doc(hidden)]
 #[inline]
-#[must_use] 
+#[must_use]
 pub fn sentinel_indicates_nested_call(value: Option<&OsStr>) -> bool {
     matches!(value, Some(val) if !val.is_empty())
 }
@@ -535,4 +550,3 @@ fn require_string_env(name: &str) -> Result<String> {
 fn require_path_env(name: &str) -> Result<PathBuf> {
     require_string_env(name).map(PathBuf::from)
 }
-

@@ -26,7 +26,7 @@ use crossbeam_channel::{Receiver, Sender, select};
 
 use super::color::Policy as ColorPolicy;
 use super::events::{LifecycleEvent, PipeChunk, StdStream, TestId, TestState, TestStateKind};
-use crate::bench::{ProgressSnapshot, HISTOGRAM_BUCKETS};
+use crate::bench::{HISTOGRAM_BUCKETS, ProgressSnapshot};
 use crate::common::time::fmt_duration;
 use crate::config::{Format, OutputMode};
 use crate::runner::{normalize_module_path, qualified_test_name};
@@ -344,14 +344,9 @@ impl Drawer {
                 runtime_name,
                 thread,
                 at,
-            } => self.handle_test_started(
-                test_id,
-                module_path,
-                test_name,
-                runtime_name,
-                thread,
-                at,
-            ),
+            } => {
+                self.handle_test_started(test_id, module_path, test_name, runtime_name, thread, at);
+            }
             LifecycleEvent::BenchProgress { test_id, snapshot } => {
                 if let Some(state) = self.tests.get_mut(&test_id) {
                     state.kind = TestStateKind::Bench {
@@ -415,13 +410,7 @@ impl Drawer {
                 thread,
                 elapsed,
                 result,
-            } => self.handle_suite_teardown_finished(
-                runtime_name,
-                suite,
-                thread,
-                elapsed,
-                result,
-            ),
+            } => self.handle_suite_teardown_finished(runtime_name, suite, thread, elapsed, result),
             LifecycleEvent::TestTeardownFailed {
                 module_path,
                 test_name,
@@ -451,25 +440,26 @@ impl Drawer {
                 .min_by_key(|id| self.tests.get(id).map(|state| state.started_at))
         };
         if let Some(id) = chosen
-            && let Some(state) = self.tests.get_mut(&id) {
-                match chunk.stream {
-                    StdStream::Stdout => state.stdout_buffer.extend_from_slice(&chunk.bytes),
-                    StdStream::Stderr => state.stderr_buffer.extend_from_slice(&chunk.bytes),
-                }
-                update_last_line(&mut state.last_output_line, &chunk.bytes);
-                append_complete_lines(&mut state.recent_output, &chunk.bytes);
-                if matches!(self.output_mode, OutputMode::Plain) {
-                    let display = qualified_test_name(state.module_path, state.test_name);
-                    emit_plain_lines(
-                        &mut self.terminal,
-                        &chunk.bytes,
-                        &display,
-                        chunk.stream,
-                        self.color,
-                    );
-                }
-                return;
+            && let Some(state) = self.tests.get_mut(&id)
+        {
+            match chunk.stream {
+                StdStream::Stdout => state.stdout_buffer.extend_from_slice(&chunk.bytes),
+                StdStream::Stderr => state.stderr_buffer.extend_from_slice(&chunk.bytes),
             }
+            update_last_line(&mut state.last_output_line, &chunk.bytes);
+            append_complete_lines(&mut state.recent_output, &chunk.bytes);
+            if matches!(self.output_mode, OutputMode::Plain) {
+                let display = qualified_test_name(state.module_path, state.test_name);
+                emit_plain_lines(
+                    &mut self.terminal,
+                    &chunk.bytes,
+                    &display,
+                    chunk.stream,
+                    self.color,
+                );
+            }
+            return;
+        }
         // Orphan bytes (no mapped test): pass through unprefixed.
         // Live mode: clear live region first; next redraw re-paints.
         if matches!(self.output_mode, OutputMode::Live) {
@@ -500,21 +490,24 @@ impl Drawer {
             LifecyclePhase::Teardown => "teardown",
         };
         let label = match (kind, &failure) {
-            (LifecyclePhase::Setup | LifecyclePhase::Teardown,
-Some(LifecycleFailure::TimedOut(_))) => {
-                StatusLabel::Timeout
+            (
+                LifecyclePhase::Setup | LifecyclePhase::Teardown,
+                Some(LifecycleFailure::TimedOut(_)),
+            ) => StatusLabel::Timeout,
+            (LifecyclePhase::Setup | LifecyclePhase::Teardown, Some(LifecycleFailure::Hung(_))) => {
+                StatusLabel::Hang
             }
-            (LifecyclePhase::Setup | LifecyclePhase::Teardown,
-Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
             (LifecyclePhase::Setup, None) => StatusLabel::SetupOk,
             // Suite-level setup failure renders as [FAIL]; the
             // [SETUP] tag is reserved for per-test SetupFailed.
-            (LifecyclePhase::Setup | LifecyclePhase::Teardown, Some(LifecycleFailure::Error(_))) => {
-                StatusLabel::Fail
-            }
-            (LifecyclePhase::Setup | LifecyclePhase::Teardown, Some(LifecycleFailure::Panicked(_))) => {
-                StatusLabel::Panic
-            }
+            (
+                LifecyclePhase::Setup | LifecyclePhase::Teardown,
+                Some(LifecycleFailure::Error(_)),
+            ) => StatusLabel::Fail,
+            (
+                LifecyclePhase::Setup | LifecyclePhase::Teardown,
+                Some(LifecycleFailure::Panicked(_)),
+            ) => StatusLabel::Panic,
             (LifecyclePhase::Teardown, None) => StatusLabel::Ok,
         };
         let tag_rendered = render_status_tag(label, self.color);
@@ -903,9 +896,8 @@ Some(LifecycleFailure::Hung(_))) => StatusLabel::Hang,
                     let remaining = rows_cap
                         .saturating_sub(LIVE_REGION_RESERVED_ROWS)
                         .saturating_sub(used);
-                    output_lines.extend(bench_histogram_lines(
-                        snapshot, self.color, cols, remaining,
-                    ));
+                    output_lines
+                        .extend(bench_histogram_lines(snapshot, self.color, cols, remaining));
                 }
                 (
                     running_line(slot.runtime_name, state, self.color, cols),
@@ -1334,12 +1326,12 @@ fn bar_render(done: usize, total: usize, width: usize) -> String {
 #[doc(hidden)]
 #[must_use]
 #[inline]
-pub fn bench_progress_trailing(
-    snap: &ProgressSnapshot,
-    cols: usize,
-    _elapsed: Duration,
-) -> String {
-    let pct = snap.done.saturating_mul(100).checked_div(snap.total).unwrap_or(0);
+pub fn bench_progress_trailing(snap: &ProgressSnapshot, cols: usize, _elapsed: Duration) -> String {
+    let pct = snap
+        .done
+        .saturating_mul(100)
+        .checked_div(snap.total)
+        .unwrap_or(0);
     let bar = bar_render(snap.done, snap.total, 10);
     if let Some(cov_permille) = snap.cov_permille.filter(|_| cols >= 100) {
         // cov_permille = cov × 1000; we render cov × 100 with one
@@ -1510,7 +1502,10 @@ pub fn bench_histogram_lines(
     if bars_width == 0 {
         return Vec::new();
     }
-    let levels: [char; 8] = ['\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
+    let levels: [char; 8] = [
+        '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
+        '\u{2588}',
+    ];
     let mut bars = String::new();
     for col in 0..bars_width {
         let bin = col
@@ -1575,10 +1570,7 @@ fn lifecycle_line(
         LifecyclePhase::Setup => "setup",
         LifecyclePhase::Teardown => "teardown",
     };
-    let raw_display = format!(
-        "{phase_word} {}",
-        normalize_module_path(lifecycle.suite)
-    );
+    let raw_display = format!("{phase_word} {}", normalize_module_path(lifecycle.suite));
     let elapsed = lifecycle.started_at.elapsed();
     let trailing = format!("<{elapsed:.2?}>");
     let display = {

@@ -38,8 +38,8 @@ const ACK_PHRASE: &str = "I am not and idion and understand what I am doing in m
 #[rudzio::suite([(runtime = Multithread::new, suite = Suite, test = Test)])]
 mod tests {
     use super::{
-        Test, fs, git_init_commit, run_fixture, run_fixture_twice, run_migrate,
-        setup_minimal_lib_crate, PathBuf,
+        PathBuf, Test, fs, git_init_commit, run_fixture, run_fixture_twice, run_migrate,
+        setup_minimal_lib_crate,
     };
     /* pre-migration (rudzio-migrate):
     #[test]
@@ -162,8 +162,8 @@ mod tests {
             if !input_manifest.exists() || !expected_manifest.exists() {
                 continue;
             }
-            let input_has_anyhow = fs::read_to_string(&input_manifest)
-                .is_ok_and(|text| text.contains("anyhow"));
+            let input_has_anyhow =
+                fs::read_to_string(&input_manifest).is_ok_and(|text| text.contains("anyhow"));
             if input_has_anyhow {
                 continue; // user's own dep — migrator must not touch it
             }
@@ -783,11 +783,7 @@ fn setup_minimal_lib_crate(path: &Path, package_name: &str) -> io::Result<()> {
 /// args and stdin input, and return the captured `Output`. Does not
 /// panic on non-zero exit — callers inspect `output.status` and
 /// stdout/stderr to assert the expected failure mode.
-fn run_migrate(
-    path: &Path,
-    extra_args: &[&str],
-    stdin_input: &str,
-) -> io::Result<Output> {
+fn run_migrate(path: &Path, extra_args: &[&str], stdin_input: &str) -> io::Result<Output> {
     let bin = env!("CARGO_BIN_EXE_rudzio-migrate");
     let mut cmd = Command::new(bin);
     let _: &mut Command = cmd

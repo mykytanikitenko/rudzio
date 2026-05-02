@@ -184,7 +184,12 @@ impl CargoMeta {
         pkg_name: String,
         pkg_version: String,
     ) -> Self {
-        Self { crate_name, manifest_dir, pkg_name, pkg_version }
+        Self {
+            crate_name,
+            manifest_dir,
+            pkg_name,
+            pkg_version,
+        }
     }
 }
 
@@ -543,7 +548,8 @@ impl Config {
         // (available_parallelism returns NonZeroUsize); the fallback is
         // unreachable in practice but keeps us off unwrap/expect.
         let threads_nz = NonZeroUsize::new(resolved_threads).unwrap_or(NonZeroUsize::MIN);
-        let parallel_hardlimit = resolve_parallel_hardlimit(parsed.hardlimit_arg, parsed.bench_mode, threads_nz);
+        let parallel_hardlimit =
+            resolve_parallel_hardlimit(parsed.hardlimit_arg, parsed.bench_mode, threads_nz);
 
         let output_mode = OutputMode::resolve(parsed.output_mode_explicit, &env);
 
@@ -844,9 +850,13 @@ fn handle_timeout_flag(state: &mut ParsedArgs, arg: &str, argv: &[String], i: &m
         state.suite_teardown_timeout = Some(duration);
         return true;
     }
-    if let Some(duration) =
-        parse_duration_secs_flag(arg, "--test-setup-timeout", "--test-setup-timeout=", argv, i)
-    {
+    if let Some(duration) = parse_duration_secs_flag(
+        arg,
+        "--test-setup-timeout",
+        "--test-setup-timeout=",
+        argv,
+        i,
+    ) {
         state.test_setup_timeout = Some(duration);
         return true;
     }
@@ -938,7 +948,9 @@ fn parse_argv(argv: &[String]) -> ParsedArgs {
 
     let mut i = 0_usize;
     while i < argv.len() {
-        let Some(arg) = argv.get(i).cloned() else { break };
+        let Some(arg) = argv.get(i).cloned() else {
+            break;
+        };
         let consumed = handle_concurrency_flag(&mut state, &arg, argv, &mut i)
             || handle_presentation_flag(&mut state, &arg, argv, &mut i)
             || handle_timeout_flag(&mut state, &arg, argv, &mut i)
@@ -949,4 +961,3 @@ fn parse_argv(argv: &[String]) -> ParsedArgs {
 
     state
 }
-

@@ -40,6 +40,13 @@ impl DistSummary {
         p50: Duration,
         p95: Duration,
     ) -> Self {
-        Self { cov_permille, histogram, max, min, p50, p95 }
+        Self {
+            cov_permille,
+            histogram,
+            max,
+            min,
+            p50,
+            p95,
+        }
     }
 }

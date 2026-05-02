@@ -53,11 +53,7 @@ fn make_plan(
     root: &Path,
     workspace_deps: BTreeMap<String, WorkspaceDepSpec>,
 ) -> Plan {
-    let rudzio_spec = RudzioSpec::new(
-        RudzioLocation::Version("0.1".to_owned()),
-        Vec::new(),
-        true,
-    );
+    let rudzio_spec = RudzioSpec::new(RudzioLocation::Version("0.1".to_owned()), Vec::new(), true);
     let mut plan = Plan::new(
         Utf8PathBuf::from(root.to_string_lossy().into_owned()),
         Utf8PathBuf::from(format!("{}/target", root.display())),
@@ -79,10 +75,7 @@ fn synthetic_root() -> PathBuf {
 /// `rudzio` so the cargo-rudzio "must depend on rudzio" filter accepts
 /// the bridged members), then each entry in `members` as `<name>/Cargo.toml`
 /// + `<name>/src/lib.rs`.
-fn write_synthetic_workspace(
-    root: &Path,
-    members: &[(&str, &str, &str)],
-) -> anyhow::Result<()> {
+fn write_synthetic_workspace(root: &Path, members: &[(&str, &str, &str)]) -> anyhow::Result<()> {
     let mut workspace_toml = String::from("[workspace]\nmembers = [");
     let mut first = true;
     for (name, _, _) in members {
@@ -164,10 +157,9 @@ fn generate_runner(cwd: &Path, out: &Path) -> anyhow::Result<()> {
 ])]
 mod tests {
     use super::{
-        BTreeMap, Item, Path, PathBuf, TempDir, WorkspaceDepSpec, bridged_member,
-        build_bridge_build_rs, build_bridge_cargo_toml, build_build_rs, build_main_rs,
-        generate_runner, make_plan, synthetic_root, write_synthetic_workspace, DevDepSpec,
-        DocumentMut, fs,
+        BTreeMap, DevDepSpec, DocumentMut, Item, Path, PathBuf, TempDir, WorkspaceDepSpec,
+        bridged_member, build_bridge_build_rs, build_bridge_cargo_toml, build_build_rs,
+        build_main_rs, fs, generate_runner, make_plan, synthetic_root, write_synthetic_workspace,
     };
 
     /// **Issue 1** — sibling-bridge dependency redirection.
@@ -259,9 +251,7 @@ mod tests {
             .get("check-cfg")
             .and_then(Item::as_array)
             .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "[lints.rust].unexpected_cfgs.check-cfg missing or not an array"
-                )
+                anyhow::anyhow!("[lints.rust].unexpected_cfgs.check-cfg missing or not an array")
             })?;
         let registered: Vec<&str> = check_cfg
             .iter()
@@ -325,10 +315,7 @@ rudzio = { workspace = true, features = [\"common\"] }
 ";
         let lib_rs = "// rudzio_test marker -- triggers detect_src_rudzio_suite\n";
 
-        write_synthetic_workspace(
-            root,
-            &[("A", a_toml, lib_rs), ("B", b_toml, lib_rs)],
-        )?;
+        write_synthetic_workspace(root, &[("A", a_toml, lib_rs), ("B", b_toml, lib_rs)])?;
 
         let out: PathBuf = root.join("agg");
         generate_runner(root, &out)?;
@@ -530,8 +517,7 @@ rudzio = { workspace = true, features = [\"common\"] }
         let mut ws_deps: BTreeMap<String, WorkspaceDepSpec> = BTreeMap::new();
         let mut provider_ws = WorkspaceDepSpec::new();
         provider_ws.path = Some(root.join("http"));
-        let _previous: Option<WorkspaceDepSpec> =
-            ws_deps.insert("http".to_owned(), provider_ws);
+        let _previous: Option<WorkspaceDepSpec> = ws_deps.insert("http".to_owned(), provider_ws);
 
         let plan = make_plan(vec![provider.clone(), consumer], &root, ws_deps);
         let provider_bridge_toml = build_bridge_cargo_toml(&plan, &provider)?;
@@ -541,9 +527,7 @@ rudzio = { workspace = true, features = [\"common\"] }
             .get("features")
             .and_then(|item| item.get("default"))
             .and_then(Item::as_array)
-            .ok_or_else(|| {
-                anyhow::anyhow!("provider bridge missing [features].default array")
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("provider bridge missing [features].default array"))?;
         let names: Vec<&str> = default_feats
             .iter()
             .filter_map(toml_edit::Value::as_str)
@@ -613,8 +597,7 @@ rudzio = { workspace = true, features = [\"common\"] }
     /// aggregator main source, since otherwise the runtime registry
     /// can't be populated at all.
     #[rudzio::test]
-    fn aggregator_main_rs_references_per_member_manifest_dir_env_var(
-    ) -> anyhow::Result<()> {
+    fn aggregator_main_rs_references_per_member_manifest_dir_env_var() -> anyhow::Result<()> {
         let root = synthetic_root();
         let mut alpha = bridged_member("alpha", &root);
         alpha.test_files = vec![alpha.manifest_dir.join("tests").join("api.rs")];

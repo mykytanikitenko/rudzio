@@ -72,9 +72,8 @@ pub fn process_file(
     opts: &Options<'_>,
     report: &mut Report,
 ) -> Result<Option<Outcome>> {
-    let source: Arc<str> = Arc::from(
-        fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?,
-    );
+    let source: Arc<str> =
+        Arc::from(fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?);
     let mut tree: syn::File = match syn::parse_file(&source) {
         Ok(parsed) => parsed,
         Err(err) => {
@@ -316,8 +315,11 @@ fn reindent_block(original: &str, indent: &str) -> String {
     if indent.is_empty() {
         return original.to_owned();
     }
-    let mut out =
-        String::with_capacity(original.len().saturating_add(indent.len().saturating_mul(8)));
+    let mut out = String::with_capacity(
+        original
+            .len()
+            .saturating_add(indent.len().saturating_mul(8)),
+    );
     for (idx, line) in original.lines().enumerate() {
         if idx > 0 {
             out.push('\n');
@@ -435,12 +437,8 @@ fn splice_bridge_before_first_suite_or_main(output: &str, bridge: &str) -> Strin
             out
         },
         |idx| {
-            let mut out = String::with_capacity(
-                output
-                    .len()
-                    .saturating_add(bridge.len())
-                    .saturating_add(1),
-            );
+            let mut out =
+                String::with_capacity(output.len().saturating_add(bridge.len()).saturating_add(1));
             out.push_str(output.get(..idx).unwrap_or(""));
             out.push_str(bridge);
             if !bridge.ends_with('\n') {

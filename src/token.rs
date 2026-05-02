@@ -93,7 +93,12 @@ impl Source {
         module_path: &'static str,
         name: &'static str,
     ) -> Self {
-        Self { file, line, module_path, name }
+        Self {
+            file,
+            line,
+            module_path,
+            name,
+        }
     }
 }
 
@@ -116,7 +121,11 @@ impl Attrs {
     #[inline]
     #[must_use]
     pub const fn new(has_benchmark: bool, ignore_reason: &'static str, ignored: bool) -> Self {
-        Self { has_benchmark, ignore_reason, ignored }
+        Self {
+            has_benchmark,
+            ignore_reason,
+            ignored,
+        }
     }
 }
 
@@ -144,7 +153,11 @@ impl Dispatch {
         runtime_group_key: RuntimeGroupKey,
         runtime_group_owner: &'static dyn RuntimeGroupOwner,
     ) -> Self {
-        Self { run_test, runtime_group_key, runtime_group_owner }
+        Self {
+            run_test,
+            runtime_group_key,
+            runtime_group_owner,
+        }
     }
 }
 
@@ -164,14 +177,23 @@ impl Token {
     #[doc(hidden)]
     #[inline]
     #[must_use]
-    pub const fn new(
-        source: Source,
-        attrs: Attrs,
-        dispatch: Dispatch,
-    ) -> Self {
-        let Source { file, line, module_path, name } = source;
-        let Attrs { has_benchmark, ignore_reason, ignored } = attrs;
-        let Dispatch { run_test, runtime_group_key, runtime_group_owner } = dispatch;
+    pub const fn new(source: Source, attrs: Attrs, dispatch: Dispatch) -> Self {
+        let Source {
+            file,
+            line,
+            module_path,
+            name,
+        } = source;
+        let Attrs {
+            has_benchmark,
+            ignore_reason,
+            ignored,
+        } = attrs;
+        let Dispatch {
+            run_test,
+            runtime_group_key,
+            runtime_group_owner,
+        } = dispatch;
         Self {
             file,
             has_benchmark,

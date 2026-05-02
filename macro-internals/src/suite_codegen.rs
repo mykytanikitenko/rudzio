@@ -3,10 +3,10 @@ use quote::{format_ident, quote};
 use syn::token::{Paren, Pub};
 use syn::{Expr, Ident, Item, ItemFn, ItemMod, Path};
 
-use crate::parse::{MainArgs, RuntimeConfig};
 use crate::codegen::{TestAttrArgs, extract_ignore_reason, extract_test_attr_args};
+use crate::parse::{MainArgs, RuntimeConfig};
 use crate::transform::{
-    CtxKind, classify_ctx_param, has_test_attr, is_async_fn, is_test_attr, apply_runtime_generics,
+    CtxKind, apply_runtime_generics, classify_ctx_param, has_test_attr, is_async_fn, is_test_attr,
 };
 
 /// Bundle of inputs for [`generate_per_test`]; gathered into a struct so
@@ -58,9 +58,7 @@ struct RunTestFnArgs<'args> {
 /// `Option<u64>` const expression token stream. The runtime-side
 /// resolver then computes
 /// `override.map(Duration::from_secs).or(config.<phase>_timeout)`.
-fn attr_timeout_overrides(
-    attr_args: &TestAttrArgs,
-) -> (TokenStream, TokenStream, TokenStream) {
+fn attr_timeout_overrides(attr_args: &TestAttrArgs) -> (TokenStream, TokenStream, TokenStream) {
     let to_quote = |secs: Option<u64>| -> TokenStream {
         secs.map_or_else(
             || quote! { ::core::option::Option::None },
@@ -435,7 +433,14 @@ fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream
 
     let test_outcome_expr = benchmark.as_ref().map_or_else(
         || plain_test_outcome(&dispatch_call, runtime_type),
-        |bench_expr| bench_test_outcome(bench_expr, &dispatch_call, runtime_type, &bench_body_closure),
+        |bench_expr| {
+            bench_test_outcome(
+                bench_expr,
+                &dispatch_call,
+                runtime_type,
+                &bench_body_closure,
+            )
+        },
     );
 
     let helper_item = run_test_fn_quote(&RunTestFnArgs {
@@ -672,10 +677,7 @@ fn owner_runtime_init_quote(
 /// matching `TestOutcome` and incrementing the corresponding
 /// `summary` counter, then returns the summary. Used as the tail of
 /// every suite-setup failure arm.
-fn owner_suite_setup_drain_quote(
-    outcome: &TokenStream,
-    counter_field: &Ident,
-) -> TokenStream {
+fn owner_suite_setup_drain_quote(outcome: &TokenStream, counter_field: &Ident) -> TokenStream {
     quote! {
         for tok in active.iter() {
             reporter.report_outcome(

@@ -124,7 +124,11 @@ impl<'req> RunRequest<'req> {
         root_token: CancellationToken,
         tokens: &'req [&'static TestToken],
     ) -> Self {
-        Self { config, root_token, tokens }
+        Self {
+            config,
+            root_token,
+            tokens,
+        }
     }
 }
 
@@ -186,7 +190,15 @@ impl SummaryOutcomes {
         passed: usize,
         timed_out: usize,
     ) -> Self {
-        Self { cancelled, failed, hung, ignored, panicked, passed, timed_out }
+        Self {
+            cancelled,
+            failed,
+            hung,
+            ignored,
+            panicked,
+            passed,
+            timed_out,
+        }
     }
 }
 
@@ -523,7 +535,12 @@ where
         }
     } else {
         // No outer budget: race parent_cancel against join.
-        match select(std::pin::pin!(phase_token.cancelled()), join_fut_pinned.as_mut()).await {
+        match select(
+            std::pin::pin!(phase_token.cancelled()),
+            join_fut_pinned.as_mut(),
+        )
+        .await
+        {
             Either::Left(_) => {
                 abort_handle.abort();
                 return PhaseOutcome::Cancelled;
@@ -647,14 +664,30 @@ pub const fn fnv1a64(text: &str) -> u64 {
         // u64 accumulator with u64-typed literals.
         let byte = *first;
         let mut widened: u64 = 0;
-        if byte & 0b0000_0001 != 0 { widened |= 0x01; }
-        if byte & 0b0000_0010 != 0 { widened |= 0x02; }
-        if byte & 0b0000_0100 != 0 { widened |= 0x04; }
-        if byte & 0b0000_1000 != 0 { widened |= 0x08; }
-        if byte & 0b0001_0000 != 0 { widened |= 0x10; }
-        if byte & 0b0010_0000 != 0 { widened |= 0x20; }
-        if byte & 0b0100_0000 != 0 { widened |= 0x40; }
-        if byte & 0b1000_0000 != 0 { widened |= 0x80; }
+        if byte & 0b0000_0001 != 0 {
+            widened |= 0x01;
+        }
+        if byte & 0b0000_0010 != 0 {
+            widened |= 0x02;
+        }
+        if byte & 0b0000_0100 != 0 {
+            widened |= 0x04;
+        }
+        if byte & 0b0000_1000 != 0 {
+            widened |= 0x08;
+        }
+        if byte & 0b0001_0000 != 0 {
+            widened |= 0x10;
+        }
+        if byte & 0b0010_0000 != 0 {
+            widened |= 0x20;
+        }
+        if byte & 0b0100_0000 != 0 {
+            widened |= 0x40;
+        }
+        if byte & 0b1000_0000 != 0 {
+            widened |= 0x80;
+        }
         hash ^= widened;
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         bytes = rest;

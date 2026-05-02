@@ -62,7 +62,12 @@ impl Capture {
         stderr_read: OwnedFd,
         stdout_read: OwnedFd,
     ) -> Self {
-        Self { drawer_terminal, saved, stderr_read, stdout_read }
+        Self {
+            drawer_terminal,
+            saved,
+            stderr_read,
+            stdout_read,
+        }
     }
 }
 
@@ -105,8 +110,7 @@ impl SavedFds {
             // SAFETY: stdout was obtained from libc::dup at construction time
             // and won the AcqRel swap above, so we hold the only live
             // reference to it. dup2 with STDOUT_FILENO is a defined syscall.
-            let _stdout_dup_ret: libc::c_int =
-                unsafe { libc::dup2(stdout, libc::STDOUT_FILENO) };
+            let _stdout_dup_ret: libc::c_int = unsafe { libc::dup2(stdout, libc::STDOUT_FILENO) };
             // SAFETY: same exclusive ownership as the dup2 above; close on a
             // valid FD is defined.
             let _stdout_close_ret: libc::c_int = unsafe { libc::close(stdout) };
@@ -115,8 +119,7 @@ impl SavedFds {
             // SAFETY: stderr was obtained from libc::dup at construction time
             // and won the AcqRel swap above, so we hold the only live
             // reference to it. dup2 with STDERR_FILENO is a defined syscall.
-            let _stderr_dup_ret: libc::c_int =
-                unsafe { libc::dup2(stderr, libc::STDERR_FILENO) };
+            let _stderr_dup_ret: libc::c_int = unsafe { libc::dup2(stderr, libc::STDERR_FILENO) };
             // SAFETY: same exclusive ownership as the dup2 above; close on a
             // valid FD is defined.
             let _stderr_close_ret: libc::c_int = unsafe { libc::close(stderr) };

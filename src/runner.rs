@@ -96,10 +96,7 @@ impl PlainState {
     /// Append a failure record to the shared list, holding the mutex
     /// only for the duration of the push.
     fn record_failure(&self, info: FailureInfo) {
-        let mut guard = self
-            .failures
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut guard = self.failures.lock().unwrap_or_else(PoisonError::into_inner);
         guard.push(info);
     }
 }
@@ -214,7 +211,8 @@ impl SuiteReporter for ModeReporter {
                     let _flush = io::stdout().flush();
                 }
                 Format::Pretty => {
-                    let (tag_rendered, tag_visible) = status_tag(StatusLabel::Cancel, plain.colored);
+                    let (tag_rendered, tag_visible) =
+                        status_tag(StatusLabel::Cancel, plain.colored);
                     let display = qualified_test_name(token.module_path, token.name);
                     let lhs_naked = format!("{:width$} {display}", "", width = tag_visible);
                     let lhs_rendered = format!("{tag_rendered} {display}");
@@ -242,7 +240,8 @@ impl SuiteReporter for ModeReporter {
                     let _flush = io::stdout().flush();
                 }
                 Format::Pretty => {
-                    let (tag_rendered, tag_visible) = status_tag(StatusLabel::Ignore, plain.colored);
+                    let (tag_rendered, tag_visible) =
+                        status_tag(StatusLabel::Ignore, plain.colored);
                     let display = qualified_test_name(token.module_path, token.name);
                     let trailing = if token.ignore_reason.is_empty() {
                         runtime_only_info(runtime_name)
@@ -397,7 +396,9 @@ impl SuiteReporter for ModeReporter {
         if let Some(plain) = &self.plain {
             if matches!(plain.fmt, Format::Pretty) {
                 let suite_disp = normalize_module_path(suite);
-                write_stdout(&format!("setup    {suite_disp} ... started <{runtime_name}>\n"));
+                write_stdout(&format!(
+                    "setup    {suite_disp} ... started <{runtime_name}>\n"
+                ));
             }
             return;
         }
@@ -508,7 +509,9 @@ impl SuiteReporter for ModeReporter {
         if let Some(plain) = &self.plain {
             if matches!(plain.fmt, Format::Pretty) {
                 let suite_disp = normalize_module_path(suite);
-                write_stdout(&format!("teardown {suite_disp} ... started <{runtime_name}>\n"));
+                write_stdout(&format!(
+                    "teardown {suite_disp} ... started <{runtime_name}>\n"
+                ));
             }
             return;
         }
@@ -753,7 +756,9 @@ fn install_signal_handler(token: CancellationToken) {
     let mut signals = match Signals::new([SIGINT, SIGTERM]) {
         Ok(handle) => handle,
         Err(err) => {
-            write_stderr(&format!("warning: failed to install signal handler: {err}\n"));
+            write_stderr(&format!(
+                "warning: failed to install signal handler: {err}\n"
+            ));
             return;
         }
     };
@@ -1125,10 +1130,13 @@ fn spawn_grace_force_exit_watchdog(token: CancellationToken, grace: Duration) {
                 "\nrudzio: {grace_text} grace period exceeded after cancellation, \
                  force-exiting (some phase ignored cooperative cancel)\n"
             ));
-            #[expect(unsafe_code, reason = "watchdog runs on a spawned thread; \
+            #[expect(
+                unsafe_code,
+                reason = "watchdog runs on a spawned thread; \
                 main may be sync-blocked, so cooperative ExitCode return cannot \
                 reach the process exit. _exit avoids the clippy::exit lint while \
-                preserving the deliberate force-exit semantics.")]
+                preserving the deliberate force-exit semantics."
+            )]
             // SAFETY: libc::_exit immediately terminates the process
             // without running destructors. It has no preconditions and
             // never returns; force-exit semantics are intentional.
@@ -1171,7 +1179,9 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
     let capture_guard = match output::init(&config) {
         Ok(guard) => guard,
         Err(err) => {
-            write_stderr(&format!("rudzio: failed to initialise output capture: {err}\n"));
+            write_stderr(&format!(
+                "rudzio: failed to initialise output capture: {err}\n"
+            ));
             return ExitCode::from(2);
         }
     };
@@ -1277,7 +1287,11 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
         return ExitCode::from(1);
     }
 
-    if grand_total.is_success() { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+    if grand_total.is_success() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 /// Format the `<runtime>` info block for events that don't carry an
@@ -1363,9 +1377,10 @@ pub fn token_passes_filters(
     run_ignored: RunIgnoredMode,
 ) -> bool {
     if let Some(needle) = filter
-        && !qualified_name.contains(needle) {
-            return false;
-        }
+        && !qualified_name.contains(needle)
+    {
+        return false;
+    }
     for skip in skip_filters {
         if qualified_name.contains(skip.as_str()) {
             return false;

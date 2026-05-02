@@ -133,10 +133,7 @@ where
         clippy::print_stdout,
         reason = "this fixture verifies that suite-level teardown runs after a per-test body timeout; the marker is printed for integration tests to grep"
     )]
-    async fn teardown(
-        self,
-        _cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         println!("teardown_suite_marker");
         Ok(())
     }
@@ -153,10 +150,7 @@ where
         clippy::print_stdout,
         reason = "this fixture verifies that per-test teardown runs after the runner's per-test watchdog fires; the marker is printed for integration tests to grep"
     )]
-    async fn teardown(
-        self,
-        _cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         println!("teardown_test_marker");
         Ok(())
     }

@@ -121,10 +121,7 @@ where
         })
     }
 
-    async fn teardown(
-        self,
-        _cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         self.cancel.cancel();
         let _closed: bool = self.tracker.close();
         self.tracker.wait().await;
@@ -138,10 +135,7 @@ where
 {
     type TeardownError = NeverFails;
 
-    async fn teardown(
-        self,
-        _cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         self.cancel.cancel();
         Ok(())
     }

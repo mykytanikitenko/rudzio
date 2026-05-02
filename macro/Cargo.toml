@@ -7,7 +7,10 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/mykytanikitenko/rudzio"
 readme = "../README.md"
 keywords = ["testing", "async", "macro", "proc-macro"]
-categories = ["development-tools::testing", "development-tools::procedural-macro-helpers"]
+categories = [
+  "development-tools::testing",
+  "development-tools::procedural-macro-helpers",
+]
 
 [lib]
 proc-macro = true

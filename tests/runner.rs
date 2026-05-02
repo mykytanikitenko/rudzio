@@ -64,7 +64,7 @@ fn env_with(rust_test_threads: Option<&str>) -> BTreeMap<String, String> {
 ])]
 mod config_parser {
     use super::{
-        BenchMode, Config, Duration, NonZeroUsize, SummaryOutcomes, SuiteSummary, Test,
+        BenchMode, Config, Duration, NonZeroUsize, SuiteSummary, SummaryOutcomes, Test,
         TestSummary, argv, env_with,
     };
 
@@ -109,8 +109,7 @@ mod config_parser {
 
     #[rudzio::test]
     fn env_var_alone_is_used(_ctx: &Test) -> anyhow::Result<()> {
-        let cfg =
-            Config::from_argv_and_env(&argv(&[]), env_with(Some("3")), rudzio::cargo_meta!());
+        let cfg = Config::from_argv_and_env(&argv(&[]), env_with(Some("3")), rudzio::cargo_meta!());
         anyhow::ensure!(cfg.threads == 3);
         Ok(())
     }
@@ -200,11 +199,8 @@ mod config_parser {
 
     #[rudzio::test]
     fn filter_substring_is_captured(_ctx: &Test) -> anyhow::Result<()> {
-        let cfg = Config::from_argv_and_env(
-            &argv(&["my_filter"]),
-            env_with(None),
-            rudzio::cargo_meta!(),
-        );
+        let cfg =
+            Config::from_argv_and_env(&argv(&["my_filter"]), env_with(None), rudzio::cargo_meta!());
         anyhow::ensure!(cfg.filter.as_deref() == Some("my_filter"));
         Ok(())
     }
@@ -390,8 +386,7 @@ mod config_parser {
 
     #[rudzio::test]
     fn env_is_propagated_into_config(_ctx: &Test) -> anyhow::Result<()> {
-        let cfg =
-            Config::from_argv_and_env(&argv(&[]), env_with(Some("4")), rudzio::cargo_meta!());
+        let cfg = Config::from_argv_and_env(&argv(&[]), env_with(Some("4")), rudzio::cargo_meta!());
         anyhow::ensure!(cfg.env.get("RUST_TEST_THREADS").map(String::as_str) == Some("4"));
         Ok(())
     }
@@ -405,11 +400,8 @@ mod config_parser {
 
     #[rudzio::test]
     fn bench_flag_sets_full_mode(_ctx: &Test) -> anyhow::Result<()> {
-        let cfg = Config::from_argv_and_env(
-            &argv(&["--bench"]),
-            env_with(None),
-            rudzio::cargo_meta!(),
-        );
+        let cfg =
+            Config::from_argv_and_env(&argv(&["--bench"]), env_with(None), rudzio::cargo_meta!());
         anyhow::ensure!(cfg.bench_mode == BenchMode::Full);
         Ok(())
     }
@@ -1003,7 +995,7 @@ mod build_sentinel {
     (runtime = ThreadPool::new, suite = Suite, test = Test),
 ])]
 mod bin_resolver {
-    use super::{Path, __resolve_at_runtime, current_exe};
+    use super::{__resolve_at_runtime, Path, current_exe};
 
     #[rudzio::test]
     fn runtime_walk_reaches_a_directory_that_exists() -> anyhow::Result<()> {

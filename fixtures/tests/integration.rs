@@ -34,8 +34,8 @@ fn log_of(out: &Output) -> String {
 fn ordered(hay: &str, needles: &[&str]) -> anyhow::Result<()> {
     let mut last: usize = 0_usize;
     for needle in needles {
-        let pos = index_of(hay, needle)
-            .map_err(|err| anyhow::anyhow!("{err} in stream:\n{hay}"))?;
+        let pos =
+            index_of(hay, needle).map_err(|err| anyhow::anyhow!("{err} in stream:\n{hay}"))?;
         anyhow::ensure!(
             pos >= last,
             "`{needle}` found at {pos} but expected at >= {last} (previous neighbour). Stream:\n{hay}",
@@ -60,11 +60,7 @@ fn run(exe: &str) -> anyhow::Result<Output> {
 /// in `Output`. Unix-only; the fixture must print a deterministic
 /// readiness marker so the integration test can race-free signal it.
 #[cfg(unix)]
-fn run_and_signal(
-    exe: &str,
-    ready_marker: &str,
-    signal: i32,
-) -> anyhow::Result<Output> {
+fn run_and_signal(exe: &str, ready_marker: &str, signal: i32) -> anyhow::Result<Output> {
     use std::os::unix::process::ExitStatusExt as _;
 
     let mut child = Command::new(exe)
@@ -649,7 +645,9 @@ mod tests {
             positions.push(pos);
         }
         anyhow::ensure!(
-            positions.windows(2_usize).all(|win| win.first() < win.get(1_usize)),
+            positions
+                .windows(2_usize)
+                .all(|win| win.first() < win.get(1_usize)),
             "tests ran out of order; positions {positions:?}, output:\n{log}"
         );
         Ok(())

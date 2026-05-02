@@ -123,9 +123,9 @@ impl<'rt> Runtime<'rt> for ThreadPool {
         // No dedicated blocking pool; delegate to the main ThreadPool. Heavy
         // blocking workloads can starve executor threads — pick a different
         // runtime for those.
-        let handle = self.pool.spawn_with_handle(async move {
-            panic::catch_unwind(AssertUnwindSafe(func))
-        });
+        let handle = self
+            .pool
+            .spawn_with_handle(async move { panic::catch_unwind(AssertUnwindSafe(func)) });
         async move {
             match handle {
                 Ok(remote) => match remote.await {

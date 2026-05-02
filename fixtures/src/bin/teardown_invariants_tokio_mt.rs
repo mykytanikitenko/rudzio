@@ -129,8 +129,7 @@ where
         let tracker_clone = tracker.clone();
         let _join = tracker_clone.spawn(async move {
             sleep(Duration::from_millis(40)).await;
-            let _prev_completed: usize =
-                SUITE_TRACKER_COMPLETED.fetch_add(1, Ordering::SeqCst);
+            let _prev_completed: usize = SUITE_TRACKER_COMPLETED.fetch_add(1, Ordering::SeqCst);
         });
         Ok(Self {
             suite_tracker: tracker,
@@ -142,10 +141,7 @@ where
         clippy::print_stdout,
         reason = "this fixture verifies invariants by emitting a single machine-readable INVARIANTS_CHECK line that the integration test greps; using println! is the deliberate channel"
     )]
-    async fn teardown(
-        self,
-        _cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         let _closed: bool = self.suite_tracker.close();
         self.suite_tracker.wait().await;
         let _prev: usize = SUITE_TEARDOWN_CALLS.fetch_add(1, Ordering::SeqCst);
@@ -174,8 +170,7 @@ where
         let _prev_spawned: usize = TEST_TRACKER_SPAWNED.fetch_add(1, Ordering::SeqCst);
         let _join = self.test_tracker.spawn(async move {
             sleep(Duration::from_millis(40)).await;
-            let _prev_completed: usize =
-                TEST_TRACKER_COMPLETED.fetch_add(1, Ordering::SeqCst);
+            let _prev_completed: usize = TEST_TRACKER_COMPLETED.fetch_add(1, Ordering::SeqCst);
         });
     }
 }
@@ -186,10 +181,7 @@ where
 {
     type TeardownError = Infallible;
 
-    async fn teardown(
-        self,
-        _cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         let _closed: bool = self.test_tracker.close();
         self.test_tracker.wait().await;
         let _prev: usize = TEST_TEARDOWN_CALLS.fetch_add(1, Ordering::SeqCst);

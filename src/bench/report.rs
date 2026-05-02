@@ -180,10 +180,12 @@ impl Report {
             return out;
         }
         let mut out = String::new();
-        let _samples_ret: Result<(), fmt::Error> =
-            writeln!(out, "  samples:           {n}");
-        let _wallclock_ret: Result<(), fmt::Error> =
-            writeln!(out, "  wall-clock:        {}", fmt_duration(self.total_elapsed));
+        let _samples_ret: Result<(), fmt::Error> = writeln!(out, "  samples:           {n}");
+        let _wallclock_ret: Result<(), fmt::Error> = writeln!(
+            out,
+            "  wall-clock:        {}",
+            fmt_duration(self.total_elapsed)
+        );
         if let Some(throughput_milli) = self.throughput_milli_per_sec() {
             // throughput_milli = iter/s × 1000; render `xxxx.yy iter/s`
             // by splitting into integer (÷1000) and centi-fractional
@@ -223,13 +225,11 @@ impl Report {
         }
         if let Some(sd) = self.std_dev() {
             let sd_text = fmt_duration(sd);
-            let _sd_ret: Result<(), fmt::Error> =
-                writeln!(out, "  std dev:           {sd_text}");
+            let _sd_ret: Result<(), fmt::Error> = writeln!(out, "  std dev:           {sd_text}");
         }
         if let Some(mad) = self.mad() {
             let mad_text = fmt_duration(mad);
-            let _mad_ret: Result<(), fmt::Error> =
-                writeln!(out, "  MAD:               {mad_text}");
+            let _mad_ret: Result<(), fmt::Error> = writeln!(out, "  MAD:               {mad_text}");
         }
         if let Some(cv_micro) = self.coefficient_of_variation_micro() {
             // cv_micro carries cov × 10⁶; we render `xxxx.yyy` (3 decimals)
@@ -247,8 +247,7 @@ impl Report {
         }
         if let Some(iqr) = self.iqr() {
             let iqr_text = fmt_duration(iqr);
-            let _iqr_ret: Result<(), fmt::Error> =
-                writeln!(out, "  IQR (p75 − p25):   {iqr_text}");
+            let _iqr_ret: Result<(), fmt::Error> = writeln!(out, "  IQR (p75 − p25):   {iqr_text}");
         }
         if let Some(outliers) = self.outlier_count(3_u32) {
             let _outliers_ret: Result<(), fmt::Error> =
@@ -356,7 +355,14 @@ impl Report {
         strategy: String,
         total_elapsed: Duration,
     ) -> Self {
-        Self { failures, iterations, panics, samples, strategy, total_elapsed }
+        Self {
+            failures,
+            iterations,
+            panics,
+            samples,
+            strategy,
+            total_elapsed,
+        }
     }
 
     /// Rough outlier count — samples more than `k × σ` from the mean
@@ -462,12 +468,9 @@ impl Report {
         }
         let min_text = fmt_duration(self.min().unwrap_or_default());
         let median_text = fmt_duration(self.median().unwrap_or_default());
-        let p95_text =
-            fmt_duration(self.percentile_permille(950_u32).unwrap_or_default());
+        let p95_text = fmt_duration(self.percentile_permille(950_u32).unwrap_or_default());
         let max_text = fmt_duration(self.max().unwrap_or_default());
-        format!(
-            "min {min_text}, p50 {median_text}, p95 {p95_text}, max {max_text} ({n} samples)"
-        )
+        format!("min {min_text}, p50 {median_text}, p95 {p95_text}, max {max_text} ({n} samples)")
     }
 
     /// Throughput in successful iterations per second × 1000 (i.e.

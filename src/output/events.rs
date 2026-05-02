@@ -224,7 +224,13 @@ impl TestStateIdent {
         test_name: &'static str,
         thread: ThreadId,
     ) -> Self {
-        Self { module_path, runtime_name, started_at, test_name, thread }
+        Self {
+            module_path,
+            runtime_name,
+            started_at,
+            test_name,
+            thread,
+        }
     }
 }
 
@@ -266,7 +272,12 @@ impl TestStateBuffers {
         stderr_buffer: Vec<u8>,
         stdout_buffer: Vec<u8>,
     ) -> Self {
-        Self { last_output_line, recent_output, stderr_buffer, stdout_buffer }
+        Self {
+            last_output_line,
+            recent_output,
+            stderr_buffer,
+            stdout_buffer,
+        }
     }
 }
 
@@ -275,9 +286,19 @@ impl TestState {
     #[inline]
     #[must_use]
     pub fn new(ident: TestStateIdent, buffers: TestStateBuffers, kind: TestStateKind) -> Self {
-        let TestStateIdent { module_path, runtime_name, started_at, test_name, thread } = ident;
-        let TestStateBuffers { last_output_line, recent_output, stderr_buffer, stdout_buffer } =
-            buffers;
+        let TestStateIdent {
+            module_path,
+            runtime_name,
+            started_at,
+            test_name,
+            thread,
+        } = ident;
+        let TestStateBuffers {
+            last_output_line,
+            recent_output,
+            stderr_buffer,
+            stdout_buffer,
+        } = buffers;
         Self {
             kind,
             last_output_line,
@@ -302,9 +323,7 @@ impl TestState {
 pub enum TestStateKind {
     /// Under a bench strategy; the most recent progress snapshot
     /// drives the trailing block + mini-histogram in the renderer.
-    Bench {
-        snapshot: Box<ProgressSnapshot>,
-    },
+    Bench { snapshot: Box<ProgressSnapshot> },
     /// Ordinary test body running (no bench strategy).
     Running,
 }

@@ -92,10 +92,7 @@ where
         clippy::panic,
         reason = "this fixture asserts the runner's catch_unwind wrapper turns a Suite::teardown panic into a structured [PANIC] teardown line; the panic must occur to exercise that path"
     )]
-    async fn teardown(
-        self,
-        _cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         panic!("suite_teardown_panicked_by_design")
     }
 }
@@ -106,10 +103,7 @@ where
 {
     type TeardownError = Infallible;
 
-    async fn teardown(
-        self,
-        _cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
     }
 }

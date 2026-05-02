@@ -178,7 +178,14 @@ impl ProgressSnapshot {
     #[inline]
     #[must_use]
     pub const fn new(done: usize, total: usize, stats: DistSummary) -> Self {
-        let DistSummary { cov_permille, histogram, max, min, p50, p95 } = stats;
+        let DistSummary {
+            cov_permille,
+            histogram,
+            max,
+            min,
+            p50,
+            p95,
+        } = stats;
         Self {
             cov_permille,
             done,

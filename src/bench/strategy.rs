@@ -103,9 +103,7 @@ impl Strategy for Sequential {
             }
             let done = idx.saturating_add(1);
             if done.checked_rem(stride).is_some_and(|rem| rem == 0) || done == iterations {
-                on_progress(ProgressSnapshot::from_samples(
-                    &samples, done, iterations,
-                ));
+                on_progress(ProgressSnapshot::from_samples(&samples, done, iterations));
             }
         }
         Report {
@@ -184,9 +182,7 @@ impl Strategy for Concurrent {
             }
             done = done.saturating_add(1);
             if done.is_multiple_of(stride) || done == iterations {
-                on_progress(ProgressSnapshot::from_samples(
-                    &samples, done, iterations,
-                ));
+                on_progress(ProgressSnapshot::from_samples(&samples, done, iterations));
             }
         }
         Report {

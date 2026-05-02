@@ -27,11 +27,7 @@ fn member(name: &str, dev_deps: Vec<DevDepSpec>) -> MemberPlan {
 
 /// Wrap `members` in a `Plan` with a default version-only rudzio spec.
 fn plan_with_members(members: Vec<MemberPlan>, workspace_root: &str) -> Plan {
-    let rudzio_spec = RudzioSpec::new(
-        RudzioLocation::Version("0.1".to_owned()),
-        Vec::new(),
-        true,
-    );
+    let rudzio_spec = RudzioSpec::new(RudzioLocation::Version("0.1".to_owned()), Vec::new(), true);
     let mut plan = Plan::new(
         Utf8PathBuf::from(workspace_root),
         Utf8PathBuf::from("/tmp/target"),
@@ -84,9 +80,7 @@ mod tests {
         match &spec.location {
             RudzioLocation::Git { url, reference } => {
                 anyhow::ensure!(url == "https://github.com/mykytanikitenko/rudzio");
-                anyhow::ensure!(
-                    matches!(reference, Some(GitRef::Rev(rev)) if rev == "deadbeef")
-                );
+                anyhow::ensure!(matches!(reference, Some(GitRef::Rev(rev)) if rev == "deadbeef"));
             }
             RudzioLocation::Path(_) | RudzioLocation::Version(_) | _ => {
                 anyhow::bail!("expected Git location, got {:?}", spec.location);
@@ -108,16 +102,13 @@ mod tests {
         dep.features = vec!["runtime-tokio-multi-thread".to_owned()];
 
         let mut ws_deps = BTreeMap::new();
-        let _prev = ws_deps.insert(
-            "rudzio".to_owned(),
-            {
-                let mut ws = WorkspaceDepSpec::new();
-                ws.git = Some("https://github.com/mykytanikitenko/rudzio".to_owned());
-                ws.git_ref = Some(GitRef::Tag("v0.1.0".to_owned()));
-                ws.features = vec!["common".to_owned()];
-                ws
-            },
-        );
+        let _prev = ws_deps.insert("rudzio".to_owned(), {
+            let mut ws = WorkspaceDepSpec::new();
+            ws.git = Some("https://github.com/mykytanikitenko/rudzio".to_owned());
+            ws.git_ref = Some(GitRef::Tag("v0.1.0".to_owned()));
+            ws.features = vec!["common".to_owned()];
+            ws
+        });
 
         let members = vec![member("storage", vec![dep])];
         let spec = collect_rudzio_spec(&members, &ws_deps, &ws_root())?;
@@ -125,9 +116,7 @@ mod tests {
         match &spec.location {
             RudzioLocation::Git { url, reference } => {
                 anyhow::ensure!(url == "https://github.com/mykytanikitenko/rudzio");
-                anyhow::ensure!(
-                    matches!(reference, Some(GitRef::Tag(tag)) if tag == "v0.1.0")
-                );
+                anyhow::ensure!(matches!(reference, Some(GitRef::Tag(tag)) if tag == "v0.1.0"));
             }
             RudzioLocation::Path(_) | RudzioLocation::Version(_) | _ => {
                 anyhow::bail!("expected Git location, got {:?}", spec.location);
@@ -261,11 +250,7 @@ mod tests {
 
     #[rudzio::test]
     fn emit_version_produces_version_key() -> anyhow::Result<()> {
-        let spec = RudzioSpec::new(
-            RudzioLocation::Version("0.1".to_owned()),
-            Vec::new(),
-            true,
-        );
+        let spec = RudzioSpec::new(RudzioLocation::Version("0.1".to_owned()), Vec::new(), true);
         let rendered = build_rudzio_inline_table(&spec).to_string();
 
         anyhow::ensure!(
@@ -279,22 +264,15 @@ mod tests {
 
     #[rudzio::test]
     fn emit_default_features_false_appears_only_when_disabled() -> anyhow::Result<()> {
-        let enabled = RudzioSpec::new(
-            RudzioLocation::Version("0.1".to_owned()),
-            Vec::new(),
-            true,
-        );
+        let enabled = RudzioSpec::new(RudzioLocation::Version("0.1".to_owned()), Vec::new(), true);
         let rendered_enabled = build_rudzio_inline_table(&enabled).to_string();
         anyhow::ensure!(
             !rendered_enabled.contains("default-features"),
             "default-features should NOT appear when true: {rendered_enabled}",
         );
 
-        let disabled = RudzioSpec::new(
-            RudzioLocation::Version("0.1".to_owned()),
-            Vec::new(),
-            false,
-        );
+        let disabled =
+            RudzioSpec::new(RudzioLocation::Version("0.1".to_owned()), Vec::new(), false);
         let rendered_disabled = build_rudzio_inline_table(&disabled).to_string();
         anyhow::ensure!(
             rendered_disabled.contains("default-features = false"),
@@ -1021,7 +999,9 @@ mod tests {
             warnings.len(),
             warnings
         );
-        let warning = warnings.first().ok_or_else(|| anyhow::anyhow!("no warning emitted"))?;
+        let warning = warnings
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("no warning emitted"))?;
         anyhow::ensure!(
             warning.contains("lib.rs:3") || warning.contains("lib.rs:3:"),
             "warning must cite file:line for the cfg(test) attr on mod tests: {warning}"
@@ -1162,10 +1142,7 @@ mod tests {
             "beta",
             &[("lib.rs", "#[cfg(test)]\nmod tests {}\n")],
         )?;
-        let plan = plan_with_members(
-            vec![alpha, beta],
-            tmp.path().to_string_lossy().as_ref(),
-        );
+        let plan = plan_with_members(vec![alpha, beta], tmp.path().to_string_lossy().as_ref());
         let all = scan_unbroadened_cfg_test_mods_in_plan(&plan);
         anyhow::ensure!(
             all.len() == 2,
@@ -1484,7 +1461,8 @@ mod tests {
         fs::create_dir_all(&out_dir)?;
         write_bridge_crate(&plan, &entry, &out_dir)?;
 
-        let rendered = fs::read_to_string(out_dir.join(bridge_dir_name(&entry)).join("Cargo.toml"))?;
+        let rendered =
+            fs::read_to_string(out_dir.join(bridge_dir_name(&entry)).join("Cargo.toml"))?;
         anyhow::ensure!(
             rendered.contains("path = \"src/lib.rs\""),
             "bridge [lib] path must be relative `src/lib.rs` (resolves through symlink):\n{rendered}"

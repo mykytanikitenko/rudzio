@@ -427,7 +427,10 @@ impl Plan {
     /// Returns an error when no remaining member matches any of `roots`.
     #[inline]
     pub fn restrict_to_paths(&mut self, roots: &[PathBuf]) -> Result<()> {
-        let abs_roots: Vec<PathBuf> = roots.iter().map(|root| canonicalize_or_keep(root)).collect();
+        let abs_roots: Vec<PathBuf> = roots
+            .iter()
+            .map(|root| canonicalize_or_keep(root))
+            .collect();
         self.members.retain(|member| {
             let abs = canonicalize_or_keep(&member.manifest_dir);
             member_under_any_root(&abs, &abs_roots)
@@ -594,19 +597,31 @@ fn build_member_plan(pkg: &Package) -> Result<Option<MemberPlan>> {
     let bin_names: Vec<String> = pkg
         .targets
         .iter()
-        .filter(|target| target.kind.iter().any(|kind| matches!(kind, TargetKind::Bin)))
+        .filter(|target| {
+            target
+                .kind
+                .iter()
+                .any(|kind| matches!(kind, TargetKind::Bin))
+        })
         .map(|target| target.name.clone())
         .collect();
 
-    let has_lib = pkg
-        .targets
-        .iter()
-        .any(|target| target.kind.iter().any(|kind| matches!(kind, TargetKind::Lib)));
+    let has_lib = pkg.targets.iter().any(|target| {
+        target
+            .kind
+            .iter()
+            .any(|kind| matches!(kind, TargetKind::Lib))
+    });
 
     let src_lib_path = pkg
         .targets
         .iter()
-        .find(|target| target.kind.iter().any(|kind| matches!(kind, TargetKind::Lib)))
+        .find(|target| {
+            target
+                .kind
+                .iter()
+                .any(|kind| matches!(kind, TargetKind::Lib))
+        })
         .map(|target| target.src_path.as_std_path().to_path_buf());
 
     let edition = pkg.edition.to_string();
@@ -630,8 +645,8 @@ fn build_member_plan(pkg: &Package) -> Result<Option<MemberPlan>> {
         .map(|(name, deps)| (name.clone(), deps.clone()))
         .collect();
 
-    let rudzio_activated_features =
-        load_rudzio_activated_features(pkg.manifest_path.as_std_path()).with_context(|| {
+    let rudzio_activated_features = load_rudzio_activated_features(pkg.manifest_path.as_std_path())
+        .with_context(|| {
             format!(
                 "loading `[package.metadata.rudzio].features` from {}",
                 pkg.manifest_path.as_std_path().display()
@@ -796,8 +811,7 @@ pub fn scan_unbroadened_cfg_test_mods(member: &MemberPlan) -> Vec<String> {
                 .iter()
                 .find(|tail_line| !tail_line.trim_start().starts_with("#["));
             let gates_a_mod = next_non_attr.is_some_and(|next| {
-                next.trim_start().starts_with("mod ")
-                    || next.trim_start().starts_with("pub mod ")
+                next.trim_start().starts_with("mod ") || next.trim_start().starts_with("pub mod ")
             });
             if !gates_a_mod {
                 continue;
@@ -997,8 +1011,7 @@ fn resolve_rudzio_declarations(
                     git_ref: ws.git_ref.clone(),
                     version_req: ws.version_req.clone(),
                     features: feats,
-                    uses_default_features: dep.uses_default_features
-                        && ws.uses_default_features,
+                    uses_default_features: dep.uses_default_features && ws.uses_default_features,
                 });
             } else {
                 let version_req = if dep.version_req.is_empty() {
@@ -1156,7 +1169,12 @@ fn discover_test_files(
     let explicit: Vec<PathBuf> = pkg
         .targets
         .iter()
-        .filter(|target| target.kind.iter().any(|kind| matches!(kind, TargetKind::Test)))
+        .filter(|target| {
+            target
+                .kind
+                .iter()
+                .any(|kind| matches!(kind, TargetKind::Test))
+        })
         .map(|target| target.src_path.as_std_path().to_path_buf())
         .filter(|path_buf| path_buf != &main_shim)
         .collect();
@@ -1490,9 +1508,7 @@ fn read_dev_deps(manifest_path: &Path) -> Result<Vec<DevDepSpec>> {
             for (section_name, section) in sections {
                 if let Some(Item::Table(deps_tbl)) = cfg_tbl.get(section_name) {
                     for (name, item) in deps_tbl {
-                        if let Some(spec) =
-                            parse_dev_dep_entry(name, item, manifest_dir, section)
-                        {
+                        if let Some(spec) = parse_dev_dep_entry(name, item, manifest_dir, section) {
                             out.push(spec);
                         }
                     }
@@ -1588,10 +1604,9 @@ fn fill_dev_dep_from_table(spec: &mut DevDepSpec, table: &Table, manifest_dir: &
 /// Apply one `key = val` pair from a dev/normal dep entry into `spec`.
 fn apply_dev_dep_field(spec: &mut DevDepSpec, key: &str, val: &Value, manifest_dir: &Path) {
     match key {
-        "workspace"
-            if val.as_bool() == Some(true) => {
-                spec.workspace_inherited = true;
-            }
+        "workspace" if val.as_bool() == Some(true) => {
+            spec.workspace_inherited = true;
+        }
         "version" => {
             if let Some(text) = val.as_str() {
                 text.clone_into(&mut spec.version_req);
@@ -1964,7 +1979,8 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
     // `CARGO_MANIFEST_DIR` (= the bridge dir) and likewise reach the
     // member tree through the symlinks.
     let rel_lib = lib_path
-        .strip_prefix(&member.manifest_dir).map_or_else(|_| PathBuf::from("src").join("lib.rs"), Path::to_path_buf);
+        .strip_prefix(&member.manifest_dir)
+        .map_or_else(|_| PathBuf::from("src").join("lib.rs"), Path::to_path_buf);
     let rel_lib_str = rel_lib.to_string_lossy().replace('\\', "/");
     lib.insert("path", value(rel_lib_str));
     doc.insert("lib", Item::Table(lib));
@@ -2477,9 +2493,7 @@ fn render_sibling_bridge_dep(dep: &DevDepSpec, plan: &Plan) -> Option<Item> {
     } else {
         None
     };
-    let mut feats: Vec<String> = ws_entry
-        .map(|ws| ws.features.clone())
-        .unwrap_or_default();
+    let mut feats: Vec<String> = ws_entry.map(|ws| ws.features.clone()).unwrap_or_default();
     feats.extend(dep.features.iter().cloned());
     feats.sort();
     feats.dedup();
@@ -2783,7 +2797,11 @@ fn sanitize_ident(value: &str) -> String {
             out.push('_');
         }
     }
-    if out.chars().next().is_some_and(|first| first.is_ascii_digit()) {
+    if out
+        .chars()
+        .next()
+        .is_some_and(|first| first.is_ascii_digit())
+    {
         out.insert(0, '_');
     }
     out

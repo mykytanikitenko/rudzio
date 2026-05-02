@@ -337,9 +337,7 @@ where
 
 /// Poll an `mpsc::Receiver` from an async context, yielding between empty
 /// attempts so the executor can make progress on the sender side.
-async fn poll_channel<T: Send + 'static>(
-    rx: mpsc::Receiver<T>,
-) -> Result<T, JoinError> {
+async fn poll_channel<T: Send + 'static>(rx: mpsc::Receiver<T>) -> Result<T, JoinError> {
     loop {
         match rx.try_recv() {
             Ok(val) => return Ok(val),

@@ -220,7 +220,9 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("histogram returned <2 rows"))?;
         let axis_row = strip_ansi(axis_line);
         anyhow::ensure!(
-            axis_row.contains('\u{2026}') || axis_row.contains("...") || axis_row.contains('\u{b5}'),
+            axis_row.contains('\u{2026}')
+                || axis_row.contains("...")
+                || axis_row.contains('\u{b5}'),
             "axis row should show min … max range: {axis_row:?}",
         );
         // `cols-1` DECAWM rule

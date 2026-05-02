@@ -79,7 +79,9 @@ fn dispatch(argv: &[String]) -> Result<ExitCode> {
         Some("test") => run_test(&rest),
         Some("migrate") => Ok(run_migrate(&rest)),
         Some(cmd) => {
-            write_stderr(&format!("cargo-rudzio: unknown subcommand `{cmd}`\n\n{USAGE}"));
+            write_stderr(&format!(
+                "cargo-rudzio: unknown subcommand `{cmd}`\n\n{USAGE}"
+            ));
             Ok(ExitCode::from(2))
         }
     }

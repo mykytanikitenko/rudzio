@@ -339,8 +339,11 @@ impl Rewriter<'_, '_> {
         // Bucket items: non-test items stay in the outer mod;
         // test fns get bucketed by their ctx group.
         let mut shared: Vec<Item> = Vec::new();
-        let mut buckets: BTreeMap<Option<String>, Vec<Item>> =
-            groups.iter().cloned().map(|key| (key, Vec::new())).collect();
+        let mut buckets: BTreeMap<Option<String>, Vec<Item>> = groups
+            .iter()
+            .cloned()
+            .map(|key| (key, Vec::new()))
+            .collect();
         for item in items {
             let bucket_key = match &item {
                 Item::Fn(func)
@@ -391,12 +394,7 @@ impl Rewriter<'_, '_> {
                 || "tests_default".to_owned(),
                 |key_str| format!("tests_with_{}", last_segment_snake(key_str)),
             );
-            let child = self.build_split_child_mod(
-                &child_ident,
-                key.as_deref(),
-                runtime_path,
-                fns,
-            );
+            let child = self.build_split_child_mod(&child_ident, key.as_deref(), runtime_path, fns);
             new_items.push(Item::Mod(child));
         }
 
@@ -553,8 +551,7 @@ impl Rewriter<'_, '_> {
             self.rewrite.original_snippets.push(snippet);
             // Leading space so prettyplease emits `/// __RUDZIO..._N__`
             // (with a visible gap) rather than `///__RUDZIO..._N__`.
-            let sentinel =
-                format!(" __RUDZIO_MIGRATE_ORIGINAL_PLACEHOLDER_{snippet_idx}__");
+            let sentinel = format!(" __RUDZIO_MIGRATE_ORIGINAL_PLACEHOLDER_{snippet_idx}__");
             let attr: Attribute = syn::parse_quote! { #[doc = #sentinel] };
             func.attrs.insert(0, attr);
         }
@@ -1166,9 +1163,11 @@ fn is_cfg_test_attr(attr: &Attribute) -> bool {
 /// `tests/<suite>/mod.rs`. Anything deeper is a submodule and inherits
 /// its main from the root via `mod` declarations.
 fn is_tests_binary_root(path: &Path) -> bool {
-    let mut components: Vec<&OsStr> =
-        path.components().map(Component::as_os_str).collect();
-    let Some(tests_idx) = components.iter().position(|seg| *seg == OsStr::new("tests")) else {
+    let mut components: Vec<&OsStr> = path.components().map(Component::as_os_str).collect();
+    let Some(tests_idx) = components
+        .iter()
+        .position(|seg| *seg == OsStr::new("tests"))
+    else {
         return false;
     };
     let rel = components.split_off(tests_idx.saturating_add(1));

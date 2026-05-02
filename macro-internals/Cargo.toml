@@ -7,7 +7,10 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/mykytanikitenko/rudzio"
 readme = "../README.md"
 keywords = ["testing", "async", "macro", "proc-macro", "internal"]
-categories = ["development-tools::testing", "development-tools::procedural-macro-helpers"]
+categories = [
+  "development-tools::testing",
+  "development-tools::procedural-macro-helpers",
+]
 
 # Single `#[rudzio::main]` per crate: one test binary aggregating every
 # `#[rudzio::test]` across the submodules under `tests/`.
@@ -31,7 +34,10 @@ syn = { workspace = true, features = ["full", "extra-traits"] }
 # rudzio-macro -> internals) is fine because dev-deps are not part of the
 # normal dependency graph.
 [dev-dependencies]
-rudzio = { workspace = true, features = ["runtime-tokio-multi-thread", "common"] }
+rudzio = { workspace = true, features = [
+  "runtime-tokio-multi-thread",
+  "common",
+] }
 anyhow = "=1.0.102"
 
 [[test]]

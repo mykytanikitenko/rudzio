@@ -48,20 +48,12 @@ check-udeps:
 # Uses `cargo run -p cargo-rudzio -- test` so the recipe works on a fresh
 # clone without requiring `cargo install cargo-rudzio`.
 test:
-    #!/usr/bin/env bash
-    if [ -f .config/.env ]; then
-        set -a && source .config/.env && set +a
-    fi
     cargo run -p cargo-rudzio -- test
 
 # Per-crate stock path: `cargo test --workspace`. Useful when debugging a
 # single crate's integration tests or reproducing what a user who doesn't
 # have cargo-rudzio installed would see.
 test-stock:
-    #!/usr/bin/env bash
-    if [ -f .config/.env ]; then
-        set -a && source .config/.env && set +a
-    fi
     cargo test --workspace
 
 # --- Security & policy ---
@@ -127,5 +119,9 @@ fix: fix-fmt fix-taplo fix-clippy
 # Run all checks and tests (pre-commit)
 pre-commit: check-fmt check-taplo check check-clippy check-udeps test
 
-# Mirror everything CI runs, locally
-ci: check-fmt check-taplo check-clippy check-audit check-deny check-semver test
+# One command for the entire CI/CD pipeline — every gate the
+# self-hosted runner executes on push to main runs here. `check-semver`
+# is intentionally NOT in this aggregate until the first crates.io
+# publish creates a baseline (it errors with "not found in registry"
+# pre-publish). After v0.1.0 lands, add `check-semver` to this list.
+ci: check-fmt check-taplo check-clippy check-audit check-deny test

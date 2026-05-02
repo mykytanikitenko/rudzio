@@ -67,10 +67,7 @@ where
         })
     }
 
-    async fn teardown(
-        self,
-        _cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
     }
 }
@@ -104,10 +101,7 @@ where
         clippy::panic,
         reason = "this fixture exercises the catch_unwind wrapper around Test::teardown (per-test teardown); the teardown body must panic to verify the runner routes the panic through report_test_teardown_failure with the panic message"
     )]
-    async fn teardown(
-        self,
-        _cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         panic!("test_teardown_panicked_by_design")
     }
 }

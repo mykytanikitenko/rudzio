@@ -30,10 +30,11 @@ pub use runner::{
 };
 pub use runtime::{JoinError, Runtime};
 pub use suite::{
-    Id as SuiteId, Reporter as SuiteReporter, RunRequest as SuiteRunRequest,
-    RuntimeGroupKey, RuntimeGroupOwner, Summary as SuiteSummary, TestOutcome, TestRunFn, fnv1a64,
+    Id as SuiteId, Reporter as SuiteReporter, RunRequest as SuiteRunRequest, RuntimeGroupKey,
+    RuntimeGroupOwner, Summary as SuiteSummary, TestOutcome, TestRunFn, fnv1a64,
 };
 pub use test_case::{BoxError, IntoRudzioResult, TestCase, TestFn, box_error};
+pub use token::{TEST_TOKENS, Token as TestToken};
 /// Re-export of the `tokio` runtime crate. Available whenever any of
 /// the `runtime-tokio-*` cargo features is on; lets downstream tests
 /// reach `tokio::time::sleep` etc. without listing tokio as a separate
@@ -49,4 +50,3 @@ pub use test_case::{BoxError, IntoRudzioResult, TestCase, TestFn, box_error};
 pub use tokio;
 #[doc(hidden)]
 pub use tokio_util;
-pub use token::{TEST_TOKENS, Token as TestToken};

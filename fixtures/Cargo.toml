@@ -19,7 +19,15 @@ exclude = ["tests/compile.rs"]
 
 [dependencies]
 anyhow = "=1.0.102"
-rudzio = { workspace = true, features = ["runtime-tokio-multi-thread", "runtime-tokio-current-thread", "runtime-tokio-local", "runtime-compio", "runtime-embassy", "runtime-futures", "common"] }
+rudzio = { workspace = true, features = [
+  "runtime-tokio-multi-thread",
+  "runtime-tokio-current-thread",
+  "runtime-tokio-local",
+  "runtime-compio",
+  "runtime-embassy",
+  "runtime-futures",
+  "common",
+] }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 

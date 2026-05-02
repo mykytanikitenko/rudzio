@@ -294,15 +294,7 @@ mod phase_wrapper_tests {
             }
         };
         let token = CancellationToken::new();
-        let outcome = drive_per_test_spawn(
-            join_fut,
-            abort_handle,
-            None,
-            None,
-            token,
-            sleep,
-        )
-        .await;
+        let outcome = drive_per_test_spawn(join_fut, abort_handle, None, None, token, sleep).await;
         anyhow::ensure!(
             matches!(outcome, PhaseOutcome::Completed("done")),
             "expected Completed(\"done\"), got {outcome:?}"
@@ -422,14 +414,8 @@ mod phase_wrapper_tests {
     #[rudzio::test]
     async fn no_timeout_with_completion_returns_completed(_ctx: &Test) -> anyhow::Result<()> {
         let token = CancellationToken::new();
-        let outcome = run_phase_with_timeout_and_cancel(
-            async { "done" },
-            None,
-            None,
-            token,
-            sleep,
-        )
-        .await;
+        let outcome =
+            run_phase_with_timeout_and_cancel(async { "done" }, None, None, token, sleep).await;
         anyhow::ensure!(
             matches!(outcome, PhaseOutcome::Completed("done")),
             "expected Completed(\"done\"), got {outcome:?}"

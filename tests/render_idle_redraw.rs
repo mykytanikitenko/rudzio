@@ -366,7 +366,9 @@ mod tests {
         // A second, multi-byte UTF-8 line — the byte-length is > the
         // char-count; an off-by-one width calc on bytes vs chars
         // would still make this overflow.
-        state.recent_output.push("\u{43a}\u{438}\u{440}\u{438}\u{43b}\u{43b}\u{438}\u{446}\u{430}".repeat(40));
+        state
+            .recent_output
+            .push("\u{43a}\u{438}\u{440}\u{438}\u{43b}\u{43b}\u{438}\u{446}\u{430}".repeat(40));
 
         // Sweep across realistic terminal widths. We include a
         // boundary case (cols = `RUNTIME_PREFIX_WIDTH + STATUS_TAG_WIDTH

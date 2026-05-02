@@ -107,10 +107,7 @@ where
         clippy::print_stdout,
         reason = "this fixture asserts duplicate suite tuples collapse into one group by emitting machine-readable COUNTING_SUITE_TEARDOWN lines that the integration test greps; println! is the deliberate channel"
     )]
-    async fn teardown(
-        self,
-        _cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         let prev = TEARDOWN_CALLS.fetch_add(1_usize, Ordering::SeqCst);
         println!(
             "COUNTING_SUITE_TEARDOWN (new count: {})",
@@ -126,10 +123,7 @@ where
 {
     type TeardownError = Infallible;
 
-    async fn teardown(
-        self,
-        _cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
     }
 }

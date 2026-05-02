@@ -65,12 +65,13 @@ pub const fn is_async_fn(func: &ItemFn) -> bool {
 #[must_use]
 pub fn is_test_attr(attr: &Attribute) -> bool {
     attr.path().is_ident("test")
-        || (attr.path().segments.len() == 2 && {
-            let first = attr.path().segments.first();
-            let second = attr.path().segments.last();
-            matches!((first, second),
+        || (attr.path().segments.len() == 2
+            && {
+                let first = attr.path().segments.first();
+                let second = attr.path().segments.last();
+                matches!((first, second),
                 (Some(first_seg), Some(second_seg)) if first_seg.ident == "rudzio" && second_seg.ident == "test")
-        })
+            })
 }
 
 /// `true` if the function's return type is `()` — either left off

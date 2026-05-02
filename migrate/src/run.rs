@@ -14,7 +14,9 @@ use std::process::ExitCode;
 use anyhow::Context as _;
 use rudzio::output::{write_stderr, write_stdout};
 
-use crate::{backup, cli, discovery, emit, manifest, preflight, report, runner_scaffold, test_context};
+use crate::{
+    backup, cli, discovery, emit, manifest, preflight, report, runner_scaffold, test_context,
+};
 
 /// Prompt text for the `--no-shared-runner=false` case.
 const SHARED_RUNNER_PROMPT: &str = "\nGenerate a shared #[rudzio::main] entry and wire Cargo.toml so all tests\nrun through one binary? This modifies Cargo.toml and creates or appends\ntests/main.rs. [y/N]\n";
@@ -290,7 +292,11 @@ fn process_package_files(
             }
             Ok(None) => {}
             Err(err) => {
-                report.warn(file.clone(), None, format!("error processing file: {err:#}"));
+                report.warn(
+                    file.clone(),
+                    None,
+                    format!("error processing file: {err:#}"),
+                );
             }
         }
     }
