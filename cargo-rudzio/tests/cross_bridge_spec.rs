@@ -21,7 +21,7 @@ use std::process::Command;
 use cargo_metadata::camino::Utf8PathBuf;
 use cargo_rudzio::generate::{
     DevDepSpec, MemberPlan, Plan, RudzioLocation, RudzioSpec, WorkspaceDepSpec,
-    build_bridge_cargo_toml, build_build_rs, build_main_rs,
+    build_bridge_build_rs, build_bridge_cargo_toml, build_build_rs, build_main_rs,
 };
 use rudzio::common::context::Suite;
 use rudzio::runtime::tokio::Multithread as TokioMultithread;
@@ -165,8 +165,9 @@ fn generate_runner(cwd: &Path, out: &Path) -> anyhow::Result<()> {
 mod tests {
     use super::{
         BTreeMap, Item, Path, PathBuf, TempDir, WorkspaceDepSpec, bridged_member,
-        build_bridge_cargo_toml, build_build_rs, build_main_rs, generate_runner,
-        make_plan, synthetic_root, write_synthetic_workspace, DevDepSpec, DocumentMut, fs,
+        build_bridge_build_rs, build_bridge_cargo_toml, build_build_rs, build_main_rs,
+        generate_runner, make_plan, synthetic_root, write_synthetic_workspace, DevDepSpec,
+        DocumentMut, fs,
     };
 
     /// **Issue 1** — sibling-bridge dependency redirection.
@@ -482,6 +483,44 @@ rudzio = { workspace = true, features = [\"common\"] }
             "aggregator build.rs must emit \
              `cargo:rustc-env=RUDZIO_MEMBER_MANIFEST_DIR_beta=<abs path>`. \
              Got:\n{build_rs}"
+        );
+        Ok(())
+    }
+
+    /// **Bridge proc-macro `CARGO_MANIFEST_DIR` gap.**
+    ///
+    /// Path-resolving proc-macros (`include_str!`, `include_bytes!`,
+    /// `sqlx::migrate!`, `refinery::embed_migrations!`, askama
+    /// templates, …) read the rustc-set `CARGO_MANIFEST_DIR` and look
+    /// for paths relative to it. Under bridge compile, that env var
+    /// points at the bridge dir (`target/.../members/<member>/`), not
+    /// the member's real dir. Top-level entries are symlinked into the
+    /// bridge so most direct references work, but `..`-based paths
+    /// (e.g. `embed_migrations!("../shared/migrations")` from a
+    /// `crates/storage/postgres/` member resolving to a sibling
+    /// `crates/storage/migrations/`) and any code that reads
+    /// `env!("CARGO_MANIFEST_DIR")` for absolute-path comparisons
+    /// silently get the wrong answer.
+    ///
+    /// Fix: bridge `build.rs` emits
+    /// `cargo:rustc-env=CARGO_MANIFEST_DIR=<original member dir>` so
+    /// the bridge's compile unit sees the same manifest dir cargo would
+    /// set under stock per-crate builds.
+    #[rudzio::test]
+    fn bridge_build_rs_overrides_cargo_manifest_dir_to_member_dir() -> anyhow::Result<()> {
+        let root = synthetic_root();
+        let alpha = bridged_member("alpha", &root);
+        let alpha_dir = alpha.manifest_dir.to_string_lossy().into_owned();
+
+        let build_rs = build_bridge_build_rs(&alpha);
+
+        anyhow::ensure!(
+            build_rs.contains(&format!("cargo:rustc-env=CARGO_MANIFEST_DIR={alpha_dir}")),
+            "bridge build.rs must emit \
+             `cargo:rustc-env=CARGO_MANIFEST_DIR=<member dir>` so path-resolving \
+             proc-macros (include_str!, sqlx::migrate!, embed_migrations!, …) \
+             find files relative to the original member dir instead of the bridge \
+             dir. Got:\n{build_rs}"
         );
         Ok(())
     }

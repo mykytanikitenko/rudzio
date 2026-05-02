@@ -1843,11 +1843,27 @@ fn create_symlink(_source: &Path, _target: &Path) -> IoResult<()> {
 #[inline]
 #[must_use]
 pub fn build_bridge_build_rs(member: &MemberPlan) -> String {
+    // The bridge's own manifest dir lives under
+    // `target/<...>/members/<member>/`, but path-resolving proc-macros
+    // (`include_str!`, `sqlx::migrate!`, `refinery::embed_migrations!`,
+    // askama templates, …) read `CARGO_MANIFEST_DIR` and look for
+    // files relative to it. Without this override, anything outside
+    // the symlink-mirrored top-level (e.g. `..`-relative paths to a
+    // sibling crate's shared resources) fails to resolve. Emitting
+    // `cargo:rustc-env=CARGO_MANIFEST_DIR=<original member dir>` makes
+    // the bridge's rustc see the same manifest dir cargo would set
+    // under stock per-crate builds, so member src compiles identically
+    // inside and outside the aggregator.
+    let manifest_dir = escape_str_literal(&member.manifest_dir.to_string_lossy());
     let mut out = String::new();
     if member.bin_names.is_empty() {
         out.push_str("fn main() {\n");
         out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
         out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
+        let _ignored: FmtResult = writeln!(
+            out,
+            "    println!(\"cargo:rustc-env=CARGO_MANIFEST_DIR={manifest_dir}\");"
+        );
         out.push_str("}\n");
         return out;
     }
@@ -1855,7 +1871,11 @@ pub fn build_bridge_build_rs(member: &MemberPlan) -> String {
     out.push_str("\nfn main() -> Result<(), String> {\n");
     out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
     out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
-    let _ignored: FmtResult =write!(
+    let _manifest_emit: FmtResult = writeln!(
+        out,
+        "    println!(\"cargo:rustc-env=CARGO_MANIFEST_DIR={manifest_dir}\");"
+    );
+    let _expose_emit: FmtResult = write!(
         out,
         "    expose_member_bins({}, {}, &[",
         quote_str(&member.package_name),

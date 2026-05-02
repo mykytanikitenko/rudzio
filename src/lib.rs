@@ -15,6 +15,20 @@ pub mod suite;
 pub mod test_case;
 pub mod token;
 
+/// Captures `CARGO_MANIFEST_DIR` as rustc saw it when compiling
+/// rudzio's `src/lib.rs`.
+///
+/// Under the cargo-rudzio aggregator, that compile happens via the
+/// bridge crate, whose own manifest dir is `target/<...>/members/rudzio/`.
+/// The bridge `build.rs` emits `cargo:rustc-env=CARGO_MANIFEST_DIR=<...>`
+/// to redirect path-resolving proc-macros (`include_str!`,
+/// `sqlx::migrate!`, …) at the original member dir; if cargo silently
+/// strips that reserved env var, the redirect doesn't take effect and
+/// the value here lands as the bridge dir instead. Tests assert
+/// against this const to verify the override is respected end-to-end.
+#[doc(hidden)]
+pub const __BRIDGE_OBSERVED_MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
+
 pub use bench::{Report, Strategy};
 pub use config::{BenchMode, CargoMeta, ColorMode, Config, Format, OutputMode, RunIgnoredMode};
 pub use context::{Suite, Test};

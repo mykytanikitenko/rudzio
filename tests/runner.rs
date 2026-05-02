@@ -1243,4 +1243,28 @@ mod path_normalize {
         anyhow::ensure!(qualified_test_name("main", "test_case") == "test_case");
         Ok(())
     }
+
+    #[rudzio::test]
+    fn bridge_build_rs_overrides_cargo_manifest_dir_at_runtime(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
+        // Pin that the bridge `build.rs` directive
+        // `cargo:rustc-env=CARGO_MANIFEST_DIR=<member dir>` actually
+        // takes effect — cargo could silently strip overrides of
+        // reserved env vars, in which case the redirect wouldn't reach
+        // proc-macros that resolve paths relative to CARGO_MANIFEST_DIR.
+        // The const captures `env!("CARGO_MANIFEST_DIR")` at rudzio
+        // lib's compile site; under the aggregator that compile runs
+        // through the bridge.
+        let captured = ::rudzio::__BRIDGE_OBSERVED_MANIFEST_DIR;
+        anyhow::ensure!(
+            !captured.contains("rudzio-auto-runner"),
+            "bridge CARGO_MANIFEST_DIR override is being stripped by cargo: \
+             rudzio's compile saw `{captured}` (the bridge dir under the \
+             aggregator's target), not the member's original manifest dir. \
+             Path-resolving proc-macros in member src will look in the wrong \
+             place under `cargo rudzio test`."
+        );
+        Ok(())
+    }
 }
