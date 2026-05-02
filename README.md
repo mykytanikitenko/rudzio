@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="rudzio — the bandit-cat test framework, fully ginger, kerchief, winking" width="220">
+</p>
+
 # rudzio
 
 [![CI](https://github.com/mykytanikitenko/rudzio/actions/workflows/ci.yml/badge.svg)](https://github.com/mykytanikitenko/rudzio/actions/workflows/ci.yml)
