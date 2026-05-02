@@ -2,9 +2,12 @@
 name = "rudzio-migrate"
 version = "0.1.0"
 edition = { workspace = true }
-publish = false
 description = "Best-effort converter of stock cargo-style Rust tests into rudzio tests. Runs on a clean git tree, rewrites sources in place, keeps backups and pre-migration copies as block comments, and asks before wiring a shared runner."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/mykytanikitenko/rudzio"
 readme = "README.md"
+keywords = ["testing", "async", "migration", "cargo-test", "rudzio"]
+categories = ["development-tools::testing", "command-line-utilities"]
 autotests = false
 
 [lib]
@@ -28,7 +31,7 @@ quote = { workspace = true }
 syn = { workspace = true, features = ["full", "extra-traits", "visit", "visit-mut"] }
 thiserror = { workspace = true }
 toml_edit = { workspace = true }
-rudzio = { path = "..", features = ["common", "runtime-tokio-multi-thread"] }
+rudzio = { workspace = true, features = ["common", "runtime-tokio-multi-thread"] }
 
 [dev-dependencies]
 tempfile = "=3.27.0"

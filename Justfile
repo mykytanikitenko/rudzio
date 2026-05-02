@@ -77,7 +77,6 @@ check-deny:
 # Check API semver compatibility against the most recent crates.io release
 check-semver:
     cargo semver-checks check-release --workspace \
-        --exclude rudzio-migrate \
         --exclude rudzio-fixtures
 
 # --- CI/CD ---
@@ -102,12 +101,17 @@ release-status:
 release-watch:
     gh run watch
 
-# Dry-run `cargo publish` in dep order — sanity check before tagging
+# Dry-run `cargo publish` in dep order — sanity check before tagging.
+# Pre-first-publish: each crate's dry-run will fail at the verify step
+# because cargo strips path deps and tries to resolve workspace siblings
+# from crates.io. Use `--no-verify` to package-only check, or run live
+# in order via the release.yml workflow on a tag push.
 release-dry-run:
-    cargo publish --dry-run -p rudzio-macro-internals
-    cargo publish --dry-run -p rudzio-macro
-    cargo publish --dry-run -p rudzio
-    cargo publish --dry-run -p cargo-rudzio
+    cargo publish --dry-run --no-verify -p rudzio-macro-internals
+    cargo publish --dry-run --no-verify -p rudzio-macro
+    cargo publish --dry-run --no-verify -p rudzio
+    cargo publish --dry-run --no-verify -p rudzio-migrate
+    cargo publish --dry-run --no-verify -p cargo-rudzio
 
 # Tag current commit and instruct on push, e.g. `just release-tag 0.2.0`
 release-tag VERSION:

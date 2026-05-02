@@ -62,7 +62,7 @@ libc = { workspace = true }
 # cause a duplicate build.
 [dev-dependencies]
 # Dogfood under every runtime rudzio ships.
-rudzio = { path = ".", features = [
+rudzio = { version = "0.1.0", path = ".", features = [
   "build",
   "common",
   "runtime-tokio-multi-thread",
@@ -130,6 +130,7 @@ edition = "2024"
 rudzio = { version = "0.1.0", path = "." }
 rudzio-macro = { version = "0.1.0", path = "macro" }
 rudzio-macro-internals = { version = "0.1.0", path = "macro-internals" }
+rudzio-migrate = { version = "0.1.0", path = "migrate" }
 
 # External crates (pinned to exact versions for reproducible builds)
 anyhow = "=1.0.102"

@@ -28,12 +28,12 @@ harness = false
 [dependencies]
 anyhow = { workspace = true }
 cargo_metadata = { workspace = true }
-rudzio-migrate = { path = "../migrate" }
+rudzio-migrate = { workspace = true }
 toml_edit = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
-rudzio = { path = "..", features = [
+rudzio = { workspace = true, features = [
   "common",
   "runtime-tokio-multi-thread",
   "runtime-tokio-current-thread",
