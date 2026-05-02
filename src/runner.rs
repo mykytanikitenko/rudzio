@@ -299,59 +299,8 @@ impl SuiteReporter for ModeReporter {
                 let _flush = io::stdout().flush();
             }
             Format::Pretty => {
-                let label = StatusLabel::from_outcome(&outcome);
-                let (tag_rendered, tag_visible) = status_tag(label, plain.colored);
-                let display = qualified_test_name(token.module_path, token.name);
-                let trailing = trailing_info(&outcome, runtime_name);
-                let lhs_naked = format!("{:width$} {display}", "", width = tag_visible);
-                let lhs_rendered = format!("{tag_rendered} {display}");
-                let header =
-                    render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
-                let mut buf = header;
-                if let TestOutcome::Benched { report, .. } = &outcome {
-                    // Bench status line + detailed stats + histogram,
-                    // emitted as a single atomic println! so concurrent
-                    // runtime threads can't interleave each other's
-                    // blocks.
-                    buf.push('\n');
-                    buf.push_str(report.detailed_summary().trim_end_matches('\n'));
-                    if report.failures.is_empty() && report.panics == 0 {
-                        let histogram = report.ascii_histogram(10, 30);
-                        if !histogram.is_empty() {
-                            buf.push('\n');
-                            buf.push_str("  histogram:\n");
-                            buf.push_str(histogram.trim_end_matches('\n'));
-                        }
-                    }
-                } else if let Some(msg) = outcome_inline_message(&outcome) {
-                    // Single atomic write: header + inlined failure
-                    // message (if any), rendered in the tag's color
-                    // for failing outcomes so the reason is visible
-                    // alongside the status line without scrolling to
-                    // the end-of-run failures section.
-                    for line in msg.lines() {
-                        buf.push('\n');
-                        let body = format!("  {line}");
-                        let painted = if matches!(
-                            label,
-                            StatusLabel::Fail
-                                | StatusLabel::Panic
-                                | StatusLabel::Setup
-                                | StatusLabel::Timeout
-                                | StatusLabel::Cancel
-                        ) {
-                            red(&body, plain.colored)
-                        } else {
-                            body
-                        };
-                        buf.push_str(&painted);
-                    }
-                } else {
-                    // Outcome has no extra detail to inline (Passed,
-                    // Ignored, etc.); the status line is the whole
-                    // payload.
-                }
-                write_stdout(&format!("{buf}\n"));
+                let block = pretty_outcome_block(token, runtime_name, &outcome, plain.colored);
+                write_stdout(&format!("{block}\n"));
             }
         }
 
@@ -868,6 +817,64 @@ pub fn normalize_module_path(mp: &str) -> String {
     out.join("::")
 }
 
+/// Build the multi-line Pretty-mode block for a finished test
+/// (status line + optional bench stats + histogram or inlined failure
+/// message). The trailing newline is added by the caller.
+fn pretty_outcome_block(
+    token: &'static TestToken,
+    runtime_name: &'static str,
+    outcome: &TestOutcome,
+    colored: bool,
+) -> String {
+    let label = StatusLabel::from_outcome(outcome);
+    let (tag_rendered, tag_visible) = status_tag(label, colored);
+    let display = qualified_test_name(token.module_path, token.name);
+    let trailing = trailing_info(outcome, runtime_name);
+    let lhs_naked = format!("{:width$} {display}", "", width = tag_visible);
+    let lhs_rendered = format!("{tag_rendered} {display}");
+    let header = render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
+    let mut buf = header;
+    if let TestOutcome::Benched { report, .. } = outcome {
+        // Bench status line + detailed stats + histogram, emitted as
+        // a single atomic write so concurrent runtime threads can't
+        // interleave each other's blocks.
+        buf.push('\n');
+        buf.push_str(report.detailed_summary().trim_end_matches('\n'));
+        if report.failures.is_empty() && report.panics == 0 {
+            let histogram = report.ascii_histogram(10, 30);
+            if !histogram.is_empty() {
+                buf.push('\n');
+                buf.push_str("  histogram:\n");
+                buf.push_str(histogram.trim_end_matches('\n'));
+            }
+        }
+    } else if let Some(msg) = outcome_inline_message(outcome) {
+        // Single atomic write: header + inlined failure message,
+        // rendered in the tag's color for failing outcomes so the
+        // reason is visible alongside the status line.
+        for line in msg.lines() {
+            buf.push('\n');
+            let body = format!("  {line}");
+            let painted = if matches!(
+                label,
+                StatusLabel::Fail
+                    | StatusLabel::Panic
+                    | StatusLabel::Setup
+                    | StatusLabel::Timeout
+                    | StatusLabel::Cancel
+            ) {
+                red(&body, colored)
+            } else {
+                body
+            };
+            buf.push_str(&painted);
+        }
+    } else {
+        // Passed / Ignored / etc.; the status line is the whole payload.
+    }
+    buf
+}
+
 /// One-shot diagnostic message for a finished test — rendered
 /// indented right under its status line so the reason for failure
 /// (test body error, setup error, panic payload, timeout note)
@@ -962,6 +969,177 @@ fn render_status_line(
 /// `cargo_meta!()` at the user's crate site so the `env!(...)` values
 /// belong to that crate, not rudzio).
 #[inline]
+/// Plain-mode end-of-run summary: failures section followed by the
+/// `test result: …` line. Live mode emits its own summary from the
+/// drawer instead.
+fn print_plain_summary(
+    plain: &PlainState,
+    grand_total: TestSummary,
+    total_count: usize,
+    filtered_out: usize,
+    elapsed: Duration,
+    colored_plain: bool,
+) {
+    if plain.fmt == Format::Terse && total_count > 0 {
+        write_stdout("\n");
+    }
+    let guard = plain
+        .failures
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if !guard.is_empty() {
+        write_stdout("\nfailures:\n\n");
+        for failure in guard.iter() {
+            write_stdout(&format!("---- {} ----\n", failure.name));
+            write_stdout(&format!("{}\n\n", failure.message));
+        }
+        write_stdout("failures:\n");
+        for failure in guard.iter() {
+            write_stdout(&format!("    {}\n", failure.name));
+        }
+        write_stdout("\n");
+    }
+    drop(guard);
+
+    let result_label = if grand_total.is_success() {
+        bold(&green("ok", colored_plain), colored_plain)
+    } else {
+        bold(&red("FAILED", colored_plain), colored_plain)
+    };
+    let elapsed_text = fmt_duration(elapsed);
+    write_stdout(&format!(
+        "test result: {}. {} passed; {} failed; {} panicked; {} timed out; \
+         {} cancelled; {} ignored; {} teardown failed; 0 measured; {} total; \
+         {} filtered out; finished in {elapsed_text}\n",
+        result_label,
+        grand_total.passed,
+        grand_total.failed,
+        grand_total.panicked,
+        grand_total.timed_out,
+        grand_total.cancelled,
+        grand_total.ignored,
+        grand_total.teardown_failures,
+        grand_total.total,
+        filtered_out,
+    ));
+}
+
+/// Group `tokens` by `(runtime_group_key)` and dispatch one OS thread
+/// per group via `thread::scope`, joining them all at scope exit. Each
+/// thread borrows `&config`/`&reporter` directly instead of cloning an
+/// `Arc` — the rule against `'static` substitution where stack
+/// borrows suffice.
+fn dispatch_test_groups(
+    tokens: &[&'static TestToken],
+    config: &Config,
+    root_token: &CancellationToken,
+    reporter: &ModeReporter,
+) -> TestSummary {
+    let mut groups: HashMap<RuntimeGroupKey, Vec<&'static TestToken>> = HashMap::new();
+    for token in tokens {
+        groups
+            .entry(token.runtime_group_key)
+            .or_default()
+            .push(token);
+    }
+    thread::scope(|scope| {
+        // Spawn every group's thread first; a lazy iterator + fold
+        // would serialize spawn-join-spawn-join.
+        let mut handles = Vec::new();
+        for mut group_tokens in groups.into_values() {
+            group_tokens.sort_by_key(|token| (token.file, token.line));
+            let Some(first) = group_tokens.first() else {
+                continue;
+            };
+            let owner: &'static dyn RuntimeGroupOwner = first.runtime_group_owner;
+            let req_root = root_token.child_token();
+            handles.push(scope.spawn(move || {
+                let req = SuiteRunRequest {
+                    tokens: &group_tokens,
+                    config,
+                    root_token: req_root,
+                };
+                owner.run_group(req, reporter)
+            }));
+        }
+        let mut total = TestSummary::zero();
+        for handle in handles {
+            match handle.join() {
+                Ok(suite_summary) => {
+                    total = total.merge(TestSummary::from(suite_summary));
+                }
+                Err(payload) => {
+                    let msg = payload
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                        .unwrap_or("unknown panic");
+                    write_stderr(&format!("error: runtime thread panicked: {msg}\n"));
+                    total = total.merge(TestSummary {
+                        panicked: 1,
+                        total: 1,
+                        ..TestSummary::zero()
+                    });
+                }
+            }
+        }
+        total
+    })
+}
+
+/// Run-timeout watchdog: cancels `token` once `dur` elapses unless
+/// the token has already been cancelled (SIGINT/SIGTERM, etc.).
+fn spawn_run_timeout_watchdog(token: CancellationToken, dur: Duration) {
+    let _watchdog = thread::spawn(move || {
+        thread::sleep(dur);
+        if !token.is_cancelled() {
+            let dur_text = fmt_duration(dur);
+            write_stderr(&format!(
+                "\nrun timeout ({dur_text}) exceeded, cancelling run...\n"
+            ));
+            token.cancel();
+        }
+    });
+}
+
+/// Layer-1 process-exit watchdog. Listens for `token` cancellation
+/// (SIGINT / SIGTERM / --run-timeout / explicit user cancel) and,
+/// after `grace`, force-exits the process with code 2. The universal
+/// safety net for sync-blocked tasks that ignore every cooperative
+/// cancellation signal — no amount of token-listening or `abort()`
+/// will free the worker, but `_exit` lets the OS reap every thread.
+fn spawn_grace_force_exit_watchdog(token: CancellationToken, grace: Duration) {
+    let _watchdog = thread::Builder::new()
+        .name("rudzio-cancel-grace-watchdog".to_owned())
+        .spawn(move || {
+            // Sync poll-loop until the token is cancelled. Avoids an
+            // executor dep — the watchdog runs no rudzio test code
+            // itself, just times out and force-exits. 50ms tick is
+            // fine: this is fault-tolerance plumbing, not a hot path.
+            while !token.is_cancelled() {
+                thread::sleep(Duration::from_millis(50));
+            }
+            thread::sleep(grace);
+            let grace_text = fmt_duration(grace);
+            write_stderr(&format!(
+                "\nrudzio: {grace_text} grace period exceeded after cancellation, \
+                 force-exiting (some phase ignored cooperative cancel)\n"
+            ));
+            #[expect(unsafe_code, reason = "watchdog runs on a spawned thread; \
+                main may be sync-blocked, so cooperative ExitCode return cannot \
+                reach the process exit. _exit avoids the clippy::exit lint while \
+                preserving the deliberate force-exit semantics.")]
+            // SAFETY: libc::_exit immediately terminates the process
+            // without running destructors. It has no preconditions and
+            // never returns; force-exit semantics are intentional.
+            unsafe {
+                libc::_exit(2);
+            }
+        });
+}
+
+#[must_use]
+#[inline]
 pub fn run(cargo: CargoMeta) -> ExitCode {
     // Default `RUST_BACKTRACE=full` (and `RUST_LIB_BACKTRACE`) **only
     // when the user hasn't set them**. Backtraces are essential for
@@ -1044,116 +1222,16 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
     install_signal_handler(root_token.clone());
 
     if let Some(dur) = config.run_timeout {
-        let watchdog_token = root_token.clone();
-        let _watchdog = thread::spawn(move || {
-            thread::sleep(dur);
-            if !watchdog_token.is_cancelled() {
-                let dur_text = fmt_duration(dur);
-                write_stderr(&format!(
-                    "\nrun timeout ({dur_text}) exceeded, cancelling run...\n"
-                ));
-                watchdog_token.cancel();
-            }
-        });
+        spawn_run_timeout_watchdog(root_token.clone(), dur);
     }
-
-    // Layer-1 process-exit watchdog. Listens for `root_token`
-    // cancellation (SIGINT / SIGTERM / --run-timeout / explicit
-    // user cancel) and, after `--cancel-grace-period`, force-exits
-    // the process with code 2. This is the universal safety net for
-    // sync-blocked tasks that ignore every cooperative cancellation
-    // signal (e.g. `std::thread::sleep` inside a test body) — no
-    // amount of token-listening or `JoinHandle::abort()` will free
-    // the worker, but `process::exit` lets the OS reap every thread.
     if let Some(grace) = config.cancel_grace_period {
-        let watchdog_token = root_token.clone();
-        let _watchdog = thread::Builder::new()
-            .name("rudzio-cancel-grace-watchdog".to_owned())
-            .spawn(move || {
-                // Sync poll-loop until the token is cancelled. Avoids
-                // an executor dep — the watchdog runs no rudzio test
-                // code itself, just times out and force-exits. 50ms
-                // tick is fine: this is fault-tolerance plumbing, not
-                // a hot path, and 50ms latency before grace starts is
-                // negligible against the multi-second grace itself.
-                while !watchdog_token.is_cancelled() {
-                    thread::sleep(Duration::from_millis(50));
-                }
-                thread::sleep(grace);
-                let grace_text = fmt_duration(grace);
-                write_stderr(&format!(
-                    "\nrudzio: {grace_text} grace period exceeded after cancellation, \
-                     force-exiting (some phase ignored cooperative cancel)\n"
-                ));
-                #[expect(unsafe_code, reason = "watchdog runs on a spawned thread; \
-                    main may be sync-blocked, so cooperative ExitCode return cannot \
-                    reach the process exit. _exit avoids the clippy::exit lint while \
-                    preserving the deliberate force-exit semantics.")]
-                // SAFETY: libc::_exit immediately terminates the process
-                // without running destructors. It has no preconditions and
-                // never returns; force-exit semantics are intentional.
-                unsafe {
-                    libc::_exit(2);
-                }
-            });
-    }
-
-    let mut groups: HashMap<RuntimeGroupKey, Vec<&'static TestToken>> = HashMap::new();
-    for token in &filtered_tokens {
-        groups
-            .entry(token.runtime_group_key)
-            .or_default()
-            .push(token);
+        spawn_grace_force_exit_watchdog(root_token.clone(), grace);
     }
 
     let reporter = ModeReporter::new(&config);
     let start = Instant::now();
 
-    // Scoped group-dispatch: one OS thread per (runtime, suite) group,
-    // all joined at scope exit. Lets each thread borrow `&config` and
-    // `&reporter` directly instead of each one cloning an `Arc` — aligned
-    // with the codebase rule against `'static` substitution where stack
-    // borrows suffice.
-    let total = thread::scope(|scope| {
-        let handles: Vec<_> = groups
-            .into_values()
-            .filter_map(|mut group_tokens| {
-                group_tokens.sort_by_key(|token| (token.file, token.line));
-                let owner: &'static dyn RuntimeGroupOwner =
-                    group_tokens.first()?.runtime_group_owner;
-                let req_root = root_token.child_token();
-                let config_ref = &config;
-                let reporter_ref = &reporter;
-                Some(scope.spawn(move || {
-                    let req = SuiteRunRequest {
-                        tokens: &group_tokens,
-                        config: config_ref,
-                        root_token: req_root,
-                    };
-                    owner.run_group(req, reporter_ref)
-                }))
-            })
-            .collect();
-
-        handles
-            .into_iter()
-            .fold(TestSummary::zero(), |acc, handle| match handle.join() {
-                Ok(suite_summary) => acc.merge(TestSummary::from(suite_summary)),
-                Err(payload) => {
-                    let msg = payload
-                        .downcast_ref::<&str>()
-                        .copied()
-                        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-                        .unwrap_or("unknown panic");
-                    write_stderr(&format!("error: runtime thread panicked: {msg}\n"));
-                    acc.merge(TestSummary {
-                        panicked: 1,
-                        total: 1,
-                        ..TestSummary::zero()
-                    })
-                }
-            })
-    });
+    let total = dispatch_test_groups(&filtered_tokens, &config, &root_token, &reporter);
 
     // Per-test teardown failures aren't visible to the per-thread
     // SuiteSummary (the per-test fn doesn't have it in scope), so fold
@@ -1168,49 +1246,14 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
     // Plain-mode summary rendering. Live mode lets the drawer handle
     // it during its shutdown path.
     if let Some(plain) = &reporter.plain {
-        if plain.fmt == Format::Terse && total_count > 0 {
-            write_stdout("\n");
-        }
-        let guard = plain
-            .failures
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if !guard.is_empty() {
-            write_stdout("\nfailures:\n\n");
-            for failure in guard.iter() {
-                write_stdout(&format!("---- {} ----\n", failure.name));
-                write_stdout(&format!("{}\n\n", failure.message));
-            }
-            write_stdout("failures:\n");
-            for failure in guard.iter() {
-                write_stdout(&format!("    {}\n", failure.name));
-            }
-            write_stdout("\n");
-        }
-        drop(guard);
-
-        let result_label = if grand_total.is_success() {
-            bold(&green("ok", colored_plain), colored_plain)
-        } else {
-            bold(&red("FAILED", colored_plain), colored_plain)
-        };
-
-        let elapsed_text = fmt_duration(elapsed);
-        write_stdout(&format!(
-            "test result: {}. {} passed; {} failed; {} panicked; {} timed out; \
-             {} cancelled; {} ignored; {} teardown failed; 0 measured; {} total; \
-             {} filtered out; finished in {elapsed_text}\n",
-            result_label,
-            grand_total.passed,
-            grand_total.failed,
-            grand_total.panicked,
-            grand_total.timed_out,
-            grand_total.cancelled,
-            grand_total.ignored,
-            grand_total.teardown_failures,
-            grand_total.total,
+        print_plain_summary(
+            plain,
+            grand_total,
+            total_count,
             filtered_out,
-        ));
+            elapsed,
+            colored_plain,
+        );
     }
 
     // Drop the guard — in Live mode this signals and joins the drawer
