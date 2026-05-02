@@ -1971,7 +1971,7 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
     // own build.rs may have needed are not relevant here because
     // we don't forward that build.rs.
 
-    if let Some(features_tbl) = build_bridge_features(member) {
+    if let Some(features_tbl) = build_bridge_features(plan, member) {
         doc.insert("features", Item::Table(features_tbl));
     }
 
@@ -2005,10 +2005,28 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
 /// Build the bridge's `[features]` table. Mirrors the member's own
 /// `[features]` 1:1, then overwrites the `default` entry with the
 /// sorted, deduped union of (member's own `default`) ∪
-/// (`rudzio_activated_features`). Returns `None` when both sources are
+/// (`rudzio_activated_features`) ∪ (every feature any sibling
+/// workspace member activates on `member` via its `[dependencies]`
+/// or `[dev-dependencies]`). Returns `None` when every source is
 /// empty — no `[features]` section is emitted in that case.
-fn build_bridge_features(member: &MemberPlan) -> Option<Table> {
-    if member.features.is_empty() && member.rudzio_activated_features.is_empty() {
+///
+/// Why the sibling union: under stock cargo, when consumer A says
+/// `B = { features = ["mock"] }`, cargo activates `mock` on B by
+/// feature unification across the dep graph. The bridge generator
+/// produces multiple compile units of B (the bridge crate plus the
+/// aggregator's own path-only reference), and unification only
+/// activates a feature when SOMEONE asks for it. Folding consumer
+/// requests into the bridge's `default` makes the activation
+/// independent of which compile-unit cargo happens to drive feature
+/// resolution from, and removes the need for members to carry a
+/// `[package.metadata.rudzio] features = [...]` workaround that
+/// duplicates information already present in consumer manifests.
+fn build_bridge_features(plan: &Plan, member: &MemberPlan) -> Option<Table> {
+    let consumer_requests = collect_sibling_feature_requests(plan, member);
+    if member.features.is_empty()
+        && member.rudzio_activated_features.is_empty()
+        && consumer_requests.is_empty()
+    {
         return None;
     }
 
@@ -2033,6 +2051,9 @@ fn build_bridge_features(member: &MemberPlan) -> Option<Table> {
     for feat in &member.rudzio_activated_features {
         let _default_inserted: bool = default.insert(feat.clone());
     }
+    for feat in consumer_requests {
+        let _default_inserted: bool = default.insert(feat);
+    }
 
     let mut default_arr = Array::new();
     for feat in &default {
@@ -2041,6 +2062,36 @@ fn build_bridge_features(member: &MemberPlan) -> Option<Table> {
     tbl.insert("default", value(default_arr));
 
     Some(tbl)
+}
+
+/// Walk every other member's `dev_deps` (which carries both regular
+/// `[dependencies]` and test-only `[dev-dependencies]`) and collect
+/// the features they activate on `member`. Workspace-inherited
+/// requests pull in the workspace dep's own features in addition to
+/// any per-consumer overrides.
+fn collect_sibling_feature_requests(plan: &Plan, member: &MemberPlan) -> BTreeSet<String> {
+    let mut features: BTreeSet<String> = BTreeSet::new();
+    for sibling in &plan.members {
+        if sibling.package_name == member.package_name {
+            continue;
+        }
+        for dep in &sibling.dev_deps {
+            if dep.name != member.package_name {
+                continue;
+            }
+            if dep.workspace_inherited
+                && let Some(ws) = plan.workspace_deps.get(&dep.name)
+            {
+                for feat in &ws.features {
+                    let _inserted: bool = features.insert(feat.clone());
+                }
+            }
+            for feat in &dep.features {
+                let _inserted: bool = features.insert(feat.clone());
+            }
+        }
+    }
+    features
 }
 
 /// Merge the member's `[dependencies]` + `[dev-dependencies]` + both

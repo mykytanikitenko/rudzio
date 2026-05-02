@@ -487,6 +487,78 @@ rudzio = { workspace = true, features = [\"common\"] }
         Ok(())
     }
 
+    /// **Sibling-dep feature union.**
+    ///
+    /// When workspace member A declares `B = { workspace = true,
+    /// features = ["mock", "testing"] }`, those feature requests reach
+    /// A's bridge's `[dependencies].B` entry (Issue 1 redirect carries
+    /// them). Cargo SHOULD then activate them on B's bridge by feature
+    /// unification. In practice that works for callers that resolve
+    /// to the same bridge package — but the bridge's own `[features].default`
+    /// is built from the member's own default + `[package.metadata.rudzio].features`
+    /// only, so any feature only requested by sibling-bridge consumers is
+    /// off when the bridge compiles standalone (e.g. when the aggregator's
+    /// own `[dependencies]` references the bridge via path-only, no
+    /// features). Members with optional cross-cuts like
+    /// `testing = ["dep:rudzio"]` are forced to opt in via
+    /// `[package.metadata.rudzio] features = [...]` to compensate.
+    ///
+    /// Fix: union every consumer's requested feature for the bridged
+    /// member into the bridge's `[features].default`. Drops the
+    /// `[package.metadata.rudzio] features` workaround for the common
+    /// case where the union equals what the user wants enabled.
+    #[rudzio::test]
+    fn bridge_default_features_union_sibling_consumer_requests() -> anyhow::Result<()> {
+        let root = synthetic_root();
+
+        // Provider crate exposing `mock` and `testing` features. Neither
+        // is in `default`, so without the union fix, the bridge's
+        // default would also not include them.
+        let mut provider = bridged_member("http", &root);
+        provider.features = BTreeMap::from([
+            ("mock".to_owned(), Vec::new()),
+            ("testing".to_owned(), Vec::new()),
+        ]);
+
+        // Consumer that activates both features on the provider.
+        let mut consumer = bridged_member("consumer", &root);
+        let mut provider_dep = DevDepSpec::new("http".to_owned());
+        provider_dep.workspace_inherited = true;
+        provider_dep.features = vec!["mock".to_owned(), "testing".to_owned()];
+        consumer.dev_deps = vec![provider_dep];
+
+        let mut ws_deps: BTreeMap<String, WorkspaceDepSpec> = BTreeMap::new();
+        let mut provider_ws = WorkspaceDepSpec::new();
+        provider_ws.path = Some(root.join("http"));
+        let _previous: Option<WorkspaceDepSpec> =
+            ws_deps.insert("http".to_owned(), provider_ws);
+
+        let plan = make_plan(vec![provider.clone(), consumer], &root, ws_deps);
+        let provider_bridge_toml = build_bridge_cargo_toml(&plan, &provider)?;
+        let doc: DocumentMut = provider_bridge_toml.parse()?;
+
+        let default_feats = doc
+            .get("features")
+            .and_then(|item| item.get("default"))
+            .and_then(Item::as_array)
+            .ok_or_else(|| {
+                anyhow::anyhow!("provider bridge missing [features].default array")
+            })?;
+        let names: Vec<&str> = default_feats
+            .iter()
+            .filter_map(toml_edit::Value::as_str)
+            .collect();
+
+        anyhow::ensure!(
+            names.contains(&"mock") && names.contains(&"testing"),
+            "provider bridge's [features].default must union features that \
+             sibling consumers request on it (so the bridge's standalone \
+             compile activates them too). Got default = {names:?}; expected \
+             to include `mock` and `testing`."
+        );
+        Ok(())
+    }
+
     /// **Bridge proc-macro `CARGO_MANIFEST_DIR` gap.**
     ///
     /// Path-resolving proc-macros (`include_str!`, `include_bytes!`,
