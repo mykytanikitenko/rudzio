@@ -104,6 +104,48 @@ pub enum RudzioLocation {
     Version(String),
 }
 
+/// Manifest section a `DevDepSpec` was parsed from.
+///
+/// Distinguishes regular `[dependencies]` from test-only
+/// `[dev-dependencies]`. Used by `build_bridge_dependencies` to elide
+/// cross-bridge cycles introduced by sibling-bridge redirection: a
+/// member's test-only dep on a sibling that itself bridges back is
+/// safe to drop from the bridge (the aggregator already links every
+/// bridged sibling, so test-time uses still resolve), whereas a
+/// regular dep must remain visible to the bridge's own lib compile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum Section {
+    /// `[dev-dependencies]` only — safe to elide as a sibling-bridge
+    /// dep on the bridge crate's own `[dependencies]` table.
+    DevOnly,
+    /// Appears in `[dependencies]` (and possibly also
+    /// `[dev-dependencies]`); must remain visible to the bridge's lib
+    /// compile because the member's src tree may reference it
+    /// outside test/`#[cfg(rudzio_test)]` gates.
+    Regular,
+}
+
+impl Section {
+    /// True when the dep ONLY came from `[dev-dependencies]`.
+    #[inline]
+    #[must_use]
+    pub const fn is_dev_only(self) -> bool {
+        matches!(self, Self::DevOnly)
+    }
+
+    /// Merge two section markers: any `Regular` occurrence wins so the
+    /// final entry can never be silently dropped from the bridge.
+    #[inline]
+    #[must_use]
+    pub const fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::DevOnly, Self::DevOnly) => Self::DevOnly,
+            (Self::Regular, _) | (_, Self::Regular) => Self::Regular,
+        }
+    }
+}
+
 /// Description of a single `[dev-dependencies]` (or `[dependencies]`) entry
 /// pulled from a workspace member's manifest.
 #[derive(Clone, Debug)]
@@ -127,6 +169,20 @@ pub struct DevDepSpec {
     pub path: Option<PathBuf>,
     /// The local entry name under which this dep appears, when `package = ...` renames it.
     pub rename: Option<String>,
+    /// Which manifest section this dep originated from
+    /// (`[dependencies]` vs `[dev-dependencies]`).
+    ///
+    /// Used by the bridge generator to elide cross-bridge cycles: when
+    /// a member declares a sibling-bridge crate as a test-only dep,
+    /// re-emitting it inside the bridge's `[dependencies]` would form
+    /// a cycle with the sibling's own regular deps once
+    /// sibling-bridge redirection is in effect. Dev-only sibling
+    /// entries are dropped from the bridge — the aggregator's own
+    /// `[dependencies]` already pulls every bridged sibling in, so the
+    /// test-time path stays sound. When the same name appears in BOTH
+    /// sections, the regular declaration wins (the merge collapses to
+    /// `Section::Regular`).
+    pub section: Section,
     /// Whether the member opted to keep cargo's `default-features = true`.
     pub uses_default_features: bool,
     /// Cargo-format version requirement string (`""` when the entry has no `version` key).
@@ -283,6 +339,7 @@ impl DevDepSpec {
             optional: false,
             path: None,
             rename: None,
+            section: Section::Regular,
             uses_default_features: true,
             version_req: String::new(),
             workspace_inherited: false,
@@ -1317,7 +1374,10 @@ fn apply_ws_dep_field(spec: &mut WorkspaceDepSpec, key: &str, val: &Value, base:
 /// `workspace = true` flag is preserved so the aggregator defers to the
 /// workspace root's pinned version.
 fn read_dev_deps(manifest_path: &Path) -> Result<Vec<DevDepSpec>> {
-    let sections = ["dependencies", "dev-dependencies"];
+    let sections: [(&str, Section); 2] = [
+        ("dependencies", Section::Regular),
+        ("dev-dependencies", Section::DevOnly),
+    ];
     let text = fs::read_to_string(manifest_path)
         .with_context(|| format!("reading {}", manifest_path.display()))?;
     let doc: DocumentMut = text
@@ -1328,8 +1388,8 @@ fn read_dev_deps(manifest_path: &Path) -> Result<Vec<DevDepSpec>> {
         .ok_or_else(|| anyhow!("manifest path has no parent"))?;
 
     let mut out: Vec<DevDepSpec> = Vec::new();
-    for section in sections {
-        collect_dev_deps(&doc, &[section], manifest_dir, &mut out);
+    for (section_name, section) in sections {
+        collect_dev_deps(&doc, &[section_name], manifest_dir, section, &mut out);
     }
 
     if let Some(target_tbl) = doc.get("target").and_then(Item::as_table) {
@@ -1337,10 +1397,12 @@ fn read_dev_deps(manifest_path: &Path) -> Result<Vec<DevDepSpec>> {
             let Some(cfg_tbl) = cfg_item.as_table() else {
                 continue;
             };
-            for section in sections {
-                if let Some(Item::Table(deps_tbl)) = cfg_tbl.get(section) {
+            for (section_name, section) in sections {
+                if let Some(Item::Table(deps_tbl)) = cfg_tbl.get(section_name) {
                     for (name, item) in deps_tbl {
-                        if let Some(spec) = parse_dev_dep_entry(name, item, manifest_dir) {
+                        if let Some(spec) =
+                            parse_dev_dep_entry(name, item, manifest_dir, section)
+                        {
                             out.push(spec);
                         }
                     }
@@ -1357,6 +1419,7 @@ fn collect_dev_deps(
     doc: &DocumentMut,
     path: &[&str],
     manifest_dir: &Path,
+    section: Section,
     out: &mut Vec<DevDepSpec>,
 ) {
     let mut cur: &Item = doc.as_item();
@@ -1369,15 +1432,21 @@ fn collect_dev_deps(
         return;
     };
     for (name, item) in deps_tbl {
-        if let Some(spec) = parse_dev_dep_entry(name, item, manifest_dir) {
+        if let Some(spec) = parse_dev_dep_entry(name, item, manifest_dir, section) {
             out.push(spec);
         }
     }
 }
 
 /// Parse a single dev/normal dep entry into a `DevDepSpec`, returning `None` for unsupported shapes.
-fn parse_dev_dep_entry(name: &str, item: &Item, manifest_dir: &Path) -> Option<DevDepSpec> {
+fn parse_dev_dep_entry(
+    name: &str,
+    item: &Item,
+    manifest_dir: &Path,
+    section: Section,
+) -> Option<DevDepSpec> {
     let mut spec = DevDepSpec {
+        section,
         name: name.to_owned(),
         rename: None,
         version_req: String::new(),
@@ -1876,11 +1945,26 @@ fn build_bridge_dependencies(plan: &Plan, member: &MemberPlan) -> Result<Table> 
                     }
                 }
                 existing.uses_default_features &= dep.uses_default_features;
+                existing.section = existing.section.merge(dep.section);
             })
             .or_insert_with(|| dep.clone());
     }
 
     for (entry_name, dep) in &merged {
+        // Skip dev-only deps that name another bridged sibling: re-emitting
+        // them in the bridge's [dependencies] would form a cycle once
+        // sibling-bridge redirection rewrites them to the sibling's bridge
+        // package, and cargo halts with `error: cyclic package dependency`.
+        // The aggregator's own [dependencies] already pulls every bridged
+        // sibling in, so test-time uses of the dep still resolve.
+        if dep.section.is_dev_only()
+            && plan
+                .members
+                .iter()
+                .any(|sibling| sibling.package_name == dep.name && bridge_applies_to(sibling))
+        {
+            continue;
+        }
         let item = render_dev_dep(dep, plan)?;
         deps.insert(entry_name, item);
     }
