@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use anyhow::{Context as _, Result, bail};
+use cargo_rudzio::args::parse_package_filters;
 use cargo_rudzio::{generate, spawn_env};
 use rudzio_migrate::run::entry_with_args as rudzio_migrate_entry;
 
@@ -27,10 +28,25 @@ USAGE:
     cargo rudzio <COMMAND> [ARGS...]
 
 COMMANDS:
-    test [ARGS...]                   Build every rudzio test in the workspace
+    test [SELECTORS...] [ARGS...]    Build every rudzio test in the workspace
                                      into ONE binary (grouped by runtime and
-                                     suite) and run it. ARGS forward to the
-                                     runner (filter patterns, --skip, etc.).
+                                     suite) and run it.
+
+                                     SELECTORS narrow the aggregator to a
+                                     subset of workspace members BEFORE the
+                                     binary is built (cheaper than filtering
+                                     at runtime):
+                                       -p, --package <NAME>  exact Cargo
+                                         package-name match. Repeatable.
+                                       <PATH>  any positional argument that
+                                         resolves to a directory on disk
+                                         restricts the aggregator to members
+                                         at-or-under that path. Repeatable.
+
+                                     Anything else in ARGS forwards verbatim
+                                     to the rudzio runner (positional filter,
+                                     --skip, --output=plain, etc.). Run the
+                                     binary with --help to see runner flags.
     migrate [ARGS...]                Run rudzio-migrate (converts stock cargo
                                      tests to rudzio). ARGS are forwarded
                                      verbatim. See `cargo rudzio migrate --help`.
@@ -38,6 +54,16 @@ COMMANDS:
                                      without running it (default:
                                      <target-dir>/rudzio-auto-runner).
     help, --help, -h                 Print this message.
+
+EXAMPLES:
+    Run only one workspace member's rudzio tests:
+        cargo rudzio test -p rudzio-migrate
+
+    Combine package selection with a runner filter:
+        cargo rudzio test -p rudzio-migrate my_failing_test
+
+    Pipe-safe output for an AI agent or log shipper:
+        cargo rudzio test -- --output=plain --color=never
 ";
 
 /// Write `text` to stdout, ignoring any I/O error.
@@ -103,10 +129,14 @@ fn run_generate(rest: &[String]) -> Result<()> {
 
 /// Handler for `cargo rudzio test`: generate the aggregator crate then `cargo run` it with the user's runner args.
 fn run_test(rest: &[String]) -> Result<ExitCode> {
-    let (path_args, runner_args) = split_path_args(rest);
+    let (package_filters, after_packages) = parse_package_filters(rest)?;
+    let (path_args, runner_args) = split_path_args(&after_packages);
     let mut plan = generate::plan_from_cwd()?;
     if !path_args.is_empty() {
         plan.restrict_to_paths(&path_args)?;
+    }
+    if !package_filters.is_empty() {
+        plan.restrict_to_packages(&package_filters)?;
     }
     emit_diagnostic_warnings(&plan);
     let target = plan.default_output_dir();

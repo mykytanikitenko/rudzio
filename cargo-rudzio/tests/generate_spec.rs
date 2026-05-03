@@ -1731,4 +1731,45 @@ mod tests {
         );
         Ok(())
     }
+
+    #[rudzio::test]
+    fn restrict_to_packages_keeps_named_members() -> anyhow::Result<()> {
+        let mut plan = plan_with_members(
+            vec![
+                member("kept-a", vec![rudzio_dep()]),
+                member("kept-b", vec![rudzio_dep()]),
+                member("dropped", vec![rudzio_dep()]),
+            ],
+            "/ws",
+        );
+        plan.restrict_to_packages(&["kept-a".to_owned(), "kept-b".to_owned()])?;
+        let names: Vec<&str> = plan
+            .members
+            .iter()
+            .map(|entry| entry.package_name.as_str())
+            .collect();
+        anyhow::ensure!(
+            names == vec!["kept-a", "kept-b"],
+            "expected [kept-a, kept-b], got {names:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn restrict_to_packages_errors_when_no_matches() -> anyhow::Result<()> {
+        let mut plan = plan_with_members(vec![member("only", vec![rudzio_dep()])], "/ws");
+        let Err(err) = plan.restrict_to_packages(&["nonexistent".to_owned()]) else {
+            anyhow::bail!("expected restrict_to_packages to fail with no matches");
+        };
+        let message = err.to_string();
+        anyhow::ensure!(
+            message.contains("no rudzio crates match package(s)"),
+            "error should explain the empty result, got: {message}",
+        );
+        anyhow::ensure!(
+            message.contains("nonexistent"),
+            "error should mention the unmatched name, got: {message}",
+        );
+        Ok(())
+    }
 }

@@ -422,6 +422,30 @@ impl Plan {
     /// Returns `Err` if no member survives — saves the user from a silent
     /// "0 tests" run when their path typo'd.
     ///
+    /// Drop every member whose `package_name` doesn't match one of
+    /// `packages`. Match is exact string equality against the Cargo
+    /// package name (the hyphenated form, as `cargo -p` accepts).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no remaining member's package name appears
+    /// in `packages` — typically because the user typo'd a name or the
+    /// requested package isn't in the rudzio dep graph.
+    #[inline]
+    pub fn restrict_to_packages(&mut self, packages: &[String]) -> Result<()> {
+        let wanted: BTreeSet<&str> = packages.iter().map(String::as_str).collect();
+        self.members
+            .retain(|member| wanted.contains(member.package_name.as_str()));
+        if self.members.is_empty() {
+            let shown = packages.join(", ");
+            bail!(
+                "no rudzio crates match package(s): {shown} (check the name, or run \
+                 `cargo rudzio test --list` against the workspace to see what's available)"
+            );
+        }
+        Ok(())
+    }
+
     /// # Errors
     ///
     /// Returns an error when no remaining member matches any of `roots`.

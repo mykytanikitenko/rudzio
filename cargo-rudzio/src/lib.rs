@@ -2,6 +2,7 @@
 //! aggregator-generation pipeline so integration tests can drive it
 //! against synthetic inputs.
 
+pub mod args;
 pub mod generate;
 pub mod sentinel;
 
