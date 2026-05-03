@@ -162,6 +162,45 @@ ENVIRONMENT:
                                 library-level panics (anyhow, etc.). Also
                                 defaulted to 'full' by the runner.
 
+EXAMPLES:
+    Pipe-safe output for log capture, log-shippers, or AI agents
+    parsing the run (no ANSI, no live region, one event per line):
+
+        <test-binary> --output=plain --color=never
+
+    Run one specific test (positional = substring against the
+    fully-qualified test name; no glob, no regex):
+
+        <test-binary> my_failing_test
+
+    Enumerate every test the binary knows about without running any.
+    Output is libtest format (`<name>: test`), one per line:
+
+        <test-binary> --list
+
+    Fully serialise the run \u{2014} one test in flight, end to end. Most
+    deterministic option for reproducing flakes and the easiest mode
+    for an AI agent to reason over because tests run in registry order
+    with no interleave:
+
+        <test-binary> --test-threads=1 --concurrency-limit=1 \\
+            --threads-parallel-hardlimit=1
+
+    Disable the process-wide hardlimit when debugging a suspected gate
+    deadlock (rest of the concurrency stack is untouched):
+
+        <test-binary> --threads-parallel-hardlimit=none
+
+    Bounded iteration budget for an AI agent. `--run-timeout` caps
+    the whole invocation; `--test-timeout` caps any single test;
+    `--phase-hang-grace=0` short-circuits the Layer-2 escalation so a
+    misbehaving cancellation path can't extend the budget. Combined
+    with pipe-safe output, the agent never blocks for longer than
+    --run-timeout regardless of what the suite does:
+
+        <test-binary> --run-timeout=120 --test-timeout=10 \\
+            --phase-hang-grace=0 --output=plain --color=never
+
 EXIT STATUS:
     0   every test passed (or none ran).
     1   at least one test failed, panicked, was cancelled, or timed out;
