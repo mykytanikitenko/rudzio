@@ -507,7 +507,8 @@ pub fn format_target_flag_warning(consumed: &[String]) -> Option<String> {
 ///
 /// Parser order is: `--manifest-path` → `-p`/`--package` →
 /// `--exclude` → `--no-run` → `--workspace`/`--all` →
-/// `--nocapture`/`--show-output` → target-selection (`--lib`,
+/// `--no-fail-fast` → `--nocapture`/`--show-output` →
+/// target-selection (`--lib`,
 /// `--bin <NAME>`, etc.) → build-graph forwarders (`--release`,
 /// `--features`, etc.) → positional paths, with everything else
 /// flowing into `runner_args` in original order. Each step operates
@@ -528,7 +529,8 @@ where
     let (exclude_packages, after_excludes) = parse_exclude_filters(&after_packages)?;
     let (no_run, after_no_run) = parse_no_run_flag(&after_excludes);
     let after_workspace = parse_workspace_flag(&after_no_run);
-    let after_capture = parse_capture_flags(&after_workspace);
+    let after_no_fail_fast = parse_no_fail_fast_flag(&after_workspace);
+    let after_capture = parse_capture_flags(&after_no_fail_fast);
     let (ignored_target_flags, after_targets) = parse_target_selection_flags(&after_capture)?;
     let (forwarded_cargo_args, after_forwarders) = parse_build_forwarder_flags(&after_targets)?;
     let (include_paths, runner_args) = split_path_args(&after_forwarders, is_dir);
@@ -563,6 +565,30 @@ pub fn parse_workspace_flag(args: &[String]) -> Vec<String> {
     let mut remaining = Vec::with_capacity(args.len());
     for arg in args {
         if arg != "--workspace" && arg != "--all" {
+            remaining.push(arg.clone());
+        }
+    }
+    remaining
+}
+
+/// Drop `--no-fail-fast` from `args`.
+///
+/// In stock cargo test, `--no-fail-fast` keeps cargo running additional
+/// test binaries after one has failed; with rudzio every test in the
+/// workspace is collected into a single linkme aggregator, so there is
+/// no "next binary" to gate on, and rudzio already runs every test it
+/// has scheduled regardless of earlier failures. The flag is therefore
+/// implicitly satisfied, and we accept-and-discard it the same way as
+/// `--workspace` rather than letting it fall through to the runner.
+///
+/// Silent consumer (no warning): the user got exactly what they asked
+/// for, since the flag matches the default behaviour.
+#[inline]
+#[must_use]
+pub fn parse_no_fail_fast_flag(args: &[String]) -> Vec<String> {
+    let mut remaining = Vec::with_capacity(args.len());
+    for arg in args {
+        if arg != "--no-fail-fast" {
             remaining.push(arg.clone());
         }
     }

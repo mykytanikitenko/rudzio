@@ -14,8 +14,9 @@ use std::path::Path;
 
 use cargo_rudzio::cli::{
     aggregator_cargo_args, format_target_flag_warning, parse_build_forwarder_flags,
-    parse_capture_flags, parse_exclude_filters, parse_manifest_path_flag, parse_no_run_flag,
-    parse_package_filters, parse_target_selection_flags, parse_test_args, parse_workspace_flag,
+    parse_capture_flags, parse_exclude_filters, parse_manifest_path_flag,
+    parse_no_fail_fast_flag, parse_no_run_flag, parse_package_filters,
+    parse_target_selection_flags, parse_test_args, parse_workspace_flag,
 };
 use rudzio::common::context::Suite;
 use rudzio::runtime::futures::ThreadPool;
@@ -33,8 +34,9 @@ use rudzio::runtime::{compio, embassy};
 mod tests {
     use super::{
         Path, aggregator_cargo_args, format_target_flag_warning, parse_build_forwarder_flags,
-        parse_capture_flags, parse_exclude_filters, parse_manifest_path_flag, parse_no_run_flag,
-        parse_package_filters, parse_target_selection_flags, parse_test_args, parse_workspace_flag,
+        parse_capture_flags, parse_exclude_filters, parse_manifest_path_flag,
+        parse_no_fail_fast_flag, parse_no_run_flag, parse_package_filters,
+        parse_target_selection_flags, parse_test_args, parse_workspace_flag,
     };
 
     /// Convenience: build a `Vec<String>` from a slice of `&str` in
@@ -588,6 +590,42 @@ mod tests {
     #[rudzio::test]
     async fn parse_test_args_consumes_workspace_so_runner_never_sees_it() -> anyhow::Result<()> {
         let parsed = parse_test_args(&argv(&["--workspace", "my_filter"]), no_dirs)?;
+        anyhow::ensure!(
+            parsed.runner_args == vec!["my_filter".to_owned()],
+            "got {:?}",
+            parsed.runner_args,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn no_fail_fast_absent_returns_args_unchanged() -> anyhow::Result<()> {
+        let input = argv(&["my_filter", "--skip", "slow_"]);
+        let remaining = parse_no_fail_fast_flag(&input);
+        anyhow::ensure!(remaining == input, "expected args untouched, got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn no_fail_fast_long_form_is_consumed() -> anyhow::Result<()> {
+        let input = argv(&["--no-fail-fast", "my_filter"]);
+        let remaining = parse_no_fail_fast_flag(&input);
+        anyhow::ensure!(remaining == argv(&["my_filter"]), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn no_fail_fast_repeated_drops_all_occurrences() -> anyhow::Result<()> {
+        let input = argv(&["--no-fail-fast", "my_filter", "--no-fail-fast"]);
+        let remaining = parse_no_fail_fast_flag(&input);
+        anyhow::ensure!(remaining == argv(&["my_filter"]), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn parse_test_args_consumes_no_fail_fast_so_runner_never_sees_it() -> anyhow::Result<()>
+    {
+        let parsed = parse_test_args(&argv(&["--no-fail-fast", "my_filter"]), no_dirs)?;
         anyhow::ensure!(
             parsed.runner_args == vec!["my_filter".to_owned()],
             "got {:?}",
