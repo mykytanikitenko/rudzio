@@ -206,6 +206,26 @@ mod config_parser {
     }
 
     #[rudzio::test]
+    fn exact_match_defaults_to_false(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg =
+            Config::from_argv_and_env(&argv(&["my_filter"]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(!cfg.exact_match);
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn exact_flag_sets_exact_match(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--exact", "my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(cfg.exact_match);
+        anyhow::ensure!(cfg.filter.as_deref() == Some("my_filter"));
+        Ok(())
+    }
+
+    #[rudzio::test]
     fn skip_filters_accumulate(_ctx: &Test) -> anyhow::Result<()> {
         let cfg = Config::from_argv_and_env(
             &argv(&["--skip=foo", "--skip", "bar"]),
@@ -1066,6 +1086,7 @@ mod filter_matching {
             Some("e2e_inproc"),
             &[],
             RunIgnoredMode::Normal,
+            false,
         ));
         Ok(())
     }
@@ -1080,6 +1101,7 @@ mod filter_matching {
             Some("doput"),
             &[],
             RunIgnoredMode::Normal,
+            false,
         ));
         Ok(())
     }
@@ -1092,6 +1114,7 @@ mod filter_matching {
             Some("nope"),
             &[],
             RunIgnoredMode::Normal,
+            false,
         ));
         Ok(())
     }
@@ -1107,6 +1130,7 @@ mod filter_matching {
             None,
             &skips(&["file_v3::"]),
             RunIgnoredMode::Normal,
+            false,
         ));
         Ok(())
     }
@@ -1119,6 +1143,7 @@ mod filter_matching {
             None,
             &skips(&["file_v3::"]),
             RunIgnoredMode::Normal,
+            false,
         ));
         Ok(())
     }
@@ -1131,6 +1156,7 @@ mod filter_matching {
             Some("e2e_inproc"),
             &skips(&["doput"]),
             RunIgnoredMode::Normal,
+            false,
         ));
         Ok(())
     }
@@ -1143,6 +1169,7 @@ mod filter_matching {
             None,
             &[],
             RunIgnoredMode::Only,
+            false,
         ));
         Ok(())
     }
@@ -1155,6 +1182,64 @@ mod filter_matching {
             None,
             &[],
             RunIgnoredMode::Only,
+            false,
+        ));
+        Ok(())
+    }
+
+    // --exact (libtest compat): filter must equal the qualified name,
+    // not merely be a substring of it.
+    #[rudzio::test]
+    fn exact_filter_rejects_substring(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(!token_passes_filters(
+            "crate::foo::doput",
+            false,
+            Some("doput"),
+            &[],
+            RunIgnoredMode::Normal,
+            true,
+        ));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn exact_filter_accepts_full_match(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(token_passes_filters(
+            "crate::foo::doput",
+            false,
+            Some("crate::foo::doput"),
+            &[],
+            RunIgnoredMode::Normal,
+            true,
+        ));
+        Ok(())
+    }
+
+    // Skip is sibling-symmetric with filter under --exact: only an
+    // entire-name match excludes a test, partial-name skip values
+    // become no-ops.
+    #[rudzio::test]
+    fn exact_skip_rejects_only_full_match(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(!token_passes_filters(
+            "crate::foo::doput",
+            false,
+            None,
+            &skips(&["crate::foo::doput"]),
+            RunIgnoredMode::Normal,
+            true,
+        ));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn exact_skip_ignores_substring(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(token_passes_filters(
+            "crate::foo::doput",
+            false,
+            None,
+            &skips(&["doput"]),
+            RunIgnoredMode::Normal,
+            true,
         ));
         Ok(())
     }

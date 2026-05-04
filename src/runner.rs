@@ -1234,6 +1234,7 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
                 config.filter.as_deref(),
                 &config.skip_filters,
                 config.run_ignored,
+                config.exact_match,
             )
         })
         .collect();
@@ -1399,9 +1400,12 @@ fn terminal_width() -> usize {
 /// mode.
 ///
 /// `qualified_name` is the same string the runner displays in its
-/// output (see [`qualified_test_name`]). Filter and skip both
-/// substring-match against it, so anything a user can copy out of the
-/// runner's output is a valid filter.
+/// output (see [`qualified_test_name`]). When `exact_match` is `false`
+/// (the default), the filter and every skip entry are matched as
+/// substrings of the qualified name — anything a user can copy out of
+/// the runner's output is a valid filter. When `exact_match` is `true`
+/// (the libtest `--exact` flag), they must match the qualified name in
+/// full.
 #[inline]
 #[must_use]
 pub fn token_passes_filters(
@@ -1410,20 +1414,33 @@ pub fn token_passes_filters(
     filter: Option<&str>,
     skip_filters: &[String],
     run_ignored: RunIgnoredMode,
+    exact_match: bool,
 ) -> bool {
     if let Some(needle) = filter
-        && !qualified_name.contains(needle)
+        && !name_matches(qualified_name, needle, exact_match)
     {
         return false;
     }
     for skip in skip_filters {
-        if qualified_name.contains(skip.as_str()) {
+        if name_matches(qualified_name, skip.as_str(), exact_match) {
             return false;
         }
     }
     match run_ignored {
         RunIgnoredMode::Normal | RunIgnoredMode::Include => true,
         RunIgnoredMode::Only => ignored,
+    }
+}
+
+/// Test-name predicate shared by the positional filter and every
+/// `--skip` entry: substring match by default, exact-equality match
+/// under the libtest `--exact` flag.
+#[inline]
+fn name_matches(qualified_name: &str, needle: &str, exact_match: bool) -> bool {
+    if exact_match {
+        qualified_name == needle
+    } else {
+        qualified_name.contains(needle)
     }
 }
 

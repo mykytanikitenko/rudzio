@@ -54,6 +54,9 @@ ARGUMENTS:
 OPTIONS:
     --skip <SUBSTRING>          Exclude tests whose name contains <SUBSTRING>.
                                 Repeatable \u{2014} accumulates across occurrences.
+    --exact                     Require the positional filter and every --skip
+                                value to match the qualified test name exactly,
+                                not as a substring. Mirrors libtest --exact.
     --ignored                   Only run tests marked #[ignore].
     --include-ignored           Run every test, ignored or not.
     --bench                     Dispatch #[rudzio::test(benchmark=...)] tests
@@ -347,7 +350,14 @@ pub struct Config {
     /// Snapshot of every environment variable at runner start. `BTreeMap`
     /// so iteration order is deterministic across runs.
     pub env: BTreeMap<String, String>,
-    /// Positional filter — runs only tests whose name contains this substring.
+    /// `--exact` (libtest compat): when `true`, the positional [`Self::filter`]
+    /// and every [`Self::skip_filters`] entry are interpreted as exact
+    /// equality matches against the test's qualified name rather than
+    /// substring matches. Defaults to `false` (substring matching, matching
+    /// rudzio's pre-`--exact` behaviour and standard cargo-test invocations).
+    pub exact_match: bool,
+    /// Positional filter — runs only tests whose name contains this substring
+    /// (or equals it exactly when [`Self::exact_match`] is `true`).
     pub filter: Option<String>,
     /// Output format.
     pub format: Format,
@@ -540,6 +550,9 @@ struct ParsedArgs {
     /// In-flight test cap from `--concurrency-limit=<N>`. `None` means the
     /// flag was absent — `Config` defaults this to `threads` at resolution.
     concurrency_limit: Option<usize>,
+    /// `--exact` (libtest compat): switches `filter` and `skip_filters`
+    /// from substring matching to exact-equality matching.
+    exact_match: bool,
     /// Positional substring filter (the first non-flag argument that survives
     /// every flag handler).
     filter: Option<String>,
@@ -652,6 +665,7 @@ impl Config {
             color: parsed.color,
             concurrency_limit: resolved_concurrency_limit,
             env,
+            exact_match: parsed.exact_match,
             filter: parsed.filter,
             format: parsed.format,
             hardlimit,
@@ -897,6 +911,7 @@ fn handle_presentation_flag(
         "--include-ignored" => state.run_ignored = RunIgnoredMode::Include,
         "--bench" => state.bench_mode = BenchMode::Full,
         "--no-bench" => state.bench_mode = BenchMode::Skip,
+        "--exact" => state.exact_match = true,
         "--plain" => state.output_mode_explicit = Some(OutputMode::Plain),
         "--list" => state.list = true,
         "--help" | "-h" => state.help = true,
