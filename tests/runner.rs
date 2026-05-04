@@ -294,6 +294,56 @@ mod config_parser {
     }
 
     #[rudzio::test]
+    fn report_time_flag_is_silently_consumed(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--report-time", "my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(cfg.filter.as_deref() == Some("my_filter"));
+        anyhow::ensure!(
+            !cfg.unparsed.iter().any(|item| item == "--report-time"),
+            "--report-time should not leak into unparsed: {:?}",
+            cfg.unparsed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_flag_bare_is_silently_consumed(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--ensure-time", "my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(cfg.filter.as_deref() == Some("my_filter"));
+        anyhow::ensure!(
+            !cfg.unparsed.iter().any(|item| item == "--ensure-time"),
+            "--ensure-time should not leak into unparsed: {:?}",
+            cfg.unparsed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_flag_with_value_is_silently_consumed(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--ensure-time=1,5", "my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(cfg.filter.as_deref() == Some("my_filter"));
+        anyhow::ensure!(
+            !cfg.unparsed
+                .iter()
+                .any(|item| item.starts_with("--ensure-time")),
+            "--ensure-time=… should not leak into unparsed: {:?}",
+            cfg.unparsed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
     fn logfile_writer_truncates_existing_file_on_open(_ctx: &Test) -> anyhow::Result<()> {
         use std::fs;
         let mut path = std::env::temp_dir();

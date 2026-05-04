@@ -920,6 +920,24 @@ fn handle_presentation_flag(
         state.logfile = Some(PathBuf::from(value));
         return true;
     }
+    // `--report-time` is libtest's per-test elapsed-time switch. Rudzio
+    // already prints elapsed for every test in the default pretty
+    // output (the `<runtime, 142ms>` block), so the flag is implicitly
+    // satisfied; accept and discard rather than letting it land in
+    // `unparsed` where it would emit a "we don't recognise this" notice.
+    if arg == "--report-time" {
+        return true;
+    }
+    // `--ensure-time [WARN[,CRIT]]` is libtest's soft/hard wall-clock
+    // budget. Rudzio's per-test budget lives on `--test-timeout`
+    // (cancels and reports timeout, not just print); the libtest soft
+    // warning tier has no rudzio equivalent. Accept and discard rather
+    // than letting it surface as an unknown flag. Libtest only spells
+    // this flag in the `=value` form (or bare) — never as a separate
+    // value arg — so we don't peek at the next argv entry here.
+    if arg == "--ensure-time" || arg.starts_with("--ensure-time=") {
+        return true;
+    }
     match arg {
         "--ignored" => state.run_ignored = RunIgnoredMode::Only,
         "--include-ignored" => state.run_ignored = RunIgnoredMode::Include,
