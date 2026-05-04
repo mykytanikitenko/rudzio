@@ -66,6 +66,32 @@ OPTIONS:
                                 ignored).
     --list                      Print test names (one per line, libtest
                                 format) and exit without running anything.
+    --logfile <FILE>            Append a libtest-shape per-test log
+                                (`<status> <qualified_name>` per line,
+                                statuses: ok / failed / ignored) to FILE.
+                                File is truncated on open. Failures to
+                                open the file are warned to stderr but
+                                don't abort the run \u{2014} the on-screen
+                                report still prints. Mirrors libtest
+                                --logfile.
+    --shuffle                   Permute each (runtime, suite) group's
+                                test list before dispatch. Cross-group
+                                ordering is unaffected (each group runs
+                                on its own thread + runtime). The
+                                resolved seed is printed as
+                                `shuffle seed: <N>` so a re-run with
+                                --shuffle-seed=<N> reproduces the order.
+    --shuffle-seed <N>          Implies --shuffle and pins the seed to
+                                <N> (a u64). Mirrors libtest
+                                --shuffle-seed.
+    --report-time               Accepted for libtest compatibility.
+                                Per-test timing already prints by default
+                                in pretty/plain output, so this flag is a
+                                silent no-op rather than a duplicate.
+    --ensure-time [<MS>]        Accepted for libtest compatibility.
+                                Silently consumed; rudzio's own
+                                --test-timeout/--run-timeout govern
+                                cancellation. Use those for hard caps.
     --test-threads <N>          OS worker-thread count runtimes size their
                                 pool to. Defaults to RUST_TEST_THREADS, else
                                 std::thread::available_parallelism(). The

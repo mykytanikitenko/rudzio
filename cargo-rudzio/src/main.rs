@@ -69,6 +69,9 @@ COMMANDS:
                                          accepted; rudzio's structured
                                          output already surfaces test
                                          stdout/stderr.
+                                       --no-fail-fast  silently accepted;
+                                         the rudzio runner already keeps
+                                         going on a per-test failure.
                                        --lib, --bins, --bin <NAME>,
                                        --example <NAME>, --examples,
                                        --test <NAME>, --tests,
@@ -83,12 +86,15 @@ COMMANDS:
                                      the spawned `cargo run`/`cargo build`
                                      before `--` (so they shape the build,
                                      not the runner):
-                                       --release, --profile <NAME>,
+                                       --release, -r (short for --release),
+                                       --profile <NAME>,
                                        --features <FEATURES>,
+                                       -F <FEATURES> (short for --features),
                                        --all-features,
                                        --no-default-features,
                                        --target <TRIPLE> (repeatable),
                                        --target-dir <DIR>,
+                                       --lockfile-path <PATH>,
                                        -j/--jobs <N>, --keep-going,
                                        --frozen, --locked, --offline,
                                        -v/--verbose (repeatable),
