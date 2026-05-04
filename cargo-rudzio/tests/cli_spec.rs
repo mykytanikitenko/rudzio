@@ -973,6 +973,23 @@ mod tests {
     }
 
     #[rudzio::test]
+    async fn build_forwarder_dash_capital_f_short_for_features_space_form() -> anyhow::Result<()> {
+        let (forwarded, remaining) =
+            parse_build_forwarder_flags(&argv(&["-F", "foo,bar", "f"]))?;
+        anyhow::ensure!(forwarded == argv(&["-F", "foo,bar"]), "got {forwarded:?}");
+        anyhow::ensure!(remaining == argv(&["f"]), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_dash_capital_f_short_for_features_equals_form() -> anyhow::Result<()> {
+        let (forwarded, remaining) = parse_build_forwarder_flags(&argv(&["-F=foo,bar"]))?;
+        anyhow::ensure!(forwarded == argv(&["-F=foo,bar"]), "got {forwarded:?}");
+        anyhow::ensure!(remaining.is_empty(), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
     async fn build_forwarder_profile_and_target_dir() -> anyhow::Result<()> {
         let (forwarded, remaining) = parse_build_forwarder_flags(&argv(&[
             "--profile",

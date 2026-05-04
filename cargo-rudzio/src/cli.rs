@@ -186,7 +186,7 @@ pub fn parse_exclude_filters(args: &[String]) -> Result<(Vec<String>, Vec<String
 /// `-v`/`--verbose` (repeatable), `--all-features`,
 /// `--no-default-features`, `--unit-graph`, `--future-incompat-report`.
 ///
-/// Value (next-arg or `=value` form): `--features`, `--profile`,
+/// Value (next-arg or `=value` form): `-F`/`--features`, `--profile`,
 /// `--target` (repeatable), `--target-dir`, `-j`/`--jobs`,
 /// `--message-format`, `--config` (repeatable), `-Z` (repeatable).
 ///
@@ -266,7 +266,8 @@ fn is_unit_build_flag(arg: &str) -> bool {
 fn is_value_build_flag(arg: &str) -> bool {
     matches!(
         arg,
-        "--features"
+        "-F"
+            | "--features"
             | "--profile"
             | "--target"
             | "--target-dir"
