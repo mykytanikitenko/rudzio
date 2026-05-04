@@ -27,7 +27,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use ::rudzio::common::context::{Suite, Test};
-use ::rudzio::runtime::tokio::Multithread;
+use ::rudzio::runtime::futures::ThreadPool;
+use ::rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
+use ::rudzio::runtime::{compio, embassy};
 
 /// The acknowledgement phrase the migrator's preflight gate requires
 /// on stdin. Intentionally typo-laden: the test asserts byte-for-byte
@@ -35,7 +37,14 @@ use ::rudzio::runtime::tokio::Multithread;
 const ACK_PHRASE: &str = "I am not and idion and understand what I am doing in most cases at least";
 
 #[cfg(any(test, rudzio_test))]
-#[rudzio::suite([(runtime = Multithread::new, suite = Suite, test = Test)])]
+#[rudzio::suite([
+    (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
+])]
 mod tests {
     use super::{
         PathBuf, Test, fs, git_init_commit, run_fixture, run_fixture_twice, run_migrate,

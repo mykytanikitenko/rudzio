@@ -4,7 +4,9 @@
 use quote::ToTokens;
 
 use rudzio::common::context::{Suite, Test};
-use rudzio::runtime::tokio::Multithread;
+use rudzio::runtime::futures::ThreadPool;
+use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
+use rudzio::runtime::{compio, embassy};
 use rudzio_macro_internals::parse::RuntimeConfig;
 
 /// Render any [`ToTokens`] value to a whitespace-stripped string —
@@ -27,11 +29,12 @@ fn parse_err_msg(source: &str) -> anyhow::Result<String> {
 }
 
 #[rudzio::suite([
-    (
-        runtime = Multithread::new,
-        suite = Suite,
-        test = Test,
-    ),
+    (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
 ])]
 mod tests {
     use super::{RuntimeConfig, Test, parse_err_msg, render};

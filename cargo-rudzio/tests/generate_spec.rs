@@ -13,7 +13,12 @@ use cargo_rudzio::generate::{
     write_runner,
 };
 use rudzio::common::context::Suite;
-use rudzio::runtime::tokio::Multithread as TokioMultithread;
+use rudzio::runtime::compio::Runtime as CompioRuntime;
+use rudzio::runtime::embassy::Runtime as EmbassyRuntime;
+use rudzio::runtime::futures::ThreadPool as FuturesThreadPool;
+use rudzio::runtime::tokio::{
+    CurrentThread as TokioCurrentThread, Local as TokioLocal, Multithread as TokioMultithread,
+};
 
 /// Build a synthetic `MemberPlan` with stable filler paths.
 fn member(name: &str, dev_deps: Vec<DevDepSpec>) -> MemberPlan {
@@ -48,11 +53,12 @@ fn ws_root() -> PathBuf {
 }
 
 #[rudzio::suite([
-    (
-        runtime = TokioMultithread::new,
-        suite = Suite,
-        test = Test,
-    ),
+    (runtime = TokioMultithread::new, suite = Suite, test = Test),
+    (runtime = TokioCurrentThread::new, suite = Suite, test = Test),
+    (runtime = TokioLocal::new, suite = Suite, test = Test),
+    (runtime = CompioRuntime::new, suite = Suite, test = Test),
+    (runtime = EmbassyRuntime::new, suite = Suite, test = Test),
+    (runtime = FuturesThreadPool::new, suite = Suite, test = Test),
 ])]
 mod tests {
     use super::{

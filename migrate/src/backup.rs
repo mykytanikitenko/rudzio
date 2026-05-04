@@ -13,7 +13,11 @@ use std::path::{Path, PathBuf};
 #[cfg(any(test, rudzio_test))]
 use rudzio::common::context::{Suite, Test};
 #[cfg(any(test, rudzio_test))]
-use rudzio::runtime::tokio::Multithread;
+use rudzio::runtime::futures::ThreadPool;
+#[cfg(any(test, rudzio_test))]
+use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
+#[cfg(any(test, rudzio_test))]
+use rudzio::runtime::{compio, embassy};
 
 /// Suffix appended to every original file path to derive its backup
 /// path. Long and specific by design.
@@ -75,6 +79,11 @@ pub fn copy_before_write(original: &Path) -> io::Result<Outcome> {
 
 #[rudzio::suite([
     (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
 ])]
 #[cfg(any(test, rudzio_test))]
 mod tests {

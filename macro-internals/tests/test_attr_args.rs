@@ -9,15 +9,18 @@
 use syn::{ItemFn, parse_quote};
 
 use rudzio::common::context::{Suite, Test};
-use rudzio::runtime::tokio::Multithread;
+use rudzio::runtime::futures::ThreadPool;
+use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
+use rudzio::runtime::{compio, embassy};
 use rudzio_macro_internals::codegen::extract_test_attr_args;
 
 #[rudzio::suite([
-    (
-        runtime = Multithread::new,
-        suite = Suite,
-        test = Test,
-    ),
+    (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
 ])]
 mod tests {
     use super::{ItemFn, Test, extract_test_attr_args, parse_quote};

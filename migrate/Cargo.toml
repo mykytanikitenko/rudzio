@@ -40,6 +40,11 @@ toml_edit = { workspace = true }
 rudzio = { workspace = true, features = [
   "common",
   "runtime-tokio-multi-thread",
+  "runtime-tokio-current-thread",
+  "runtime-tokio-local",
+  "runtime-compio",
+  "runtime-embassy",
+  "runtime-futures",
 ] }
 
 [dev-dependencies]

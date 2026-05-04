@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 use anyhow::Context as _;
 use rudzio::common::context::Suite;
 use rudzio::common::context::Test;
-use rudzio::runtime::tokio::Multithread;
+use rudzio::runtime::futures::ThreadPool;
+use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
+use rudzio::runtime::{compio, embassy};
 
 /// Find `needle` in `hay` and return its byte index, or an error
 /// naming the missing needle. Used by `ordered` for stdio-attribution
@@ -167,11 +169,12 @@ fn run_parallel(exe: &str, threads: u32) -> anyhow::Result<Output> {
 }
 
 #[rudzio::suite([
-    (
-        runtime = Multithread::new,
-        suite = Suite,
-        test = Test,
-    ),
+    (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
 ])]
 mod tests {
     use super::{
@@ -1256,11 +1259,12 @@ mod tests {
 
 #[cfg(unix)]
 #[rudzio::suite([
-    (
-        runtime = Multithread::new,
-        suite = Suite,
-        test = Test,
-    ),
+    (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
 ])]
 mod unix_tests {
     use super::{Test, log_of, ordered, run, run_and_signal};

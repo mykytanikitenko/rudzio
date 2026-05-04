@@ -18,10 +18,17 @@ use cargo_rudzio::cli::{
     parse_package_filters, parse_target_selection_flags, parse_test_args, parse_workspace_flag,
 };
 use rudzio::common::context::Suite;
-use rudzio::runtime::tokio::Multithread;
+use rudzio::runtime::futures::ThreadPool;
+use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
+use rudzio::runtime::{compio, embassy};
 
 #[rudzio::suite([
     (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
 ])]
 mod tests {
     use super::{

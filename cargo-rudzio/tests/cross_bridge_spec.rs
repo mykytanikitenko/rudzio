@@ -24,7 +24,12 @@ use cargo_rudzio::generate::{
     build_bridge_build_rs, build_bridge_cargo_toml, build_build_rs, build_main_rs,
 };
 use rudzio::common::context::Suite;
-use rudzio::runtime::tokio::Multithread as TokioMultithread;
+use rudzio::runtime::compio::Runtime as CompioRuntime;
+use rudzio::runtime::embassy::Runtime as EmbassyRuntime;
+use rudzio::runtime::futures::ThreadPool as FuturesThreadPool;
+use rudzio::runtime::tokio::{
+    CurrentThread as TokioCurrentThread, Local as TokioLocal, Multithread as TokioMultithread,
+};
 use tempfile::TempDir;
 use toml_edit::{DocumentMut, Item};
 
@@ -149,11 +154,12 @@ fn generate_runner(cwd: &Path, out: &Path) -> anyhow::Result<()> {
 }
 
 #[rudzio::suite([
-    (
-        runtime = TokioMultithread::new,
-        suite = Suite,
-        test = Test,
-    ),
+    (runtime = TokioMultithread::new, suite = Suite, test = Test),
+    (runtime = TokioCurrentThread::new, suite = Suite, test = Test),
+    (runtime = TokioLocal::new, suite = Suite, test = Test),
+    (runtime = CompioRuntime::new, suite = Suite, test = Test),
+    (runtime = EmbassyRuntime::new, suite = Suite, test = Test),
+    (runtime = FuturesThreadPool::new, suite = Suite, test = Test),
 ])]
 mod tests {
     use super::{
