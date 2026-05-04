@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use anyhow::{Context as _, Result, bail};
-use cargo_rudzio::cli::{aggregator_cargo_args, parse_test_args};
+use cargo_rudzio::cli::{aggregator_cargo_args, format_target_flag_warning, parse_test_args};
 use cargo_rudzio::{generate, spawn_env};
 use rudzio_migrate::run::entry_with_args as rudzio_migrate_entry;
 
@@ -64,6 +64,15 @@ COMMANDS:
                                          accepted; rudzio's structured
                                          output already surfaces test
                                          stdout/stderr.
+                                       --lib, --bins, --bin <NAME>,
+                                       --example <NAME>, --examples,
+                                       --test <NAME>, --tests,
+                                       --bench <NAME>, --benches,
+                                       --all-targets, --doc  consumed
+                                         with one consolidated stderr
+                                         warning. The aggregator is one
+                                         binary, so per-target selection
+                                         has no rudzio analog.
 
                                      Anything else in ARGS forwards verbatim
                                      to the rudzio runner (positional filter,
@@ -156,6 +165,9 @@ fn run_generate(rest: &[String]) -> Result<()> {
 /// Handler for `cargo rudzio test`: generate the aggregator crate then `cargo run` it with the user's runner args.
 fn run_test(rest: &[String]) -> Result<ExitCode> {
     let parsed = parse_test_args(rest, Path::is_dir)?;
+    if let Some(warning) = format_target_flag_warning(&parsed.ignored_target_flags) {
+        write_stderr(&format!("warning: {warning}\n"));
+    }
     let mut plan = generate::plan_from_cwd()?;
     if !parsed.filters.include_paths.is_empty() {
         plan.restrict_to_paths(&parsed.filters.include_paths)?;

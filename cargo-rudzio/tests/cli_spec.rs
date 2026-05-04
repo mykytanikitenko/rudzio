@@ -13,8 +13,9 @@
 use std::path::Path;
 
 use cargo_rudzio::cli::{
-    aggregator_cargo_args, parse_capture_flags, parse_exclude_filters, parse_no_run_flag,
-    parse_package_filters, parse_test_args, parse_workspace_flag,
+    aggregator_cargo_args, format_target_flag_warning, parse_capture_flags, parse_exclude_filters,
+    parse_no_run_flag, parse_package_filters, parse_target_selection_flags, parse_test_args,
+    parse_workspace_flag,
 };
 use rudzio::common::context::Suite;
 use rudzio::runtime::tokio::Multithread;
@@ -24,8 +25,9 @@ use rudzio::runtime::tokio::Multithread;
 ])]
 mod tests {
     use super::{
-        Path, aggregator_cargo_args, parse_capture_flags, parse_exclude_filters, parse_no_run_flag,
-        parse_package_filters, parse_test_args, parse_workspace_flag,
+        Path, aggregator_cargo_args, format_target_flag_warning, parse_capture_flags,
+        parse_exclude_filters, parse_no_run_flag, parse_package_filters,
+        parse_target_selection_flags, parse_test_args, parse_workspace_flag,
     };
 
     /// Convenience: build a `Vec<String>` from a slice of `&str` in
@@ -638,6 +640,213 @@ mod tests {
                 == vec!["my_filter".to_owned(), "--skip".to_owned(), "slow_".to_owned()],
             "got {:?}",
             parsed.runner_args,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn no_target_flags_returns_empty_consumed_and_unchanged_args() -> anyhow::Result<()> {
+        let input = argv(&["my_filter", "--skip", "slow_"]);
+        let (consumed, remaining) = parse_target_selection_flags(&input)?;
+        anyhow::ensure!(consumed.is_empty(), "got {consumed:?}");
+        anyhow::ensure!(remaining == input, "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn lib_target_flag_consumed_and_recorded() -> anyhow::Result<()> {
+        let input = argv(&["--lib", "my_filter"]);
+        let (consumed, remaining) = parse_target_selection_flags(&input)?;
+        anyhow::ensure!(consumed == vec!["--lib".to_owned()], "got {consumed:?}");
+        anyhow::ensure!(remaining == argv(&["my_filter"]), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn bins_examples_tests_benches_doc_all_targets_consumed() -> anyhow::Result<()> {
+        let input = argv(&[
+            "--bins",
+            "--examples",
+            "--tests",
+            "--benches",
+            "--all-targets",
+            "--doc",
+            "my_filter",
+        ]);
+        let (consumed, remaining) = parse_target_selection_flags(&input)?;
+        anyhow::ensure!(
+            consumed
+                == vec![
+                    "--bins".to_owned(),
+                    "--examples".to_owned(),
+                    "--tests".to_owned(),
+                    "--benches".to_owned(),
+                    "--all-targets".to_owned(),
+                    "--doc".to_owned(),
+                ],
+            "got {consumed:?}",
+        );
+        anyhow::ensure!(remaining == argv(&["my_filter"]), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn bin_space_form_consumes_flag_and_value() -> anyhow::Result<()> {
+        let input = argv(&["--bin", "rudzio-cli", "my_filter"]);
+        let (consumed, remaining) = parse_target_selection_flags(&input)?;
+        anyhow::ensure!(
+            consumed == vec!["--bin rudzio-cli".to_owned()],
+            "got {consumed:?}",
+        );
+        anyhow::ensure!(remaining == argv(&["my_filter"]), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn bin_equals_form_consumes_single_arg() -> anyhow::Result<()> {
+        let input = argv(&["--bin=rudzio-cli", "my_filter"]);
+        let (consumed, remaining) = parse_target_selection_flags(&input)?;
+        anyhow::ensure!(
+            consumed == vec!["--bin=rudzio-cli".to_owned()],
+            "got {consumed:?}",
+        );
+        anyhow::ensure!(remaining == argv(&["my_filter"]), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn example_test_bench_value_forms_consumed() -> anyhow::Result<()> {
+        let input = argv(&[
+            "--example",
+            "demo",
+            "--test=integration",
+            "--bench",
+            "perf",
+        ]);
+        let (consumed, remaining) = parse_target_selection_flags(&input)?;
+        anyhow::ensure!(
+            consumed
+                == vec![
+                    "--example demo".to_owned(),
+                    "--test=integration".to_owned(),
+                    "--bench perf".to_owned(),
+                ],
+            "got {consumed:?}",
+        );
+        anyhow::ensure!(remaining.is_empty(), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn target_flags_mixed_with_runner_args_preserve_order() -> anyhow::Result<()> {
+        let input = argv(&[
+            "my_filter",
+            "--lib",
+            "--skip",
+            "slow_",
+            "--bin",
+            "demo",
+            "--output=plain",
+        ]);
+        let (consumed, remaining) = parse_target_selection_flags(&input)?;
+        anyhow::ensure!(
+            consumed == vec!["--lib".to_owned(), "--bin demo".to_owned()],
+            "got {consumed:?}",
+        );
+        anyhow::ensure!(
+            remaining
+                == argv(&["my_filter", "--skip", "slow_", "--output=plain"]),
+            "got {remaining:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn bin_without_value_errors() -> anyhow::Result<()> {
+        let input = argv(&["--bin"]);
+        let Err(err) = parse_target_selection_flags(&input) else {
+            anyhow::bail!("expected error for trailing --bin");
+        };
+        anyhow::ensure!(
+            err.to_string().contains("requires a target name"),
+            "got {err}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn example_equals_empty_errors() -> anyhow::Result<()> {
+        let input = argv(&["--example="]);
+        let Err(err) = parse_target_selection_flags(&input) else {
+            anyhow::bail!("expected error for empty --example=");
+        };
+        anyhow::ensure!(
+            err.to_string().contains("non-empty target name"),
+            "got {err}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn parse_test_args_records_target_flags_in_struct() -> anyhow::Result<()> {
+        let parsed = parse_test_args(
+            &argv(&["--lib", "--bin", "demo", "my_filter"]),
+            no_dirs,
+        )?;
+        anyhow::ensure!(
+            parsed.ignored_target_flags
+                == vec!["--lib".to_owned(), "--bin demo".to_owned()],
+            "got {:?}",
+            parsed.ignored_target_flags,
+        );
+        anyhow::ensure!(
+            parsed.runner_args == vec!["my_filter".to_owned()],
+            "got {:?}",
+            parsed.runner_args,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn parse_test_args_target_flags_default_empty() -> anyhow::Result<()> {
+        let parsed = parse_test_args(&argv(&[]), no_dirs)?;
+        anyhow::ensure!(
+            parsed.ignored_target_flags.is_empty(),
+            "got {:?}",
+            parsed.ignored_target_flags,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn format_target_flag_warning_returns_none_when_empty() -> anyhow::Result<()> {
+        anyhow::ensure!(
+            format_target_flag_warning(&[]).is_none(),
+            "expected None for empty input",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn format_target_flag_warning_lists_consumed_flags() -> anyhow::Result<()> {
+        let warning = format_target_flag_warning(&[
+            "--lib".to_owned(),
+            "--bin demo".to_owned(),
+        ])
+        .ok_or_else(|| anyhow::anyhow!("expected Some(_) for non-empty input"))?;
+        anyhow::ensure!(
+            warning.contains("--lib"),
+            "warning should name --lib, got {warning:?}",
+        );
+        anyhow::ensure!(
+            warning.contains("--bin demo"),
+            "warning should name --bin demo, got {warning:?}",
+        );
+        anyhow::ensure!(
+            warning.contains("aggregator")
+                || warning.contains("one binary")
+                || warning.contains("ignor"),
+            "warning should explain why flags were ignored, got {warning:?}",
         );
         Ok(())
     }

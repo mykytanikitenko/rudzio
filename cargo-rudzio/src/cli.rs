@@ -53,6 +53,12 @@ impl PlanFilters {
 pub struct ParsedTestArgs {
     /// Plan-shaping selectors consumed by `cargo-rudzio` itself.
     pub filters: PlanFilters,
+    /// Cargo target-selection flags consumed but not honoured. The
+    /// aggregator is one binary, so per-target selection has no
+    /// rudzio analog. The caller emits one consolidated stderr warning
+    /// listing these so the user knows their flag was a no-op rather
+    /// than silently honoured.
+    pub ignored_target_flags: Vec<String>,
     /// `--no-run` was passed: build the aggregator binary but skip
     /// running it (mirrors `cargo test --no-run`).
     pub no_run: bool,
@@ -67,6 +73,7 @@ impl ParsedTestArgs {
     pub const fn empty() -> Self {
         Self {
             filters: PlanFilters::empty(),
+            ignored_target_flags: Vec::new(),
             no_run: false,
             runner_args: Vec::new(),
         }
@@ -239,6 +246,85 @@ pub fn parse_package_filters(args: &[String]) -> Result<(Vec<String>, Vec<String
     Ok((packages, remaining))
 }
 
+/// Pull cargo's per-target selection flags out of `args`.
+///
+/// Recognised: `--lib`, `--bins`, `--examples`, `--tests`, `--benches`,
+/// `--all-targets`, `--doc` (unit flags) and `--bin <NAME>`, `--bin=<NAME>`,
+/// `--example <NAME>`, `--example=<NAME>`, `--test <NAME>`, `--test=<NAME>`,
+/// `--bench <NAME>`, `--bench=<NAME>` (value flags).
+///
+/// All are consumed but not honoured — the rudzio aggregator is one
+/// binary, so per-target selection has no semantic analog. The
+/// returned `Vec<String>` records what was consumed, in input order,
+/// so the caller can emit a single consolidated warning rather than a
+/// silent no-op (silence here would be confusing: the user thought
+/// they were narrowing the run, and got a workspace-wide one
+/// instead).
+///
+/// # Errors
+///
+/// Returns an error when `--bin` / `--example` / `--test` / `--bench`
+/// is the last arg with no following value, or when the equals form
+/// supplies an empty name.
+#[inline]
+pub fn parse_target_selection_flags(args: &[String]) -> Result<(Vec<String>, Vec<String>)> {
+    let mut consumed = Vec::new();
+    let mut remaining = Vec::new();
+    let mut idx = 0_usize;
+    while let Some(arg) = args.get(idx) {
+        if matches!(
+            arg.as_str(),
+            "--lib" | "--bins" | "--examples" | "--tests" | "--benches" | "--all-targets" | "--doc"
+        ) {
+            consumed.push(arg.clone());
+            idx = idx.saturating_add(1_usize);
+        } else if matches!(arg.as_str(), "--bin" | "--example" | "--test" | "--bench") {
+            let next_idx = idx.saturating_add(1_usize);
+            let value = args
+                .get(next_idx)
+                .ok_or_else(|| anyhow::anyhow!("`{arg}` requires a target name"))?;
+            consumed.push(format!("{arg} {value}"));
+            idx = next_idx.saturating_add(1_usize);
+        } else if let Some(value_pos) = arg.find('=') {
+            let head = arg.get(..value_pos).unwrap_or("");
+            if matches!(head, "--bin" | "--example" | "--test" | "--bench") {
+                let value = arg.get(value_pos.saturating_add(1_usize)..).unwrap_or("");
+                if value.is_empty() {
+                    bail!("`{head}=` requires a non-empty target name");
+                }
+                consumed.push(arg.clone());
+            } else {
+                remaining.push(arg.clone());
+            }
+            idx = idx.saturating_add(1_usize);
+        } else {
+            remaining.push(arg.clone());
+            idx = idx.saturating_add(1_usize);
+        }
+    }
+    Ok((consumed, remaining))
+}
+
+/// Render the consolidated stderr warning for ignored target flags.
+///
+/// Returns `None` when the input is empty (no warning to emit), so the
+/// caller's print site can be a flat `if let Some(msg) =` without
+/// needing its own emptiness check. Returning a single multi-line
+/// `String` rather than streaming directly keeps the formatter pure
+/// and unit-testable.
+#[inline]
+#[must_use]
+pub fn format_target_flag_warning(consumed: &[String]) -> Option<String> {
+    if consumed.is_empty() {
+        return None;
+    }
+    let joined = consumed.join(", ");
+    Some(format!(
+        "ignored cargo target-selection flags: {joined} (the rudzio aggregator is one binary; \
+         per-target selection has no analog — every workspace member's tests will run)"
+    ))
+}
+
 /// Compose every `cargo rudzio test` parser into a single structured result.
 ///
 /// `is_dir` is injected so the path-vs-runner split is testable without
@@ -247,10 +333,10 @@ pub fn parse_package_filters(args: &[String]) -> Result<(Vec<String>, Vec<String
 ///
 /// Parser order is: `-p`/`--package` → `--exclude` → `--no-run` →
 /// `--workspace`/`--all` → `--nocapture`/`--show-output` →
-/// positional paths, with everything else flowing into `runner_args`
-/// in original order. Each step operates on what the previous step
-/// left behind, so a flag consumed early can never collide with a
-/// later one.
+/// target-selection (`--lib`, `--bin <NAME>`, etc.) → positional paths,
+/// with everything else flowing into `runner_args` in original order.
+/// Each step operates on what the previous step left behind, so a flag
+/// consumed early can never collide with a later one.
 ///
 /// # Errors
 ///
@@ -266,13 +352,15 @@ where
     let (no_run, after_no_run) = parse_no_run_flag(&after_excludes);
     let after_workspace = parse_workspace_flag(&after_no_run);
     let after_capture = parse_capture_flags(&after_workspace);
-    let (include_paths, runner_args) = split_path_args(&after_capture, is_dir);
+    let (ignored_target_flags, after_targets) = parse_target_selection_flags(&after_capture)?;
+    let (include_paths, runner_args) = split_path_args(&after_targets, is_dir);
     Ok(ParsedTestArgs {
         filters: PlanFilters {
             exclude_packages,
             include_packages,
             include_paths,
         },
+        ignored_target_flags,
         no_run,
         runner_args,
     })
