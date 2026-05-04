@@ -181,8 +181,8 @@ pub fn parse_exclude_filters(args: &[String]) -> Result<(Vec<String>, Vec<String
 
 /// Pull cargo build-graph forwarder flags out of `args`.
 ///
-/// Unit (no value): `--release`, `--frozen`, `--locked`, `--offline`,
-/// `--keep-going`, `--ignore-rust-version`, `-q`/`--quiet`,
+/// Unit (no value): `-r`/`--release`, `--frozen`, `--locked`,
+/// `--offline`, `--keep-going`, `--ignore-rust-version`, `-q`/`--quiet`,
 /// `-v`/`--verbose` (repeatable), `--all-features`,
 /// `--no-default-features`, `--unit-graph`, `--future-incompat-report`.
 ///
@@ -241,7 +241,8 @@ pub fn parse_build_forwarder_flags(args: &[String]) -> Result<(Vec<String>, Vec<
 fn is_unit_build_flag(arg: &str) -> bool {
     matches!(
         arg,
-        "--release"
+        "-r"
+            | "--release"
             | "--frozen"
             | "--locked"
             | "--offline"

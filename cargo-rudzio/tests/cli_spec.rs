@@ -876,6 +876,14 @@ mod tests {
     }
 
     #[rudzio::test]
+    async fn build_forwarder_dash_r_short_for_release() -> anyhow::Result<()> {
+        let (forwarded, remaining) = parse_build_forwarder_flags(&argv(&["-r", "f"]))?;
+        anyhow::ensure!(forwarded == argv(&["-r"]), "got {forwarded:?}");
+        anyhow::ensure!(remaining == argv(&["f"]), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
     async fn build_forwarder_frozen_locked_offline() -> anyhow::Result<()> {
         let (forwarded, remaining) =
             parse_build_forwarder_flags(&argv(&["--frozen", "--locked", "--offline"]))?;
