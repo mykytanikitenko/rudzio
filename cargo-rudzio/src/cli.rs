@@ -188,7 +188,8 @@ pub fn parse_exclude_filters(args: &[String]) -> Result<(Vec<String>, Vec<String
 ///
 /// Value (next-arg or `=value` form): `-F`/`--features`, `--profile`,
 /// `--target` (repeatable), `--target-dir`, `-j`/`--jobs`,
-/// `--message-format`, `--config` (repeatable), `-Z` (repeatable).
+/// `--message-format`, `--config` (repeatable), `-Z` (repeatable),
+/// `--lockfile-path`.
 ///
 /// Forwarded args preserve the user's original spelling (space form
 /// vs equals form) so the spawned cargo sees what the user intended,
@@ -276,6 +277,7 @@ fn is_value_build_flag(arg: &str) -> bool {
             | "--message-format"
             | "--config"
             | "-Z"
+            | "--lockfile-path"
     )
 }
 

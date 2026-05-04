@@ -1028,6 +1028,43 @@ mod tests {
     }
 
     #[rudzio::test]
+    async fn build_forwarder_lockfile_path_space_form() -> anyhow::Result<()> {
+        let (forwarded, remaining) =
+            parse_build_forwarder_flags(&argv(&["--lockfile-path", "alt.lock", "f"]))?;
+        anyhow::ensure!(
+            forwarded == argv(&["--lockfile-path", "alt.lock"]),
+            "got {forwarded:?}",
+        );
+        anyhow::ensure!(remaining == argv(&["f"]), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_lockfile_path_equals_form_preserves_user_spelling()
+    -> anyhow::Result<()> {
+        let (forwarded, remaining) =
+            parse_build_forwarder_flags(&argv(&["--lockfile-path=alt.lock"]))?;
+        anyhow::ensure!(
+            forwarded == argv(&["--lockfile-path=alt.lock"]),
+            "got {forwarded:?}",
+        );
+        anyhow::ensure!(remaining.is_empty(), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_lockfile_path_missing_value_errors() -> anyhow::Result<()> {
+        let Err(err) = parse_build_forwarder_flags(&argv(&["--lockfile-path"])) else {
+            anyhow::bail!("expected error for trailing --lockfile-path");
+        };
+        anyhow::ensure!(
+            err.to_string().contains("--lockfile-path"),
+            "error should mention the flag, got {err}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
     async fn build_forwarder_profile_and_target_dir() -> anyhow::Result<()> {
         let (forwarded, remaining) = parse_build_forwarder_flags(&argv(&[
             "--profile",
