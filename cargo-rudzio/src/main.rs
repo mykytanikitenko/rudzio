@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use anyhow::{Context as _, Result, bail};
-use cargo_rudzio::cli::parse_test_args;
+use cargo_rudzio::cli::{aggregator_cargo_args, parse_test_args};
 use cargo_rudzio::{generate, spawn_env};
 use rudzio_migrate::run::entry_with_args as rudzio_migrate_entry;
 
@@ -49,6 +49,15 @@ COMMANDS:
                                          restricts the aggregator to members
                                          at-or-under that path. Repeatable.
 
+                                     CARGO-COMPAT FLAGS consumed locally:
+                                       --no-run  build the aggregator
+                                         binary but skip running it. Cargo
+                                         build output is in
+                                         json-render-diagnostics format on
+                                         stdout, so tooling can extract the
+                                         binary path with
+                                         `jq -r 'select(.executable != null) | .executable'`.
+
                                      Anything else in ARGS forwards verbatim
                                      to the rudzio runner (positional filter,
                                      --skip, --output=plain, etc.). Run the
@@ -70,6 +79,10 @@ EXAMPLES:
 
     Pipe-safe output for an AI agent or log shipper:
         cargo rudzio test -- --output=plain --color=never
+
+    Build the aggregator without running it; print the binary path:
+        cargo rudzio test --no-run \\
+          | jq -r 'select(.executable != null) | .executable'
 ";
 
 /// Write `text` to stdout, ignoring any I/O error.
@@ -148,23 +161,18 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
     let target = plan.default_output_dir();
     generate::write_runner(&plan, &target)?;
     let manifest = target.join("Cargo.toml");
+    let manifest_str = manifest.to_str().ok_or_else(|| {
+        anyhow::anyhow!("manifest path is not valid UTF-8: {}", manifest.display())
+    })?;
+    let cargo_argv = aggregator_cargo_args(&parsed, manifest_str);
     let mut cmd = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     for (key, value) in &spawn_env() {
         cmd.env(key, value);
     }
     let status = cmd
-        .arg("run")
-        .arg("--manifest-path")
-        .arg(&manifest)
-        .arg("--")
-        .args(&parsed.runner_args)
+        .args(&cargo_argv)
         .status()
-        .with_context(|| {
-            format!(
-                "failed to spawn cargo run --manifest-path {}",
-                manifest.display()
-            )
-        })?;
+        .with_context(|| format!("failed to spawn cargo with args {cargo_argv:?}"))?;
     Ok(status.code().map_or_else(
         || ExitCode::from(1),
         |code| ExitCode::from(u8::try_from(code & 0xFF_i32).unwrap_or(1)),

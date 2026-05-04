@@ -53,6 +53,9 @@ impl PlanFilters {
 pub struct ParsedTestArgs {
     /// Plan-shaping selectors consumed by `cargo-rudzio` itself.
     pub filters: PlanFilters,
+    /// `--no-run` was passed: build the aggregator binary but skip
+    /// running it (mirrors `cargo test --no-run`).
+    pub no_run: bool,
     /// Args forwarded verbatim to the rudzio runner after `--`.
     pub runner_args: Vec<String>,
 }
@@ -64,9 +67,39 @@ impl ParsedTestArgs {
     pub const fn empty() -> Self {
         Self {
             filters: PlanFilters::empty(),
+            no_run: false,
             runner_args: Vec::new(),
         }
     }
+}
+
+/// Build the argv we hand to `cargo` for the aggregator invocation.
+///
+/// Default (`no_run = false`): `cargo run --manifest-path X -- <runner args>`.
+/// `--no-run`: `cargo build --manifest-path X --message-format=json-render-diagnostics`,
+/// dropping the `--` separator and any runner args (the aggregator
+/// won't be spawned, so forwarding them is dead weight). The
+/// `json-render-diagnostics` format keeps human-friendly diagnostics
+/// on stderr while emitting machine-readable artifact records on
+/// stdout, so downstream tooling (or AI agents) can extract the
+/// built binary path with `jq -r 'select(.executable != null) | .executable'`.
+#[inline]
+#[must_use]
+pub fn aggregator_cargo_args(parsed: &ParsedTestArgs, manifest: &str) -> Vec<String> {
+    let mut argv = Vec::with_capacity(parsed.runner_args.len().saturating_add(5_usize));
+    if parsed.no_run {
+        argv.push("build".to_owned());
+        argv.push("--manifest-path".to_owned());
+        argv.push(manifest.to_owned());
+        argv.push("--message-format=json-render-diagnostics".to_owned());
+    } else {
+        argv.push("run".to_owned());
+        argv.push("--manifest-path".to_owned());
+        argv.push(manifest.to_owned());
+        argv.push("--".to_owned());
+        argv.extend(parsed.runner_args.iter().cloned());
+    }
+    argv
 }
 
 /// Pull `--exclude <name>` / `--exclude=<name>` out of `args`.
@@ -111,6 +144,28 @@ pub fn parse_exclude_filters(args: &[String]) -> Result<(Vec<String>, Vec<String
         }
     }
     Ok((excluded, remaining))
+}
+
+/// Strip `--no-run` from `args` and return whether it was present.
+///
+/// Mirrors cargo test's `--no-run`: a unit flag (no value), repeatable
+/// without semantic effect — present means "build the aggregator
+/// binary but don't execute it". Consumed locally because we have to
+/// branch from `cargo run` to `cargo build` ourselves; cargo can't see
+/// it through the `cargo run` we'd otherwise spawn.
+#[inline]
+#[must_use]
+pub fn parse_no_run_flag(args: &[String]) -> (bool, Vec<String>) {
+    let mut found = false;
+    let mut remaining = Vec::with_capacity(args.len());
+    for arg in args {
+        if arg == "--no-run" {
+            found = true;
+        } else {
+            remaining.push(arg.clone());
+        }
+    }
+    (found, remaining)
 }
 
 /// Pull `-p <name>` / `-p=<name>` / `--package <name>` / `--package=<name>` out of `args`.
@@ -163,13 +218,14 @@ pub fn parse_package_filters(args: &[String]) -> Result<(Vec<String>, Vec<String
 /// Compose every `cargo rudzio test` parser into a single structured result.
 ///
 /// `is_dir` is injected so the path-vs-runner split is testable without
-/// touching disk. Production callers pass `|p| p.is_dir()`; tests pass
-/// a closure that recognises a curated set of paths.
+/// touching disk. Production callers pass `Path::is_dir`; tests pass a
+/// closure that recognises a curated set of paths.
 ///
-/// Parser order is: `-p`/`--package` → `--exclude` → positional paths,
-/// with everything else flowing into `runner_args` in original order.
-/// Each step operates on what the previous step left behind, so a flag
-/// consumed early can never collide with a later one.
+/// Parser order is: `-p`/`--package` → `--exclude` → `--no-run` →
+/// positional paths, with everything else flowing into `runner_args`
+/// in original order. Each step operates on what the previous step
+/// left behind, so a flag consumed early can never collide with a
+/// later one.
 ///
 /// # Errors
 ///
@@ -182,13 +238,15 @@ where
 {
     let (include_packages, after_packages) = parse_package_filters(args)?;
     let (exclude_packages, after_excludes) = parse_exclude_filters(&after_packages)?;
-    let (include_paths, runner_args) = split_path_args(&after_excludes, is_dir);
+    let (no_run, after_no_run) = parse_no_run_flag(&after_excludes);
+    let (include_paths, runner_args) = split_path_args(&after_no_run, is_dir);
     Ok(ParsedTestArgs {
         filters: PlanFilters {
             exclude_packages,
             include_packages,
             include_paths,
         },
+        no_run,
         runner_args,
     })
 }

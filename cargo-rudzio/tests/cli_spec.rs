@@ -12,7 +12,10 @@
 
 use std::path::Path;
 
-use cargo_rudzio::cli::{parse_exclude_filters, parse_package_filters, parse_test_args};
+use cargo_rudzio::cli::{
+    aggregator_cargo_args, parse_exclude_filters, parse_no_run_flag, parse_package_filters,
+    parse_test_args,
+};
 use rudzio::common::context::Suite;
 use rudzio::runtime::tokio::Multithread;
 
@@ -20,7 +23,10 @@ use rudzio::runtime::tokio::Multithread;
     (runtime = Multithread::new, suite = Suite, test = Test),
 ])]
 mod tests {
-    use super::{Path, parse_exclude_filters, parse_package_filters, parse_test_args};
+    use super::{
+        Path, aggregator_cargo_args, parse_exclude_filters, parse_no_run_flag,
+        parse_package_filters, parse_test_args,
+    };
 
     /// Convenience: build a `Vec<String>` from a slice of `&str` in
     /// one expression so the test bodies stay readable.
@@ -380,6 +386,142 @@ mod tests {
         anyhow::ensure!(
             err.to_string().contains("requires a package name"),
             "got {err}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn no_run_flag_absent_returns_false_and_unchanged_args() -> anyhow::Result<()> {
+        let input = argv(&["my_filter", "--skip", "slow_"]);
+        let (no_run, remaining) = parse_no_run_flag(&input);
+        anyhow::ensure!(!no_run, "expected no_run = false");
+        anyhow::ensure!(remaining == input, "expected args untouched, got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn no_run_flag_is_consumed_when_present() -> anyhow::Result<()> {
+        let input = argv(&["--no-run"]);
+        let (no_run, remaining) = parse_no_run_flag(&input);
+        anyhow::ensure!(no_run, "expected no_run = true");
+        anyhow::ensure!(remaining.is_empty(), "expected empty remaining, got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn no_run_flag_consumed_among_other_args_preserves_order() -> anyhow::Result<()> {
+        let input = argv(&["my_filter", "--no-run", "--skip", "slow_"]);
+        let (no_run, remaining) = parse_no_run_flag(&input);
+        anyhow::ensure!(no_run, "expected no_run = true");
+        anyhow::ensure!(
+            remaining == argv(&["my_filter", "--skip", "slow_"]),
+            "got {remaining:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn no_run_flag_repeated_still_means_true() -> anyhow::Result<()> {
+        let input = argv(&["--no-run", "--no-run"]);
+        let (no_run, remaining) = parse_no_run_flag(&input);
+        anyhow::ensure!(no_run, "expected no_run = true");
+        anyhow::ensure!(remaining.is_empty(), "expected both consumed, got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn parse_test_args_no_run_default_false() -> anyhow::Result<()> {
+        let parsed = parse_test_args(&argv(&[]), no_dirs)?;
+        anyhow::ensure!(!parsed.no_run, "expected default false");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn parse_test_args_no_run_extracted_into_struct() -> anyhow::Result<()> {
+        let parsed = parse_test_args(&argv(&["--no-run", "my_filter"]), no_dirs)?;
+        anyhow::ensure!(parsed.no_run, "expected no_run = true");
+        anyhow::ensure!(
+            parsed.runner_args == vec!["my_filter".to_owned()],
+            "got {:?}",
+            parsed.runner_args,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn aggregator_cargo_args_default_uses_run_subcommand() -> anyhow::Result<()> {
+        let parsed = parse_test_args(&argv(&["my_filter"]), no_dirs)?;
+        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
+        anyhow::ensure!(
+            invocation
+                == vec![
+                    "run".to_owned(),
+                    "--manifest-path".to_owned(),
+                    "/tmp/Cargo.toml".to_owned(),
+                    "--".to_owned(),
+                    "my_filter".to_owned(),
+                ],
+            "got {invocation:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn aggregator_cargo_args_no_run_swaps_to_build_subcommand() -> anyhow::Result<()> {
+        let parsed = parse_test_args(&argv(&["--no-run"]), no_dirs)?;
+        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
+        anyhow::ensure!(
+            invocation
+                == vec![
+                    "build".to_owned(),
+                    "--manifest-path".to_owned(),
+                    "/tmp/Cargo.toml".to_owned(),
+                    "--message-format=json-render-diagnostics".to_owned(),
+                ],
+            "got {invocation:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn aggregator_cargo_args_no_run_drops_runner_args() -> anyhow::Result<()> {
+        let parsed = parse_test_args(&argv(&["--no-run", "would_be_filter"]), no_dirs)?;
+        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
+        anyhow::ensure!(
+            !invocation.contains(&"--".to_owned()),
+            "build path must not include `--` separator, got {invocation:?}",
+        );
+        anyhow::ensure!(
+            !invocation.contains(&"would_be_filter".to_owned()),
+            "build path must not forward runner args, got {invocation:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn aggregator_cargo_args_default_forwards_runner_args_after_separator()
+    -> anyhow::Result<()> {
+        let parsed = parse_test_args(
+            &argv(&["my_filter", "--skip", "slow_", "--output=plain"]),
+            no_dirs,
+        )?;
+        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
+        let separator_index = invocation
+            .iter()
+            .position(|arg| arg == "--")
+            .ok_or_else(|| anyhow::anyhow!("expected `--` separator in {invocation:?}"))?;
+        let after_separator: &[String] = invocation
+            .get(separator_index.saturating_add(1_usize)..)
+            .unwrap_or(&[]);
+        anyhow::ensure!(
+            after_separator
+                == [
+                    "my_filter".to_owned(),
+                    "--skip".to_owned(),
+                    "slow_".to_owned(),
+                    "--output=plain".to_owned(),
+                ],
+            "got {after_separator:?}",
         );
         Ok(())
     }
