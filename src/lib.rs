@@ -20,7 +20,10 @@ pub mod token;
 pub use bench::{Report, Strategy};
 #[doc(hidden)]
 pub use bridge_meta::{__BRIDGE_OBSERVED_MANIFEST_DIR, __BRIDGE_PROC_MACRO_OBSERVED_MANIFEST_DIR};
-pub use config::{BenchMode, CargoMeta, ColorMode, Config, Format, OutputMode, RunIgnoredMode};
+pub use config::{
+    BenchMode, CargoMeta, ColorMode, Config, EnsureTimeConfig, EnsureTimeViolation, Format,
+    OutputMode, RunIgnoredMode,
+};
 pub use context::{Suite, Test};
 pub use futures_util;
 #[doc(hidden)]

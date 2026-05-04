@@ -385,6 +385,15 @@ pub struct Config {
     /// Snapshot of every environment variable at runner start. `BTreeMap`
     /// so iteration order is deterministic across runs.
     pub env: BTreeMap<String, String>,
+    /// `--ensure-time` (libtest compat). `Some` when the user passed
+    /// the flag, carrying the resolved warn/critical thresholds. Tests
+    /// that exceed `critical` are treated as failures (counted in
+    /// [`crate::TestSummary::ensure_time_exceeded`] and propagated to
+    /// the exit code). Resolution order:
+    /// `--ensure-time=<warn-ms>,<critical-ms>` literal value > the
+    /// `RUST_TEST_TIME_INTEGRATION` env var (same `<warn>,<critical>`
+    /// shape) > libtest's integration-test defaults of 500ms / 1000ms.
+    pub ensure_time: Option<EnsureTimeConfig>,
     /// `--exact` (libtest compat): when `true`, the positional [`Self::filter`]
     /// and every [`Self::skip_filters`] entry are interpreted as exact
     /// equality matches against the test's qualified name rather than
@@ -519,6 +528,69 @@ pub struct Config {
     pub unparsed: Vec<String>,
 }
 
+/// Resolved warn/critical thresholds for `--ensure-time`.
+///
+/// Mirrors libtest's tiered timing gate: a test that runs longer than
+/// `warn` is logged but not failed; one that exceeds `critical` is
+/// counted as a failure and bumps the run's exit code. Both come from
+/// `--ensure-time=<warn-ms>,<critical-ms>` if explicit, otherwise from
+/// `RUST_TEST_TIME_INTEGRATION` (libtest's integration-test slot, the
+/// closest analogue to a rudzio aggregator binary), otherwise libtest's
+/// 500/1000 ms integration defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct EnsureTimeConfig {
+    /// Soft threshold — exceeded tests get a stderr warning but stay
+    /// passing.
+    pub warn: Duration,
+    /// Hard threshold — exceeded tests are reported as failures and
+    /// flip the run's exit code.
+    pub critical: Duration,
+}
+
+impl EnsureTimeConfig {
+    /// Libtest's integration-test defaults: 500ms warn, 1000ms critical.
+    /// Used when `--ensure-time` is bare and no env override is set.
+    #[inline]
+    #[must_use]
+    pub const fn integration_defaults() -> Self {
+        Self {
+            warn: Duration::from_millis(500),
+            critical: Duration::from_millis(1000),
+        }
+    }
+
+    /// Classify `elapsed` against the configured thresholds.
+    ///
+    /// `None` → under `warn` (no violation).
+    /// `Some(Warn)` → reached `warn` but under `critical` (advisory).
+    /// `Some(Critical)` → reached `critical` (counts as a failure).
+    #[inline]
+    #[must_use]
+    pub const fn violation(&self, elapsed: Duration) -> Option<EnsureTimeViolation> {
+        if elapsed.as_nanos() >= self.critical.as_nanos() {
+            Some(EnsureTimeViolation::Critical)
+        } else if elapsed.as_nanos() >= self.warn.as_nanos() {
+            Some(EnsureTimeViolation::Warn)
+        } else {
+            None
+        }
+    }
+}
+
+/// Classification of a test's elapsed time against an
+/// [`EnsureTimeConfig`]'s thresholds. `Warn` is advisory (the test still
+/// passes); `Critical` flips the run's exit code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum EnsureTimeViolation {
+    /// Elapsed reached the `critical` threshold; counts as a failure.
+    Critical,
+    /// Elapsed reached the `warn` threshold but stayed under `critical`;
+    /// surfaced on stderr without flipping the exit code.
+    Warn,
+}
+
 /// Output rendering style.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -528,6 +600,22 @@ pub enum Format {
     Pretty,
     /// One character per test (`.`/`F`/`c`/`i`) on a single line.
     Terse,
+}
+
+/// Parser-stage state for `--ensure-time`.
+///
+/// `Default` defers warn/critical resolution to env + libtest defaults;
+/// `Explicit(warn, critical)` captures the inline `=<warn-ms>,<critical-ms>`
+/// values so the env var is bypassed. Kept separate from
+/// [`EnsureTimeConfig`] so the parser doesn't need to read the env
+/// snapshot — that's a `Config::from_argv_and_env` responsibility.
+#[derive(Debug, Clone, Copy)]
+enum EnsureTimeArg {
+    /// Bare `--ensure-time` (or unparsable inline value). Resolution
+    /// continues with `RUST_TEST_TIME_INTEGRATION` then defaults.
+    Default,
+    /// `--ensure-time=<warn-ms>,<critical-ms>` parsed cleanly.
+    Explicit { warn: Duration, critical: Duration },
 }
 
 /// Resolution outcome for `--threads-parallel-hardlimit=<value>`.
@@ -607,6 +695,13 @@ struct ParsedArgs {
     /// In-flight test cap from `--concurrency-limit=<N>`. `None` means the
     /// flag was absent — `Config` defaults this to `threads` at resolution.
     concurrency_limit: Option<usize>,
+    /// `--ensure-time` (libtest compat). `Some(EnsureTimeArg::Default)`
+    /// when the user passed the bare flag (defer env+default resolution
+    /// to `Config::from_argv_and_env`); `Some(EnsureTimeArg::Explicit)`
+    /// when an inline `--ensure-time=<warn,critical>` value was parsed
+    /// (env is ignored). Garbage values fall back to `Default` so the
+    /// flag still has effect (matches libtest's lenient parse).
+    ensure_time: Option<EnsureTimeArg>,
     /// `--exact` (libtest compat): switches `filter` and `skip_filters`
     /// from substring matching to exact-equality matching.
     exact_match: bool,
@@ -732,6 +827,7 @@ impl Config {
             color: parsed.color,
             compat_consumed: parsed.compat_consumed,
             concurrency_limit: resolved_concurrency_limit,
+            ensure_time: resolve_ensure_time(parsed.ensure_time, &env),
             env,
             exact_match: parsed.exact_match,
             filter: parsed.filter,
@@ -789,6 +885,52 @@ impl OutputMode {
             Self::Live
         } else {
             Self::Plain
+        }
+    }
+}
+
+/// Parse a `--ensure-time=<warn-ms>,<critical-ms>` value into thresholds.
+///
+/// Returns `None` for any malformed input — the caller falls back to
+/// [`EnsureTimeArg::Default`] in that case so the flag still has effect
+/// (matches libtest's lenient parse: a garbage `--ensure-time=foo` is
+/// equivalent to a bare `--ensure-time`). Both halves must be unsigned
+/// millisecond counts; pure-integer parse, no fractional ms.
+fn parse_ensure_time_pair(text: &str) -> Option<EnsureTimeArg> {
+    let (warn_text, critical_text) = text.split_once(',')?;
+    let warn_ms: u64 = warn_text.parse().ok()?;
+    let critical_ms: u64 = critical_text.parse().ok()?;
+    Some(EnsureTimeArg::Explicit {
+        warn: Duration::from_millis(warn_ms),
+        critical: Duration::from_millis(critical_ms),
+    })
+}
+
+/// Resolve `--ensure-time` to concrete warn/critical thresholds.
+///
+/// Resolution order (mirrors libtest):
+/// 1. Inline `--ensure-time=<warn>,<critical>` value, if cleanly
+///    parsed (`EnsureTimeArg::Explicit`).
+/// 2. `RUST_TEST_TIME_INTEGRATION` env var with the same `<warn>,<critical>`
+///    millisecond shape.
+/// 3. [`EnsureTimeConfig::integration_defaults`] (500ms / 1000ms).
+fn resolve_ensure_time(
+    arg: Option<EnsureTimeArg>,
+    env: &BTreeMap<String, String>,
+) -> Option<EnsureTimeConfig> {
+    let arg = arg?;
+    match arg {
+        EnsureTimeArg::Explicit { warn, critical } => Some(EnsureTimeConfig { warn, critical }),
+        EnsureTimeArg::Default => {
+            let env_value = env
+                .get("RUST_TEST_TIME_INTEGRATION")
+                .and_then(|raw| parse_ensure_time_pair(raw));
+            match env_value {
+                Some(EnsureTimeArg::Explicit { warn, critical }) => {
+                    Some(EnsureTimeConfig { warn, critical })
+                }
+                _ => Some(EnsureTimeConfig::integration_defaults()),
+            }
         }
     }
 }
@@ -992,15 +1134,20 @@ fn handle_presentation_flag(
         state.compat_consumed.push(arg.to_owned());
         return true;
     }
-    // `--ensure-time [WARN[,CRIT]]` is libtest's soft/hard wall-clock
-    // budget. Rudzio's per-test budget lives on `--test-timeout`
-    // (cancels and reports timeout, not just print); the libtest soft
-    // warning tier has no rudzio equivalent. Accept and discard rather
-    // than letting it surface as an unknown flag. Libtest only spells
-    // this flag in the `=value` form (or bare) — never as a separate
-    // value arg — so we don't peek at the next argv entry here.
-    if arg == "--ensure-time" || arg.starts_with("--ensure-time=") {
-        state.compat_consumed.push(arg.to_owned());
+    // `--ensure-time [=<WARN-MS>,<CRIT-MS>]` is libtest's tiered
+    // wall-clock gate: tests over `warn` log a notice; tests over
+    // `critical` are counted as failures (and bump the exit code).
+    // Bare form defers warn/critical to `RUST_TEST_TIME_INTEGRATION`
+    // (then libtest's 500/1000 ms integration defaults). Inline value
+    // bypasses the env. Libtest only spells this flag in the `=value`
+    // form (or bare) — never as a separate value arg — so we don't peek
+    // at the next argv entry here.
+    if arg == "--ensure-time" {
+        state.ensure_time = Some(EnsureTimeArg::Default);
+        return true;
+    }
+    if let Some(value) = arg.strip_prefix("--ensure-time=") {
+        state.ensure_time = Some(parse_ensure_time_pair(value).unwrap_or(EnsureTimeArg::Default));
         return true;
     }
     if let Some(value) = flag_value(arg, "--shuffle-seed", "--shuffle-seed=", argv, i) {

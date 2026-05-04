@@ -32,8 +32,8 @@ use rudzio::runtime::{compio, embassy};
 use rudzio::suite::SummaryOutcomes;
 use rudzio::test_case::{BoxError, box_error};
 use rudzio::{
-    BenchMode, Config, Format, RunIgnoredMode, SuiteSummary, TestSummary, normalize_module_path,
-    qualified_test_name, token_passes_filters,
+    BenchMode, Config, EnsureTimeConfig, EnsureTimeViolation, Format, RunIgnoredMode, SuiteSummary,
+    TestSummary, normalize_module_path, qualified_test_name, token_passes_filters,
 };
 
 /// Build a `Vec<String>` argv from string slices — the `Config`
@@ -64,8 +64,8 @@ fn env_with(rust_test_threads: Option<&str>) -> BTreeMap<String, String> {
 ])]
 mod config_parser {
     use super::{
-        BenchMode, Config, Duration, Format, NonZeroUsize, PathBuf, SuiteSummary, SummaryOutcomes,
-        Test, TestSummary, argv, env_with,
+        BenchMode, Config, Duration, EnsureTimeConfig, EnsureTimeViolation, Format, NonZeroUsize,
+        PathBuf, SuiteSummary, SummaryOutcomes, Test, TestSummary, argv, env_with,
     };
 
     // `#[rudzio::test]` accepts fns that don't take a context parameter
@@ -490,6 +490,183 @@ mod config_parser {
                 .any(|item| item.starts_with("--ensure-time")),
             "--ensure-time=… should not leak into unparsed: {:?}",
             cfg.unparsed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_absent_means_none(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg =
+            Config::from_argv_and_env(&argv(&["my_filter"]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(
+            cfg.ensure_time.is_none(),
+            "expected None, got {:?}",
+            cfg.ensure_time,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_bare_uses_libtest_integration_defaults(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--ensure-time", "my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        let thresholds = cfg
+            .ensure_time
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("expected Some, got None"))?;
+        anyhow::ensure!(
+            thresholds.warn == Duration::from_millis(500),
+            "warn = {:?}",
+            thresholds.warn,
+        );
+        anyhow::ensure!(
+            thresholds.critical == Duration::from_millis(1000),
+            "critical = {:?}",
+            thresholds.critical,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_bare_honors_rust_test_time_integration_env(_ctx: &Test) -> anyhow::Result<()> {
+        let mut env = env_with(None);
+        let _prev =
+            env.insert("RUST_TEST_TIME_INTEGRATION".to_owned(), "120,250".to_owned());
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--ensure-time", "my_filter"]),
+            env,
+            rudzio::cargo_meta!(),
+        );
+        let thresholds = cfg
+            .ensure_time
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("expected Some, got None"))?;
+        anyhow::ensure!(
+            thresholds.warn == Duration::from_millis(120),
+            "warn = {:?}",
+            thresholds.warn,
+        );
+        anyhow::ensure!(
+            thresholds.critical == Duration::from_millis(250),
+            "critical = {:?}",
+            thresholds.critical,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_explicit_value_overrides_env(_ctx: &Test) -> anyhow::Result<()> {
+        let mut env = env_with(None);
+        let _prev =
+            env.insert("RUST_TEST_TIME_INTEGRATION".to_owned(), "999,9999".to_owned());
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--ensure-time=42,84", "my_filter"]),
+            env,
+            rudzio::cargo_meta!(),
+        );
+        let thresholds = cfg
+            .ensure_time
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("expected Some, got None"))?;
+        anyhow::ensure!(
+            thresholds.warn == Duration::from_millis(42),
+            "warn = {:?}",
+            thresholds.warn,
+        );
+        anyhow::ensure!(
+            thresholds.critical == Duration::from_millis(84),
+            "critical = {:?}",
+            thresholds.critical,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_garbage_value_falls_back_to_defaults(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--ensure-time=not-a-pair", "my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        let thresholds = cfg
+            .ensure_time
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("expected Some, got None"))?;
+        anyhow::ensure!(
+            thresholds.warn == Duration::from_millis(500),
+            "warn = {:?}",
+            thresholds.warn,
+        );
+        anyhow::ensure!(
+            thresholds.critical == Duration::from_millis(1000),
+            "critical = {:?}",
+            thresholds.critical,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_violation_below_warn_returns_none(_ctx: &Test) -> anyhow::Result<()> {
+        let thresholds = EnsureTimeConfig::integration_defaults();
+        let outcome = thresholds.violation(Duration::from_millis(100));
+        anyhow::ensure!(
+            outcome.is_none(),
+            "elapsed below warn must return None, got {outcome:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_violation_at_warn_returns_warn(_ctx: &Test) -> anyhow::Result<()> {
+        let thresholds = EnsureTimeConfig::integration_defaults();
+        let outcome = thresholds.violation(Duration::from_millis(500));
+        anyhow::ensure!(
+            matches!(outcome, Some(EnsureTimeViolation::Warn)),
+            "elapsed at warn threshold must return Warn, got {outcome:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_violation_at_critical_returns_critical(_ctx: &Test) -> anyhow::Result<()> {
+        let thresholds = EnsureTimeConfig::integration_defaults();
+        let outcome = thresholds.violation(Duration::from_millis(1000));
+        anyhow::ensure!(
+            matches!(outcome, Some(EnsureTimeViolation::Critical)),
+            "elapsed at critical threshold must return Critical, got {outcome:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_violation_well_above_critical_returns_critical(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
+        let thresholds = EnsureTimeConfig::integration_defaults();
+        let outcome = thresholds.violation(Duration::from_secs(60));
+        anyhow::ensure!(
+            matches!(outcome, Some(EnsureTimeViolation::Critical)),
+            "elapsed well above critical must return Critical, got {outcome:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_no_longer_recorded_in_compat_consumed(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--ensure-time", "my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            !cfg.compat_consumed
+                .iter()
+                .any(|item| item.starts_with("--ensure-time")),
+            "ensure-time has real semantics now; should not be in compat_consumed: {:?}",
+            cfg.compat_consumed,
         );
         Ok(())
     }
@@ -1116,6 +1293,56 @@ mod config_parser {
             merged.hung == 6,
             "TestSummary::merge must sum hung counters, got {}",
             merged.hung
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn test_summary_is_success_false_when_ensure_time_exceeded_gt_zero(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
+        let mut summary = TestSummary::zero();
+        summary.passed = 5;
+        summary.ensure_time_exceeded = 1;
+        summary.total = 5;
+        anyhow::ensure!(
+            !summary.is_success(),
+            "is_success must return false when ensure_time_exceeded > 0",
+        );
+        anyhow::ensure!(
+            summary.exit_code() == 1_i32,
+            "exit_code must be 1 when ensure_time_exceeded > 0, got {}",
+            summary.exit_code(),
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn test_summary_merge_includes_ensure_time_exceeded(_ctx: &Test) -> anyhow::Result<()> {
+        let mut left = TestSummary::zero();
+        left.ensure_time_exceeded = 3;
+        left.total = 3;
+        let mut right = TestSummary::zero();
+        right.ensure_time_exceeded = 4;
+        right.total = 4;
+        let merged = left.merge(right);
+        anyhow::ensure!(
+            merged.ensure_time_exceeded == 7,
+            "TestSummary::merge must sum ensure_time_exceeded counters, got {}",
+            merged.ensure_time_exceeded,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn test_summary_zero_initialises_ensure_time_exceeded_to_zero(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
+        let zero = TestSummary::zero();
+        anyhow::ensure!(
+            zero.ensure_time_exceeded == 0,
+            "zero() must give ensure_time_exceeded=0, got {}",
+            zero.ensure_time_exceeded,
         );
         Ok(())
     }

@@ -15,7 +15,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 
 use crate::common::time::fmt_duration;
-use crate::config::{CargoMeta, ColorMode, Config, Format, OutputMode, RunIgnoredMode, USAGE};
+use crate::config::{
+    CargoMeta, ColorMode, Config, EnsureTimeConfig, EnsureTimeViolation, Format, OutputMode,
+    RunIgnoredMode, USAGE,
+};
 use crate::output;
 use crate::output::events::LifecycleEvent;
 use crate::output::logfile::LogfileWriter;
@@ -73,6 +76,18 @@ struct FailureInfo {
 ///   `report_outcome` is a no-op because the macro-generated
 ///   dispatch already emits `TestCompleted` with the full outcome.
 struct ModeReporter {
+    /// Resolved `--ensure-time` thresholds (libtest compat). `None` when
+    /// the flag wasn't passed; otherwise [`Self::report_outcome`]
+    /// classifies each `TestOutcome::Passed`'s elapsed time and emits a
+    /// stderr notice for `Warn` / `Critical` violations.
+    ensure_time: Option<EnsureTimeConfig>,
+    /// Count of `TestOutcome::Passed` elapses that hit
+    /// [`EnsureTimeViolation::Critical`]. Per-test
+    /// [`Self::report_outcome`] runs without the per-thread
+    /// `SuiteSummary` in scope, so the runner folds this atomic into
+    /// the grand-total `TestSummary.ensure_time_exceeded` after
+    /// dispatch — same pattern as `test_teardown_failures` below.
+    ensure_time_exceeded: AtomicUsize,
     /// Libtest `--logfile <PATH>` sink. Disabled (no-op) when the user
     /// did not pass the flag or the file failed to open.
     logfile: LogfileWriter,
@@ -138,6 +153,11 @@ enum StatusLabel {
 pub struct TestSummary {
     /// Tests cancelled before completion.
     pub cancelled: usize,
+    /// Tests whose elapsed time reached the `--ensure-time` critical
+    /// threshold. Counted as failures for [`is_success`] so the run
+    /// exits non-zero whenever any test was slower than the configured
+    /// hard limit.
+    pub ensure_time_exceeded: usize,
     /// Tests that failed via assertion or returned `Err`.
     pub failed: usize,
     /// Tests escalated from `TimedOut` to `Hung` because they ignored
@@ -171,6 +191,8 @@ impl ModeReporter {
         let logfile = LogfileWriter::open(config.logfile.as_deref());
         match config.output_mode {
             OutputMode::Plain => Self {
+                ensure_time: config.ensure_time,
+                ensure_time_exceeded: AtomicUsize::new(0),
                 logfile,
                 plain: Some(PlainState {
                     failures: Mutex::new(Vec::new()),
@@ -180,6 +202,8 @@ impl ModeReporter {
                 test_teardown_failures: AtomicUsize::new(0),
             },
             OutputMode::Live => Self {
+                ensure_time: config.ensure_time,
+                ensure_time_exceeded: AtomicUsize::new(0),
                 logfile,
                 plain: None,
                 test_teardown_failures: AtomicUsize::new(0),
@@ -306,6 +330,16 @@ impl SuiteReporter for ModeReporter {
             let qualified = qualified_test_name(token.module_path, token.name);
             self.logfile
                 .write_line(Self::logfile_status_for(&outcome), &qualified);
+        }
+        if let (Some(thresholds), TestOutcome::Passed { elapsed }) = (self.ensure_time, &outcome)
+            && let Some(level) = thresholds.violation(*elapsed)
+        {
+            let qualified = qualified_test_name(token.module_path, token.name);
+            let notice = format_ensure_time_notice(&qualified, *elapsed, level, &thresholds);
+            write_stderr(&format!("{notice}\n"));
+            if matches!(level, EnsureTimeViolation::Critical) {
+                let _prev = self.ensure_time_exceeded.fetch_add(1, Ordering::Relaxed);
+            }
         }
         let Some(plain) = &self.plain else {
             // Live mode: macro-generated dispatch already emitted
@@ -676,6 +710,7 @@ impl TestSummary {
             && self.panicked == 0
             && self.cancelled == 0
             && self.teardown_failures == 0
+            && self.ensure_time_exceeded == 0
     }
 
     #[inline]
@@ -683,6 +718,9 @@ impl TestSummary {
     pub const fn merge(self, other: Self) -> Self {
         Self {
             cancelled: self.cancelled.saturating_add(other.cancelled),
+            ensure_time_exceeded: self
+                .ensure_time_exceeded
+                .saturating_add(other.ensure_time_exceeded),
             failed: self.failed.saturating_add(other.failed),
             hung: self.hung.saturating_add(other.hung),
             ignored: self.ignored.saturating_add(other.ignored),
@@ -701,6 +739,7 @@ impl TestSummary {
     pub const fn zero() -> Self {
         Self {
             cancelled: 0,
+            ensure_time_exceeded: 0,
             failed: 0,
             hung: 0,
             ignored: 0,
@@ -718,6 +757,7 @@ impl From<SuiteSummary> for TestSummary {
     fn from(summary: SuiteSummary) -> Self {
         Self {
             cancelled: summary.cancelled,
+            ensure_time_exceeded: 0,
             failed: summary.failed,
             hung: summary.hung,
             ignored: summary.ignored,
@@ -775,6 +815,26 @@ fn enable_full_backtrace_default() {
 /// short `1.23s`-style representation.
 fn format_elapsed(elapsed: Duration) -> String {
     fmt_duration(elapsed)
+}
+
+/// Format the libtest-shape stderr notice for a `--ensure-time`
+/// violation. Pure helper so the message wording is testable without
+/// driving the whole reporter.
+fn format_ensure_time_notice(
+    qualified: &str,
+    elapsed: Duration,
+    level: EnsureTimeViolation,
+    thresholds: &EnsureTimeConfig,
+) -> String {
+    let (label, threshold) = match level {
+        EnsureTimeViolation::Critical => ("critical", thresholds.critical),
+        EnsureTimeViolation::Warn => ("warn", thresholds.warn),
+    };
+    format!(
+        "note: ensure-time {label}: test {qualified} took {elapsed}, exceeds threshold {threshold}",
+        elapsed = fmt_duration(elapsed),
+        threshold = fmt_duration(threshold),
+    )
 }
 
 /// Print a one-shot stderr notice listing every CLI argument the rudzio
@@ -1365,6 +1425,7 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
     // the reporter's atomic counter in here.
     let grand_total = total.merge(TestSummary {
         teardown_failures: reporter.test_teardown_failures.load(Ordering::Relaxed),
+        ensure_time_exceeded: reporter.ensure_time_exceeded.load(Ordering::Relaxed),
         ..TestSummary::zero()
     });
 
