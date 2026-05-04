@@ -1165,6 +1165,34 @@ mod tests {
     }
 
     #[rudzio::test]
+    async fn build_forwarder_dash_z_missing_value_errors() -> anyhow::Result<()> {
+        let Err(err) = parse_build_forwarder_flags(&argv(&["-Z"])) else {
+            anyhow::bail!("expected error for trailing -Z");
+        };
+        anyhow::ensure!(
+            err.to_string().contains("-Z"),
+            "error should mention the flag, got {err}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_dash_z_threaded_among_other_flags() -> anyhow::Result<()> {
+        let (forwarded, remaining) = parse_build_forwarder_flags(&argv(&[
+            "--release",
+            "-Z",
+            "unstable-options",
+            "my_filter",
+        ]))?;
+        anyhow::ensure!(
+            forwarded == argv(&["--release", "-Z", "unstable-options"]),
+            "got {forwarded:?}",
+        );
+        anyhow::ensure!(remaining == argv(&["my_filter"]), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
     async fn build_forwarder_value_flag_without_value_errors() -> anyhow::Result<()> {
         let Err(err) = parse_build_forwarder_flags(&argv(&["--features"])) else {
             anyhow::bail!("expected error for trailing --features");
