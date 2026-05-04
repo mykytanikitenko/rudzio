@@ -14,8 +14,8 @@ use std::path::Path;
 
 use cargo_rudzio::cli::{
     aggregator_cargo_args, format_target_flag_warning, parse_build_forwarder_flags,
-    parse_capture_flags, parse_exclude_filters, parse_no_run_flag, parse_package_filters,
-    parse_target_selection_flags, parse_test_args, parse_workspace_flag,
+    parse_capture_flags, parse_exclude_filters, parse_manifest_path_flag, parse_no_run_flag,
+    parse_package_filters, parse_target_selection_flags, parse_test_args, parse_workspace_flag,
 };
 use rudzio::common::context::Suite;
 use rudzio::runtime::tokio::Multithread;
@@ -26,8 +26,8 @@ use rudzio::runtime::tokio::Multithread;
 mod tests {
     use super::{
         Path, aggregator_cargo_args, format_target_flag_warning, parse_build_forwarder_flags,
-        parse_capture_flags, parse_exclude_filters, parse_no_run_flag, parse_package_filters,
-        parse_target_selection_flags, parse_test_args, parse_workspace_flag,
+        parse_capture_flags, parse_exclude_filters, parse_manifest_path_flag, parse_no_run_flag,
+        parse_package_filters, parse_target_selection_flags, parse_test_args, parse_workspace_flag,
     };
 
     /// Convenience: build a `Vec<String>` from a slice of `&str` in
@@ -1215,6 +1215,109 @@ mod tests {
         anyhow::ensure!(
             !invocation.contains(&"--message-format=json-render-diagnostics".to_owned()),
             "auto-injection should be skipped when user supplied --message-format, got {invocation:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn manifest_path_absent_returns_none_and_unchanged_args() -> anyhow::Result<()> {
+        let input = argv(&["my_filter", "--skip", "slow_"]);
+        let (manifest, remaining) = parse_manifest_path_flag(&input)?;
+        anyhow::ensure!(manifest.is_none(), "got {manifest:?}");
+        anyhow::ensure!(remaining == input, "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn manifest_path_space_form_consumed() -> anyhow::Result<()> {
+        let input = argv(&["--manifest-path", "/path/to/Cargo.toml", "my_filter"]);
+        let (manifest, remaining) = parse_manifest_path_flag(&input)?;
+        anyhow::ensure!(
+            manifest == Some(Path::new("/path/to/Cargo.toml").to_path_buf()),
+            "got {manifest:?}",
+        );
+        anyhow::ensure!(remaining == argv(&["my_filter"]), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn manifest_path_equals_form_consumed() -> anyhow::Result<()> {
+        let input = argv(&["--manifest-path=/path/to/Cargo.toml", "my_filter"]);
+        let (manifest, remaining) = parse_manifest_path_flag(&input)?;
+        anyhow::ensure!(
+            manifest == Some(Path::new("/path/to/Cargo.toml").to_path_buf()),
+            "got {manifest:?}",
+        );
+        anyhow::ensure!(remaining == argv(&["my_filter"]), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn manifest_path_last_wins_when_repeated() -> anyhow::Result<()> {
+        let input = argv(&[
+            "--manifest-path=/first",
+            "--manifest-path",
+            "/second",
+        ]);
+        let (manifest, remaining) = parse_manifest_path_flag(&input)?;
+        anyhow::ensure!(
+            manifest == Some(Path::new("/second").to_path_buf()),
+            "expected last-wins, got {manifest:?}",
+        );
+        anyhow::ensure!(remaining.is_empty(), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn manifest_path_without_value_errors() -> anyhow::Result<()> {
+        let Err(err) = parse_manifest_path_flag(&argv(&["--manifest-path"])) else {
+            anyhow::bail!("expected error for trailing --manifest-path");
+        };
+        anyhow::ensure!(
+            err.to_string().contains("requires a path"),
+            "got {err}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn manifest_path_empty_equals_errors() -> anyhow::Result<()> {
+        let Err(err) = parse_manifest_path_flag(&argv(&["--manifest-path="])) else {
+            anyhow::bail!("expected error for empty --manifest-path=");
+        };
+        anyhow::ensure!(
+            err.to_string().contains("non-empty path"),
+            "got {err}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn parse_test_args_records_manifest_path_in_struct() -> anyhow::Result<()> {
+        let parsed = parse_test_args(
+            &argv(&["--manifest-path", "/path/Cargo.toml", "my_filter"]),
+            no_dirs,
+        )?;
+        anyhow::ensure!(
+            parsed.manifest_path == Some(Path::new("/path/Cargo.toml").to_path_buf()),
+            "got {:?}",
+            parsed.manifest_path,
+        );
+        anyhow::ensure!(
+            parsed.runner_args == vec!["my_filter".to_owned()],
+            "got {:?}",
+            parsed.runner_args,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn parse_test_args_manifest_path_default_none() -> anyhow::Result<()> {
+        let parsed = parse_test_args(&argv(&[]), no_dirs)?;
+        anyhow::ensure!(
+            parsed.manifest_path.is_none(),
+            "got {:?}",
+            parsed.manifest_path,
         );
         Ok(())
     }

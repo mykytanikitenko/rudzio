@@ -50,6 +50,11 @@ COMMANDS:
                                          at-or-under that path. Repeatable.
 
                                      CARGO-COMPAT FLAGS consumed locally:
+                                       --manifest-path <PATH>  point
+                                         cargo-rudzio at a workspace
+                                         other than the current
+                                         directory's. Repeated use is
+                                         last-wins (mirrors cargo).
                                        --no-run  build the aggregator
                                          binary but skip running it. Cargo
                                          build output is in
@@ -191,7 +196,10 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
     if let Some(warning) = format_target_flag_warning(&parsed.ignored_target_flags) {
         write_stderr(&format!("warning: {warning}\n"));
     }
-    let mut plan = generate::plan_from_cwd()?;
+    let mut plan = match parsed.manifest_path.as_deref() {
+        Some(manifest) => generate::plan_from_manifest(manifest)?,
+        None => generate::plan_from_cwd()?,
+    };
     if !parsed.filters.include_paths.is_empty() {
         plan.restrict_to_paths(&parsed.filters.include_paths)?;
     }

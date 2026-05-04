@@ -2911,3 +2911,27 @@ pub fn plan_from_cwd() -> Result<Plan> {
         .context("failed to run `cargo metadata --no-deps` from the current directory")?;
     build_plan(&metadata)
 }
+
+/// Build a `Plan` by querying `cargo metadata --manifest-path PATH`.
+///
+/// Used when the user invokes `cargo rudzio test --manifest-path PATH`
+/// to operate on a workspace other than the current directory's.
+///
+/// # Errors
+///
+/// Returns an error when `cargo metadata` fails or when reconciling
+/// member metadata into a `Plan` fails.
+#[inline]
+pub fn plan_from_manifest(manifest_path: &Path) -> Result<Plan> {
+    let metadata = MetadataCommand::new()
+        .manifest_path(manifest_path)
+        .no_deps()
+        .exec()
+        .with_context(|| {
+            format!(
+                "failed to run `cargo metadata --no-deps --manifest-path {}`",
+                manifest_path.display(),
+            )
+        })?;
+    build_plan(&metadata)
+}

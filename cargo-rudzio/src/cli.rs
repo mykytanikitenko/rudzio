@@ -65,6 +65,10 @@ pub struct ParsedTestArgs {
     /// listing these so the user knows their flag was a no-op rather
     /// than silently honoured.
     pub ignored_target_flags: Vec<String>,
+    /// `--manifest-path PATH` if the user pointed cargo-rudzio at a
+    /// workspace other than CWD. `None` means "use CWD". Repeated
+    /// occurrences resolve last-wins, mirroring cargo's own behaviour.
+    pub manifest_path: Option<PathBuf>,
     /// `--no-run` was passed: build the aggregator binary but skip
     /// running it (mirrors `cargo test --no-run`).
     pub no_run: bool,
@@ -81,6 +85,7 @@ impl ParsedTestArgs {
             filters: PlanFilters::empty(),
             forwarded_cargo_args: Vec::new(),
             ignored_target_flags: Vec::new(),
+            manifest_path: None,
             no_run: false,
             runner_args: Vec::new(),
         }
@@ -306,6 +311,44 @@ pub fn parse_capture_flags(args: &[String]) -> Vec<String> {
     remaining
 }
 
+/// Pull `--manifest-path <PATH>` / `--manifest-path=<PATH>` out of `args`.
+///
+/// Lets `cargo rudzio test` operate on a workspace other than CWD.
+/// Returns the resolved path (or `None` if the flag was absent) and
+/// the args list with the flag entries removed. Repeated flags
+/// resolve last-wins, mirroring cargo's own semantics.
+///
+/// # Errors
+///
+/// Returns an error when `--manifest-path` is the last arg with no
+/// following value, or when the equals form supplies an empty path.
+#[inline]
+pub fn parse_manifest_path_flag(args: &[String]) -> Result<(Option<PathBuf>, Vec<String>)> {
+    let mut manifest: Option<PathBuf> = None;
+    let mut remaining = Vec::new();
+    let mut idx = 0_usize;
+    while let Some(arg) = args.get(idx) {
+        if arg == "--manifest-path" {
+            let next_idx = idx.saturating_add(1_usize);
+            let value = args
+                .get(next_idx)
+                .ok_or_else(|| anyhow::anyhow!("`{arg}` requires a path"))?;
+            manifest = Some(PathBuf::from(value));
+            idx = next_idx.saturating_add(1_usize);
+        } else if let Some(value) = arg.strip_prefix("--manifest-path=") {
+            if value.is_empty() {
+                bail!("`--manifest-path=` requires a non-empty path");
+            }
+            manifest = Some(PathBuf::from(value));
+            idx = idx.saturating_add(1_usize);
+        } else {
+            remaining.push(arg.clone());
+            idx = idx.saturating_add(1_usize);
+        }
+    }
+    Ok((manifest, remaining))
+}
+
 /// Drop `--no-run` from `args` and return whether it was present.
 ///
 /// Mirrors cargo test's `--no-run`: a unit flag (no value), repeatable
@@ -460,13 +503,14 @@ pub fn format_target_flag_warning(consumed: &[String]) -> Option<String> {
 /// touching disk. Production callers pass `Path::is_dir`; tests pass a
 /// closure that recognises a curated set of paths.
 ///
-/// Parser order is: `-p`/`--package` → `--exclude` → `--no-run` →
-/// `--workspace`/`--all` → `--nocapture`/`--show-output` →
-/// target-selection (`--lib`, `--bin <NAME>`, etc.) → build-graph
-/// forwarders (`--release`, `--features`, etc.) → positional paths,
-/// with everything else flowing into `runner_args` in original order.
-/// Each step operates on what the previous step left behind, so a flag
-/// consumed early can never collide with a later one.
+/// Parser order is: `--manifest-path` → `-p`/`--package` →
+/// `--exclude` → `--no-run` → `--workspace`/`--all` →
+/// `--nocapture`/`--show-output` → target-selection (`--lib`,
+/// `--bin <NAME>`, etc.) → build-graph forwarders (`--release`,
+/// `--features`, etc.) → positional paths, with everything else
+/// flowing into `runner_args` in original order. Each step operates
+/// on what the previous step left behind, so a flag consumed early
+/// can never collide with a later one.
 ///
 /// # Errors
 ///
@@ -477,7 +521,8 @@ pub fn parse_test_args<F>(args: &[String], is_dir: F) -> Result<ParsedTestArgs>
 where
     F: Fn(&Path) -> bool,
 {
-    let (include_packages, after_packages) = parse_package_filters(args)?;
+    let (manifest_path, after_manifest) = parse_manifest_path_flag(args)?;
+    let (include_packages, after_packages) = parse_package_filters(&after_manifest)?;
     let (exclude_packages, after_excludes) = parse_exclude_filters(&after_packages)?;
     let (no_run, after_no_run) = parse_no_run_flag(&after_excludes);
     let after_workspace = parse_workspace_flag(&after_no_run);
@@ -493,6 +538,7 @@ where
         },
         forwarded_cargo_args,
         ignored_target_flags,
+        manifest_path,
         no_run,
         runner_args,
     })
