@@ -13,9 +13,9 @@
 use std::path::Path;
 
 use cargo_rudzio::cli::{
-    aggregator_cargo_args, format_target_flag_warning, parse_capture_flags, parse_exclude_filters,
-    parse_no_run_flag, parse_package_filters, parse_target_selection_flags, parse_test_args,
-    parse_workspace_flag,
+    aggregator_cargo_args, format_target_flag_warning, parse_build_forwarder_flags,
+    parse_capture_flags, parse_exclude_filters, parse_no_run_flag, parse_package_filters,
+    parse_target_selection_flags, parse_test_args, parse_workspace_flag,
 };
 use rudzio::common::context::Suite;
 use rudzio::runtime::tokio::Multithread;
@@ -25,8 +25,8 @@ use rudzio::runtime::tokio::Multithread;
 ])]
 mod tests {
     use super::{
-        Path, aggregator_cargo_args, format_target_flag_warning, parse_capture_flags,
-        parse_exclude_filters, parse_no_run_flag, parse_package_filters,
+        Path, aggregator_cargo_args, format_target_flag_warning, parse_build_forwarder_flags,
+        parse_capture_flags, parse_exclude_filters, parse_no_run_flag, parse_package_filters,
         parse_target_selection_flags, parse_test_args, parse_workspace_flag,
     };
 
@@ -847,6 +847,374 @@ mod tests {
                 || warning.contains("one binary")
                 || warning.contains("ignor"),
             "warning should explain why flags were ignored, got {warning:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_absent_returns_empty_and_unchanged_args() -> anyhow::Result<()> {
+        let input = argv(&["my_filter", "--skip", "slow_"]);
+        let (forwarded, remaining) = parse_build_forwarder_flags(&input)?;
+        anyhow::ensure!(forwarded.is_empty(), "got {forwarded:?}");
+        anyhow::ensure!(remaining == input, "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_release_unit_flag() -> anyhow::Result<()> {
+        let (forwarded, remaining) = parse_build_forwarder_flags(&argv(&["--release", "f"]))?;
+        anyhow::ensure!(forwarded == argv(&["--release"]), "got {forwarded:?}");
+        anyhow::ensure!(remaining == argv(&["f"]), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_frozen_locked_offline() -> anyhow::Result<()> {
+        let (forwarded, remaining) =
+            parse_build_forwarder_flags(&argv(&["--frozen", "--locked", "--offline"]))?;
+        anyhow::ensure!(
+            forwarded == argv(&["--frozen", "--locked", "--offline"]),
+            "got {forwarded:?}",
+        );
+        anyhow::ensure!(remaining.is_empty(), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_all_features_and_no_default_features() -> anyhow::Result<()> {
+        let (forwarded, remaining) =
+            parse_build_forwarder_flags(&argv(&["--all-features", "--no-default-features"]))?;
+        anyhow::ensure!(
+            forwarded == argv(&["--all-features", "--no-default-features"]),
+            "got {forwarded:?}",
+        );
+        anyhow::ensure!(remaining.is_empty(), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_keep_going_and_ignore_rust_version() -> anyhow::Result<()> {
+        let (forwarded, remaining) =
+            parse_build_forwarder_flags(&argv(&["--keep-going", "--ignore-rust-version"]))?;
+        anyhow::ensure!(
+            forwarded == argv(&["--keep-going", "--ignore-rust-version"]),
+            "got {forwarded:?}",
+        );
+        anyhow::ensure!(remaining.is_empty(), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_quiet_short_and_long() -> anyhow::Result<()> {
+        let (forwarded_short, _) = parse_build_forwarder_flags(&argv(&["-q"]))?;
+        let (forwarded_long, _) = parse_build_forwarder_flags(&argv(&["--quiet"]))?;
+        anyhow::ensure!(forwarded_short == argv(&["-q"]), "got {forwarded_short:?}");
+        anyhow::ensure!(forwarded_long == argv(&["--quiet"]), "got {forwarded_long:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_verbose_short_long_repeatable() -> anyhow::Result<()> {
+        let (forwarded, remaining) =
+            parse_build_forwarder_flags(&argv(&["-v", "--verbose", "-v", "f"]))?;
+        anyhow::ensure!(
+            forwarded == argv(&["-v", "--verbose", "-v"]),
+            "got {forwarded:?}",
+        );
+        anyhow::ensure!(remaining == argv(&["f"]), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_unit_graph_and_future_incompat() -> anyhow::Result<()> {
+        let (forwarded, remaining) =
+            parse_build_forwarder_flags(&argv(&["--unit-graph", "--future-incompat-report"]))?;
+        anyhow::ensure!(
+            forwarded == argv(&["--unit-graph", "--future-incompat-report"]),
+            "got {forwarded:?}",
+        );
+        anyhow::ensure!(remaining.is_empty(), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_features_space_form() -> anyhow::Result<()> {
+        let (forwarded, remaining) =
+            parse_build_forwarder_flags(&argv(&["--features", "foo,bar", "f"]))?;
+        anyhow::ensure!(
+            forwarded == argv(&["--features", "foo,bar"]),
+            "got {forwarded:?}",
+        );
+        anyhow::ensure!(remaining == argv(&["f"]), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_features_equals_form_preserves_user_spelling() -> anyhow::Result<()> {
+        let (forwarded, remaining) = parse_build_forwarder_flags(&argv(&["--features=foo,bar"]))?;
+        anyhow::ensure!(forwarded == argv(&["--features=foo,bar"]), "got {forwarded:?}");
+        anyhow::ensure!(remaining.is_empty(), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_profile_and_target_dir() -> anyhow::Result<()> {
+        let (forwarded, remaining) = parse_build_forwarder_flags(&argv(&[
+            "--profile",
+            "ci",
+            "--target-dir=/tmp/td",
+        ]))?;
+        anyhow::ensure!(
+            forwarded == argv(&["--profile", "ci", "--target-dir=/tmp/td"]),
+            "got {forwarded:?}",
+        );
+        anyhow::ensure!(remaining.is_empty(), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_target_repeatable() -> anyhow::Result<()> {
+        let (forwarded, remaining) = parse_build_forwarder_flags(&argv(&[
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "--target=aarch64-apple-darwin",
+        ]))?;
+        anyhow::ensure!(
+            forwarded
+                == argv(&[
+                    "--target",
+                    "x86_64-unknown-linux-gnu",
+                    "--target=aarch64-apple-darwin",
+                ]),
+            "got {forwarded:?}",
+        );
+        anyhow::ensure!(remaining.is_empty(), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_jobs_short_and_long_both_forms() -> anyhow::Result<()> {
+        let (forwarded, remaining) = parse_build_forwarder_flags(&argv(&[
+            "-j", "8", "--jobs=4", "--jobs", "2", "-j=1",
+        ]))?;
+        anyhow::ensure!(
+            forwarded == argv(&["-j", "8", "--jobs=4", "--jobs", "2", "-j=1"]),
+            "got {forwarded:?}",
+        );
+        anyhow::ensure!(remaining.is_empty(), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_message_format_both_forms() -> anyhow::Result<()> {
+        let (forwarded, remaining) = parse_build_forwarder_flags(&argv(&[
+            "--message-format",
+            "human",
+            "--message-format=json",
+        ]))?;
+        anyhow::ensure!(
+            forwarded
+                == argv(&[
+                    "--message-format",
+                    "human",
+                    "--message-format=json",
+                ]),
+            "got {forwarded:?}",
+        );
+        anyhow::ensure!(remaining.is_empty(), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_config_repeatable() -> anyhow::Result<()> {
+        let (forwarded, remaining) = parse_build_forwarder_flags(&argv(&[
+            "--config",
+            "build.jobs=8",
+            "--config=net.git-fetch-with-cli=true",
+        ]))?;
+        anyhow::ensure!(
+            forwarded
+                == argv(&[
+                    "--config",
+                    "build.jobs=8",
+                    "--config=net.git-fetch-with-cli=true",
+                ]),
+            "got {forwarded:?}",
+        );
+        anyhow::ensure!(remaining.is_empty(), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_unstable_z_flag() -> anyhow::Result<()> {
+        let (forwarded, remaining) =
+            parse_build_forwarder_flags(&argv(&["-Z", "unstable-options", "-Z=avoid-dev-deps"]))?;
+        anyhow::ensure!(
+            forwarded == argv(&["-Z", "unstable-options", "-Z=avoid-dev-deps"]),
+            "got {forwarded:?}",
+        );
+        anyhow::ensure!(remaining.is_empty(), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_value_flag_without_value_errors() -> anyhow::Result<()> {
+        let Err(err) = parse_build_forwarder_flags(&argv(&["--features"])) else {
+            anyhow::bail!("expected error for trailing --features");
+        };
+        anyhow::ensure!(
+            err.to_string().contains("requires a value"),
+            "got {err}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_empty_equals_value_errors() -> anyhow::Result<()> {
+        let Err(err) = parse_build_forwarder_flags(&argv(&["--features="])) else {
+            anyhow::bail!("expected error for empty --features=");
+        };
+        anyhow::ensure!(
+            err.to_string().contains("non-empty value"),
+            "got {err}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn build_forwarder_mixed_with_runner_args_preserves_order() -> anyhow::Result<()> {
+        let input = argv(&[
+            "my_filter",
+            "--release",
+            "--skip",
+            "slow_",
+            "--features",
+            "ci",
+            "--output=plain",
+        ]);
+        let (forwarded, remaining) = parse_build_forwarder_flags(&input)?;
+        anyhow::ensure!(
+            forwarded == argv(&["--release", "--features", "ci"]),
+            "got {forwarded:?}",
+        );
+        anyhow::ensure!(
+            remaining == argv(&["my_filter", "--skip", "slow_", "--output=plain"]),
+            "got {remaining:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn parse_test_args_records_forwarded_cargo_args() -> anyhow::Result<()> {
+        let parsed = parse_test_args(
+            &argv(&["--release", "--features", "ci", "my_filter"]),
+            no_dirs,
+        )?;
+        anyhow::ensure!(
+            parsed.forwarded_cargo_args == argv(&["--release", "--features", "ci"]),
+            "got {:?}",
+            parsed.forwarded_cargo_args,
+        );
+        anyhow::ensure!(
+            parsed.runner_args == vec!["my_filter".to_owned()],
+            "got {:?}",
+            parsed.runner_args,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn parse_test_args_forwarded_default_empty() -> anyhow::Result<()> {
+        let parsed = parse_test_args(&argv(&[]), no_dirs)?;
+        anyhow::ensure!(
+            parsed.forwarded_cargo_args.is_empty(),
+            "got {:?}",
+            parsed.forwarded_cargo_args,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn aggregator_cargo_args_default_inserts_forwarded_before_separator()
+    -> anyhow::Result<()> {
+        let parsed = parse_test_args(
+            &argv(&["--release", "--features", "ci", "my_filter"]),
+            no_dirs,
+        )?;
+        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
+        let separator_index = invocation
+            .iter()
+            .position(|arg| arg == "--")
+            .ok_or_else(|| anyhow::anyhow!("expected `--` separator"))?;
+        let before: &[String] = invocation.get(..separator_index).unwrap_or(&[]);
+        anyhow::ensure!(
+            before.contains(&"--release".to_owned()),
+            "expected --release before separator, got {before:?}",
+        );
+        anyhow::ensure!(
+            before
+                .iter()
+                .any(|arg| arg == "--features"),
+            "expected --features before separator, got {before:?}",
+        );
+        let after: &[String] = invocation
+            .get(separator_index.saturating_add(1_usize)..)
+            .unwrap_or(&[]);
+        anyhow::ensure!(
+            after == ["my_filter".to_owned()],
+            "got {after:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn aggregator_cargo_args_no_run_inserts_forwarded_with_auto_message_format()
+    -> anyhow::Result<()> {
+        let parsed = parse_test_args(&argv(&["--no-run", "--release"]), no_dirs)?;
+        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
+        anyhow::ensure!(
+            invocation.contains(&"build".to_owned()),
+            "expected build subcommand, got {invocation:?}",
+        );
+        anyhow::ensure!(
+            invocation.contains(&"--release".to_owned()),
+            "expected --release forwarded, got {invocation:?}",
+        );
+        anyhow::ensure!(
+            invocation.contains(&"--message-format=json-render-diagnostics".to_owned()),
+            "expected auto --message-format injection, got {invocation:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn aggregator_cargo_args_no_run_skips_auto_message_format_when_user_supplied()
+    -> anyhow::Result<()> {
+        let parsed =
+            parse_test_args(&argv(&["--no-run", "--message-format=human"]), no_dirs)?;
+        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
+        anyhow::ensure!(
+            !invocation.contains(&"--message-format=json-render-diagnostics".to_owned()),
+            "auto-injection should be skipped when user supplied --message-format, got {invocation:?}",
+        );
+        anyhow::ensure!(
+            invocation.contains(&"--message-format=human".to_owned()),
+            "user's --message-format should be present, got {invocation:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn aggregator_cargo_args_no_run_skips_auto_when_user_supplied_space_form()
+    -> anyhow::Result<()> {
+        let parsed = parse_test_args(
+            &argv(&["--no-run", "--message-format", "human"]),
+            no_dirs,
+        )?;
+        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
+        anyhow::ensure!(
+            !invocation.contains(&"--message-format=json-render-diagnostics".to_owned()),
+            "auto-injection should be skipped when user supplied --message-format, got {invocation:?}",
         );
         Ok(())
     }

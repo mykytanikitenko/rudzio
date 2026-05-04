@@ -74,6 +74,29 @@ COMMANDS:
                                          binary, so per-target selection
                                          has no rudzio analog.
 
+                                     CARGO BUILD-GRAPH FLAGS forwarded to
+                                     the spawned `cargo run`/`cargo build`
+                                     before `--` (so they shape the build,
+                                     not the runner):
+                                       --release, --profile <NAME>,
+                                       --features <FEATURES>,
+                                       --all-features,
+                                       --no-default-features,
+                                       --target <TRIPLE> (repeatable),
+                                       --target-dir <DIR>,
+                                       -j/--jobs <N>, --keep-going,
+                                       --frozen, --locked, --offline,
+                                       -v/--verbose (repeatable),
+                                       -q/--quiet, --message-format <FMT>,
+                                       --config <K=V> (repeatable),
+                                       -Z <FLAG> (repeatable, nightly),
+                                       --ignore-rust-version, --unit-graph,
+                                       --future-incompat-report.
+                                     Both space (`--features ci`) and
+                                     equals (`--features=ci`) forms are
+                                     accepted; the user's spelling is
+                                     forwarded unchanged.
+
                                      Anything else in ARGS forwards verbatim
                                      to the rudzio runner (positional filter,
                                      --skip, --output=plain, etc.). Run the

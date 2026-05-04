@@ -53,6 +53,12 @@ impl PlanFilters {
 pub struct ParsedTestArgs {
     /// Plan-shaping selectors consumed by `cargo-rudzio` itself.
     pub filters: PlanFilters,
+    /// Cargo build-graph args spliced into the spawned `cargo
+    /// run`/`cargo build` invocation BEFORE the `--` separator (so
+    /// they shape the build, not the runner). Order is preserved
+    /// from the user's original argv; the user's flag spelling
+    /// (space vs equals form) is preserved verbatim.
+    pub forwarded_cargo_args: Vec<String>,
     /// Cargo target-selection flags consumed but not honoured. The
     /// aggregator is one binary, so per-target selection has no
     /// rudzio analog. The caller emits one consolidated stderr warning
@@ -73,6 +79,7 @@ impl ParsedTestArgs {
     pub const fn empty() -> Self {
         Self {
             filters: PlanFilters::empty(),
+            forwarded_cargo_args: Vec::new(),
             ignored_target_flags: Vec::new(),
             no_run: false,
             runner_args: Vec::new(),
@@ -82,27 +89,41 @@ impl ParsedTestArgs {
 
 /// Build the argv we hand to `cargo` for the aggregator invocation.
 ///
-/// Default (`no_run = false`): `cargo run --manifest-path X -- <runner args>`.
-/// `--no-run`: `cargo build --manifest-path X --message-format=json-render-diagnostics`,
+/// Default (`no_run = false`):
+/// `cargo run --manifest-path X <forwarded_cargo_args> -- <runner args>`.
+/// `--no-run`:
+/// `cargo build --manifest-path X <forwarded_cargo_args> [--message-format=json-render-diagnostics]`,
 /// dropping the `--` separator and any runner args (the aggregator
 /// won't be spawned, so forwarding them is dead weight). The
 /// `json-render-diagnostics` format keeps human-friendly diagnostics
 /// on stderr while emitting machine-readable artifact records on
 /// stdout, so downstream tooling (or AI agents) can extract the
 /// built binary path with `jq -r 'select(.executable != null) | .executable'`.
+/// Auto-injection of `--message-format` is skipped when the user
+/// already supplied one (last-wins would also work, but skipping
+/// keeps the spawned argv clean).
 #[inline]
 #[must_use]
 pub fn aggregator_cargo_args(parsed: &ParsedTestArgs, manifest: &str) -> Vec<String> {
-    let mut argv = Vec::with_capacity(parsed.runner_args.len().saturating_add(5_usize));
+    let capacity = parsed
+        .runner_args
+        .len()
+        .saturating_add(parsed.forwarded_cargo_args.len())
+        .saturating_add(8_usize);
+    let mut argv = Vec::with_capacity(capacity);
     if parsed.no_run {
         argv.push("build".to_owned());
         argv.push("--manifest-path".to_owned());
         argv.push(manifest.to_owned());
-        argv.push("--message-format=json-render-diagnostics".to_owned());
+        argv.extend(parsed.forwarded_cargo_args.iter().cloned());
+        if !user_supplied_message_format(&parsed.forwarded_cargo_args) {
+            argv.push("--message-format=json-render-diagnostics".to_owned());
+        }
     } else {
         argv.push("run".to_owned());
         argv.push("--manifest-path".to_owned());
         argv.push(manifest.to_owned());
+        argv.extend(parsed.forwarded_cargo_args.iter().cloned());
         argv.push("--".to_owned());
         argv.extend(parsed.runner_args.iter().cloned());
     }
@@ -151,6 +172,114 @@ pub fn parse_exclude_filters(args: &[String]) -> Result<(Vec<String>, Vec<String
         }
     }
     Ok((excluded, remaining))
+}
+
+/// Pull cargo build-graph forwarder flags out of `args`.
+///
+/// Unit (no value): `--release`, `--frozen`, `--locked`, `--offline`,
+/// `--keep-going`, `--ignore-rust-version`, `-q`/`--quiet`,
+/// `-v`/`--verbose` (repeatable), `--all-features`,
+/// `--no-default-features`, `--unit-graph`, `--future-incompat-report`.
+///
+/// Value (next-arg or `=value` form): `--features`, `--profile`,
+/// `--target` (repeatable), `--target-dir`, `-j`/`--jobs`,
+/// `--message-format`, `--config` (repeatable), `-Z` (repeatable).
+///
+/// Forwarded args preserve the user's original spelling (space form
+/// vs equals form) so the spawned cargo sees what the user intended,
+/// and order is preserved within the consumed slice. The caller
+/// splices them into the spawned `cargo` invocation BEFORE the `--`
+/// separator (so they shape cargo's build, not the rudzio runner).
+///
+/// # Errors
+///
+/// Returns an error when a value flag is the last arg with no
+/// following value, or when the equals form supplies an empty value.
+#[inline]
+pub fn parse_build_forwarder_flags(args: &[String]) -> Result<(Vec<String>, Vec<String>)> {
+    let mut forwarded = Vec::new();
+    let mut remaining = Vec::new();
+    let mut idx = 0_usize;
+    while let Some(arg) = args.get(idx) {
+        if is_unit_build_flag(arg) {
+            forwarded.push(arg.clone());
+            idx = idx.saturating_add(1_usize);
+        } else if is_value_build_flag(arg) {
+            let next_idx = idx.saturating_add(1_usize);
+            let value = args
+                .get(next_idx)
+                .ok_or_else(|| anyhow::anyhow!("`{arg}` requires a value"))?;
+            forwarded.push(arg.clone());
+            forwarded.push(value.clone());
+            idx = next_idx.saturating_add(1_usize);
+        } else if let Some(value_pos) = arg.find('=')
+            && let Some(head) = arg.get(..value_pos)
+            && is_value_build_flag(head)
+        {
+            let value = arg.get(value_pos.saturating_add(1_usize)..).unwrap_or("");
+            if value.is_empty() {
+                bail!("`{head}=` requires a non-empty value");
+            }
+            forwarded.push(arg.clone());
+            idx = idx.saturating_add(1_usize);
+        } else {
+            remaining.push(arg.clone());
+            idx = idx.saturating_add(1_usize);
+        }
+    }
+    Ok((forwarded, remaining))
+}
+
+/// Return `true` if `arg` is a recognised unit (no-value) cargo
+/// build-graph forwarder flag.
+#[inline]
+fn is_unit_build_flag(arg: &str) -> bool {
+    matches!(
+        arg,
+        "--release"
+            | "--frozen"
+            | "--locked"
+            | "--offline"
+            | "--keep-going"
+            | "--ignore-rust-version"
+            | "-q"
+            | "--quiet"
+            | "-v"
+            | "--verbose"
+            | "--all-features"
+            | "--no-default-features"
+            | "--unit-graph"
+            | "--future-incompat-report"
+    )
+}
+
+/// Return `true` if `arg` is a recognised value-bearing cargo
+/// build-graph forwarder flag (matches the bare flag name; the equals
+/// form is detected at the call site by stripping after `=`).
+#[inline]
+fn is_value_build_flag(arg: &str) -> bool {
+    matches!(
+        arg,
+        "--features"
+            | "--profile"
+            | "--target"
+            | "--target-dir"
+            | "-j"
+            | "--jobs"
+            | "--message-format"
+            | "--config"
+            | "-Z"
+    )
+}
+
+/// Return `true` if `forwarded` already contains a `--message-format`
+/// (any spelling) so the no-run auto-injection can be skipped.
+#[inline]
+#[must_use]
+fn user_supplied_message_format(forwarded: &[String]) -> bool {
+    forwarded
+        .iter()
+        .any(|arg| arg == "--message-format" || arg.starts_with("--message-format="))
 }
 
 /// Drop `--nocapture` and `--show-output` from `args`.
@@ -333,7 +462,8 @@ pub fn format_target_flag_warning(consumed: &[String]) -> Option<String> {
 ///
 /// Parser order is: `-p`/`--package` → `--exclude` → `--no-run` →
 /// `--workspace`/`--all` → `--nocapture`/`--show-output` →
-/// target-selection (`--lib`, `--bin <NAME>`, etc.) → positional paths,
+/// target-selection (`--lib`, `--bin <NAME>`, etc.) → build-graph
+/// forwarders (`--release`, `--features`, etc.) → positional paths,
 /// with everything else flowing into `runner_args` in original order.
 /// Each step operates on what the previous step left behind, so a flag
 /// consumed early can never collide with a later one.
@@ -353,13 +483,15 @@ where
     let after_workspace = parse_workspace_flag(&after_no_run);
     let after_capture = parse_capture_flags(&after_workspace);
     let (ignored_target_flags, after_targets) = parse_target_selection_flags(&after_capture)?;
-    let (include_paths, runner_args) = split_path_args(&after_targets, is_dir);
+    let (forwarded_cargo_args, after_forwarders) = parse_build_forwarder_flags(&after_targets)?;
+    let (include_paths, runner_args) = split_path_args(&after_forwarders, is_dir);
     Ok(ParsedTestArgs {
         filters: PlanFilters {
             exclude_packages,
             include_packages,
             include_paths,
         },
+        forwarded_cargo_args,
         ignored_target_flags,
         no_run,
         runner_args,
