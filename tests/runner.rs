@@ -32,7 +32,7 @@ use rudzio::runtime::{compio, embassy};
 use rudzio::suite::SummaryOutcomes;
 use rudzio::test_case::{BoxError, box_error};
 use rudzio::{
-    BenchMode, Config, RunIgnoredMode, SuiteSummary, TestSummary, normalize_module_path,
+    BenchMode, Config, Format, RunIgnoredMode, SuiteSummary, TestSummary, normalize_module_path,
     qualified_test_name, token_passes_filters,
 };
 
@@ -64,7 +64,7 @@ fn env_with(rust_test_threads: Option<&str>) -> BTreeMap<String, String> {
 ])]
 mod config_parser {
     use super::{
-        BenchMode, Config, Duration, NonZeroUsize, SuiteSummary, SummaryOutcomes, Test,
+        BenchMode, Config, Duration, Format, NonZeroUsize, SuiteSummary, SummaryOutcomes, Test,
         TestSummary, argv, env_with,
     };
 
@@ -222,6 +222,21 @@ mod config_parser {
         );
         anyhow::ensure!(cfg.exact_match);
         anyhow::ensure!(cfg.filter.as_deref() == Some("my_filter"));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn quiet_long_form_selects_terse_format(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg =
+            Config::from_argv_and_env(&argv(&["--quiet"]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(matches!(cfg.format, Format::Terse));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn quiet_short_form_selects_terse_format(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(&argv(&["-q"]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(matches!(cfg.format, Format::Terse));
         Ok(())
     }
 

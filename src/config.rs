@@ -101,6 +101,7 @@ OPTIONS:
                                 over the bench-mode default in either
                                 direction.
     --format <pretty|terse>     Output format. Default: pretty.
+    -q, --quiet                 Synonym for --format=terse (libtest compat).
     --color <auto|always|never> ANSI colour policy. Default: auto.
     --output <live|plain>       Output rendering. 'live' = bottom-of-terminal
                                 live region + history above (default on TTY
@@ -912,6 +913,7 @@ fn handle_presentation_flag(
         "--bench" => state.bench_mode = BenchMode::Full,
         "--no-bench" => state.bench_mode = BenchMode::Skip,
         "--exact" => state.exact_match = true,
+        "--quiet" | "-q" => state.format = Format::Terse,
         "--plain" => state.output_mode_explicit = Some(OutputMode::Plain),
         "--list" => state.list = true,
         "--help" | "-h" => state.help = true,
