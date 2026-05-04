@@ -367,6 +367,14 @@ pub struct Config {
     pub cargo: CargoMeta,
     /// Colour policy.
     pub color: ColorMode,
+    /// Cargo-test-compat flags that rudzio silently accepts because the
+    /// requested behaviour is already a rudzio default (e.g.
+    /// `--report-time` — per-test elapsed already prints unconditionally).
+    /// Recorded in original input order so debug tooling, integration
+    /// tests, and a future verbose mode can show "we saw this flag and
+    /// intentionally did nothing with it" without spamming stderr on
+    /// every run.
+    pub compat_consumed: Vec<String>,
     /// Maximum number of tests dispatched concurrently per runtime group.
     /// This is the *scheduler* knob (how many futures are in-flight at
     /// once); [`Self::threads`] is the *executor* knob (how many OS
@@ -591,6 +599,11 @@ struct ParsedArgs {
     cancel_grace_period: Option<Duration>,
     /// Colour policy from `--color=<auto|always|never>`.
     color: ColorMode,
+    /// Silent-consume audit trail for cargo-test-compat flags whose
+    /// requested behaviour is already a rudzio default (e.g.
+    /// `--report-time`). Each match pushes the flag's verbatim spelling
+    /// here in original argv order.
+    compat_consumed: Vec<String>,
     /// In-flight test cap from `--concurrency-limit=<N>`. `None` means the
     /// flag was absent — `Config` defaults this to `threads` at resolution.
     concurrency_limit: Option<usize>,
@@ -717,6 +730,7 @@ impl Config {
             cancel_grace_period: parsed.cancel_grace_period,
             cargo,
             color: parsed.color,
+            compat_consumed: parsed.compat_consumed,
             concurrency_limit: resolved_concurrency_limit,
             env,
             exact_match: parsed.exact_match,
@@ -972,7 +986,10 @@ fn handle_presentation_flag(
     // output (the `<runtime, 142ms>` block), so the flag is implicitly
     // satisfied; accept and discard rather than letting it land in
     // `unparsed` where it would emit a "we don't recognise this" notice.
+    // Recorded in `compat_consumed` so debug tooling can see what was
+    // accepted-as-default rather than acted on.
     if arg == "--report-time" {
+        state.compat_consumed.push(arg.to_owned());
         return true;
     }
     // `--ensure-time [WARN[,CRIT]]` is libtest's soft/hard wall-clock
@@ -983,6 +1000,7 @@ fn handle_presentation_flag(
     // this flag in the `=value` form (or bare) — never as a separate
     // value arg — so we don't peek at the next argv entry here.
     if arg == "--ensure-time" || arg.starts_with("--ensure-time=") {
+        state.compat_consumed.push(arg.to_owned());
         return true;
     }
     if let Some(value) = flag_value(arg, "--shuffle-seed", "--shuffle-seed=", argv, i) {

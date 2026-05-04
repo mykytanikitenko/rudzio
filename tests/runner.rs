@@ -415,6 +415,52 @@ mod config_parser {
     }
 
     #[rudzio::test]
+    fn compat_consumed_records_report_time(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--report-time", "my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            cfg.compat_consumed == vec!["--report-time".to_owned()],
+            "got {:?}",
+            cfg.compat_consumed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn compat_consumed_empty_when_no_silent_compat_flags(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            cfg.compat_consumed.is_empty(),
+            "got {:?}",
+            cfg.compat_consumed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn compat_consumed_preserves_order_for_duplicates(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--report-time", "my_filter", "--report-time"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            cfg.compat_consumed
+                == vec!["--report-time".to_owned(), "--report-time".to_owned()],
+            "got {:?}",
+            cfg.compat_consumed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
     fn ensure_time_flag_bare_is_silently_consumed(_ctx: &Test) -> anyhow::Result<()> {
         let cfg = Config::from_argv_and_env(
             &argv(&["--ensure-time", "my_filter"]),

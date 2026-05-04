@@ -1484,4 +1484,80 @@ mod tests {
         );
         Ok(())
     }
+
+    #[rudzio::test]
+    async fn compat_consumed_records_workspace_flag() -> anyhow::Result<()> {
+        let parsed = parse_test_args(&argv(&["--workspace", "my_filter"]), no_dirs)?;
+        anyhow::ensure!(
+            parsed.compat_consumed == vec!["--workspace".to_owned()],
+            "got {:?}",
+            parsed.compat_consumed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn compat_consumed_records_capture_flags_in_order() -> anyhow::Result<()> {
+        let parsed = parse_test_args(
+            &argv(&["--nocapture", "my_filter", "--show-output"]),
+            no_dirs,
+        )?;
+        anyhow::ensure!(
+            parsed.compat_consumed
+                == vec!["--nocapture".to_owned(), "--show-output".to_owned()],
+            "got {:?}",
+            parsed.compat_consumed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn compat_consumed_records_no_fail_fast() -> anyhow::Result<()> {
+        let parsed = parse_test_args(&argv(&["--no-fail-fast", "my_filter"]), no_dirs)?;
+        anyhow::ensure!(
+            parsed.compat_consumed == vec!["--no-fail-fast".to_owned()],
+            "got {:?}",
+            parsed.compat_consumed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn compat_consumed_aggregates_every_silent_compat_flag() -> anyhow::Result<()> {
+        let parsed = parse_test_args(
+            &argv(&[
+                "--workspace",
+                "--nocapture",
+                "my_filter",
+                "--no-fail-fast",
+                "--show-output",
+                "--all",
+            ]),
+            no_dirs,
+        )?;
+        anyhow::ensure!(
+            parsed.compat_consumed
+                == vec![
+                    "--workspace".to_owned(),
+                    "--all".to_owned(),
+                    "--no-fail-fast".to_owned(),
+                    "--nocapture".to_owned(),
+                    "--show-output".to_owned(),
+                ],
+            "got {:?}",
+            parsed.compat_consumed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn compat_consumed_empty_when_no_silent_compat_flags() -> anyhow::Result<()> {
+        let parsed = parse_test_args(&argv(&["my_filter", "--skip", "slow_"]), no_dirs)?;
+        anyhow::ensure!(
+            parsed.compat_consumed.is_empty(),
+            "got {:?}",
+            parsed.compat_consumed,
+        );
+        Ok(())
+    }
 }

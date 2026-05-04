@@ -51,6 +51,14 @@ impl PlanFilters {
 #[derive(Debug, Default)]
 #[non_exhaustive]
 pub struct ParsedTestArgs {
+    /// Cargo-test-compat flags that rudzio silently accepts because
+    /// the requested behaviour is already a rudzio default
+    /// (`--workspace`, `--all`, `--nocapture`, `--show-output`,
+    /// `--no-fail-fast`). Recorded in original input order so debug
+    /// tooling, integration tests, and a future verbose mode can
+    /// surface "we saw this flag and intentionally did nothing with
+    /// it" without spamming stderr on every invocation.
+    pub compat_consumed: Vec<String>,
     /// Plan-shaping selectors consumed by `cargo-rudzio` itself.
     pub filters: PlanFilters,
     /// Cargo build-graph args spliced into the spawned `cargo
@@ -82,6 +90,7 @@ impl ParsedTestArgs {
     #[must_use]
     pub const fn empty() -> Self {
         Self {
+            compat_consumed: Vec::new(),
             filters: PlanFilters::empty(),
             forwarded_cargo_args: Vec::new(),
             ignored_target_flags: Vec::new(),
@@ -291,6 +300,28 @@ fn user_supplied_message_format(forwarded: &[String]) -> bool {
         .any(|arg| arg == "--message-format" || arg.starts_with("--message-format="))
 }
 
+/// Drop every arg matching one of `flags` from `args`, returning the
+/// consumed list (in original input order) and the remaining args.
+///
+/// Shared engine for silent-consume compat helpers
+/// (`parse_workspace_flag`, `parse_capture_flags`,
+/// `parse_no_fail_fast_flag`). Centralising the loop keeps the
+/// "honest no-op" audit trail consistent and lets `parse_test_args`
+/// accumulate `compat_consumed` from one place.
+#[inline]
+fn consume_compat_flag(args: &[String], flags: &[&str]) -> (Vec<String>, Vec<String>) {
+    let mut consumed = Vec::new();
+    let mut remaining = Vec::with_capacity(args.len());
+    for arg in args {
+        if flags.iter().any(|flag| arg == *flag) {
+            consumed.push(arg.clone());
+        } else {
+            remaining.push(arg.clone());
+        }
+    }
+    (consumed, remaining)
+}
+
 /// Drop `--nocapture` and `--show-output` from `args`.
 ///
 /// Both are libtest stdout/stderr capture toggles. rudzio's structured
@@ -302,17 +333,13 @@ fn user_supplied_message_format(forwarded: &[String]) -> bool {
 ///
 /// Silent consumer (no warning) by design: emitting a "we ignored
 /// your flag" message every time would be noise, since the user's
-/// intent (see test stdout/stderr) is already satisfied.
+/// intent (see test stdout/stderr) is already satisfied. Each consumed
+/// occurrence is recorded on `ParsedTestArgs::compat_consumed` for
+/// debug tooling.
 #[inline]
 #[must_use]
 pub fn parse_capture_flags(args: &[String]) -> Vec<String> {
-    let mut remaining = Vec::with_capacity(args.len());
-    for arg in args {
-        if arg != "--nocapture" && arg != "--show-output" {
-            remaining.push(arg.clone());
-        }
-    }
-    remaining
+    consume_compat_flag(args, &["--nocapture", "--show-output"]).1
 }
 
 /// Pull `--manifest-path <PATH>` / `--manifest-path=<PATH>` out of `args`.
@@ -530,13 +557,22 @@ where
     let (include_packages, after_packages) = parse_package_filters(&after_manifest)?;
     let (exclude_packages, after_excludes) = parse_exclude_filters(&after_packages)?;
     let (no_run, after_no_run) = parse_no_run_flag(&after_excludes);
-    let after_workspace = parse_workspace_flag(&after_no_run);
-    let after_no_fail_fast = parse_no_fail_fast_flag(&after_workspace);
-    let after_capture = parse_capture_flags(&after_no_fail_fast);
+    let (workspace_consumed, after_workspace) =
+        consume_compat_flag(&after_no_run, &["--workspace", "--all"]);
+    let (no_fail_fast_consumed, after_no_fail_fast) =
+        consume_compat_flag(&after_workspace, &["--no-fail-fast"]);
+    let (capture_consumed, after_capture) =
+        consume_compat_flag(&after_no_fail_fast, &["--nocapture", "--show-output"]);
+    let mut compat_consumed =
+        Vec::with_capacity(workspace_consumed.len() + no_fail_fast_consumed.len() + capture_consumed.len());
+    compat_consumed.extend(workspace_consumed);
+    compat_consumed.extend(no_fail_fast_consumed);
+    compat_consumed.extend(capture_consumed);
     let (ignored_target_flags, after_targets) = parse_target_selection_flags(&after_capture)?;
     let (forwarded_cargo_args, after_forwarders) = parse_build_forwarder_flags(&after_targets)?;
     let (include_paths, runner_args) = split_path_args(&after_forwarders, is_dir);
     Ok(ParsedTestArgs {
+        compat_consumed,
         filters: PlanFilters {
             exclude_packages,
             include_packages,
@@ -564,13 +600,7 @@ where
 #[inline]
 #[must_use]
 pub fn parse_workspace_flag(args: &[String]) -> Vec<String> {
-    let mut remaining = Vec::with_capacity(args.len());
-    for arg in args {
-        if arg != "--workspace" && arg != "--all" {
-            remaining.push(arg.clone());
-        }
-    }
-    remaining
+    consume_compat_flag(args, &["--workspace", "--all"]).1
 }
 
 /// Drop `--no-fail-fast` from `args`.
@@ -588,13 +618,7 @@ pub fn parse_workspace_flag(args: &[String]) -> Vec<String> {
 #[inline]
 #[must_use]
 pub fn parse_no_fail_fast_flag(args: &[String]) -> Vec<String> {
-    let mut remaining = Vec::with_capacity(args.len());
-    for arg in args {
-        if arg != "--no-fail-fast" {
-            remaining.push(arg.clone());
-        }
-    }
-    remaining
+    consume_compat_flag(args, &["--no-fail-fast"]).1
 }
 
 /// Split positional `cargo rudzio test` args into directory paths
