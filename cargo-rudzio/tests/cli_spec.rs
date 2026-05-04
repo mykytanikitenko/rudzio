@@ -13,8 +13,8 @@
 use std::path::Path;
 
 use cargo_rudzio::cli::{
-    aggregator_cargo_args, parse_exclude_filters, parse_no_run_flag, parse_package_filters,
-    parse_test_args,
+    aggregator_cargo_args, parse_capture_flags, parse_exclude_filters, parse_no_run_flag,
+    parse_package_filters, parse_test_args, parse_workspace_flag,
 };
 use rudzio::common::context::Suite;
 use rudzio::runtime::tokio::Multithread;
@@ -24,8 +24,8 @@ use rudzio::runtime::tokio::Multithread;
 ])]
 mod tests {
     use super::{
-        Path, aggregator_cargo_args, parse_exclude_filters, parse_no_run_flag,
-        parse_package_filters, parse_test_args,
+        Path, aggregator_cargo_args, parse_capture_flags, parse_exclude_filters, parse_no_run_flag,
+        parse_package_filters, parse_test_args, parse_workspace_flag,
     };
 
     /// Convenience: build a `Vec<String>` from a slice of `&str` in
@@ -494,6 +494,150 @@ mod tests {
         anyhow::ensure!(
             !invocation.contains(&"would_be_filter".to_owned()),
             "build path must not forward runner args, got {invocation:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn workspace_flag_absent_returns_args_unchanged() -> anyhow::Result<()> {
+        let input = argv(&["my_filter", "--skip", "slow_"]);
+        let remaining = parse_workspace_flag(&input);
+        anyhow::ensure!(remaining == input, "expected args untouched, got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn workspace_long_form_is_consumed() -> anyhow::Result<()> {
+        let input = argv(&["--workspace", "my_filter"]);
+        let remaining = parse_workspace_flag(&input);
+        anyhow::ensure!(remaining == argv(&["my_filter"]), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn all_alias_for_workspace_is_consumed() -> anyhow::Result<()> {
+        let input = argv(&["--all", "my_filter"]);
+        let remaining = parse_workspace_flag(&input);
+        anyhow::ensure!(remaining == argv(&["my_filter"]), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn workspace_and_all_together_both_consumed_order_preserved() -> anyhow::Result<()> {
+        let input = argv(&["my_filter", "--workspace", "--skip", "slow_", "--all"]);
+        let remaining = parse_workspace_flag(&input);
+        anyhow::ensure!(
+            remaining == argv(&["my_filter", "--skip", "slow_"]),
+            "got {remaining:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn workspace_repeated_still_drops_all_occurrences() -> anyhow::Result<()> {
+        let input = argv(&["--workspace", "--workspace", "my_filter"]);
+        let remaining = parse_workspace_flag(&input);
+        anyhow::ensure!(remaining == argv(&["my_filter"]), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn capture_flags_absent_returns_args_unchanged() -> anyhow::Result<()> {
+        let input = argv(&["my_filter", "--skip", "slow_"]);
+        let remaining = parse_capture_flags(&input);
+        anyhow::ensure!(remaining == input, "expected args untouched, got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn nocapture_long_form_is_consumed() -> anyhow::Result<()> {
+        let input = argv(&["--nocapture", "my_filter"]);
+        let remaining = parse_capture_flags(&input);
+        anyhow::ensure!(remaining == argv(&["my_filter"]), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn show_output_long_form_is_consumed() -> anyhow::Result<()> {
+        let input = argv(&["--show-output", "my_filter"]);
+        let remaining = parse_capture_flags(&input);
+        anyhow::ensure!(remaining == argv(&["my_filter"]), "got {remaining:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn nocapture_and_show_output_together_both_consumed() -> anyhow::Result<()> {
+        let input = argv(&["my_filter", "--nocapture", "--skip", "slow_", "--show-output"]);
+        let remaining = parse_capture_flags(&input);
+        anyhow::ensure!(
+            remaining == argv(&["my_filter", "--skip", "slow_"]),
+            "got {remaining:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn parse_test_args_consumes_workspace_so_runner_never_sees_it() -> anyhow::Result<()> {
+        let parsed = parse_test_args(&argv(&["--workspace", "my_filter"]), no_dirs)?;
+        anyhow::ensure!(
+            parsed.runner_args == vec!["my_filter".to_owned()],
+            "got {:?}",
+            parsed.runner_args,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn parse_test_args_consumes_all_so_runner_never_sees_it() -> anyhow::Result<()> {
+        let parsed = parse_test_args(&argv(&["--all", "my_filter"]), no_dirs)?;
+        anyhow::ensure!(
+            parsed.runner_args == vec!["my_filter".to_owned()],
+            "got {:?}",
+            parsed.runner_args,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn parse_test_args_consumes_nocapture_so_runner_never_sees_it() -> anyhow::Result<()> {
+        let parsed = parse_test_args(&argv(&["--nocapture", "my_filter"]), no_dirs)?;
+        anyhow::ensure!(
+            parsed.runner_args == vec!["my_filter".to_owned()],
+            "got {:?}",
+            parsed.runner_args,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn parse_test_args_consumes_show_output_so_runner_never_sees_it() -> anyhow::Result<()> {
+        let parsed = parse_test_args(&argv(&["--show-output", "my_filter"]), no_dirs)?;
+        anyhow::ensure!(
+            parsed.runner_args == vec!["my_filter".to_owned()],
+            "got {:?}",
+            parsed.runner_args,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn parse_test_args_silent_consumers_dropped_alongside_real_filters() -> anyhow::Result<()>
+    {
+        let input = argv(&[
+            "--workspace",
+            "--all",
+            "--nocapture",
+            "--show-output",
+            "my_filter",
+            "--skip",
+            "slow_",
+        ]);
+        let parsed = parse_test_args(&input, no_dirs)?;
+        anyhow::ensure!(
+            parsed.runner_args
+                == vec!["my_filter".to_owned(), "--skip".to_owned(), "slow_".to_owned()],
+            "got {:?}",
+            parsed.runner_args,
         );
         Ok(())
     }

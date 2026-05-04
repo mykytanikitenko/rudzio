@@ -57,6 +57,13 @@ COMMANDS:
                                          stdout, so tooling can extract the
                                          binary path with
                                          `jq -r 'select(.executable != null) | .executable'`.
+                                       --workspace, --all  silently
+                                         accepted; rudzio always operates on
+                                         the whole workspace by default.
+                                       --nocapture, --show-output  silently
+                                         accepted; rudzio's structured
+                                         output already surfaces test
+                                         stdout/stderr.
 
                                      Anything else in ARGS forwards verbatim
                                      to the rudzio runner (positional filter,

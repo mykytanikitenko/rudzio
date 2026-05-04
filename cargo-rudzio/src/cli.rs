@@ -146,7 +146,31 @@ pub fn parse_exclude_filters(args: &[String]) -> Result<(Vec<String>, Vec<String
     Ok((excluded, remaining))
 }
 
-/// Strip `--no-run` from `args` and return whether it was present.
+/// Drop `--nocapture` and `--show-output` from `args`.
+///
+/// Both are libtest stdout/stderr capture toggles. rudzio's structured
+/// event output already surfaces test stdout/stderr to the contributor,
+/// so there's no rudzio-side knob to flip — but cargo-test users (and
+/// AI agents that have memorised cargo-test's flag set) reach for them
+/// reflexively, so we accept-and-discard rather than letting them fall
+/// through to the runner where they'd warn about an unknown flag.
+///
+/// Silent consumer (no warning) by design: emitting a "we ignored
+/// your flag" message every time would be noise, since the user's
+/// intent (see test stdout/stderr) is already satisfied.
+#[inline]
+#[must_use]
+pub fn parse_capture_flags(args: &[String]) -> Vec<String> {
+    let mut remaining = Vec::with_capacity(args.len());
+    for arg in args {
+        if arg != "--nocapture" && arg != "--show-output" {
+            remaining.push(arg.clone());
+        }
+    }
+    remaining
+}
+
+/// Drop `--no-run` from `args` and return whether it was present.
 ///
 /// Mirrors cargo test's `--no-run`: a unit flag (no value), repeatable
 /// without semantic effect — present means "build the aggregator
@@ -222,6 +246,7 @@ pub fn parse_package_filters(args: &[String]) -> Result<(Vec<String>, Vec<String
 /// closure that recognises a curated set of paths.
 ///
 /// Parser order is: `-p`/`--package` → `--exclude` → `--no-run` →
+/// `--workspace`/`--all` → `--nocapture`/`--show-output` →
 /// positional paths, with everything else flowing into `runner_args`
 /// in original order. Each step operates on what the previous step
 /// left behind, so a flag consumed early can never collide with a
@@ -239,7 +264,9 @@ where
     let (include_packages, after_packages) = parse_package_filters(args)?;
     let (exclude_packages, after_excludes) = parse_exclude_filters(&after_packages)?;
     let (no_run, after_no_run) = parse_no_run_flag(&after_excludes);
-    let (include_paths, runner_args) = split_path_args(&after_no_run, is_dir);
+    let after_workspace = parse_workspace_flag(&after_no_run);
+    let after_capture = parse_capture_flags(&after_workspace);
+    let (include_paths, runner_args) = split_path_args(&after_capture, is_dir);
     Ok(ParsedTestArgs {
         filters: PlanFilters {
             exclude_packages,
@@ -249,6 +276,29 @@ where
         no_run,
         runner_args,
     })
+}
+
+/// Drop `--workspace` and its `--all` alias from `args`.
+///
+/// `cargo rudzio test` already operates on every workspace member by
+/// default (the aggregator is built from a workspace-wide `Plan`), so
+/// these flags are redundant — but they're the cargo-test invocations
+/// most contributors and AI agents reach for first ("run all the
+/// tests"). Accepting and discarding them keeps the muscle-memory path
+/// from emitting an "unrecognised flag" warning at the runner.
+///
+/// Silent consumer (no warning): the user got exactly what they asked
+/// for, since the flag matches the default behaviour.
+#[inline]
+#[must_use]
+pub fn parse_workspace_flag(args: &[String]) -> Vec<String> {
+    let mut remaining = Vec::with_capacity(args.len());
+    for arg in args {
+        if arg != "--workspace" && arg != "--all" {
+            remaining.push(arg.clone());
+        }
+    }
+    remaining
 }
 
 /// Split positional `cargo rudzio test` args into directory paths
