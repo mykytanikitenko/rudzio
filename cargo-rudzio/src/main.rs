@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use anyhow::{Context as _, Result, bail};
-use cargo_rudzio::args::parse_package_filters;
+use cargo_rudzio::cli::parse_test_args;
 use cargo_rudzio::{generate, spawn_env};
 use rudzio_migrate::run::entry_with_args as rudzio_migrate_entry;
 
@@ -38,6 +38,12 @@ COMMANDS:
                                      at runtime):
                                        -p, --package <NAME>  exact Cargo
                                          package-name match. Repeatable.
+                                       --exclude <NAME>  exact Cargo
+                                         package-name match for members to
+                                         drop. Repeatable. Combine with -p
+                                         to keep all-but-N, or use alone to
+                                         skip noisy crates from the
+                                         workspace-wide default.
                                        <PATH>  any positional argument that
                                          resolves to a directory on disk
                                          restricts the aggregator to members
@@ -129,15 +135,15 @@ fn run_generate(rest: &[String]) -> Result<()> {
 
 /// Handler for `cargo rudzio test`: generate the aggregator crate then `cargo run` it with the user's runner args.
 fn run_test(rest: &[String]) -> Result<ExitCode> {
-    let (package_filters, after_packages) = parse_package_filters(rest)?;
-    let (path_args, runner_args) = split_path_args(&after_packages);
+    let parsed = parse_test_args(rest, Path::is_dir)?;
     let mut plan = generate::plan_from_cwd()?;
-    if !path_args.is_empty() {
-        plan.restrict_to_paths(&path_args)?;
+    if !parsed.filters.include_paths.is_empty() {
+        plan.restrict_to_paths(&parsed.filters.include_paths)?;
     }
-    if !package_filters.is_empty() {
-        plan.restrict_to_packages(&package_filters)?;
+    if !parsed.filters.include_packages.is_empty() {
+        plan.restrict_to_packages(&parsed.filters.include_packages)?;
     }
+    plan.exclude_packages(&parsed.filters.exclude_packages)?;
     emit_diagnostic_warnings(&plan);
     let target = plan.default_output_dir();
     generate::write_runner(&plan, &target)?;
@@ -151,7 +157,7 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
         .arg("--manifest-path")
         .arg(&manifest)
         .arg("--")
-        .args(&runner_args)
+        .args(&parsed.runner_args)
         .status()
         .with_context(|| {
             format!(
@@ -163,38 +169,6 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
         || ExitCode::from(1),
         |code| ExitCode::from(u8::try_from(code & 0xFF_i32).unwrap_or(1)),
     ))
-}
-
-/// Split positional `cargo rudzio test` args into directory paths
-/// (used to restrict the aggregator to a subset of workspace members)
-/// and runner-bound args (filters, --skip, etc., forwarded verbatim).
-///
-/// An arg counts as a path iff it is path-shaped (starts with `./`,
-/// `../`, `/`, or is exactly `.` / `..`) AND resolves to a directory
-/// on disk. The disk check guards against runner filters that happen
-/// to look path-shaped — rudzio test names use `::`, so a real path
-/// arg practically must exist as a directory at the time of the run.
-fn split_path_args(rest: &[String]) -> (Vec<PathBuf>, Vec<String>) {
-    let mut paths = Vec::new();
-    let mut runner = Vec::new();
-    for arg in rest {
-        if is_existing_dir_path_arg(arg) {
-            paths.push(PathBuf::from(arg));
-        } else {
-            runner.push(arg.clone());
-        }
-    }
-    (paths, runner)
-}
-
-/// Return `true` iff `arg` looks path-shaped AND points at an existing directory.
-fn is_existing_dir_path_arg(arg: &str) -> bool {
-    let path_shaped = arg == "."
-        || arg == ".."
-        || arg.starts_with("./")
-        || arg.starts_with("../")
-        || arg.starts_with('/');
-    path_shaped && Path::new(arg).is_dir()
 }
 
 /// Print warnings from the src-scan diagnostic pass before the

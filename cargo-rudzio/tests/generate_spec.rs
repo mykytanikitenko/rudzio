@@ -1772,4 +1772,61 @@ mod tests {
         );
         Ok(())
     }
+
+    #[rudzio::test]
+    fn exclude_packages_drops_named_members() -> anyhow::Result<()> {
+        let mut plan = plan_with_members(
+            vec![
+                member("kept-a", vec![rudzio_dep()]),
+                member("dropped", vec![rudzio_dep()]),
+                member("kept-b", vec![rudzio_dep()]),
+            ],
+            "/ws",
+        );
+        plan.exclude_packages(&["dropped".to_owned()])?;
+        let names: Vec<&str> = plan
+            .members
+            .iter()
+            .map(|entry| entry.package_name.as_str())
+            .collect();
+        anyhow::ensure!(
+            names == vec!["kept-a", "kept-b"],
+            "expected [kept-a, kept-b], got {names:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn exclude_packages_with_no_excludes_keeps_everything() -> anyhow::Result<()> {
+        let mut plan = plan_with_members(
+            vec![
+                member("a", vec![rudzio_dep()]),
+                member("b", vec![rudzio_dep()]),
+            ],
+            "/ws",
+        );
+        plan.exclude_packages(&[])?;
+        anyhow::ensure!(plan.members.len() == 2, "members should be untouched");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn exclude_packages_errors_when_everything_dropped() -> anyhow::Result<()> {
+        let mut plan = plan_with_members(
+            vec![
+                member("a", vec![rudzio_dep()]),
+                member("b", vec![rudzio_dep()]),
+            ],
+            "/ws",
+        );
+        let Err(err) = plan.exclude_packages(&["a".to_owned(), "b".to_owned()]) else {
+            anyhow::bail!("expected exclude_packages to fail when nothing remains");
+        };
+        let message = err.to_string();
+        anyhow::ensure!(
+            message.contains("excluded every"),
+            "error should explain the empty result, got: {message}",
+        );
+        Ok(())
+    }
 }

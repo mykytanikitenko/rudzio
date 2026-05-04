@@ -398,6 +398,35 @@ impl Plan {
         PathBuf::from(self.target_directory.as_std_path()).join(AGGREGATOR_NAME)
     }
 
+    /// Drop every member whose `package_name` matches one of `excluded`.
+    ///
+    /// Mirrors cargo's `--exclude`: exact name match against the Cargo
+    /// package name. Excludes that don't match any current member are
+    /// silently ignored (cargo behaves the same way).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the exclusion would empty the plan — this
+    /// usually means the user paired `--exclude` with a too-narrow
+    /// `-p` set; surfacing it is friendlier than a silent "0 tests" run.
+    #[inline]
+    pub fn exclude_packages(&mut self, excluded: &[String]) -> Result<()> {
+        if excluded.is_empty() {
+            return Ok(());
+        }
+        let unwanted: BTreeSet<&str> = excluded.iter().map(String::as_str).collect();
+        self.members
+            .retain(|member| !unwanted.contains(member.package_name.as_str()));
+        if self.members.is_empty() {
+            let shown = excluded.join(", ");
+            bail!(
+                "excluded every rudzio crate from the plan via --exclude {shown} \
+                 (check the names, or pair with -p to keep something)"
+            );
+        }
+        Ok(())
+    }
+
     /// Construct an empty `Plan` keyed by workspace root, target directory, and rudzio spec.
     #[inline]
     #[must_use]
