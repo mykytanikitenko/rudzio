@@ -33,6 +33,8 @@ use rudzio::runtime::tokio::Multithread;
     (runtime = Multithread::new, suite = Suite, test = Test),
 ])]
 mod tests {
+    use rudzio::context::Test as _;
+
     use super::{Duration, Test};
 
     // Plain test — no bench annotation. Runs once regardless of

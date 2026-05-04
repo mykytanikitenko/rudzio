@@ -6,7 +6,7 @@ use tokio_util::task::TaskTracker;
 
 use crate::config::Config;
 use crate::context;
-use crate::runtime::{JoinError, Runtime};
+use crate::runtime::Runtime;
 
 use super::test::Test;
 
@@ -32,72 +32,6 @@ where
     }
 }
 
-impl<'suite_context, R> Suite<'suite_context, R>
-where
-    R: Runtime<'suite_context> + Sync,
-{
-    #[inline]
-    pub fn block_on<F>(&self, fut: F) -> F::Output
-    where
-        F: Future + 'suite_context,
-        F::Output: 'static,
-    {
-        self.rt.block_on(fut)
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn cancel_token(&self) -> &CancellationToken {
-        &self.cancel
-    }
-
-    #[inline]
-    pub fn spawn<F>(
-        &self,
-        fut: F,
-    ) -> impl Future<Output = Result<F::Output, JoinError>> + Send + 'suite_context
-    where
-        F: Future + Send + 'static,
-        F::Output: Send,
-    {
-        self.rt.spawn(fut)
-    }
-
-    #[inline]
-    pub fn spawn_blocking<F, T>(
-        &self,
-        func: F,
-    ) -> impl Future<Output = Result<T, JoinError>> + Send + 'suite_context
-    where
-        F: FnOnce() -> T + Send + 'static,
-        T: Send + 'static,
-    {
-        self.rt.spawn_blocking(func)
-    }
-
-    #[inline]
-    pub fn spawn_local<F>(
-        &self,
-        fut: F,
-    ) -> impl Future<Output = Result<F::Output, JoinError>> + 'suite_context
-    where
-        F: Future + 'static,
-    {
-        self.rt.spawn_local(fut)
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn tracker(&self) -> &TaskTracker {
-        &self.tracker
-    }
-
-    #[inline]
-    pub fn yield_now(&self) -> impl Future<Output = ()> + 'suite_context {
-        self.rt.yield_now()
-    }
-}
-
 impl<'suite_context, R> context::Suite<'suite_context, R> for Suite<'suite_context, R>
 where
     R: for<'rt> Runtime<'rt> + Sync,
@@ -109,6 +43,21 @@ where
         = Test<'test_context, R>
     where
         Self: 'test_context;
+
+    #[inline]
+    fn rt(&self) -> &'suite_context R {
+        self.rt
+    }
+
+    #[inline]
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    #[inline]
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
+    }
 
     #[inline]
     fn context<'test_context>(

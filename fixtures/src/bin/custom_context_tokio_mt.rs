@@ -13,12 +13,13 @@
 
 use std::error::Error;
 use std::fmt;
-use std::marker::PhantomData;
 
+use rudzio::Config;
 use rudzio::context;
 use rudzio::runtime::Runtime;
 use rudzio::runtime::tokio::Multithread;
 use rudzio::tokio_util::sync::CancellationToken;
+use rudzio::tokio_util::task::TaskTracker;
 
 /// Sentinel error type that never occurs in practice.
 #[derive(Debug)]
@@ -29,8 +30,12 @@ struct MySuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'suite_context R>,
+    /// Per-suite cancellation token.
+    cancel: CancellationToken,
+    /// Borrow of the async runtime driving this suite.
+    rt: &'suite_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 /// Custom per-test context with no state.
@@ -38,8 +43,14 @@ struct MyTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'test_context R>,
+    /// Per-test cancellation token.
+    cancel: CancellationToken,
+    /// Resolved CLI/env configuration.
+    config: &'test_context Config,
+    /// Borrow of the async runtime driving this test.
+    rt: &'test_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 impl fmt::Display for NeverFails {
@@ -84,30 +95,50 @@ where
         Self: 'test_context;
 
     #[inline]
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    #[inline]
     async fn context<'test_context>(
         &'test_context self,
-        _cancel: CancellationToken,
-        _config: &'test_context ::rudzio::Config,
+        cancel: CancellationToken,
+        config: &'test_context Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Ok(MyTest {
-            _marker: PhantomData,
+            cancel,
+            config,
+            rt: self.rt,
+            tracker: self.tracker.clone(),
         })
     }
 
     #[inline]
+    fn rt(&self) -> &'suite_context R {
+        self.rt
+    }
+
+    #[inline]
     async fn setup(
-        _rt: &'suite_context R,
-        _cancel: CancellationToken,
-        _config: &'suite_context ::rudzio::Config,
+        rt: &'suite_context R,
+        cancel: CancellationToken,
+        _config: &'suite_context Config,
     ) -> Result<Self, Self::SetupError> {
         Ok(Self {
-            _marker: PhantomData,
+            cancel: cancel.child_token(),
+            rt,
+            tracker: TaskTracker::new(),
         })
     }
 
     #[inline]
     async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
+    }
+
+    #[inline]
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 
@@ -118,8 +149,28 @@ where
     type TeardownError = NeverFails;
 
     #[inline]
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    #[inline]
+    fn config(&self) -> &Config {
+        self.config
+    }
+
+    #[inline]
+    fn rt(&self) -> &'test_context R {
+        self.rt
+    }
+
+    #[inline]
     async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
+    }
+
+    #[inline]
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 

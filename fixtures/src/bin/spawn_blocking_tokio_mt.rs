@@ -26,6 +26,8 @@ fn triangular_sum(n: u64) -> u64 {
     ),
 ])]
 mod tests {
+    use rudzio::context::Test as _;
+
     use super::{Test, ThreadId, thread, triangular_sum};
 
     #[rudzio::test]

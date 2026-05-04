@@ -7,13 +7,13 @@
 
 use std::error::Error;
 use std::fmt;
-use std::marker::PhantomData;
 
 use rudzio::Config;
 use rudzio::context;
 use rudzio::runtime::Runtime;
 use rudzio::runtime::tokio::Multithread;
 use rudzio::tokio_util::sync::CancellationToken;
+use rudzio::tokio_util::task::TaskTracker;
 
 /// Error type used to fail suite setup on purpose.
 #[derive(Debug)]
@@ -32,8 +32,12 @@ struct FailingSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'suite_context R>,
+    /// Per-suite cancellation token.
+    cancel: CancellationToken,
+    /// Borrow of the async runtime driving this suite.
+    rt: &'suite_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 impl<'suite_context, R> fmt::Debug for FailingSuite<'suite_context, R>
@@ -57,12 +61,20 @@ where
     where
         Self: 'test_context;
 
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
     async fn context<'test_context>(
         &'test_context self,
         _cancel: CancellationToken,
         _config: &'test_context Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Err(SetupFailed)
+    }
+
+    fn rt(&self) -> &'suite_context R {
+        self.rt
     }
 
     async fn setup(
@@ -76,6 +88,10 @@ where
     async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
     }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
+    }
 }
 
 /// Test context placeholder; never actually constructed because
@@ -84,8 +100,14 @@ struct NeverBuilt<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'test_context R>,
+    /// Per-test cancellation token.
+    cancel: CancellationToken,
+    /// Resolved CLI/env configuration.
+    config: &'test_context Config,
+    /// Borrow of the async runtime driving this test.
+    rt: &'test_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 impl<'test_context, R> fmt::Debug for NeverBuilt<'test_context, R>
@@ -103,8 +125,24 @@ where
 {
     type TeardownError = SetupFailed;
 
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    fn config(&self) -> &Config {
+        self.config
+    }
+
+    fn rt(&self) -> &'test_context R {
+        self.rt
+    }
+
     async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 

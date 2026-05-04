@@ -9,7 +9,6 @@
 
 use std::convert::Infallible;
 use std::fmt;
-use std::marker::PhantomData;
 use std::time::Duration;
 
 use rudzio::Config;
@@ -17,6 +16,7 @@ use rudzio::context;
 use rudzio::runtime::Runtime;
 use rudzio::runtime::tokio::Multithread;
 use rudzio::tokio_util::sync::CancellationToken;
+use rudzio::tokio_util::task::TaskTracker;
 use tokio::time::sleep;
 
 /// Suite whose [`context::Suite::setup`] hangs past the configured
@@ -26,8 +26,12 @@ struct HangingSetupSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'suite_context R>,
+    /// Per-suite cancellation token.
+    cancel: CancellationToken,
+    /// Borrow of the async runtime driving this suite.
+    rt: &'suite_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 /// Per-test context placeholder; never actually constructed because
@@ -36,8 +40,14 @@ struct NeverBuiltTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'test_context R>,
+    /// Per-test cancellation token.
+    cancel: CancellationToken,
+    /// Resolved CLI/env configuration.
+    config: &'test_context Config,
+    /// Borrow of the async runtime driving this test.
+    rt: &'test_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 impl<'suite_context, R> fmt::Debug for HangingSetupSuite<'suite_context, R>
@@ -70,14 +80,25 @@ where
     where
         Self: 'test_context;
 
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
     async fn context<'test_context>(
         &'test_context self,
-        _cancel: CancellationToken,
-        _config: &'test_context Config,
+        cancel: CancellationToken,
+        config: &'test_context Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Ok(NeverBuiltTest {
-            _marker: PhantomData,
+            cancel,
+            config,
+            rt: self.rt,
+            tracker: self.tracker.clone(),
         })
+    }
+
+    fn rt(&self) -> &'suite_context R {
+        self.rt
     }
 
     #[expect(
@@ -85,7 +106,7 @@ where
         reason = "this fixture asserts the suite-setup-timeout phase wrapper drops the in-flight setup future before completion; the println! after the sleep is the unreached marker that the integration test greps for absence"
     )]
     async fn setup(
-        _rt: &'suite_context R,
+        rt: &'suite_context R,
         cancel: CancellationToken,
         _config: &'suite_context Config,
     ) -> Result<Self, Self::SetupError> {
@@ -100,7 +121,9 @@ where
             .await;
         println!("hanging_suite_setup_unreached_marker");
         Ok(Self {
-            _marker: PhantomData,
+            cancel: cancel.child_token(),
+            rt,
+            tracker: TaskTracker::new(),
         })
     }
 
@@ -112,6 +135,10 @@ where
         println!("teardown_must_not_run_marker");
         Ok(())
     }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
+    }
 }
 
 impl<'test_context, R> context::Test<'test_context, R> for NeverBuiltTest<'test_context, R>
@@ -120,8 +147,24 @@ where
 {
     type TeardownError = Infallible;
 
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    fn config(&self) -> &Config {
+        self.config
+    }
+
+    fn rt(&self) -> &'test_context R {
+        self.rt
+    }
+
     async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 

@@ -21,6 +21,8 @@ use rudzio::runtime::tokio::Multithread;
     ),
 ])]
 mod tests {
+    use rudzio::context::Test as _;
+
     use super::Test;
 
     #[rudzio::test]

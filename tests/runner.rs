@@ -1383,3 +1383,53 @@ mod path_normalize {
         Ok(())
     }
 }
+
+#[rudzio::suite([
+    (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
+])]
+mod runtime_ctx_api {
+    use std::time::{Duration, Instant};
+
+    use rudzio::context::Test as _;
+
+    use super::Test;
+
+    /// `Test::sleep` delegates to the suite's runtime, so test bodies can
+    /// sleep runtime-agnostically — no `tokio::time::sleep` or other
+    /// adapter-specific timer is needed. Asserted across all six adapters
+    /// so the contract holds wherever the suite is dispatched.
+    #[rudzio::test]
+    async fn ctx_sleep_completes_after_requested_duration(
+        ctx: &Test,
+    ) -> anyhow::Result<()> {
+        let start = Instant::now();
+        ctx.sleep(Duration::from_millis(15_u64)).await;
+        let elapsed = start.elapsed();
+        anyhow::ensure!(
+            elapsed >= Duration::from_millis(10_u64),
+            "ctx.sleep must wait at least roughly the requested duration, elapsed={elapsed:?}"
+        );
+        Ok(())
+    }
+
+    /// `Test::name` surfaces `Runtime::name` so test bodies can branch on
+    /// the active adapter without coupling to a specific runtime type.
+    /// Asserted across all six adapters: each must return a non-empty,
+    /// stable identifier.
+    #[rudzio::test]
+    async fn ctx_name_returns_nonempty_runtime_identifier(
+        ctx: &Test,
+    ) -> anyhow::Result<()> {
+        let name = ctx.name();
+        anyhow::ensure!(
+            !name.is_empty(),
+            "ctx.name must return a non-empty runtime identifier"
+        );
+        Ok(())
+    }
+}

@@ -7,13 +7,14 @@
 
 use std::convert::Infallible;
 use std::fmt;
-use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use rudzio::Config;
 use rudzio::context;
 use rudzio::runtime::Runtime;
 use rudzio::runtime::tokio::Multithread;
 use rudzio::tokio_util::sync::CancellationToken;
+use rudzio::tokio_util::task::TaskTracker;
 
 /// Suite-level state: a shared counter bumped every time a per-test
 /// context is produced.
@@ -21,15 +22,16 @@ struct CountingSuite<'suite_context, Rt>
 where
     Rt: Runtime<'suite_context> + Sync,
 {
-    /// Phantom binding for the suite-context lifetime + runtime type.
-    /// Ordered before `tests_created` to satisfy
-    /// `arbitrary_source_item_ordering`. Unused at runtime — exists
-    /// solely to anchor the generic parameters.
-    _marker: PhantomData<&'suite_context Rt>,
+    /// Per-suite cancellation token.
+    cancel: CancellationToken,
+    /// Borrow of the async runtime driving this suite.
+    rt: &'suite_context Rt,
     /// Counter incremented once per per-test context emitted by
     /// `context()`. Each `CountingTest` reads its own 1-based ordinal
     /// from this counter.
     tests_created: AtomicUsize,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 impl<'suite_context, Rt> fmt::Debug for CountingSuite<'suite_context, Rt>
@@ -56,10 +58,15 @@ where
     where
         Self: 'test_context;
 
+    #[inline]
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
     async fn context<'test_context>(
         &'test_context self,
-        _cancel: CancellationToken,
-        _config: &'test_context rudzio::Config,
+        cancel: CancellationToken,
+        config: &'test_context Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         // Each test body sees its own 1-based ordinal, and the suite's
         // counter keeps climbing across the whole group.
@@ -67,22 +74,40 @@ where
             .tests_created
             .fetch_add(1, Ordering::SeqCst)
             .saturating_add(1);
-        Ok(CountingTest::new(nth))
+        Ok(CountingTest::new(
+            cancel,
+            config,
+            nth,
+            self.rt,
+            self.tracker.clone(),
+        ))
+    }
+
+    #[inline]
+    fn rt(&self) -> &'suite_context Rt {
+        self.rt
     }
 
     async fn setup(
-        _rt: &'suite_context Rt,
-        _cancel: CancellationToken,
-        _config: &'suite_context rudzio::Config,
+        rt: &'suite_context Rt,
+        cancel: CancellationToken,
+        _config: &'suite_context Config,
     ) -> Result<Self, Self::SetupError> {
         Ok(Self {
-            _marker: PhantomData,
+            cancel: cancel.child_token(),
+            rt,
             tests_created: AtomicUsize::new(0),
+            tracker: TaskTracker::new(),
         })
     }
 
     async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
+    }
+
+    #[inline]
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 
@@ -94,12 +119,17 @@ pub struct CountingTest<'test_context, Rt>
 where
     Rt: Runtime<'test_context> + Sync,
 {
-    /// Phantom binding for the test-context lifetime + runtime type.
-    /// Unused at runtime — exists solely to anchor generics.
-    _marker: PhantomData<&'test_context Rt>,
+    /// Per-test cancellation token.
+    cancel: CancellationToken,
+    /// Resolved CLI/env configuration.
+    config: &'test_context Config,
     /// 1-based ordinal of this per-test context within the suite,
     /// assigned by `CountingSuite::context()`.
     nth: usize,
+    /// Borrow of the async runtime driving this test.
+    rt: &'test_context Rt,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 impl<'test_context, Rt> CountingTest<'test_context, Rt>
@@ -111,10 +141,19 @@ where
     /// the same crate as this struct in the example) can build one.
     #[inline]
     #[must_use]
-    pub const fn new(nth: usize) -> Self {
+    pub const fn new(
+        cancel: CancellationToken,
+        config: &'test_context Config,
+        nth: usize,
+        rt: &'test_context Rt,
+        tracker: TaskTracker,
+    ) -> Self {
         Self {
-            _marker: PhantomData,
+            cancel,
+            config,
             nth,
+            rt,
+            tracker,
         }
     }
 
@@ -145,8 +184,28 @@ where
     type TeardownError = Infallible;
 
     #[inline]
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    #[inline]
+    fn config(&self) -> &Config {
+        self.config
+    }
+
+    #[inline]
+    fn rt(&self) -> &'test_context Rt {
+        self.rt
+    }
+
+    #[inline]
     async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
+    }
+
+    #[inline]
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 

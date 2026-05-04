@@ -9,7 +9,6 @@
 
 use std::error::Error;
 use std::fmt;
-use std::marker::PhantomData;
 use std::process::exit;
 use std::sync::{Arc, Barrier, BarrierWaitResult, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -21,6 +20,7 @@ use rudzio::runtime::compio::Runtime as CompioRuntime;
 use rudzio::runtime::tokio::Multithread;
 use rudzio::runtime::{JoinError, Runtime};
 use rudzio::tokio_util::sync::CancellationToken;
+use rudzio::tokio_util::task::TaskTracker;
 
 /// Maximum time the watchdog thread waits before aborting the process.
 const WATCHDOG_TIMEOUT: Duration = Duration::from_secs(5);
@@ -30,8 +30,12 @@ struct CrossSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
+    /// Per-suite cancellation token.
+    cancel: CancellationToken,
     /// Borrow of the async runtime driving the suite context.
     rt: &'suite_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 /// Per-test context exposing `spawn_blocking` on the group's runtime.
@@ -39,10 +43,14 @@ struct CrossTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'test_context R>,
+    /// Per-test cancellation token.
+    cancel: CancellationToken,
+    /// Resolved CLI/env configuration.
+    config: &'test_context Config,
     /// Borrow of the async runtime driving this test.
     rt: &'test_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 /// Sentinel error type that never occurs in practice.
@@ -104,28 +112,46 @@ where
     where
         Self: 'test_context;
 
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
     async fn context<'test_context>(
         &'test_context self,
-        _cancel: CancellationToken,
-        _config: &'test_context Config,
+        cancel: CancellationToken,
+        config: &'test_context Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Ok(CrossTest {
-            _marker: PhantomData,
+            cancel,
+            config,
             rt: self.rt,
+            tracker: self.tracker.clone(),
         })
+    }
+
+    fn rt(&self) -> &'suite_context R {
+        self.rt
     }
 
     async fn setup(
         rt: &'suite_context R,
-        _cancel: CancellationToken,
+        cancel: CancellationToken,
         _config: &'suite_context Config,
     ) -> Result<Self, Self::SetupError> {
         start_watchdog();
-        Ok(Self { rt })
+        Ok(Self {
+            cancel: cancel.child_token(),
+            rt,
+            tracker: TaskTracker::new(),
+        })
     }
 
     async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 
@@ -135,8 +161,24 @@ where
 {
     type TeardownError = NeverFails;
 
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    fn config(&self) -> &Config {
+        self.config
+    }
+
+    fn rt(&self) -> &'test_context R {
+        self.rt
+    }
+
     async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 

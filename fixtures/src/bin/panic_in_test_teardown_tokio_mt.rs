@@ -9,12 +9,13 @@
 
 use std::convert::Infallible;
 use std::fmt;
-use std::marker::PhantomData;
 
+use rudzio::Config;
 use rudzio::context;
 use rudzio::runtime::Runtime;
 use rudzio::runtime::tokio::Multithread;
 use rudzio::tokio_util::sync::CancellationToken;
+use rudzio::tokio_util::task::TaskTracker;
 
 /// Suite whose suite-level setup, per-test context, and suite teardown
 /// all succeed; only the per-test [`context::Test::teardown`] panics.
@@ -22,8 +23,12 @@ struct PassingSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'suite_context R>,
+    /// Per-suite cancellation token.
+    cancel: CancellationToken,
+    /// Borrow of the async runtime driving this suite.
+    rt: &'suite_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 impl<'suite_context, R> fmt::Debug for PassingSuite<'suite_context, R>
@@ -47,28 +52,45 @@ where
     where
         Self: 'test_context;
 
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
     async fn context<'test_context>(
         &'test_context self,
-        _cancel: CancellationToken,
-        _config: &'test_context ::rudzio::Config,
+        cancel: CancellationToken,
+        config: &'test_context Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Ok(PanickingTeardownTest {
-            _marker: PhantomData,
+            cancel,
+            config,
+            rt: self.rt,
+            tracker: self.tracker.clone(),
         })
     }
 
+    fn rt(&self) -> &'suite_context R {
+        self.rt
+    }
+
     async fn setup(
-        _rt: &'suite_context R,
-        _cancel: CancellationToken,
-        _config: &'suite_context ::rudzio::Config,
+        rt: &'suite_context R,
+        cancel: CancellationToken,
+        _config: &'suite_context Config,
     ) -> Result<Self, Self::SetupError> {
         Ok(Self {
-            _marker: PhantomData,
+            cancel: cancel.child_token(),
+            rt,
+            tracker: TaskTracker::new(),
         })
     }
 
     async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 
@@ -77,8 +99,14 @@ struct PanickingTeardownTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'test_context R>,
+    /// Per-test cancellation token.
+    cancel: CancellationToken,
+    /// Resolved CLI/env configuration.
+    config: &'test_context Config,
+    /// Borrow of the async runtime driving this test.
+    rt: &'test_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 impl<'test_context, R> fmt::Debug for PanickingTeardownTest<'test_context, R>
@@ -97,12 +125,28 @@ where
 {
     type TeardownError = Infallible;
 
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    fn config(&self) -> &Config {
+        self.config
+    }
+
+    fn rt(&self) -> &'test_context R {
+        self.rt
+    }
+
     #[expect(
         clippy::panic,
         reason = "this fixture exercises the catch_unwind wrapper around Test::teardown (per-test teardown); the teardown body must panic to verify the runner routes the panic through report_test_teardown_failure with the panic message"
     )]
     async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         panic!("test_teardown_panicked_by_design")
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 

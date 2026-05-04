@@ -10,6 +10,8 @@ use rudzio::runtime::futures::ThreadPool;
     ),
 ])]
 mod tests {
+    use rudzio::context::Test as _;
+
     use super::Test;
 
     #[rudzio::test]

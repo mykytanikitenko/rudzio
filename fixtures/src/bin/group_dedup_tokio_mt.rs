@@ -10,7 +10,6 @@
 
 use std::convert::Infallible;
 use std::fmt;
-use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rudzio::Config;
@@ -18,6 +17,7 @@ use rudzio::context;
 use rudzio::runtime::Runtime;
 use rudzio::runtime::tokio::Multithread;
 use rudzio::tokio_util::sync::CancellationToken;
+use rudzio::tokio_util::task::TaskTracker;
 
 /// Number of `Suite::setup` invocations observed across all groups.
 static SETUP_CALLS: AtomicUsize = AtomicUsize::new(0);
@@ -30,8 +30,12 @@ struct CountingSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'suite_context R>,
+    /// Per-suite cancellation token.
+    cancel: CancellationToken,
+    /// Borrow of the async runtime driving this suite.
+    rt: &'suite_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 /// Per-test context with no state; the test bodies inspect
@@ -40,8 +44,14 @@ struct CountingTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'test_context R>,
+    /// Per-test cancellation token.
+    cancel: CancellationToken,
+    /// Resolved CLI/env configuration.
+    config: &'test_context Config,
+    /// Borrow of the async runtime driving this test.
+    rt: &'test_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 impl<'suite_context, R> fmt::Debug for CountingSuite<'suite_context, R>
@@ -74,14 +84,25 @@ where
     where
         Self: 'test_context;
 
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
     async fn context<'test_context>(
         &'test_context self,
-        _cancel: CancellationToken,
-        _config: &'test_context Config,
+        cancel: CancellationToken,
+        config: &'test_context Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Ok(CountingTest {
-            _marker: PhantomData,
+            cancel,
+            config,
+            rt: self.rt,
+            tracker: self.tracker.clone(),
         })
+    }
+
+    fn rt(&self) -> &'suite_context R {
+        self.rt
     }
 
     #[expect(
@@ -89,8 +110,8 @@ where
         reason = "this fixture asserts duplicate suite tuples collapse into one group by emitting machine-readable COUNTING_SUITE_SETUP lines that the integration test greps; println! is the deliberate channel"
     )]
     async fn setup(
-        _rt: &'suite_context R,
-        _cancel: CancellationToken,
+        rt: &'suite_context R,
+        cancel: CancellationToken,
         _config: &'suite_context Config,
     ) -> Result<Self, Self::SetupError> {
         let prev = SETUP_CALLS.fetch_add(1_usize, Ordering::SeqCst);
@@ -99,7 +120,9 @@ where
             prev.saturating_add(1_usize),
         );
         Ok(Self {
-            _marker: PhantomData,
+            cancel: cancel.child_token(),
+            rt,
+            tracker: TaskTracker::new(),
         })
     }
 
@@ -115,6 +138,10 @@ where
         );
         Ok(())
     }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
+    }
 }
 
 impl<'test_context, R> context::Test<'test_context, R> for CountingTest<'test_context, R>
@@ -123,8 +150,24 @@ where
 {
     type TeardownError = Infallible;
 
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    fn config(&self) -> &Config {
+        self.config
+    }
+
+    fn rt(&self) -> &'test_context R {
+        self.rt
+    }
+
     async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 

@@ -9,6 +9,8 @@ use rudzio::runtime::embassy::Runtime;
     ),
 ])]
 mod tests {
+    use rudzio::context::Test as _;
+
     use super::Test;
 
     #[rudzio::test]

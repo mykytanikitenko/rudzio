@@ -23,6 +23,8 @@ use tokio::time::sleep;
     ),
 ])]
 mod tests {
+    use rudzio::context::Test as _;
+
     use super::{Duration, Test, sleep};
 
     #[rudzio::test]

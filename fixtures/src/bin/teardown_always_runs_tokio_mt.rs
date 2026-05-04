@@ -7,13 +7,14 @@
 
 use std::convert::Infallible;
 use std::fmt;
-use std::marker::PhantomData;
 use std::time::Duration;
 
+use rudzio::Config;
 use rudzio::context::{Suite, Test};
 use rudzio::runtime::Runtime;
 use rudzio::runtime::tokio::Multithread;
 use rudzio::tokio_util::sync::CancellationToken;
+use rudzio::tokio_util::task::TaskTracker;
 use tokio::time::sleep;
 
 #[rudzio::suite([
@@ -51,8 +52,12 @@ pub struct TeardownSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'suite_context R>,
+    /// Per-suite cancellation token.
+    cancel: CancellationToken,
+    /// Borrow of the async runtime driving this suite.
+    rt: &'suite_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 /// Per-test context that holds a cancel token (so the test body can cooperate
@@ -62,12 +67,16 @@ pub struct TeardownTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'test_context R>,
     /// Cancel token plumbed in from the suite's `context` impl; the test
     /// body races a 30 s sleep against this token so it returns when the
     /// per-test watchdog fires.
-    cancel: CancellationToken,
+    pub cancel: CancellationToken,
+    /// Resolved CLI/env configuration.
+    config: &'test_context Config,
+    /// Borrow of the async runtime driving this test.
+    rt: &'test_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 #[rudzio::main]
@@ -106,25 +115,39 @@ where
         Self: 'test_context;
 
     #[inline]
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    #[inline]
     async fn context<'test_context>(
         &'test_context self,
         cancel: CancellationToken,
-        _config: &'test_context ::rudzio::Config,
+        config: &'test_context Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Ok(TeardownTest {
             cancel,
-            _marker: PhantomData,
+            config,
+            rt: self.rt,
+            tracker: self.tracker.clone(),
         })
     }
 
     #[inline]
+    fn rt(&self) -> &'suite_context R {
+        self.rt
+    }
+
+    #[inline]
     async fn setup(
-        _rt: &'suite_context R,
-        _cancel: CancellationToken,
-        _config: &'suite_context ::rudzio::Config,
+        rt: &'suite_context R,
+        cancel: CancellationToken,
+        _config: &'suite_context Config,
     ) -> Result<Self, Self::SetupError> {
         Ok(Self {
-            _marker: PhantomData,
+            cancel: cancel.child_token(),
+            rt,
+            tracker: TaskTracker::new(),
         })
     }
 
@@ -137,6 +160,11 @@ where
         println!("teardown_suite_marker");
         Ok(())
     }
+
+    #[inline]
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
+    }
 }
 
 impl<'test_context, R> Test<'test_context, R> for TeardownTest<'test_context, R>
@@ -146,6 +174,21 @@ where
     type TeardownError = Infallible;
 
     #[inline]
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    #[inline]
+    fn config(&self) -> &Config {
+        self.config
+    }
+
+    #[inline]
+    fn rt(&self) -> &'test_context R {
+        self.rt
+    }
+
+    #[inline]
     #[expect(
         clippy::print_stdout,
         reason = "this fixture verifies that per-test teardown runs after the runner's per-test watchdog fires; the marker is printed for integration tests to grep"
@@ -153,5 +196,10 @@ where
     async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         println!("teardown_test_marker");
         Ok(())
+    }
+
+    #[inline]
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }

@@ -9,6 +9,8 @@ use rudzio::runtime::tokio::Local;
     ),
 ])]
 mod tests {
+    use rudzio::context::Test as _;
+
     use super::Test;
 
     #[rudzio::test]

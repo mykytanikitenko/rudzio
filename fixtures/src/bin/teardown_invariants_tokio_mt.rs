@@ -17,10 +17,10 @@
 
 use std::convert::Infallible;
 use std::fmt;
-use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use rudzio::Config;
 use rudzio::context;
 use rudzio::runtime::Runtime;
 use rudzio::runtime::tokio::Multithread;
@@ -53,10 +53,12 @@ struct InvariantsSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'suite_context R>,
+    /// Per-suite cancellation token.
+    cancel: CancellationToken,
+    /// Borrow of the async runtime driving this suite.
+    rt: &'suite_context R,
     /// Suite-level tracker; populated in `setup`, closed + drained in
-    /// `teardown`.
+    /// `teardown`. Also returned by the `tracker()` accessor.
     suite_tracker: TaskTracker,
 }
 
@@ -66,8 +68,14 @@ struct InvariantsTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'test_context R>,
+    /// Per-test cancellation token.
+    cancel: CancellationToken,
+    /// Resolved CLI/env configuration.
+    config: &'test_context Config,
+    /// Borrow of the async runtime driving this test.
+    rt: &'test_context R,
+    /// Suite-shared tracker exposed via the `tracker()` accessor.
+    suite_tracker: TaskTracker,
     /// Per-test tracker; populated by `spawn_tracked_sleep`, closed +
     /// drained in `teardown`.
     test_tracker: TaskTracker,
@@ -103,22 +111,33 @@ where
     where
         Self: 'test_context;
 
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
     async fn context<'test_context>(
         &'test_context self,
-        _cancel: CancellationToken,
-        _config: &'test_context ::rudzio::Config,
+        cancel: CancellationToken,
+        config: &'test_context Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         let _prev: usize = TEST_SETUP_CALLS.fetch_add(1, Ordering::SeqCst);
         Ok(InvariantsTest {
+            cancel,
+            config,
+            rt: self.rt,
+            suite_tracker: self.suite_tracker.clone(),
             test_tracker: TaskTracker::new(),
-            _marker: PhantomData,
         })
     }
 
+    fn rt(&self) -> &'suite_context R {
+        self.rt
+    }
+
     async fn setup(
-        _rt: &'suite_context R,
-        _cancel: CancellationToken,
-        _config: &'suite_context ::rudzio::Config,
+        rt: &'suite_context R,
+        cancel: CancellationToken,
+        _config: &'suite_context Config,
     ) -> Result<Self, Self::SetupError> {
         let _prev: usize = SUITE_SETUP_CALLS.fetch_add(1, Ordering::SeqCst);
         let tracker = TaskTracker::new();
@@ -132,8 +151,9 @@ where
             let _prev_completed: usize = SUITE_TRACKER_COMPLETED.fetch_add(1, Ordering::SeqCst);
         });
         Ok(Self {
+            cancel: cancel.child_token(),
+            rt,
             suite_tracker: tracker,
-            _marker: PhantomData,
         })
     }
 
@@ -158,6 +178,10 @@ where
         );
         Ok(())
     }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.suite_tracker
+    }
 }
 
 impl<'test_context, R> InvariantsTest<'test_context, R>
@@ -181,11 +205,27 @@ where
 {
     type TeardownError = Infallible;
 
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    fn config(&self) -> &Config {
+        self.config
+    }
+
+    fn rt(&self) -> &'test_context R {
+        self.rt
+    }
+
     async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         let _closed: bool = self.test_tracker.close();
         self.test_tracker.wait().await;
         let _prev: usize = TEST_TEARDOWN_CALLS.fetch_add(1, Ordering::SeqCst);
         Ok(())
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.suite_tracker
     }
 }
 

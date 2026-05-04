@@ -17,6 +17,8 @@ use rudzio::runtime::tokio::{CurrentThread, Multithread};
     (runtime = compio::Runtime::new, suite = Suite, test = Test),
 ])]
 mod tests {
+    use rudzio::context::Test as _;
+
     use super::Test;
 
     #[rudzio::test]

@@ -10,13 +10,13 @@
 
 use std::convert::Infallible;
 use std::fmt;
-use std::marker::PhantomData;
 
 use rudzio::Config;
 use rudzio::context;
 use rudzio::runtime::Runtime;
 use rudzio::runtime::tokio::Multithread;
 use rudzio::tokio_util::sync::CancellationToken;
+use rudzio::tokio_util::task::TaskTracker;
 
 /// Per-test context that is never built — `context()` is unreachable
 /// because the suite's `setup` panics before any test gets a chance.
@@ -24,8 +24,14 @@ struct NeverBuilt<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'test_context R>,
+    /// Per-test cancellation token.
+    cancel: CancellationToken,
+    /// Resolved CLI/env configuration.
+    config: &'test_context Config,
+    /// Borrow of the async runtime driving this test.
+    rt: &'test_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 /// Suite whose [`context::Suite::setup`] always panics.
@@ -33,8 +39,12 @@ struct PanickingSetupSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'suite_context R>,
+    /// Per-suite cancellation token.
+    cancel: CancellationToken,
+    /// Borrow of the async runtime driving this suite.
+    rt: &'suite_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 impl<'test_context, R> fmt::Debug for NeverBuilt<'test_context, R>
@@ -68,6 +78,10 @@ where
     where
         Self: 'test_context;
 
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
     #[expect(
         clippy::unreachable,
         reason = "this fixture asserts Suite::setup's panic prevents context() from ever being invoked; the unreachable!() guards that contract — the panic must occur in setup() to exercise that path"
@@ -78,6 +92,10 @@ where
         _config: &'test_context Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         unreachable!("context() must not run when setup panicked")
+    }
+
+    fn rt(&self) -> &'suite_context R {
+        self.rt
     }
 
     #[expect(
@@ -95,6 +113,10 @@ where
     async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
     }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
+    }
 }
 
 impl<'test_context, R> context::Test<'test_context, R> for NeverBuilt<'test_context, R>
@@ -103,8 +125,24 @@ where
 {
     type TeardownError = Infallible;
 
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    fn config(&self) -> &Config {
+        self.config
+    }
+
+    fn rt(&self) -> &'test_context R {
+        self.rt
+    }
+
     async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 

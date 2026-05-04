@@ -60,6 +60,8 @@ where
 {
     /// Per-test cancel token; cancelled in `Test::teardown`.
     cancel: CancellationToken,
+    /// Resolved CLI/env configuration, handed down from the suite.
+    config: &'test_context Config,
     /// Borrow of the async runtime driving this test.
     rt: &'test_context R,
     /// Suite-level tracker shared from `BaseSuite::tracker`.
@@ -96,16 +98,25 @@ where
     where
         Self: 'test_context;
 
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
     async fn context<'test_context>(
         &'test_context self,
         cancel: CancellationToken,
-        _config: &'test_context Config,
+        config: &'test_context Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Ok(BaseTest {
             cancel,
+            config,
             rt: self.rt,
             tracker: self.tracker.clone(),
         })
+    }
+
+    fn rt(&self) -> &'suite_context R {
+        self.rt
     }
 
     async fn setup(
@@ -127,6 +138,10 @@ where
         self.tracker.wait().await;
         Ok(())
     }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
+    }
 }
 
 impl<'test_context, R> context::Test<'test_context, R> for BaseTest<'test_context, R>
@@ -135,9 +150,25 @@ where
 {
     type TeardownError = NeverFails;
 
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    fn config(&self) -> &Config {
+        self.config
+    }
+
+    fn rt(&self) -> &'test_context R {
+        self.rt
+    }
+
     async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         self.cancel.cancel();
         Ok(())
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 
