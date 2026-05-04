@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio_util::sync::CancellationToken;
 
@@ -20,6 +20,7 @@ use crate::output;
 use crate::output::events::LifecycleEvent;
 use crate::output::logfile::LogfileWriter;
 use crate::output::{write_stderr, write_stdout};
+use crate::shuffle::seeded_shuffle;
 use crate::suite::{
     Reporter as SuiteReporter, RunRequest as SuiteRunRequest, RuntimeGroupKey, RuntimeGroupOwner,
     Summary as SuiteSummary, TeardownResult, TestOutcome,
@@ -1113,6 +1114,14 @@ fn dispatch_test_groups(
         let mut handles = Vec::new();
         for mut group_tokens in groups.into_values() {
             group_tokens.sort_by_key(|token| (token.file, token.line));
+            if config.shuffle {
+                // Shuffle within each `(runtime, suite)` group only —
+                // cross-group order is irrelevant because every group
+                // runs on its own thread and its own runtime, so
+                // reordering across groups wouldn't change interleaving
+                // in any user-visible way.
+                seeded_shuffle(&mut group_tokens, resolved_shuffle_seed(config));
+            }
             let Some(first) = group_tokens.first() else {
                 continue;
             };
@@ -1206,6 +1215,33 @@ fn spawn_grace_force_exit_watchdog(token: CancellationToken, grace: Duration) {
         });
 }
 
+/// Resolve the shuffle seed for a `Config`: the user's explicit
+/// `--shuffle-seed=N` if present, otherwise a clock-derived value via
+/// [`derive_shuffle_seed`]. Both branches return the same `u64` so the
+/// caller can pass it to `seeded_shuffle` and print it for repro.
+fn resolved_shuffle_seed(config: &Config) -> u64 {
+    config.shuffle_seed.unwrap_or_else(derive_shuffle_seed)
+}
+
+/// Build a fresh shuffle seed from the wall clock. Used when the user
+/// passed `--shuffle` without `--shuffle-seed`. Falls back to `0` if the
+/// clock is somehow before `UNIX_EPOCH` — that branch only happens with
+/// a deeply broken system clock and a 0 seed is still a valid (if
+/// boring) permutation. Computed as `secs * 1e9 + subsec_nanos` with
+/// wrapping arithmetic to dodge the u128 → u64 truncation cast: both
+/// `secs` (`u64`) and `subsec_nanos` (`u32`) already fit, so no
+/// information is lost beyond the natural u64 wrap on year ~2554.
+fn derive_shuffle_seed() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| {
+            d.as_secs()
+                .wrapping_mul(1_000_000_000)
+                .wrapping_add(u64::from(d.subsec_nanos()))
+        })
+        .unwrap_or(0)
+}
+
 #[must_use]
 #[inline]
 pub fn run(cargo: CargoMeta) -> ExitCode {
@@ -1221,7 +1257,7 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
     // user has expressed any preference, including `RUST_BACKTRACE=0`.
     enable_full_backtrace_default();
 
-    let config = Config::parse(cargo);
+    let mut config = Config::parse(cargo);
 
     // Surface anything the rudzio parser didn't recognise. The args are
     // still preserved in `Config::unparsed` for downstream consumers
@@ -1296,6 +1332,16 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
             total_count,
             if total_count == 1 { "test" } else { "tests" }
         ));
+    }
+
+    // Resolve the shuffle seed once up front (so the printed seed and
+    // the per-group permutations all agree) and announce it on stdout
+    // in libtest-compatible form: a re-run with `--shuffle-seed=<N>`
+    // reproduces the same order.
+    if config.shuffle {
+        let seed = config.shuffle_seed.unwrap_or_else(derive_shuffle_seed);
+        config.shuffle_seed = Some(seed);
+        write_stdout(&format!("shuffle seed: {seed}\n"));
     }
 
     // Root cancellation token: cancelled on run-timeout, SIGINT, or SIGTERM.

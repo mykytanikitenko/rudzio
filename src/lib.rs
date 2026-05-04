@@ -12,6 +12,7 @@ pub mod output;
 pub mod parallelism;
 pub mod runner;
 pub mod runtime;
+pub mod shuffle;
 pub mod suite;
 pub mod test_case;
 pub mod token;

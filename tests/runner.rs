@@ -294,6 +294,111 @@ mod config_parser {
     }
 
     #[rudzio::test]
+    fn shuffle_flag_defaults_to_off(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(&argv(&[]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(!cfg.shuffle, "shuffle should default to false");
+        anyhow::ensure!(
+            cfg.shuffle_seed.is_none(),
+            "shuffle_seed should default to None, got {:?}",
+            cfg.shuffle_seed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn shuffle_flag_alone_enables_shuffle_without_seed(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--shuffle"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(cfg.shuffle, "shuffle should be true");
+        anyhow::ensure!(
+            cfg.shuffle_seed.is_none(),
+            "shuffle_seed should still be None without --shuffle-seed",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn shuffle_seed_equals_form_implies_shuffle(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--shuffle-seed=42"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(cfg.shuffle, "shuffle should be implicitly true");
+        anyhow::ensure!(
+            cfg.shuffle_seed == Some(42),
+            "shuffle_seed = {:?}",
+            cfg.shuffle_seed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn shuffle_seed_space_form_implies_shuffle(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--shuffle-seed", "1234567890"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(cfg.shuffle);
+        anyhow::ensure!(cfg.shuffle_seed == Some(1_234_567_890));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn shuffle_with_seed_is_deterministic(_ctx: &Test) -> anyhow::Result<()> {
+        let mut a: Vec<u32> = (0..50_u32).collect();
+        let mut b: Vec<u32> = (0..50_u32).collect();
+        rudzio::shuffle::seeded_shuffle(&mut a, 12345);
+        rudzio::shuffle::seeded_shuffle(&mut b, 12345);
+        anyhow::ensure!(a == b, "same seed must yield same permutation");
+        anyhow::ensure!(
+            a != (0..50_u32).collect::<Vec<_>>(),
+            "shuffle should change the order with overwhelming probability",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn shuffle_with_different_seeds_yields_different_orders(_ctx: &Test) -> anyhow::Result<()> {
+        let mut a: Vec<u32> = (0..50_u32).collect();
+        let mut b: Vec<u32> = (0..50_u32).collect();
+        rudzio::shuffle::seeded_shuffle(&mut a, 1);
+        rudzio::shuffle::seeded_shuffle(&mut b, 2);
+        anyhow::ensure!(a != b, "different seeds should permute differently");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn shuffle_preserves_multiset(_ctx: &Test) -> anyhow::Result<()> {
+        let original: Vec<u32> = (0..100_u32).collect();
+        let mut permuted = original.clone();
+        rudzio::shuffle::seeded_shuffle(&mut permuted, 0xDEAD_BEEF);
+        let mut sorted = permuted.clone();
+        sorted.sort_unstable();
+        anyhow::ensure!(sorted == original, "shuffle must be a permutation");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn shuffle_seed_garbage_value_falls_through(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--shuffle-seed=not-a-number", "my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            !cfg.shuffle,
+            "garbage shuffle-seed value should not enable shuffle",
+        );
+        anyhow::ensure!(cfg.shuffle_seed.is_none());
+        Ok(())
+    }
+
+    #[rudzio::test]
     fn report_time_flag_is_silently_consumed(_ctx: &Test) -> anyhow::Result<()> {
         let cfg = Config::from_argv_and_env(
             &argv(&["--report-time", "my_filter"]),

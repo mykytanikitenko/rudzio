@@ -445,6 +445,18 @@ pub struct Config {
     pub run_ignored: RunIgnoredMode,
     /// `--run-timeout=<secs>`. `None` = unbounded.
     pub run_timeout: Option<Duration>,
+    /// `--shuffle` (libtest compat). When `true`, the runner permutes
+    /// each `(runtime, suite)` group's test list before dispatch using
+    /// [`Self::shuffle_seed`] (or a derived seed when the seed flag was
+    /// not supplied). Implicitly enabled by `--shuffle-seed=<N>`.
+    pub shuffle: bool,
+    /// `--shuffle-seed=<N>` (libtest compat). When `Some`, that exact
+    /// seed is used for the shuffle permutation; same seed → same
+    /// order across runs. When `None` and [`Self::shuffle`] is `true`,
+    /// the runner derives a seed from the wall clock at run start and
+    /// prints it on a single `shuffle seed: <N>` stdout line so the
+    /// user can reproduce the order.
+    pub shuffle_seed: Option<u64>,
     /// `--skip=<substring>` entries. A test is excluded if its name contains
     /// any of them.
     pub skip_filters: Vec<String>,
@@ -585,6 +597,13 @@ struct ParsedArgs {
     run_ignored: RunIgnoredMode,
     /// Whole-run wall-clock cap from `--run-timeout=<secs>`.
     run_timeout: Option<Duration>,
+    /// `true` if `--shuffle` was seen, or if `--shuffle-seed=<N>` was
+    /// seen with a parseable value (libtest implies shuffle).
+    shuffle: bool,
+    /// `Some(N)` from `--shuffle-seed=<N>` / `--shuffle-seed <N>`. A
+    /// garbage value falls through (leaves `None`) without enabling
+    /// shuffle; this matches how libtest treats unparsable seeds.
+    shuffle_seed: Option<u64>,
     /// Substring filters from each `--skip=<text>` flag, in order.
     skip_filters: Vec<String>,
     /// Per-suite setup phase budget from `--suite-setup-timeout=<secs>`.
@@ -686,6 +705,8 @@ impl Config {
             phase_hang_grace: parsed.phase_hang_grace,
             run_ignored: parsed.run_ignored,
             run_timeout: parsed.run_timeout,
+            shuffle: parsed.shuffle,
+            shuffle_seed: parsed.shuffle_seed,
             skip_filters: parsed.skip_filters,
             suite_setup_timeout: parsed.suite_setup_timeout,
             suite_teardown_timeout: parsed.suite_teardown_timeout,
@@ -936,6 +957,19 @@ fn handle_presentation_flag(
     // this flag in the `=value` form (or bare) — never as a separate
     // value arg — so we don't peek at the next argv entry here.
     if arg == "--ensure-time" || arg.starts_with("--ensure-time=") {
+        return true;
+    }
+    if let Some(value) = flag_value(arg, "--shuffle-seed", "--shuffle-seed=", argv, i) {
+        if let Ok(seed) = value.parse::<u64>() {
+            state.shuffle_seed = Some(seed);
+            state.shuffle = true;
+        }
+        // Garbage value: leave shuffle off, leave seed None — matches
+        // how libtest treats an unparsable seed (silent fallthrough).
+        return true;
+    }
+    if arg == "--shuffle" {
+        state.shuffle = true;
         return true;
     }
     match arg {
