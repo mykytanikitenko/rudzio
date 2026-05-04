@@ -33,6 +33,7 @@ pub mod events;
 pub mod first_poll;
 pub mod init;
 pub mod lifecycle;
+pub mod logfile;
 pub mod panic_hook;
 #[cfg(unix)]
 pub mod pipe;

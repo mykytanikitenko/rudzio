@@ -18,6 +18,7 @@ use crate::common::time::fmt_duration;
 use crate::config::{CargoMeta, ColorMode, Config, Format, OutputMode, RunIgnoredMode, USAGE};
 use crate::output;
 use crate::output::events::LifecycleEvent;
+use crate::output::logfile::LogfileWriter;
 use crate::output::{write_stderr, write_stdout};
 use crate::suite::{
     Reporter as SuiteReporter, RunRequest as SuiteRunRequest, RuntimeGroupKey, RuntimeGroupOwner,
@@ -71,6 +72,9 @@ struct FailureInfo {
 ///   `report_outcome` is a no-op because the macro-generated
 ///   dispatch already emits `TestCompleted` with the full outcome.
 struct ModeReporter {
+    /// Libtest `--logfile <PATH>` sink. Disabled (no-op) when the user
+    /// did not pass the flag or the file failed to open.
+    logfile: LogfileWriter,
     /// Plain-mode rendering state; `None` when running in live mode.
     plain: Option<PlainState>,
     /// Count of per-test teardown failures (Err or panic). The codegen
@@ -163,8 +167,10 @@ impl ModeReporter {
     /// Construct a reporter wired for either plain or live output mode
     /// based on `config.output_mode`.
     fn new(config: &Config) -> Self {
+        let logfile = LogfileWriter::open(config.logfile.as_deref());
         match config.output_mode {
             OutputMode::Plain => Self {
+                logfile,
                 plain: Some(PlainState {
                     failures: Mutex::new(Vec::new()),
                     fmt: config.format,
@@ -173,9 +179,25 @@ impl ModeReporter {
                 test_teardown_failures: AtomicUsize::new(0),
             },
             OutputMode::Live => Self {
+                logfile,
                 plain: None,
                 test_teardown_failures: AtomicUsize::new(0),
             },
+        }
+    }
+
+    /// Map a [`TestOutcome`] to its libtest-format logfile status word.
+    fn logfile_status_for(outcome: &TestOutcome) -> &'static str {
+        match outcome {
+            TestOutcome::Passed { .. } => "ok",
+            TestOutcome::Benched { report, .. } => {
+                if report.is_success() { "ok" } else { "failed" }
+            }
+            TestOutcome::Failed { .. }
+            | TestOutcome::Panicked { .. }
+            | TestOutcome::SetupFailed { .. } => "failed",
+            TestOutcome::TimedOut | TestOutcome::Hung { .. } => "failed",
+            TestOutcome::Cancelled => "ignored",
         }
     }
 }
@@ -204,6 +226,10 @@ impl StatusLabel {
 
 impl SuiteReporter for ModeReporter {
     fn report_cancelled(&self, token: &'static TestToken, runtime_name: &'static str) {
+        if self.logfile.is_enabled() {
+            let qualified = qualified_test_name(token.module_path, token.name);
+            self.logfile.write_line("ignored", &qualified);
+        }
         if let Some(plain) = &self.plain {
             match plain.fmt {
                 Format::Terse => {
@@ -233,6 +259,10 @@ impl SuiteReporter for ModeReporter {
     }
 
     fn report_ignored(&self, token: &'static TestToken, runtime_name: &'static str) {
+        if self.logfile.is_enabled() {
+            let qualified = qualified_test_name(token.module_path, token.name);
+            self.logfile.write_line("ignored", &qualified);
+        }
         if let Some(plain) = &self.plain {
             match plain.fmt {
                 Format::Terse => {
@@ -271,6 +301,11 @@ impl SuiteReporter for ModeReporter {
         runtime_name: &'static str,
         outcome: TestOutcome,
     ) {
+        if self.logfile.is_enabled() {
+            let qualified = qualified_test_name(token.module_path, token.name);
+            self.logfile
+                .write_line(Self::logfile_status_for(&outcome), &qualified);
+        }
         let Some(plain) = &self.plain else {
             // Live mode: macro-generated dispatch already emitted
             // TestCompleted with the full outcome; nothing to do.
@@ -1301,6 +1336,11 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
             colored_plain,
         );
     }
+
+    // Flush the libtest-format logfile (no-op when --logfile was not
+    // passed) before the process winds down, so a buffered tail isn't
+    // lost on early exit.
+    reporter.logfile.flush();
 
     // Drop the guard — in Live mode this signals and joins the drawer
     // (which prints its own summary + restores FDs). In Plain mode

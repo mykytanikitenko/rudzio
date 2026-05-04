@@ -381,6 +381,11 @@ pub struct Config {
     pub help: bool,
     /// `--list`: print test names and exit without running.
     pub list: bool,
+    /// `--logfile <PATH>` / `--logfile=<PATH>` (libtest compat). When
+    /// present, the runner appends one libtest-format line per finished
+    /// test to this path: `<status> <qualified_name>` (e.g. `ok foo::bar`,
+    /// `failed foo::baz`). Absent when the flag is not supplied.
+    pub logfile: Option<PathBuf>,
     /// Rendering strategy for the runner's test output.
     pub output_mode: OutputMode,
     /// Hard cap on the total number of rudzio-dispatched test bodies actively
@@ -566,6 +571,9 @@ struct ParsedArgs {
     help: bool,
     /// `true` if `--list` was seen.
     list: bool,
+    /// `--logfile=<PATH>` / `--logfile <PATH>`. `None` when the flag was
+    /// absent.
+    logfile: Option<PathBuf>,
     /// Explicit `--output=<live|plain>` / `--plain` choice. `None` means
     /// fall through to the auto-detection rule in [`OutputMode::resolve`].
     output_mode_explicit: Option<OutputMode>,
@@ -672,6 +680,7 @@ impl Config {
             hardlimit,
             help: parsed.help,
             list: parsed.list,
+            logfile: parsed.logfile,
             output_mode,
             parallel_hardlimit,
             phase_hang_grace: parsed.phase_hang_grace,
@@ -905,6 +914,10 @@ fn handle_presentation_flag(
             "plain" => state.output_mode_explicit = Some(OutputMode::Plain),
             _ => {}
         }
+        return true;
+    }
+    if let Some(value) = flag_value(arg, "--logfile", "--logfile=", argv, i) {
+        state.logfile = Some(PathBuf::from(value));
         return true;
     }
     match arg {

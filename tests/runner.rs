@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::env::current_exe;
 use std::ffi::OsStr;
 use std::num::NonZeroUsize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -64,8 +64,8 @@ fn env_with(rust_test_threads: Option<&str>) -> BTreeMap<String, String> {
 ])]
 mod config_parser {
     use super::{
-        BenchMode, Config, Duration, Format, NonZeroUsize, SuiteSummary, SummaryOutcomes, Test,
-        TestSummary, argv, env_with,
+        BenchMode, Config, Duration, Format, NonZeroUsize, PathBuf, SuiteSummary, SummaryOutcomes,
+        Test, TestSummary, argv, env_with,
     };
 
     // `#[rudzio::test]` accepts fns that don't take a context parameter
@@ -202,6 +202,116 @@ mod config_parser {
         let cfg =
             Config::from_argv_and_env(&argv(&["my_filter"]), env_with(None), rudzio::cargo_meta!());
         anyhow::ensure!(cfg.filter.as_deref() == Some("my_filter"));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn logfile_absent_is_none(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(&argv(&[]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(cfg.logfile.is_none(), "logfile = {:?}", cfg.logfile);
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn logfile_space_form_is_captured(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--logfile", "out.log"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            cfg.logfile.as_deref() == Some(PathBuf::from("out.log").as_path()),
+            "logfile = {:?}",
+            cfg.logfile,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn logfile_equals_form_is_captured(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--logfile=out.log"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            cfg.logfile.as_deref() == Some(PathBuf::from("out.log").as_path()),
+            "logfile = {:?}",
+            cfg.logfile,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn logfile_does_not_leak_into_filter(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--logfile", "out.log", "my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(cfg.filter.as_deref() == Some("my_filter"));
+        anyhow::ensure!(
+            cfg.logfile.as_deref() == Some(PathBuf::from("out.log").as_path()),
+            "logfile = {:?}",
+            cfg.logfile,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn logfile_writer_disabled_when_no_path(_ctx: &Test) -> anyhow::Result<()> {
+        let writer = rudzio::output::logfile::LogfileWriter::open(None);
+        writer.write_line("ok", "any::name");
+        anyhow::ensure!(!writer.is_enabled(), "writer should be a no-op when path is None");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn logfile_writer_emits_libtest_format_lines(_ctx: &Test) -> anyhow::Result<()> {
+        use std::fs;
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "rudzio-logfile-emits-{}-{}.log",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or_default(),
+        ));
+        let writer = rudzio::output::logfile::LogfileWriter::open(Some(&path));
+        anyhow::ensure!(writer.is_enabled(), "writer should be enabled when path opens");
+        writer.write_line("ok", "foo::bar");
+        writer.write_line("failed", "foo::baz");
+        writer.write_line("ignored", "foo::qux");
+        writer.flush();
+        let contents = fs::read_to_string(&path)?;
+        let _removed = fs::remove_file(&path);
+        anyhow::ensure!(
+            contents == "ok foo::bar\nfailed foo::baz\nignored foo::qux\n",
+            "got {contents:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn logfile_writer_truncates_existing_file_on_open(_ctx: &Test) -> anyhow::Result<()> {
+        use std::fs;
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "rudzio-logfile-trunc-{}-{}.log",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or_default(),
+        ));
+        fs::write(&path, "stale content from a previous run\n")?;
+        let writer = rudzio::output::logfile::LogfileWriter::open(Some(&path));
+        writer.write_line("ok", "fresh::test");
+        writer.flush();
+        let contents = fs::read_to_string(&path)?;
+        let _removed = fs::remove_file(&path);
+        anyhow::ensure!(contents == "ok fresh::test\n", "got {contents:?}");
         Ok(())
     }
 
