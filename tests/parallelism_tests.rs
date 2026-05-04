@@ -6,50 +6,58 @@
 //! tests exercise the only primitive in the framework that controls
 //! cross-runtime concurrency, so we want them actually executing.
 //!
-//! After the swap to a runtime-agnostic async semaphore, the suite is
-//! pinned to tokio runtimes (`Multithread`, `CurrentThread`) so the
-//! test bodies can use `tokio::spawn` + `tokio::sync::oneshot` for
-//! coordination. The `HardLimit` primitive itself is runtime-agnostic;
-//! the choice of runtime here is purely about the test plumbing.
+//! Runtime coverage: the suite is dispatched on every supported
+//! adapter (tokio mt/ct/local, compio, embassy, futures::ThreadPool)
+//! since `HardLimit` is itself runtime-agnostic and must hold the
+//! same contract everywhere. Test plumbing avoids tokio-specific
+//! helpers (`tokio::spawn`, `tokio::sync::oneshot`,
+//! `tokio::time::sleep`): concurrency goes through `FuturesUnordered`
+//! driven by the test body, parked-state assertions use
+//! `futures_util::future::poll_immediate` (single-poll probe), and
+//! cooperative yielding goes through `ctx.yield_now()`.
 //!
-//! Synchronisation discipline: deterministic oneshots and `Notify`
-//! coordinate between tasks — no `tokio::time::sleep` in the success
-//! path. `timeout` is used exclusively to prove *absence* of an event
-//! (a future must still be Pending), which is the only safe direction
-//! to time-bound.
+//! Synchronisation discipline: deterministic atomics + `poll_immediate`
+//! coordinate between sub-futures — no wall-clock sleeps in either the
+//! success path or the absence-of-event path.
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::PoisonError;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use rudzio::common::context::Suite;
+use rudzio::common::context::{Suite, Test};
 use rudzio::parallelism::HardLimit;
-use rudzio::runtime::tokio::{CurrentThread, Multithread};
-use rudzio::tokio::spawn;
-use rudzio::tokio::sync::oneshot;
-use rudzio::tokio::time::sleep;
+use rudzio::runtime::futures::ThreadPool;
+use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
+use rudzio::runtime::{compio, embassy};
 
 #[rudzio::suite([
     (runtime = Multithread::new, suite = Suite, test = Test),
     (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
 ])]
 mod tests {
+    use rudzio::context::Test as _;
+    use rudzio::futures_util::future::poll_immediate;
+    use rudzio::futures_util::stream::{FuturesUnordered, StreamExt};
+
     use super::{
-        Arc, AtomicUsize, Duration, HardLimit, Ordering, PoisonError, collect_sink, nz, oneshot,
-        sleep, spawn,
+        Arc, AtomicBool, AtomicUsize, HardLimit, Ordering, PoisonError, Test, collect_sink, nz,
     };
 
+    /// Sequential acquires below the ceiling never produce a parked
+    /// emission — the gate's fast path returns immediately and the
+    /// sink stays untouched.
     #[rudzio::test]
-    async fn fast_path_never_emits() -> anyhow::Result<()> {
+    async fn fast_path_never_emits(_ctx: &Test) -> anyhow::Result<()> {
         let (captured, sink) = collect_sink();
-        let limit = HardLimit::with_sink(Some(nz(4)), sink);
+        let limit = HardLimit::with_sink(Some(nz(4_usize)), sink);
 
-        // Sequential acquires well below the ceiling: every one is
-        // try_acquire fast-path, no emission.
-        for _ in 0_i32..10_i32 {
+        for _idx in 0_i32..10_i32 {
             let _guard = limit.acquire().await;
         }
 
@@ -64,65 +72,83 @@ mod tests {
         Ok(())
     }
 
+    /// A second acquirer parks while the only permit is held, then
+    /// wakes and acquires once the holder drops its guard. Parked
+    /// state is verified via `poll_immediate` (single-poll probe
+    /// returns None on Pending) — no wall-clock sleeps anywhere.
     #[rudzio::test]
-    async fn guard_release_wakes_next_waiter() -> anyhow::Result<()> {
-        let (_, sink) = collect_sink();
-        let limit = Arc::new(HardLimit::with_sink(Some(nz(1)), sink));
+    async fn guard_release_wakes_next_waiter(ctx: &Test) -> anyhow::Result<()> {
+        let (_unused, sink) = collect_sink();
+        let limit = Arc::new(HardLimit::with_sink(Some(nz(1_usize)), sink));
 
         let outer_guard = limit.acquire().await;
+        let acquired = Arc::new(AtomicBool::new(false));
         let limit_clone = Arc::clone(&limit);
-        let (tx, rx) = oneshot::channel::<()>();
-        let waiter = spawn(async move {
+        let acquired_clone = Arc::clone(&acquired);
+        let mut waiters = FuturesUnordered::new();
+        waiters.push(async move {
             let _guard = limit_clone.acquire().await;
-            tx.send(()).map_err(|()| anyhow::anyhow!("send failed"))
+            acquired_clone.store(true, Ordering::SeqCst);
         });
 
-        // Prove the waiter is parked: a bounded sleep must elapse with
-        // the rx still empty. Time-bounded *absence*-check.
-        sleep(Duration::from_millis(30_u64)).await;
+        // Probe: poll the waiter once. While the gate is full it must
+        // stay Pending and the acquired flag must remain false.
+        for _attempt in 0_i32..3_i32 {
+            let probe = poll_immediate(waiters.next()).await;
+            anyhow::ensure!(
+                probe.is_none(),
+                "waiter completed while gate full: {probe:?}"
+            );
+            ctx.yield_now().await;
+        }
+        anyhow::ensure!(
+            !acquired.load(Ordering::SeqCst),
+            "waiter set acquired flag while gate was full"
+        );
 
-        // Drop the held permit; waiter must wake and signal.
         drop(outer_guard);
-        rx.await
-            .map_err(|err| anyhow::anyhow!("waiter never unblocked: {err:?}"))?;
-        waiter
-            .await
-            .map_err(|err| anyhow::anyhow!("waiter join failed: {err:?}"))??;
+        let drained = waiters.next().await;
+        anyhow::ensure!(drained.is_some(), "waiter never unblocked");
+        anyhow::ensure!(
+            acquired.load(Ordering::SeqCst),
+            "waiter completed without setting acquired flag"
+        );
         Ok(())
     }
 
+    /// Five contenders, two permits, each holder yields cooperatively
+    /// while holding so other futures can be polled. Peak concurrency
+    /// (atomic `fetch_max`) must equal 2 — the gate must enforce its
+    /// ceiling and never let a third holder in.
     #[rudzio::test]
-    async fn permit_count_caps_concurrent_acquires() -> anyhow::Result<()> {
-        let (_, sink) = collect_sink();
-        let limit = Arc::new(HardLimit::with_sink(Some(nz(2)), sink));
+    async fn permit_count_caps_concurrent_acquires(ctx: &Test) -> anyhow::Result<()> {
+        let (_unused, sink) = collect_sink();
+        let limit = Arc::new(HardLimit::with_sink(Some(nz(2_usize)), sink));
 
         let active = Arc::new(AtomicUsize::new(0_usize));
         let peak = Arc::new(AtomicUsize::new(0_usize));
 
-        // Each task acquires, holds for 30ms (forcing real overlap
-        // with at least one other task), records peak via fetch_max,
-        // then releases. With L=2 and 5 tasks, exactly two are
-        // concurrent at any time — peak must equal 2 (never higher).
-        let mut handles = Vec::new();
-        for _ in 0_i32..5_i32 {
+        let mut workers = FuturesUnordered::new();
+        for _idx in 0_i32..5_i32 {
             let limit_clone = Arc::clone(&limit);
             let active_clone = Arc::clone(&active);
             let peak_clone = Arc::clone(&peak);
-            handles.push(spawn(async move {
+            workers.push(async move {
                 let _guard = limit_clone.acquire().await;
                 let now = active_clone
                     .fetch_add(1_usize, Ordering::SeqCst)
                     .saturating_add(1_usize);
                 let _prev_peak = peak_clone.fetch_max(now, Ordering::SeqCst);
-                sleep(Duration::from_millis(30_u64)).await;
+                // Yield several times so the executor can poll waiting
+                // sub-futures and force genuine overlap with the second
+                // permit holder.
+                for _yield_idx in 0_i32..5_i32 {
+                    ctx.yield_now().await;
+                }
                 let _prev_active = active_clone.fetch_sub(1_usize, Ordering::SeqCst);
-            }));
+            });
         }
-        for handle in handles {
-            handle
-                .await
-                .map_err(|err| anyhow::anyhow!("worker join failed: {err:?}"))?;
-        }
+        while workers.next().await.is_some() {}
 
         let observed_peak = peak.load(Ordering::SeqCst);
         anyhow::ensure!(
@@ -132,39 +158,54 @@ mod tests {
         Ok(())
     }
 
+    /// Two permits held; a third acquirer parks and triggers exactly
+    /// one diagnostic emission. Releasing one of the held permits
+    /// wakes the third. Parked state verified via `poll_immediate` so
+    /// the test stays deterministic and runtime-agnostic.
     #[rudzio::test]
-    async fn third_acquire_waits_and_emits_on_unblock() -> anyhow::Result<()> {
+    async fn third_acquire_waits_and_emits_on_unblock(ctx: &Test) -> anyhow::Result<()> {
         let (captured, sink) = collect_sink();
-        let limit = Arc::new(HardLimit::with_sink(Some(nz(2)), sink));
+        let limit = Arc::new(HardLimit::with_sink(Some(nz(2_usize)), sink));
 
         let g1 = limit.acquire().await;
         let g2 = limit.acquire().await;
 
         let limit_clone = Arc::clone(&limit);
-        let (tx, rx) = oneshot::channel::<()>();
-        let third = spawn(async move {
+        let acquired = Arc::new(AtomicBool::new(false));
+        let acquired_clone = Arc::clone(&acquired);
+        let mut waiters = FuturesUnordered::new();
+        waiters.push(async move {
             let _guard = limit_clone.acquire().await;
-            tx.send(()).map_err(|()| anyhow::anyhow!("send failed"))
+            acquired_clone.store(true, Ordering::SeqCst);
         });
 
-        // Prove the third future is parked by showing it does NOT
-        // signal within a bounded window.
-        sleep(Duration::from_millis(50_u64)).await;
+        // Park-state probe: single-poll the third acquirer; it must
+        // stay Pending until a held permit is released.
+        for _attempt in 0_i32..3_i32 {
+            let probe = poll_immediate(waiters.next()).await;
+            anyhow::ensure!(
+                probe.is_none(),
+                "third acquirer completed while gate was full: {probe:?}"
+            );
+            ctx.yield_now().await;
+        }
         let parked_snapshot = {
             let out = captured.lock().unwrap_or_else(PoisonError::into_inner);
             out.clone()
         };
         anyhow::ensure!(
             parked_snapshot.is_empty(),
-            "expected no emissions while parked, got {parked_snapshot:?}"
+            "expected no emissions while still parked (sink fires on unblock, \
+             not on park entry), got {parked_snapshot:?}"
         );
 
         drop(g1);
-        rx.await
-            .map_err(|err| anyhow::anyhow!("third never unblocked: {err:?}"))?;
-        third
-            .await
-            .map_err(|err| anyhow::anyhow!("third join failed: {err:?}"))??;
+        let drained = waiters.next().await;
+        anyhow::ensure!(drained.is_some(), "third never unblocked");
+        anyhow::ensure!(
+            acquired.load(Ordering::SeqCst),
+            "third completed without setting acquired flag"
+        );
         drop(g2);
 
         let snapshot = {
@@ -193,25 +234,24 @@ mod tests {
         Ok(())
     }
 
+    /// `None` ceiling = unlimited mode: many workers each making many
+    /// acquires never produce a parked emission. The fast path stays
+    /// dominant because the gate never reports full.
     #[rudzio::test]
-    async fn unlimited_mode_never_blocks_never_emits() -> anyhow::Result<()> {
+    async fn unlimited_mode_never_blocks_never_emits(_ctx: &Test) -> anyhow::Result<()> {
         let (captured, sink) = collect_sink();
         let limit = Arc::new(HardLimit::with_sink(None, sink));
 
-        let mut handles = Vec::new();
-        for _ in 0_i32..32_i32 {
+        let mut workers = FuturesUnordered::new();
+        for _outer in 0_i32..32_i32 {
             let limit_clone = Arc::clone(&limit);
-            handles.push(spawn(async move {
-                for _ in 0_i32..64_i32 {
+            workers.push(async move {
+                for _inner in 0_i32..64_i32 {
                     let _guard = limit_clone.acquire().await;
                 }
-            }));
+            });
         }
-        for handle in handles {
-            handle
-                .await
-                .map_err(|err| anyhow::anyhow!("worker join failed: {err:?}"))?;
-        }
+        while workers.next().await.is_some() {}
 
         let snapshot = {
             let out = captured.lock().unwrap_or_else(PoisonError::into_inner);
