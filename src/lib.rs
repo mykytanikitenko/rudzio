@@ -39,6 +39,13 @@ pub use suite::{
 };
 pub use test_case::{BoxError, IntoRudzioResult, TestCase, TestFn, box_error};
 pub use token::{TEST_TOKENS, Token as TestToken};
+/// Re-export of the `async-std` runtime crate. Available whenever the
+/// `runtime-async-std` cargo feature is on; lets downstream tests reach
+/// `async_std::*` items without listing async-std as a separate dev-dep
+/// (mirrors the rationale behind the `tokio` re-export below).
+#[doc(hidden)]
+#[cfg(feature = "runtime-async-std")]
+pub use async_std;
 /// Re-export of the `tokio` runtime crate. Available whenever any of
 /// the `runtime-tokio-*` cargo features is on; lets downstream tests
 /// reach `tokio::time::sleep` etc. without listing tokio as a separate

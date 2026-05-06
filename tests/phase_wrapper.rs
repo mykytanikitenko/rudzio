@@ -45,7 +45,7 @@ use rudzio::common::context::{Suite, Test};
 use rudzio::futures_util::future::{AbortHandle, Aborted};
 use rudzio::runtime::futures::ThreadPool;
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
-use rudzio::runtime::{compio, embassy};
+use rudzio::runtime::{async_std, compio, embassy};
 use rudzio::suite::{PhaseOutcome, drive_per_test_spawn, run_phase_with_timeout_and_cancel};
 use rudzio::tokio_util::sync::CancellationToken;
 
@@ -56,6 +56,7 @@ use rudzio::tokio_util::sync::CancellationToken;
     (runtime = compio::Runtime::new, suite = Suite, test = Test),
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
 ])]
 mod phase_wrapper_tests {
     use std::future::pending;

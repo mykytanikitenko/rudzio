@@ -26,6 +26,7 @@ rudzio = { workspace = true, features = [
   "runtime-compio",
   "runtime-embassy",
   "runtime-futures",
+  "runtime-async-std",
   "common",
 ] }
 tokio = { workspace = true }

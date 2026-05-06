@@ -24,6 +24,7 @@ use cargo_rudzio::generate::{
     build_bridge_build_rs, build_bridge_cargo_toml, build_build_rs, build_main_rs,
 };
 use rudzio::common::context::Suite;
+use rudzio::runtime::async_std::Runtime as AsyncStdRuntime;
 use rudzio::runtime::compio::Runtime as CompioRuntime;
 use rudzio::runtime::embassy::Runtime as EmbassyRuntime;
 use rudzio::runtime::futures::ThreadPool as FuturesThreadPool;
@@ -160,6 +161,7 @@ fn generate_runner(cwd: &Path, out: &Path) -> anyhow::Result<()> {
     (runtime = CompioRuntime::new, suite = Suite, test = Test),
     (runtime = EmbassyRuntime::new, suite = Suite, test = Test),
     (runtime = FuturesThreadPool::new, suite = Suite, test = Test),
+    (runtime = AsyncStdRuntime::new, suite = Suite, test = Test),
 ])]
 mod tests {
     use super::{

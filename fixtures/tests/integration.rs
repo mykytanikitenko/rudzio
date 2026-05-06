@@ -13,7 +13,7 @@ use rudzio::common::context::Suite;
 use rudzio::common::context::Test;
 use rudzio::runtime::futures::ThreadPool;
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
-use rudzio::runtime::{compio, embassy};
+use rudzio::runtime::{async_std, compio, embassy};
 
 /// Find `needle` in `hay` and return its byte index, or an error
 /// naming the missing needle. Used by `ordered` for stdio-attribution
@@ -175,6 +175,7 @@ fn run_parallel(exe: &str, threads: u32) -> anyhow::Result<Output> {
     (runtime = compio::Runtime::new, suite = Suite, test = Test),
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
 ])]
 mod tests {
     use super::{
@@ -1265,6 +1266,7 @@ mod tests {
     (runtime = compio::Runtime::new, suite = Suite, test = Test),
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
 ])]
 mod unix_tests {
     use super::{Test, log_of, ordered, run, run_and_signal};

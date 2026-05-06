@@ -20,7 +20,7 @@ use rudzio::runtime::futures::ThreadPool;
 #[cfg(any(test, rudzio_test))]
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
 #[cfg(any(test, rudzio_test))]
-use rudzio::runtime::{compio, embassy};
+use rudzio::runtime::{async_std, compio, embassy};
 
 use crate::phrase::ACK_PHRASE;
 
@@ -194,6 +194,7 @@ fn strip_one_newline(input: &str) -> &str {
     (runtime = compio::Runtime::new, suite = Suite, test = Test),
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
 ])]
 #[cfg(any(test, rudzio_test))]
 mod tests {

@@ -28,7 +28,7 @@ use rudzio::build::{
 use rudzio::common::context::{Suite, Test};
 use rudzio::runtime::futures::ThreadPool;
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
-use rudzio::runtime::{compio, embassy};
+use rudzio::runtime::{async_std, compio, embassy};
 use rudzio::suite::SummaryOutcomes;
 use rudzio::test_case::{BoxError, box_error};
 use rudzio::{
@@ -61,6 +61,7 @@ fn env_with(rust_test_threads: Option<&str>) -> BTreeMap<String, String> {
     (runtime = compio::Runtime::new, suite = Suite, test = Test),
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
 ])]
 mod config_parser {
     use super::{
@@ -1359,6 +1360,7 @@ mod config_parser {
     (runtime = compio::Runtime::new, suite = Suite, test = Test),
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
 ])]
 mod bench_strategies {
     use rudzio::bench::Strategy as _;
@@ -1485,6 +1487,7 @@ mod bench_strategies {
     (runtime = compio::Runtime::new, suite = Suite, test = Test),
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
 ])]
 mod build_sentinel {
     use super::{
@@ -1566,6 +1569,7 @@ mod build_sentinel {
     (runtime = compio::Runtime::new, suite = Suite, test = Test),
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
 ])]
 mod bin_resolver {
     use super::{__resolve_at_runtime, Path, current_exe};
@@ -1617,6 +1621,7 @@ mod bin_resolver {
     (runtime = compio::Runtime::new, suite = Suite, test = Test),
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
 ])]
 mod filter_matching {
     use super::{RunIgnoredMode, Test, token_passes_filters};
@@ -1805,6 +1810,7 @@ mod filter_matching {
     (runtime = compio::Runtime::new, suite = Suite, test = Test),
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
 ])]
 mod path_normalize {
     use super::{Test, normalize_module_path, qualified_test_name};
@@ -1929,6 +1935,7 @@ mod path_normalize {
     (runtime = compio::Runtime::new, suite = Suite, test = Test),
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
 ])]
 mod runtime_ctx_api {
     use std::time::{Duration, Instant};

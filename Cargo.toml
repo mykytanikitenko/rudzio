@@ -46,6 +46,7 @@ futures-executor = { workspace = true, features = [
   "thread-pool",
 ], optional = true }
 futures-timer = { workspace = true, optional = true }
+async-std = { workspace = true, features = ["unstable"], optional = true }
 send_wrapper = { workspace = true, features = ["futures"], optional = true }
 # Only compiled when the `build` feature is on (the `rudzio::build`
 # module). Kept optional so rudzio used purely as a runtime dep doesn't
@@ -77,6 +78,7 @@ rudzio = { version = "0.1.0", path = ".", features = [
   "runtime-compio",
   "runtime-embassy",
   "runtime-futures",
+  "runtime-async-std",
 ] }
 anyhow = "=1.0.102"
 # Renderer regression tests construct a `Drawer` directly and feed it
@@ -120,6 +122,7 @@ runtime-futures = [
   "dep:futures-timer",
   "dep:send_wrapper",
 ]
+runtime-async-std = ["dep:async-std", "dep:send_wrapper"]
 
 [lints]
 workspace = true
@@ -140,6 +143,7 @@ rudzio-migrate = { version = "0.1.0", path = "migrate" }
 
 # External crates (pinned to exact versions for reproducible builds)
 anyhow = "=1.0.102"
+async-std = "=1.13.2"
 cargo_metadata = "=0.23.1"
 compio-runtime = "=0.11.0"
 compio-driver = "=0.11.4"
@@ -225,11 +229,16 @@ variant_size_differences = "forbid"
 # Clippy lints
 # ===========================================================================
 [workspace.lints.clippy]
-# `correctness` / `complexity` / `perf` / `style` / `cargo` are flipped
-# to `forbid`: locking those in is the whole point of Phase 5. Nothing in
-# the workspace `#[allow]`s a lint from these groups, so the upgrade is
-# free.
-cargo = { level = "forbid", priority = -1 }
+# `correctness` / `complexity` / `perf` / `style` are flipped to `forbid`:
+# locking those in is the whole point of Phase 5. Nothing in the workspace
+# `#[allow]`s a lint from these groups, so the upgrade is free.
+#
+# `cargo` is held at `deny` (one notch below `forbid`) so the
+# `multiple_crate_versions` allow further down can take effect — async-std
+# unavoidably pulls duplicate async-channel / event-listener majors, and
+# Rust's lint resolution disallows overriding a forbidden group lint. The
+# group will go back to `forbid` when the async-std adapter is retired.
+cargo = { level = "deny", priority = -1 }
 complexity = { level = "forbid", priority = -1 }
 correctness = { level = "forbid", priority = -1 }
 perf = { level = "forbid", priority = -1 }
@@ -379,6 +388,13 @@ blanket_clippy_restriction_lints = { level = "allow", priority = 1 }
 implicit_return = { level = "allow", priority = 1 }
 missing_trait_methods = { level = "allow", priority = 1 }
 mod_module_files = { level = "allow", priority = 1 }
+# Workaround for async-std (abandoned upstream, slated for removal once
+# the POC stabilises): async-std 1.13.2 simultaneously pulls async-channel
+# 1.x + 2.x and event-listener 2.x + 5.x through its own dep tree. There
+# is no single-version satisfaction across the major-version boundary, so
+# the workspace tolerates the duplication for as long as runtime-async-std
+# ships. Drop this allow when the async-std adapter is retired.
+multiple_crate_versions = { level = "allow", priority = 1 }
 multiple_inherent_impl = { level = "allow", priority = 1 }
 pattern_type_mismatch = { level = "allow", priority = 1 }
 pub_use = { level = "allow", priority = 1 }

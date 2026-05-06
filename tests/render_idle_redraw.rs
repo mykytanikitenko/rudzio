@@ -37,6 +37,7 @@ use rudzio::output::events::{
     TestStateKind,
 };
 use rudzio::output::render::{Drawer, running_line, running_output_lines, spawn_drawer};
+use rudzio::runtime::async_std;
 use rudzio::runtime::compio;
 use rudzio::runtime::embassy;
 use rudzio::runtime::futures::ThreadPool;
@@ -154,6 +155,7 @@ impl Harness {
     (runtime = compio::Runtime::new, suite = Suite, test = Test),
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
 ])]
 mod tests {
     use super::{

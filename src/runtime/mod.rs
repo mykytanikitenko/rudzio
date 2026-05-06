@@ -5,6 +5,8 @@ mod join_error;
 /// The [`Runtime`] trait defining the async runtime abstraction.
 mod rt;
 
+#[cfg(feature = "runtime-async-std")]
+pub mod async_std;
 #[cfg(feature = "runtime-compio")]
 pub mod compio;
 #[cfg(feature = "runtime-embassy")]

@@ -2,6 +2,7 @@
 
 use cargo_rudzio::{EXPOSE_BINS_SENTINEL_ENV, spawn_env};
 use rudzio::common::context::Suite;
+use rudzio::runtime::async_std::Runtime as AsyncStdRuntime;
 use rudzio::runtime::compio::Runtime as CompioRuntime;
 use rudzio::runtime::embassy::Runtime as EmbassyRuntime;
 use rudzio::runtime::futures::ThreadPool as FuturesThreadPool;
@@ -37,6 +38,11 @@ use rudzio::runtime::tokio::{
     ),
     (
         runtime = FuturesThreadPool::new,
+        suite = Suite,
+        test = Test,
+    ),
+    (
+        runtime = AsyncStdRuntime::new,
         suite = Suite,
         test = Test,
     ),

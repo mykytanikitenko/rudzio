@@ -17,7 +17,7 @@ use rudzio::runtime::futures::ThreadPool;
 #[cfg(any(test, rudzio_test))]
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
 #[cfg(any(test, rudzio_test))]
-use rudzio::runtime::{compio, embassy};
+use rudzio::runtime::{async_std, compio, embassy};
 
 /// Suffix appended to every original file path to derive its backup
 /// path. Long and specific by design.
@@ -84,6 +84,7 @@ pub fn copy_before_write(original: &Path) -> io::Result<Outcome> {
     (runtime = compio::Runtime::new, suite = Suite, test = Test),
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
 ])]
 #[cfg(any(test, rudzio_test))]
 mod tests {

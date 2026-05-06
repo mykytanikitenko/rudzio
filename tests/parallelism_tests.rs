@@ -30,7 +30,7 @@ use rudzio::common::context::{Suite, Test};
 use rudzio::parallelism::HardLimit;
 use rudzio::runtime::futures::ThreadPool;
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
-use rudzio::runtime::{compio, embassy};
+use rudzio::runtime::{async_std, compio, embassy};
 
 #[rudzio::suite([
     (runtime = Multithread::new, suite = Suite, test = Test),
@@ -39,6 +39,7 @@ use rudzio::runtime::{compio, embassy};
     (runtime = compio::Runtime::new, suite = Suite, test = Test),
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
 ])]
 mod tests {
     use rudzio::context::Test as _;

@@ -13,6 +13,7 @@ use cargo_rudzio::generate::{
     write_runner,
 };
 use rudzio::common::context::Suite;
+use rudzio::runtime::async_std::Runtime as AsyncStdRuntime;
 use rudzio::runtime::compio::Runtime as CompioRuntime;
 use rudzio::runtime::embassy::Runtime as EmbassyRuntime;
 use rudzio::runtime::futures::ThreadPool as FuturesThreadPool;
@@ -59,6 +60,7 @@ fn ws_root() -> PathBuf {
     (runtime = CompioRuntime::new, suite = Suite, test = Test),
     (runtime = EmbassyRuntime::new, suite = Suite, test = Test),
     (runtime = FuturesThreadPool::new, suite = Suite, test = Test),
+    (runtime = AsyncStdRuntime::new, suite = Suite, test = Test),
 ])]
 mod tests {
     use super::{
