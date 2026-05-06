@@ -185,7 +185,20 @@ linkme = "=0.3.36"
 # (the only platforms where the runtime adapter compiles). The `iouring`
 # feature flag is a no-op on non-linux because the `io-uring` crate is
 # itself `target_os = "linux"`-gated inside monoio's manifest.
-monoio = "=0.2.4"
+#
+# `sync` is mandatory because rudzio multiplexes per-runtime worker
+# threads under one `thread::scope` and shares a runtime-agnostic
+# `futures_intrusive::Semaphore` (the `HardLimit` permit pool) across
+# them. When another runtime's thread releases a permit, monoio's body
+# task waker fires from a non-owner thread; without `sync`, monoio
+# either panics ("waker can only be sent across threads when `sync`
+# feature enabled") or, when the state machine is in the right corner,
+# silently no-ops the wake — the body's parked driver never unparks
+# and the whole multi-runtime suite deadlocks. `sync` switches the
+# cross-thread wake path to a flume-channel + driver-unpark bridge
+# that delivers the waker to monoio's owner thread and breaks its
+# `driver.park()`.
+monoio = { version = "=0.2.4", features = ["sync"] }
 
 # ===========================================================================
 # Rust compiler lints
