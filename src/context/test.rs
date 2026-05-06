@@ -30,10 +30,16 @@ where
     /// Error returned by [`Self::teardown`].
     type TeardownError: fmt::Display + fmt::Debug + Send + Sync + 'test_context;
 
-    /// Borrow of the runtime driving this test (the same runtime the
-    /// enclosing suite was constructed with). The default-implemented
-    /// API methods on this trait dispatch through this accessor.
-    fn rt(&self) -> &'test_context R;
+    /// Block the calling thread until `fut` completes, dispatching
+    /// through [`Runtime::block_on`].
+    #[inline]
+    fn block_on<F>(&self, fut: F) -> F::Output
+    where
+        F: Future + 'test_context,
+        F::Output: 'static,
+    {
+        self.rt().block_on(fut)
+    }
 
     /// Per-test cancellation token. The runner builds it as a child of
     /// the suite's root token and hands it to
@@ -48,40 +54,17 @@ where
     /// through `rt().config()`.
     fn config(&self) -> &Config;
 
-    /// Shared task tracker inherited from the enclosing suite. Used by
-    /// [`Self::spawn_tracked`] so suite teardown can wait for any
-    /// background work the test started.
-    fn tracker(&self) -> &TaskTracker;
-
-    /// Tear down per-test state. Called after the test body returns.
-    ///
-    /// `cancel` is a per-phase cancellation token (a child of the
-    /// runner's root token). The runner cancels it on either the
-    /// per-test-teardown timeout or a parent cancel (run-timeout,
-    /// SIGINT). Cooperative impls should poll it to bail out instead of
-    /// running past the timeout.
-    fn teardown(
-        self,
-        cancel: CancellationToken,
-    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'test_context;
-
-    /// Block the calling thread until `fut` completes, dispatching
-    /// through [`Runtime::block_on`].
-    #[inline]
-    fn block_on<F>(&self, fut: F) -> F::Output
-    where
-        F: Future + 'test_context,
-        F::Output: 'static,
-    {
-        self.rt().block_on(fut)
-    }
-
     /// Stable identifier of the runtime driving this test, surfaced
     /// from [`Runtime::name`].
     #[inline]
     fn name(&self) -> &'static str {
         self.rt().name()
     }
+
+    /// Borrow of the runtime driving this test (the same runtime the
+    /// enclosing suite was constructed with). The default-implemented
+    /// API methods on this trait dispatch through this accessor.
+    fn rt(&self) -> &'test_context R;
 
     /// Sleep for `duration` using the runtime's native timer
     /// ([`Runtime::sleep`]).
@@ -144,6 +127,23 @@ where
     {
         self.rt().spawn(self.tracker().track_future(fut))
     }
+
+    /// Tear down per-test state. Called after the test body returns.
+    ///
+    /// `cancel` is a per-phase cancellation token (a child of the
+    /// runner's root token). The runner cancels it on either the
+    /// per-test-teardown timeout or a parent cancel (run-timeout,
+    /// SIGINT). Cooperative impls should poll it to bail out instead of
+    /// running past the timeout.
+    fn teardown(
+        self,
+        cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'test_context;
+
+    /// Shared task tracker inherited from the enclosing suite. Used by
+    /// [`Self::spawn_tracked`] so suite teardown can wait for any
+    /// background work the test started.
+    fn tracker(&self) -> &TaskTracker;
 
     /// Yield control back to the runtime scheduler
     /// ([`Runtime::yield_now`]).

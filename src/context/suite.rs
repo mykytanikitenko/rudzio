@@ -57,21 +57,22 @@ where
     where
         Self: 'test_context;
 
-    /// Borrow of the runtime driving this suite. The default-implemented
-    /// API methods on this trait dispatch through this accessor, so the
-    /// chain is `Suite → Runtime` for every passthrough.
-    fn rt(&self) -> &'suite_context R;
+    /// Block the calling thread until `fut` completes, dispatching through
+    /// [`Runtime::block_on`].
+    #[inline]
+    fn block_on<F>(&self, fut: F) -> F::Output
+    where
+        F: Future + 'suite_context,
+        F::Output: 'static,
+    {
+        self.rt().block_on(fut)
+    }
 
     /// Root cancellation token of this suite. The runner builds it as a
     /// child of its run-level token and hands it to [`Self::setup`];
     /// implementations should expose it here so per-test contexts and
     /// background tasks can react to suite-level cancellation.
     fn cancel_token(&self) -> &CancellationToken;
-
-    /// Shared task tracker for background tasks the suite (or its tests)
-    /// spawn through `spawn_tracked`. Surfaced so suite-teardown can
-    /// `close()` + `wait()` for outstanding work.
-    fn tracker(&self) -> &TaskTracker;
 
     /// Create a fresh per-test context.
     ///
@@ -93,6 +94,18 @@ where
         config: &'test_context Config,
     ) -> impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>> + Send + 'test_context;
 
+    /// Stable identifier of the runtime driving this suite, surfaced from
+    /// [`Runtime::name`].
+    #[inline]
+    fn name(&self) -> &'static str {
+        self.rt().name()
+    }
+
+    /// Borrow of the runtime driving this suite. The default-implemented
+    /// API methods on this trait dispatch through this accessor, so the
+    /// chain is `Suite → Runtime` for every passthrough.
+    fn rt(&self) -> &'suite_context R;
+
     /// Create the shared state. Called once per runtime group.
     ///
     /// `cancel` is the runner's root cancellation token for this run. The
@@ -110,36 +123,6 @@ where
     ) -> impl Future<Output = Result<Self, Self::SetupError>> + Send + 'suite_context
     where
         Self: Sized;
-
-    /// Tear down the shared state. Called after all tests in the group.
-    ///
-    /// `cancel` is a per-phase cancellation token (a child of the
-    /// runner's root token). The runner cancels it on either the
-    /// suite-teardown timeout or a parent cancel (run-timeout, SIGINT).
-    /// Cooperative impls should poll it to bail out promptly instead of
-    /// running to completion past the timeout.
-    fn teardown(
-        self,
-        cancel: CancellationToken,
-    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'suite_context;
-
-    /// Block the calling thread until `fut` completes, dispatching through
-    /// [`Runtime::block_on`].
-    #[inline]
-    fn block_on<F>(&self, fut: F) -> F::Output
-    where
-        F: Future + 'suite_context,
-        F::Output: 'static,
-    {
-        self.rt().block_on(fut)
-    }
-
-    /// Stable identifier of the runtime driving this suite, surfaced from
-    /// [`Runtime::name`].
-    #[inline]
-    fn name(&self) -> &'static str {
-        self.rt().name()
-    }
 
     /// Sleep for `duration` using the runtime's native timer
     /// ([`Runtime::sleep`]).
@@ -187,6 +170,23 @@ where
     {
         self.rt().spawn_local(fut)
     }
+
+    /// Tear down the shared state. Called after all tests in the group.
+    ///
+    /// `cancel` is a per-phase cancellation token (a child of the
+    /// runner's root token). The runner cancels it on either the
+    /// suite-teardown timeout or a parent cancel (run-timeout, SIGINT).
+    /// Cooperative impls should poll it to bail out promptly instead of
+    /// running to completion past the timeout.
+    fn teardown(
+        self,
+        cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'suite_context;
+
+    /// Shared task tracker for background tasks the suite (or its tests)
+    /// spawn through `spawn_tracked`. Surfaced so suite-teardown can
+    /// `close()` + `wait()` for outstanding work.
+    fn tracker(&self) -> &TaskTracker;
 
     /// Yield control back to the runtime scheduler ([`Runtime::yield_now`]).
     #[inline]

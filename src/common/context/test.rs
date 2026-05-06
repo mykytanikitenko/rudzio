@@ -59,11 +59,6 @@ where
     type TeardownError = Infallible;
 
     #[inline]
-    fn rt(&self) -> &'test_context R {
-        self.rt
-    }
-
-    #[inline]
     fn cancel_token(&self) -> &CancellationToken {
         &self.cancel
     }
@@ -74,13 +69,18 @@ where
     }
 
     #[inline]
-    fn tracker(&self) -> &TaskTracker {
-        &self.tracker
+    fn rt(&self) -> &'test_context R {
+        self.rt
     }
 
     #[inline]
     async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         self.cancel.cancel();
         Ok(())
+    }
+
+    #[inline]
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }

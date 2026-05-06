@@ -17,7 +17,7 @@
 //! independent of whether the side-channel log was writable.
 
 use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Write as _};
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 
@@ -25,15 +25,36 @@ use crate::output::writers::write_stderr;
 
 /// Append-only sink for libtest-format test result lines.
 #[derive(Debug)]
-pub struct LogfileWriter {
+pub struct Writer {
     /// `Some` when an output file was opened successfully; `None` when
     /// the user did not pass `--logfile` or the open failed.
     inner: Option<Mutex<BufWriter<File>>>,
 }
 
-impl LogfileWriter {
-    /// Open `path` for write+truncate. When `path` is `None`, returns a
-    /// disabled writer whose [`Self::write_line`] is a no-op.
+impl Writer {
+    /// Flush buffered output to the underlying file. Called at run end
+    /// from the runner so a buffered tail is not lost when the process
+    /// exits.
+    #[inline]
+    pub fn flush(&self) {
+        let Some(mutex) = self.inner.as_ref() else {
+            return;
+        };
+        let _ignored = mutex
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .flush();
+    }
+
+    /// `true` when an output file was opened and lines will be written.
+    #[inline]
+    #[must_use]
+    pub const fn is_enabled(&self) -> bool {
+        self.inner.is_some()
+    }
+
+    /// Open `requested` for write+truncate. When `requested` is `None`, returns
+    /// a disabled writer whose [`Self::write_line`] is a no-op.
     ///
     /// On open failure (permission denied, parent missing, …) writes a
     /// single warning line to stderr and returns a disabled writer so
@@ -41,8 +62,8 @@ impl LogfileWriter {
     /// stdout — is independent of the logfile side channel.
     #[inline]
     #[must_use]
-    pub fn open(path: Option<&Path>) -> Self {
-        let Some(path) = path else {
+    pub fn open(requested: Option<&Path>) -> Self {
+        let Some(path) = requested else {
             return Self { inner: None };
         };
         match OpenOptions::new()
@@ -64,13 +85,6 @@ impl LogfileWriter {
         }
     }
 
-    /// `true` when an output file was opened and lines will be written.
-    #[inline]
-    #[must_use]
-    pub fn is_enabled(&self) -> bool {
-        self.inner.is_some()
-    }
-
     /// Append `<status> <qualified_name>\n` to the logfile. No-op when
     /// the writer is disabled.
     ///
@@ -82,19 +96,9 @@ impl LogfileWriter {
         let Some(mutex) = self.inner.as_ref() else {
             return;
         };
-        let mut guard = mutex.lock().unwrap_or_else(PoisonError::into_inner);
-        let _ignored = writeln!(*guard, "{status} {qualified_name}");
-    }
-
-    /// Flush buffered output to the underlying file. Called at run end
-    /// from the runner so a buffered tail is not lost when the process
-    /// exits.
-    #[inline]
-    pub fn flush(&self) {
-        let Some(mutex) = self.inner.as_ref() else {
-            return;
-        };
-        let mut guard = mutex.lock().unwrap_or_else(PoisonError::into_inner);
-        let _ignored = guard.flush();
+        let _ignored = writeln!(
+            *mutex.lock().unwrap_or_else(PoisonError::into_inner),
+            "{status} {qualified_name}",
+        );
     }
 }

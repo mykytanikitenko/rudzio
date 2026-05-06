@@ -16,14 +16,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::common::time::fmt_duration;
 use crate::config::{
-    CargoMeta, ColorMode, Config, EnsureTimeConfig, EnsureTimeViolation, Format, OutputMode,
+    CargoMeta, ColorMode, Config, EnsureTimes, EnsureTimeViolation, Format, OutputMode, PrintOnly,
     RunIgnoredMode, USAGE,
 };
 use crate::output;
 use crate::output::events::LifecycleEvent;
-use crate::output::logfile::LogfileWriter;
+use crate::output::logfile::Writer as LogfileWriter;
 use crate::output::{write_stderr, write_stdout};
-use crate::shuffle::seeded_shuffle;
+use crate::shuffle::permute_with_seed;
 use crate::suite::{
     Reporter as SuiteReporter, RunRequest as SuiteRunRequest, RuntimeGroupKey, RuntimeGroupOwner,
     Summary as SuiteSummary, TeardownResult, TestOutcome,
@@ -80,7 +80,7 @@ struct ModeReporter {
     /// the flag wasn't passed; otherwise [`Self::report_outcome`]
     /// classifies each `TestOutcome::Passed`'s elapsed time and emits a
     /// stderr notice for `Warn` / `Critical` violations.
-    ensure_time: Option<EnsureTimeConfig>,
+    ensure_time: Option<EnsureTimes>,
     /// Count of `TestOutcome::Passed` elapses that hit
     /// [`EnsureTimeViolation::Critical`]. Per-test
     /// [`Self::report_outcome`] runs without the per-thread
@@ -185,6 +185,22 @@ pub struct TestSummary {
 // ---------------------------------------------------------------------------
 
 impl ModeReporter {
+    /// Map a [`TestOutcome`] to its libtest-format logfile status word.
+    const fn logfile_status_for(outcome: &TestOutcome) -> &'static str {
+        match outcome {
+            TestOutcome::Passed { .. } => "ok",
+            TestOutcome::Benched { report, .. } => {
+                if report.is_success() { "ok" } else { "failed" }
+            }
+            TestOutcome::Failed { .. }
+            | TestOutcome::Panicked { .. }
+            | TestOutcome::SetupFailed { .. }
+            | TestOutcome::TimedOut
+            | TestOutcome::Hung { .. } => "failed",
+            TestOutcome::Cancelled => "ignored",
+        }
+    }
+
     /// Construct a reporter wired for either plain or live output mode
     /// based on `config.output_mode`.
     fn new(config: &Config) -> Self {
@@ -208,21 +224,6 @@ impl ModeReporter {
                 plain: None,
                 test_teardown_failures: AtomicUsize::new(0),
             },
-        }
-    }
-
-    /// Map a [`TestOutcome`] to its libtest-format logfile status word.
-    fn logfile_status_for(outcome: &TestOutcome) -> &'static str {
-        match outcome {
-            TestOutcome::Passed { .. } => "ok",
-            TestOutcome::Benched { report, .. } => {
-                if report.is_success() { "ok" } else { "failed" }
-            }
-            TestOutcome::Failed { .. }
-            | TestOutcome::Panicked { .. }
-            | TestOutcome::SetupFailed { .. } => "failed",
-            TestOutcome::TimedOut | TestOutcome::Hung { .. } => "failed",
-            TestOutcome::Cancelled => "ignored",
         }
     }
 }
@@ -824,7 +825,7 @@ fn format_ensure_time_notice(
     qualified: &str,
     elapsed: Duration,
     level: EnsureTimeViolation,
-    thresholds: &EnsureTimeConfig,
+    thresholds: &EnsureTimes,
 ) -> String {
     let (label, threshold) = match level {
         EnsureTimeViolation::Critical => ("critical", thresholds.critical),
@@ -1180,7 +1181,7 @@ fn dispatch_test_groups(
                 // runs on its own thread and its own runtime, so
                 // reordering across groups wouldn't change interleaving
                 // in any user-visible way.
-                seeded_shuffle(&mut group_tokens, resolved_shuffle_seed(config));
+                permute_with_seed(&mut group_tokens, resolved_shuffle_seed(config));
             }
             let Some(first) = group_tokens.first() else {
                 continue;
@@ -1278,7 +1279,7 @@ fn spawn_grace_force_exit_watchdog(token: CancellationToken, grace: Duration) {
 /// Resolve the shuffle seed for a `Config`: the user's explicit
 /// `--shuffle-seed=N` if present, otherwise a clock-derived value via
 /// [`derive_shuffle_seed`]. Both branches return the same `u64` so the
-/// caller can pass it to `seeded_shuffle` and print it for repro.
+/// caller can pass it to `permute_with_seed` and print it for repro.
 fn resolved_shuffle_seed(config: &Config) -> u64 {
     config.shuffle_seed.unwrap_or_else(derive_shuffle_seed)
 }
@@ -1294,12 +1295,11 @@ fn resolved_shuffle_seed(config: &Config) -> u64 {
 fn derive_shuffle_seed() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| {
-            d.as_secs()
+        .map_or(0, |dur| {
+            dur.as_secs()
                 .wrapping_mul(1_000_000_000)
-                .wrapping_add(u64::from(d.subsec_nanos()))
+                .wrapping_add(u64::from(dur.subsec_nanos()))
         })
-        .unwrap_or(0)
 }
 
 #[must_use]
@@ -1332,7 +1332,7 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
     // --help / -h: print USAGE to real stdout and exit before the
     // output-capture pipe is installed, so the help text reaches the
     // user's terminal directly.
-    if config.help {
+    if matches!(config.print_only, PrintOnly::Help) {
         write_stdout(USAGE);
         return ExitCode::SUCCESS;
     }
@@ -1372,7 +1372,7 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
 
     let filtered_out = all_tokens.len().saturating_sub(filtered_tokens.len());
 
-    if config.list {
+    if matches!(config.print_only, PrintOnly::List) {
         drop(capture_guard);
         for token in &filtered_tokens {
             write_stdout(&format!(

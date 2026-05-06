@@ -47,6 +47,7 @@ futures-executor = { workspace = true, features = [
 ], optional = true }
 futures-timer = { workspace = true, optional = true }
 async-std = { workspace = true, features = ["unstable"], optional = true }
+smol = { workspace = true, optional = true }
 send_wrapper = { workspace = true, features = ["futures"], optional = true }
 # Only compiled when the `build` feature is on (the `rudzio::build`
 # module). Kept optional so rudzio used purely as a runtime dep doesn't
@@ -79,6 +80,7 @@ rudzio = { version = "0.1.0", path = ".", features = [
   "runtime-embassy",
   "runtime-futures",
   "runtime-async-std",
+  "runtime-smol",
 ] }
 anyhow = "=1.0.102"
 # Renderer regression tests construct a `Drawer` directly and feed it
@@ -123,6 +125,7 @@ runtime-futures = [
   "dep:send_wrapper",
 ]
 runtime-async-std = ["dep:async-std", "dep:send_wrapper"]
+runtime-smol = ["dep:smol", "dep:send_wrapper"]
 
 [lints]
 workspace = true
@@ -161,6 +164,7 @@ thiserror = "=2.0.18"
 proc-macro2 = "=1.0.106"
 quote = "=1.0.45"
 send_wrapper = "=0.6.0"
+smol = "=2.0.2"
 syn = "=2.0.117"
 toml_edit = "=0.25.11"
 tokio = { version = "=1.52.1", features = ["rt", "macros", "time"] }

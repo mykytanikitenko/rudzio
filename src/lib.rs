@@ -21,8 +21,8 @@ pub use bench::{Report, Strategy};
 #[doc(hidden)]
 pub use bridge_meta::{__BRIDGE_OBSERVED_MANIFEST_DIR, __BRIDGE_PROC_MACRO_OBSERVED_MANIFEST_DIR};
 pub use config::{
-    BenchMode, CargoMeta, ColorMode, Config, EnsureTimeConfig, EnsureTimeViolation, Format,
-    OutputMode, RunIgnoredMode,
+    BenchMode, CargoMeta, ColorMode, Config, EnsureTimes, EnsureTimeViolation, Format, OutputMode,
+    PrintOnly, RunIgnoredMode,
 };
 pub use context::{Suite, Test};
 pub use futures_util;
@@ -46,6 +46,13 @@ pub use token::{TEST_TOKENS, Token as TestToken};
 #[doc(hidden)]
 #[cfg(feature = "runtime-async-std")]
 pub use async_std;
+/// Re-export of the `smol` runtime crate. Available whenever the
+/// `runtime-smol` cargo feature is on; lets downstream tests reach
+/// `smol::*` items without listing smol as a separate dev-dep (mirrors
+/// the rationale behind the `tokio` re-export below).
+#[doc(hidden)]
+#[cfg(feature = "runtime-smol")]
+pub use smol;
 /// Re-export of the `tokio` runtime crate. Available whenever any of
 /// the `runtime-tokio-*` cargo features is on; lets downstream tests
 /// reach `tokio::time::sleep` etc. without listing tokio as a separate

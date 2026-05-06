@@ -18,7 +18,7 @@ use rudzio::Config;
 use rudzio::context;
 use rudzio::runtime::compio::Runtime as CompioRuntime;
 use rudzio::runtime::tokio::Multithread;
-use rudzio::runtime::{JoinError, Runtime};
+use rudzio::runtime::Runtime;
 use rudzio::tokio_util::sync::CancellationToken;
 use rudzio::tokio_util::task::TaskTracker;
 
@@ -71,23 +71,6 @@ where
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CrossSuite").finish_non_exhaustive()
-    }
-}
-
-impl<'test_context, R> CrossTest<'test_context, R>
-where
-    R: Runtime<'test_context> + Sync,
-{
-    /// Hand off a blocking closure to the group's async runtime.
-    fn spawn_blocking<F, T>(
-        &self,
-        func: F,
-    ) -> impl Future<Output = Result<T, JoinError>> + Send + 'test_context
-    where
-        F: FnOnce() -> T + Send + 'static,
-        T: Send + 'static,
-    {
-        self.rt.spawn_blocking(func)
     }
 }
 
@@ -222,6 +205,8 @@ fn start_watchdog() {
     ),
 ])]
 mod tests {
+    use rudzio::context::Test as _;
+
     use super::{BarrierWaitResult, CrossTest, shared_barrier};
 
     #[rudzio::test]

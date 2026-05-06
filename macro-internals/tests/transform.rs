@@ -5,7 +5,7 @@ use syn::{ItemFn, parse_quote};
 use rudzio::common::context::{Suite, Test};
 use rudzio::runtime::futures::ThreadPool;
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
-use rudzio::runtime::{async_std, compio, embassy};
+use rudzio::runtime::{async_std, compio, embassy, smol};
 use rudzio_macro_internals::transform::apply_runtime_generics;
 
 #[rudzio::suite([
@@ -16,6 +16,7 @@ use rudzio_macro_internals::transform::apply_runtime_generics;
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
 ])]
 mod tests {
     use super::{ItemFn, Test, apply_runtime_generics, parse_quote};

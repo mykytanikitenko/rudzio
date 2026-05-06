@@ -45,18 +45,8 @@ where
         Self: 'test_context;
 
     #[inline]
-    fn rt(&self) -> &'suite_context R {
-        self.rt
-    }
-
-    #[inline]
     fn cancel_token(&self) -> &CancellationToken {
         &self.cancel
-    }
-
-    #[inline]
-    fn tracker(&self) -> &TaskTracker {
-        &self.tracker
     }
 
     #[inline]
@@ -71,6 +61,11 @@ where
         // so root-level cancellation still propagates.
         let tracker = self.tracker.clone();
         async move { Ok(Test::new(cancel, self.rt, tracker, config)) }
+    }
+
+    #[inline]
+    fn rt(&self) -> &'suite_context R {
+        self.rt
     }
 
     #[inline]
@@ -94,5 +89,10 @@ where
         let _closed: bool = self.tracker.close();
         self.tracker.wait().await;
         Ok(())
+    }
+
+    #[inline]
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }

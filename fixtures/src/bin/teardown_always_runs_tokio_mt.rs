@@ -63,6 +63,7 @@ where
 /// Per-test context that holds a cancel token (so the test body can cooperate
 /// with the runner's per-test watchdog) and prints a marker from its
 /// teardown impl.
+#[non_exhaustive]
 pub struct TeardownTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
@@ -72,11 +73,11 @@ where
     /// per-test watchdog fires.
     pub cancel: CancellationToken,
     /// Resolved CLI/env configuration.
-    config: &'test_context Config,
+    pub config: &'test_context Config,
     /// Borrow of the async runtime driving this test.
-    rt: &'test_context R,
+    pub rt: &'test_context R,
     /// Suite-shared task tracker.
-    tracker: TaskTracker,
+    pub tracker: TaskTracker,
 }
 
 #[rudzio::main]

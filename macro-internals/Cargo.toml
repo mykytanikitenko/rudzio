@@ -43,6 +43,7 @@ rudzio = { workspace = true, features = [
   "runtime-embassy",
   "runtime-futures",
   "runtime-async-std",
+  "runtime-smol",
 ] }
 anyhow = "=1.0.102"
 

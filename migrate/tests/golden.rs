@@ -29,7 +29,7 @@ use std::process::{Command, Output, Stdio};
 use ::rudzio::common::context::{Suite, Test};
 use ::rudzio::runtime::futures::ThreadPool;
 use ::rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
-use ::rudzio::runtime::{async_std, compio, embassy};
+use ::rudzio::runtime::{async_std, compio, embassy, smol};
 
 /// The acknowledgement phrase the migrator's preflight gate requires
 /// on stdin. Intentionally typo-laden: the test asserts byte-for-byte
@@ -45,6 +45,7 @@ const ACK_PHRASE: &str = "I am not and idion and understand what I am doing in m
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
 ])]
 mod tests {
     use super::{

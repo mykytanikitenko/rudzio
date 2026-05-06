@@ -6,6 +6,7 @@ use rudzio::runtime::async_std::Runtime as AsyncStdRuntime;
 use rudzio::runtime::compio::Runtime as CompioRuntime;
 use rudzio::runtime::embassy::Runtime as EmbassyRuntime;
 use rudzio::runtime::futures::ThreadPool as FuturesThreadPool;
+use rudzio::runtime::smol::Runtime as SmolRuntime;
 use rudzio::runtime::tokio::{
     CurrentThread as TokioCurrentThread, Local as TokioLocal, Multithread as TokioMultithread,
 };
@@ -43,6 +44,11 @@ use rudzio::runtime::tokio::{
     ),
     (
         runtime = AsyncStdRuntime::new,
+        suite = Suite,
+        test = Test,
+    ),
+    (
+        runtime = SmolRuntime::new,
         suite = Suite,
         test = Test,
     ),

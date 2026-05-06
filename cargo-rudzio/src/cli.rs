@@ -563,8 +563,12 @@ where
         consume_compat_flag(&after_workspace, &["--no-fail-fast"]);
     let (capture_consumed, after_capture) =
         consume_compat_flag(&after_no_fail_fast, &["--nocapture", "--show-output"]);
-    let mut compat_consumed =
-        Vec::with_capacity(workspace_consumed.len() + no_fail_fast_consumed.len() + capture_consumed.len());
+    let mut compat_consumed = Vec::with_capacity(
+        workspace_consumed
+            .len()
+            .saturating_add(no_fail_fast_consumed.len())
+            .saturating_add(capture_consumed.len()),
+    );
     compat_consumed.extend(workspace_consumed);
     compat_consumed.extend(no_fail_fast_consumed);
     compat_consumed.extend(capture_consumed);

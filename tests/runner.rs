@@ -28,11 +28,11 @@ use rudzio::build::{
 use rudzio::common::context::{Suite, Test};
 use rudzio::runtime::futures::ThreadPool;
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
-use rudzio::runtime::{async_std, compio, embassy};
+use rudzio::runtime::{async_std, compio, embassy, smol};
 use rudzio::suite::SummaryOutcomes;
 use rudzio::test_case::{BoxError, box_error};
 use rudzio::{
-    BenchMode, Config, EnsureTimeConfig, EnsureTimeViolation, Format, RunIgnoredMode, SuiteSummary,
+    BenchMode, Config, EnsureTimes, EnsureTimeViolation, Format, RunIgnoredMode, SuiteSummary,
     TestSummary, normalize_module_path, qualified_test_name, token_passes_filters,
 };
 
@@ -62,10 +62,19 @@ fn env_with(rust_test_threads: Option<&str>) -> BTreeMap<String, String> {
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
 ])]
 mod config_parser {
+    use std::env::temp_dir;
+    use std::fs;
+    use std::process;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use rudzio::output::logfile::Writer as LogfileWriter;
+    use rudzio::shuffle::permute_with_seed;
+
     use super::{
-        BenchMode, Config, Duration, EnsureTimeConfig, EnsureTimeViolation, Format, NonZeroUsize,
+        BenchMode, Config, Duration, EnsureTimes, EnsureTimeViolation, Format, NonZeroUsize,
         PathBuf, SuiteSummary, SummaryOutcomes, Test, TestSummary, argv, env_with,
     };
 
@@ -261,7 +270,7 @@ mod config_parser {
 
     #[rudzio::test]
     fn logfile_writer_disabled_when_no_path(_ctx: &Test) -> anyhow::Result<()> {
-        let writer = rudzio::output::logfile::LogfileWriter::open(None);
+        let writer = LogfileWriter::open(None);
         writer.write_line("ok", "any::name");
         anyhow::ensure!(!writer.is_enabled(), "writer should be a no-op when path is None");
         Ok(())
@@ -269,17 +278,15 @@ mod config_parser {
 
     #[rudzio::test]
     fn logfile_writer_emits_libtest_format_lines(_ctx: &Test) -> anyhow::Result<()> {
-        use std::fs;
-        let mut path = std::env::temp_dir();
-        path.push(format!(
+        let path = temp_dir().join(format!(
             "rudzio-logfile-emits-{}-{}.log",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .map(|elapsed| elapsed.as_nanos())
                 .unwrap_or_default(),
         ));
-        let writer = rudzio::output::logfile::LogfileWriter::open(Some(&path));
+        let writer = LogfileWriter::open(Some(&path));
         anyhow::ensure!(writer.is_enabled(), "writer should be enabled when path opens");
         writer.write_line("ok", "foo::bar");
         writer.write_line("failed", "foo::baz");
@@ -351,13 +358,13 @@ mod config_parser {
 
     #[rudzio::test]
     fn shuffle_with_seed_is_deterministic(_ctx: &Test) -> anyhow::Result<()> {
-        let mut a: Vec<u32> = (0..50_u32).collect();
-        let mut b: Vec<u32> = (0..50_u32).collect();
-        rudzio::shuffle::seeded_shuffle(&mut a, 12345);
-        rudzio::shuffle::seeded_shuffle(&mut b, 12345);
-        anyhow::ensure!(a == b, "same seed must yield same permutation");
+        let mut first: Vec<u32> = (0..50_u32).collect();
+        let mut second: Vec<u32> = (0..50_u32).collect();
+        permute_with_seed(&mut first, 12345);
+        permute_with_seed(&mut second, 12345);
+        anyhow::ensure!(first == second, "same seed must yield same permutation");
         anyhow::ensure!(
-            a != (0..50_u32).collect::<Vec<_>>(),
+            first != (0..50_u32).collect::<Vec<_>>(),
             "shuffle should change the order with overwhelming probability",
         );
         Ok(())
@@ -365,11 +372,11 @@ mod config_parser {
 
     #[rudzio::test]
     fn shuffle_with_different_seeds_yields_different_orders(_ctx: &Test) -> anyhow::Result<()> {
-        let mut a: Vec<u32> = (0..50_u32).collect();
-        let mut b: Vec<u32> = (0..50_u32).collect();
-        rudzio::shuffle::seeded_shuffle(&mut a, 1);
-        rudzio::shuffle::seeded_shuffle(&mut b, 2);
-        anyhow::ensure!(a != b, "different seeds should permute differently");
+        let mut first: Vec<u32> = (0..50_u32).collect();
+        let mut second: Vec<u32> = (0..50_u32).collect();
+        permute_with_seed(&mut first, 1);
+        permute_with_seed(&mut second, 2);
+        anyhow::ensure!(first != second, "different seeds should permute differently");
         Ok(())
     }
 
@@ -377,7 +384,7 @@ mod config_parser {
     fn shuffle_preserves_multiset(_ctx: &Test) -> anyhow::Result<()> {
         let original: Vec<u32> = (0..100_u32).collect();
         let mut permuted = original.clone();
-        rudzio::shuffle::seeded_shuffle(&mut permuted, 0xDEAD_BEEF);
+        permute_with_seed(&mut permuted, 0xDEAD_BEEF);
         let mut sorted = permuted.clone();
         sorted.sort_unstable();
         anyhow::ensure!(sorted == original, "shuffle must be a permutation");
@@ -524,7 +531,7 @@ mod config_parser {
             thresholds.warn,
         );
         anyhow::ensure!(
-            thresholds.critical == Duration::from_millis(1000),
+            thresholds.critical == Duration::from_secs(1),
             "critical = {:?}",
             thresholds.critical,
         );
@@ -602,7 +609,7 @@ mod config_parser {
             thresholds.warn,
         );
         anyhow::ensure!(
-            thresholds.critical == Duration::from_millis(1000),
+            thresholds.critical == Duration::from_secs(1),
             "critical = {:?}",
             thresholds.critical,
         );
@@ -611,7 +618,7 @@ mod config_parser {
 
     #[rudzio::test]
     fn ensure_time_violation_below_warn_returns_none(_ctx: &Test) -> anyhow::Result<()> {
-        let thresholds = EnsureTimeConfig::integration_defaults();
+        let thresholds = EnsureTimes::integration_defaults();
         let outcome = thresholds.violation(Duration::from_millis(100));
         anyhow::ensure!(
             outcome.is_none(),
@@ -622,7 +629,7 @@ mod config_parser {
 
     #[rudzio::test]
     fn ensure_time_violation_at_warn_returns_warn(_ctx: &Test) -> anyhow::Result<()> {
-        let thresholds = EnsureTimeConfig::integration_defaults();
+        let thresholds = EnsureTimes::integration_defaults();
         let outcome = thresholds.violation(Duration::from_millis(500));
         anyhow::ensure!(
             matches!(outcome, Some(EnsureTimeViolation::Warn)),
@@ -633,8 +640,8 @@ mod config_parser {
 
     #[rudzio::test]
     fn ensure_time_violation_at_critical_returns_critical(_ctx: &Test) -> anyhow::Result<()> {
-        let thresholds = EnsureTimeConfig::integration_defaults();
-        let outcome = thresholds.violation(Duration::from_millis(1000));
+        let thresholds = EnsureTimes::integration_defaults();
+        let outcome = thresholds.violation(Duration::from_secs(1));
         anyhow::ensure!(
             matches!(outcome, Some(EnsureTimeViolation::Critical)),
             "elapsed at critical threshold must return Critical, got {outcome:?}",
@@ -646,8 +653,8 @@ mod config_parser {
     fn ensure_time_violation_well_above_critical_returns_critical(
         _ctx: &Test,
     ) -> anyhow::Result<()> {
-        let thresholds = EnsureTimeConfig::integration_defaults();
-        let outcome = thresholds.violation(Duration::from_secs(60));
+        let thresholds = EnsureTimes::integration_defaults();
+        let outcome = thresholds.violation(Duration::from_mins(1));
         anyhow::ensure!(
             matches!(outcome, Some(EnsureTimeViolation::Critical)),
             "elapsed well above critical must return Critical, got {outcome:?}",
@@ -674,18 +681,16 @@ mod config_parser {
 
     #[rudzio::test]
     fn logfile_writer_truncates_existing_file_on_open(_ctx: &Test) -> anyhow::Result<()> {
-        use std::fs;
-        let mut path = std::env::temp_dir();
-        path.push(format!(
+        let path = temp_dir().join(format!(
             "rudzio-logfile-trunc-{}-{}.log",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .map(|elapsed| elapsed.as_nanos())
                 .unwrap_or_default(),
         ));
         fs::write(&path, "stale content from a previous run\n")?;
-        let writer = rudzio::output::logfile::LogfileWriter::open(Some(&path));
+        let writer = LogfileWriter::open(Some(&path));
         writer.write_line("ok", "fresh::test");
         writer.flush();
         let contents = fs::read_to_string(&path)?;
@@ -1361,6 +1366,7 @@ mod config_parser {
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
 ])]
 mod bench_strategies {
     use rudzio::bench::Strategy as _;
@@ -1488,6 +1494,7 @@ mod bench_strategies {
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
 ])]
 mod build_sentinel {
     use super::{
@@ -1570,6 +1577,7 @@ mod build_sentinel {
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
 ])]
 mod bin_resolver {
     use super::{__resolve_at_runtime, Path, current_exe};
@@ -1622,6 +1630,7 @@ mod bin_resolver {
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
 ])]
 mod filter_matching {
     use super::{RunIgnoredMode, Test, token_passes_filters};
@@ -1811,6 +1820,7 @@ mod filter_matching {
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
 ])]
 mod path_normalize {
     use super::{Test, normalize_module_path, qualified_test_name};
@@ -1936,6 +1946,7 @@ mod path_normalize {
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
 ])]
 mod runtime_ctx_api {
     use std::time::{Duration, Instant};

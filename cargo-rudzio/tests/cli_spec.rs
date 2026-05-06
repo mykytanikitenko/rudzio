@@ -21,7 +21,7 @@ use cargo_rudzio::cli::{
 use rudzio::common::context::Suite;
 use rudzio::runtime::futures::ThreadPool;
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
-use rudzio::runtime::{async_std, compio, embassy};
+use rudzio::runtime::{async_std, compio, embassy, smol};
 
 #[rudzio::suite([
     (runtime = Multithread::new, suite = Suite, test = Test),
@@ -31,6 +31,7 @@ use rudzio::runtime::{async_std, compio, embassy};
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
 ])]
 mod tests {
     use super::{

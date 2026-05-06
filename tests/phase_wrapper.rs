@@ -14,7 +14,7 @@
 //! escalates from `TimedOut` to `Hung` and the abort signal is fired.
 //!
 //! Runtime coverage: the suite is dispatched on every supported
-//! adapter (tokio mt/ct/local, compio, embassy, futures::ThreadPool)
+//! adapter (tokio mt/ct/local, compio, embassy, `futures::ThreadPool`)
 //! since the wrappers are themselves runtime-agnostic and must hold the
 //! same contract everywhere. The wrappers' `sleep: Sleep` parameter is
 //! threaded as `|d| ctx.sleep(d)` so the timer always belongs to the
@@ -45,7 +45,7 @@ use rudzio::common::context::{Suite, Test};
 use rudzio::futures_util::future::{AbortHandle, Aborted};
 use rudzio::runtime::futures::ThreadPool;
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
-use rudzio::runtime::{async_std, compio, embassy};
+use rudzio::runtime::{async_std, compio, embassy, smol};
 use rudzio::suite::{PhaseOutcome, drive_per_test_spawn, run_phase_with_timeout_and_cancel};
 use rudzio::tokio_util::sync::CancellationToken;
 
@@ -57,6 +57,7 @@ use rudzio::tokio_util::sync::CancellationToken;
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
 ])]
 mod phase_wrapper_tests {
     use std::future::pending;

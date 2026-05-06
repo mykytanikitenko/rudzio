@@ -382,9 +382,6 @@ pub struct Config {
     /// [`Self::threads`] so single-flag invocations behave the same as
     /// libtest.
     pub concurrency_limit: usize,
-    /// Snapshot of every environment variable at runner start. `BTreeMap`
-    /// so iteration order is deterministic across runs.
-    pub env: BTreeMap<String, String>,
     /// `--ensure-time` (libtest compat). `Some` when the user passed
     /// the flag, carrying the resolved warn/critical thresholds. Tests
     /// that exceed `critical` are treated as failures (counted in
@@ -393,7 +390,10 @@ pub struct Config {
     /// `--ensure-time=<warn-ms>,<critical-ms>` literal value > the
     /// `RUST_TEST_TIME_INTEGRATION` env var (same `<warn>,<critical>`
     /// shape) > libtest's integration-test defaults of 500ms / 1000ms.
-    pub ensure_time: Option<EnsureTimeConfig>,
+    pub ensure_time: Option<EnsureTimes>,
+    /// Snapshot of every environment variable at runner start. `BTreeMap`
+    /// so iteration order is deterministic across runs.
+    pub env: BTreeMap<String, String>,
     /// `--exact` (libtest compat): when `true`, the positional [`Self::filter`]
     /// and every [`Self::skip_filters`] entry are interpreted as exact
     /// equality matches against the test's qualified name rather than
@@ -417,13 +417,6 @@ pub struct Config {
     /// scoped threads for test dispatch.
     #[doc(hidden)]
     pub hardlimit: Arc<HardLimit>,
-    /// `--help` / `-h`: print a usage message listing every recognised
-    /// flag and environment variable, then exit. Handled by the runner
-    /// (see `crate::runner::run`) so the help text reaches the real
-    /// terminal rather than the capture pipe.
-    pub help: bool,
-    /// `--list`: print test names and exit without running.
-    pub list: bool,
     /// `--logfile <PATH>` / `--logfile=<PATH>` (libtest compat). When
     /// present, the runner appends one libtest-format line per finished
     /// test to this path: `<status> <qualified_name>` (e.g. `ok foo::bar`,
@@ -484,6 +477,11 @@ pub struct Config {
     /// don't slow the tear-down significantly, long enough that
     /// real-world cooperative cancellation has time to land.
     pub phase_hang_grace: Option<Duration>,
+    /// `--help` / `-h` / `--list` exit-after-print mode. `None` is the
+    /// regular run; `Help` prints USAGE and exits before the
+    /// output-capture pipe is installed; `List` prints filtered test
+    /// names and exits without running them.
+    pub print_only: PrintOnly,
     /// How `#[ignore]`d tests are treated.
     pub run_ignored: RunIgnoredMode,
     /// `--run-timeout=<secs>`. `None` = unbounded.
@@ -539,24 +537,24 @@ pub struct Config {
 /// 500/1000 ms integration defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct EnsureTimeConfig {
-    /// Soft threshold — exceeded tests get a stderr warning but stay
-    /// passing.
-    pub warn: Duration,
+pub struct EnsureTimes {
     /// Hard threshold — exceeded tests are reported as failures and
     /// flip the run's exit code.
     pub critical: Duration,
+    /// Soft threshold — exceeded tests get a stderr warning but stay
+    /// passing.
+    pub warn: Duration,
 }
 
-impl EnsureTimeConfig {
+impl EnsureTimes {
     /// Libtest's integration-test defaults: 500ms warn, 1000ms critical.
     /// Used when `--ensure-time` is bare and no env override is set.
     #[inline]
     #[must_use]
     pub const fn integration_defaults() -> Self {
         Self {
+            critical: Duration::from_secs(1),
             warn: Duration::from_millis(500),
-            critical: Duration::from_millis(1000),
         }
     }
 
@@ -579,7 +577,7 @@ impl EnsureTimeConfig {
 }
 
 /// Classification of a test's elapsed time against an
-/// [`EnsureTimeConfig`]'s thresholds. `Warn` is advisory (the test still
+/// [`EnsureTimes`]'s thresholds. `Warn` is advisory (the test still
 /// passes); `Critical` flips the run's exit code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -607,7 +605,7 @@ pub enum Format {
 /// `Default` defers warn/critical resolution to env + libtest defaults;
 /// `Explicit(warn, critical)` captures the inline `=<warn-ms>,<critical-ms>`
 /// values so the env var is bypassed. Kept separate from
-/// [`EnsureTimeConfig`] so the parser doesn't need to read the env
+/// [`EnsureTimes`] so the parser doesn't need to read the env
 /// snapshot — that's a `Config::from_argv_and_env` responsibility.
 #[derive(Debug, Clone, Copy)]
 enum EnsureTimeArg {
@@ -615,7 +613,12 @@ enum EnsureTimeArg {
     /// continues with `RUST_TEST_TIME_INTEGRATION` then defaults.
     Default,
     /// `--ensure-time=<warn-ms>,<critical-ms>` parsed cleanly.
-    Explicit { warn: Duration, critical: Duration },
+    Explicit {
+        /// Hard threshold; tests slower than this fail the run.
+        critical: Duration,
+        /// Soft threshold; tests slower than this are flagged but still pass.
+        warn: Duration,
+    },
 }
 
 /// Resolution outcome for `--threads-parallel-hardlimit=<value>`.
@@ -713,10 +716,6 @@ struct ParsedArgs {
     /// Result of `--threads-parallel-hardlimit=<value>` parsing; combined
     /// with `bench_mode` and `threads` later to produce the final hardlimit.
     hardlimit_arg: HardlimitArg,
-    /// `true` if `--help`/`-h` was seen.
-    help: bool,
-    /// `true` if `--list` was seen.
-    list: bool,
     /// `--logfile=<PATH>` / `--logfile <PATH>`. `None` when the flag was
     /// absent.
     logfile: Option<PathBuf>,
@@ -727,6 +726,10 @@ struct ParsedArgs {
     /// means disabled (explicit `=0`); inherits `Config`'s default when the
     /// flag is absent.
     phase_hang_grace: Option<Duration>,
+    /// Exit-after-print mode selected by `--help` / `--list`. Defaults
+    /// to [`PrintOnly::None`] (regular run); a later flag flips this to
+    /// [`PrintOnly::Help`] or [`PrintOnly::List`].
+    print_only: PrintOnly,
     /// `--include-ignored` / `--ignored` selection for ignored tests.
     run_ignored: RunIgnoredMode,
     /// Whole-run wall-clock cap from `--run-timeout=<secs>`.
@@ -756,6 +759,26 @@ struct ParsedArgs {
     /// CLI args the rudzio parser didn't recognise — preserved verbatim
     /// for downstream parsing by user code / custom runtimes.
     unparsed: Vec<String>,
+}
+
+/// Exit-after-print mode selected by `--help` / `--list`.
+///
+/// Both flags short-circuit a normal run; `Config` carries the chosen
+/// branch so the runner can dispatch to the correct print path. Default
+/// `None` keeps the regular run-tests path active.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PrintOnly {
+    /// `--help` / `-h`: print USAGE and exit before the output-capture
+    /// pipe is installed, so the help text reaches the user's terminal
+    /// directly.
+    Help,
+    /// `--list`: print every filtered test's qualified name, one per
+    /// line, and exit without running anything.
+    List,
+    /// No exit-after-print mode requested; run tests normally.
+    #[default]
+    None,
 }
 
 /// How `#[ignore]`d tests should be treated for this run.
@@ -833,12 +856,11 @@ impl Config {
             filter: parsed.filter,
             format: parsed.format,
             hardlimit,
-            help: parsed.help,
-            list: parsed.list,
             logfile: parsed.logfile,
             output_mode,
             parallel_hardlimit,
             phase_hang_grace: parsed.phase_hang_grace,
+            print_only: parsed.print_only,
             run_ignored: parsed.run_ignored,
             run_timeout: parsed.run_timeout,
             shuffle: parsed.shuffle,
@@ -901,8 +923,8 @@ fn parse_ensure_time_pair(text: &str) -> Option<EnsureTimeArg> {
     let warn_ms: u64 = warn_text.parse().ok()?;
     let critical_ms: u64 = critical_text.parse().ok()?;
     Some(EnsureTimeArg::Explicit {
-        warn: Duration::from_millis(warn_ms),
         critical: Duration::from_millis(critical_ms),
+        warn: Duration::from_millis(warn_ms),
     })
 }
 
@@ -913,23 +935,23 @@ fn parse_ensure_time_pair(text: &str) -> Option<EnsureTimeArg> {
 ///    parsed (`EnsureTimeArg::Explicit`).
 /// 2. `RUST_TEST_TIME_INTEGRATION` env var with the same `<warn>,<critical>`
 ///    millisecond shape.
-/// 3. [`EnsureTimeConfig::integration_defaults`] (500ms / 1000ms).
+/// 3. [`EnsureTimes::integration_defaults`] (500ms / 1000ms).
 fn resolve_ensure_time(
     arg: Option<EnsureTimeArg>,
     env: &BTreeMap<String, String>,
-) -> Option<EnsureTimeConfig> {
-    let arg = arg?;
-    match arg {
-        EnsureTimeArg::Explicit { warn, critical } => Some(EnsureTimeConfig { warn, critical }),
+) -> Option<EnsureTimes> {
+    let resolved = arg?;
+    match resolved {
+        EnsureTimeArg::Explicit { critical, warn } => Some(EnsureTimes { critical, warn }),
         EnsureTimeArg::Default => {
             let env_value = env
                 .get("RUST_TEST_TIME_INTEGRATION")
                 .and_then(|raw| parse_ensure_time_pair(raw));
             match env_value {
-                Some(EnsureTimeArg::Explicit { warn, critical }) => {
-                    Some(EnsureTimeConfig { warn, critical })
+                Some(EnsureTimeArg::Explicit { critical, warn }) => {
+                    Some(EnsureTimes { critical, warn })
                 }
-                _ => Some(EnsureTimeConfig::integration_defaults()),
+                _ => Some(EnsureTimes::integration_defaults()),
             }
         }
     }
@@ -1171,8 +1193,8 @@ fn handle_presentation_flag(
         "--exact" => state.exact_match = true,
         "--quiet" | "-q" => state.format = Format::Terse,
         "--plain" => state.output_mode_explicit = Some(OutputMode::Plain),
-        "--list" => state.list = true,
-        "--help" | "-h" => state.help = true,
+        "--list" => state.print_only = PrintOnly::List,
+        "--help" | "-h" => state.print_only = PrintOnly::Help,
         _ => return false,
     }
     true

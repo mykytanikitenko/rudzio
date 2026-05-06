@@ -13,6 +13,8 @@ pub mod compio;
 pub mod embassy;
 #[cfg(feature = "runtime-futures")]
 pub mod futures;
+#[cfg(feature = "runtime-smol")]
+pub mod smol;
 #[cfg(any(
     feature = "runtime-tokio-multi-thread",
     feature = "runtime-tokio-current-thread",

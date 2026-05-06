@@ -42,6 +42,7 @@ rudzio = { workspace = true, features = [
   "runtime-embassy",
   "runtime-futures",
   "runtime-async-std",
+  "runtime-smol",
 ] }
 tempfile = "=3.27.0"
 

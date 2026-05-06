@@ -7,7 +7,7 @@
 //! cross-runtime concurrency, so we want them actually executing.
 //!
 //! Runtime coverage: the suite is dispatched on every supported
-//! adapter (tokio mt/ct/local, compio, embassy, futures::ThreadPool)
+//! adapter (tokio mt/ct/local, compio, embassy, `futures::ThreadPool`)
 //! since `HardLimit` is itself runtime-agnostic and must hold the
 //! same contract everywhere. Test plumbing avoids tokio-specific
 //! helpers (`tokio::spawn`, `tokio::sync::oneshot`,
@@ -30,7 +30,7 @@ use rudzio::common::context::{Suite, Test};
 use rudzio::parallelism::HardLimit;
 use rudzio::runtime::futures::ThreadPool;
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
-use rudzio::runtime::{async_std, compio, embassy};
+use rudzio::runtime::{async_std, compio, embassy, smol};
 
 #[rudzio::suite([
     (runtime = Multithread::new, suite = Suite, test = Test),
@@ -40,11 +40,12 @@ use rudzio::runtime::{async_std, compio, embassy};
     (runtime = embassy::Runtime::new, suite = Suite, test = Test),
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
 ])]
 mod tests {
     use rudzio::context::Test as _;
     use rudzio::futures_util::future::poll_immediate;
-    use rudzio::futures_util::stream::{FuturesUnordered, StreamExt};
+    use rudzio::futures_util::stream::{FuturesUnordered, StreamExt as _};
 
     use super::{
         Arc, AtomicBool, AtomicUsize, HardLimit, Ordering, PoisonError, Test, collect_sink, nz,
