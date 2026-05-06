@@ -6,6 +6,7 @@ mod parallelism_tests;
 mod phase_wrapper;
 mod render_idle_redraw;
 mod runner;
+mod time_fmt;
 
 #[rudzio::main]
 fn main() {}

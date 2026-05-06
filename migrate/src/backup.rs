@@ -16,6 +16,11 @@ use rudzio::common::context::{Suite, Test};
 use rudzio::runtime::futures::ThreadPool;
 #[cfg(any(test, rudzio_test))]
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
+#[cfg(all(
+    any(test, rudzio_test),
+    any(target_os = "linux", target_os = "macos"),
+))]
+use rudzio::runtime::monoio;
 #[cfg(any(test, rudzio_test))]
 use rudzio::runtime::{async_std, compio, embassy, smol};
 
@@ -86,6 +91,8 @@ pub fn copy_before_write(original: &Path) -> io::Result<Outcome> {
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
     (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
 ])]
 #[cfg(any(test, rudzio_test))]
 mod tests {

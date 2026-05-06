@@ -48,6 +48,10 @@ futures-executor = { workspace = true, features = [
 futures-timer = { workspace = true, optional = true }
 async-std = { workspace = true, features = ["unstable"], optional = true }
 smol = { workspace = true, optional = true }
+# `monoio` is a thread-per-core, !Send io_uring/kqueue runtime. Declared
+# unconditionally; the `runtime-monoio` feature is platform-gated at the
+# module + suite-entry level (linux + macos only).
+monoio = { workspace = true, optional = true }
 send_wrapper = { workspace = true, features = ["futures"], optional = true }
 # Only compiled when the `build` feature is on (the `rudzio::build`
 # module). Kept optional so rudzio used purely as a runtime dep doesn't
@@ -81,6 +85,7 @@ rudzio = { version = "0.1.0", path = ".", features = [
   "runtime-futures",
   "runtime-async-std",
   "runtime-smol",
+  "runtime-monoio",
 ] }
 anyhow = "=1.0.102"
 # Renderer regression tests construct a `Drawer` directly and feed it
@@ -126,6 +131,10 @@ runtime-futures = [
 ]
 runtime-async-std = ["dep:async-std", "dep:send_wrapper"]
 runtime-smol = ["dep:smol", "dep:send_wrapper"]
+# Monoio adapter. The dep itself compiles only on linux/macos; the
+# `runtime/monoio` module is additionally cfg-gated so enabling this
+# feature on other targets is a no-op rather than a hard build failure.
+runtime-monoio = ["dep:monoio", "dep:send_wrapper"]
 
 [lints]
 workspace = true
@@ -171,6 +180,12 @@ tokio = { version = "=1.52.1", features = ["rt", "macros", "time"] }
 tokio-util = { version = "=0.7.18", features = ["rt"] }
 trybuild = "=1.0.116"
 linkme = "=0.3.36"
+# Keep monoio's default features (`iouring`, `legacy`, `macros`, `bytes`,
+# `utils`, `async-cancel`) so `FusionDriver` is available on linux+macos
+# (the only platforms where the runtime adapter compiles). The `iouring`
+# feature flag is a no-op on non-linux because the `io-uring` crate is
+# itself `target_os = "linux"`-gated inside monoio's manifest.
+monoio = "=0.2.4"
 
 # ===========================================================================
 # Rust compiler lints

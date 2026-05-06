@@ -13,6 +13,11 @@ pub mod compio;
 pub mod embassy;
 #[cfg(feature = "runtime-futures")]
 pub mod futures;
+#[cfg(all(
+    feature = "runtime-monoio",
+    any(target_os = "linux", target_os = "macos"),
+))]
+pub mod monoio;
 #[cfg(feature = "runtime-smol")]
 pub mod smol;
 #[cfg(any(

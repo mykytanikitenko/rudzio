@@ -41,6 +41,8 @@ use rudzio::runtime::async_std;
 use rudzio::runtime::compio;
 use rudzio::runtime::embassy;
 use rudzio::runtime::futures::ThreadPool;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use rudzio::runtime::monoio;
 use rudzio::runtime::smol;
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
 use rudzio::suite::TestOutcome;
@@ -140,6 +142,8 @@ impl Harness {
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
     (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
 ])]
 mod tests {
     use super::{

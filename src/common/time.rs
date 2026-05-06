@@ -40,33 +40,3 @@ pub fn fmt_duration(dur: Duration) -> String {
         format!("{nanos}.00ns")
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::fmt_duration;
-    use std::time::Duration;
-
-    #[test]
-    fn formats_seconds() {
-        assert_eq!(fmt_duration(Duration::from_millis(1_230)), "1.23s");
-        assert_eq!(fmt_duration(Duration::from_secs(42)), "42.00s");
-    }
-
-    #[test]
-    fn formats_milliseconds() {
-        assert_eq!(fmt_duration(Duration::from_micros(45_670)), "45.67ms");
-        assert_eq!(fmt_duration(Duration::from_millis(1)), "1.00ms");
-    }
-
-    #[test]
-    fn formats_microseconds() {
-        assert_eq!(fmt_duration(Duration::from_nanos(123_450)), "123.45\u{b5}s");
-        assert_eq!(fmt_duration(Duration::from_micros(1)), "1.00\u{b5}s");
-    }
-
-    #[test]
-    fn formats_nanoseconds() {
-        assert_eq!(fmt_duration(Duration::from_nanos(42)), "42.00ns");
-        assert_eq!(fmt_duration(Duration::from_nanos(0)), "0.00ns");
-    }
-}

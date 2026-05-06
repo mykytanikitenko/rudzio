@@ -28,6 +28,8 @@ use rudzio::build::{
 use rudzio::common::context::{Suite, Test};
 use rudzio::runtime::futures::ThreadPool;
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use rudzio::runtime::monoio;
 use rudzio::runtime::{async_std, compio, embassy, smol};
 use rudzio::suite::SummaryOutcomes;
 use rudzio::test_case::{BoxError, box_error};
@@ -63,6 +65,8 @@ fn env_with(rust_test_threads: Option<&str>) -> BTreeMap<String, String> {
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
     (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
 ])]
 mod config_parser {
     use std::env::temp_dir;
@@ -1367,6 +1371,8 @@ mod config_parser {
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
     (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
 ])]
 mod bench_strategies {
     use rudzio::bench::Strategy as _;
@@ -1495,6 +1501,8 @@ mod bench_strategies {
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
     (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
 ])]
 mod build_sentinel {
     use super::{
@@ -1578,6 +1586,8 @@ mod build_sentinel {
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
     (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
 ])]
 mod bin_resolver {
     use super::{__resolve_at_runtime, Path, current_exe};
@@ -1631,6 +1641,8 @@ mod bin_resolver {
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
     (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
 ])]
 mod filter_matching {
     use super::{RunIgnoredMode, Test, token_passes_filters};
@@ -1821,6 +1833,8 @@ mod filter_matching {
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
     (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
 ])]
 mod path_normalize {
     use super::{Test, normalize_module_path, qualified_test_name};
@@ -1947,6 +1961,8 @@ mod path_normalize {
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
     (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
 ])]
 mod runtime_ctx_api {
     use std::time::{Duration, Instant};

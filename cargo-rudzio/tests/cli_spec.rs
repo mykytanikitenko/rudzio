@@ -21,6 +21,8 @@ use cargo_rudzio::cli::{
 use rudzio::common::context::Suite;
 use rudzio::runtime::futures::ThreadPool;
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use rudzio::runtime::monoio;
 use rudzio::runtime::{async_std, compio, embassy, smol};
 
 #[rudzio::suite([
@@ -32,6 +34,8 @@ use rudzio::runtime::{async_std, compio, embassy, smol};
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
     (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
 ])]
 mod tests {
     use super::{

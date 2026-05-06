@@ -46,6 +46,17 @@ pub use token::{TEST_TOKENS, Token as TestToken};
 #[doc(hidden)]
 #[cfg(feature = "runtime-async-std")]
 pub use async_std;
+/// Re-export of the `monoio` runtime crate. Available whenever the
+/// `runtime-monoio` cargo feature is on AND the target supports monoio
+/// (linux or macos). Lets downstream tests reach `monoio::*` items
+/// without listing monoio as a separate dev-dep (mirrors the rationale
+/// behind the `tokio` re-export below).
+#[doc(hidden)]
+#[cfg(all(
+    feature = "runtime-monoio",
+    any(target_os = "linux", target_os = "macos"),
+))]
+pub use monoio;
 /// Re-export of the `smol` runtime crate. Available whenever the
 /// `runtime-smol` cargo feature is on; lets downstream tests reach
 /// `smol::*` items without listing smol as a separate dev-dep (mirrors

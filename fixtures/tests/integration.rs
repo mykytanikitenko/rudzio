@@ -13,6 +13,8 @@ use rudzio::common::context::Suite;
 use rudzio::common::context::Test;
 use rudzio::runtime::futures::ThreadPool;
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use rudzio::runtime::monoio;
 use rudzio::runtime::{async_std, compio, embassy, smol};
 
 /// Find `needle` in `hay` and return its byte index, or an error
@@ -177,6 +179,8 @@ fn run_parallel(exe: &str, threads: u32) -> anyhow::Result<Output> {
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
     (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
 ])]
 mod tests {
     use super::{
@@ -1269,6 +1273,8 @@ mod tests {
     (runtime = ThreadPool::new, suite = Suite, test = Test),
     (runtime = async_std::Runtime::new, suite = Suite, test = Test),
     (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
 ])]
 mod unix_tests {
     use super::{Test, log_of, ordered, run, run_and_signal};
