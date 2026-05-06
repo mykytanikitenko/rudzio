@@ -1,5 +1,5 @@
 use syn::parse::{Parse, ParseStream};
-use syn::{Ident, Path, Token, bracketed, parenthesized};
+use syn::{Attribute, Ident, Path, Token, bracketed, parenthesized};
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -10,6 +10,12 @@ pub struct MainArgs {
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct RuntimeConfig {
+    /// Outer attributes parsed before the parenthesized tuple. The
+    /// suite-codegen pass emits these on every item generated for this
+    /// entry, so a `#[cfg(target_os = "linux")]` prefix on a single
+    /// runtime config makes the entire per-entry expansion vanish on
+    /// non-matching targets.
+    pub attrs: Vec<Attribute>,
     pub runtime: Path,
     pub suite: Path,
     pub test: Path,
@@ -57,6 +63,7 @@ impl Parse for MainArgs {
 impl Parse for RuntimeConfig {
     #[inline]
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let attrs = Attribute::parse_outer(input)?;
         let content;
         parenthesized!(content in input);
 
@@ -94,6 +101,7 @@ impl Parse for RuntimeConfig {
         let _: Option<Token![,]> = content.parse()?;
 
         Ok(Self {
+            attrs,
             runtime,
             suite,
             test,

@@ -1,7 +1,7 @@
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::token::{Paren, Pub};
-use syn::{Expr, Ident, Item, ItemFn, ItemMod, Path};
+use syn::{Attribute, Expr, Ident, Item, ItemFn, ItemMod, Path};
 
 use crate::codegen::{TestAttrArgs, extract_ignore_reason, extract_test_attr_args};
 use crate::parse::{MainArgs, RuntimeConfig};
@@ -12,6 +12,10 @@ use crate::transform::{
 /// Bundle of inputs for [`generate_per_test`]; gathered into a struct so
 /// the helper does not exceed clippy's `too_many_arguments` threshold.
 struct GeneratePerTestArgs<'args> {
+    /// Outer attributes (`#[cfg(...)]` etc.) attached to the runtime-config
+    /// entry; emitted on every item this helper produces so the entire
+    /// per-entry expansion vanishes when the cfg doesn't hold.
+    cfg_attrs: &'args [Attribute],
     /// Index of the parent runtime-config block within the suite macro.
     cfg_idx: usize,
     /// Stable string keying the runtime group; matches the owner's key.
@@ -40,6 +44,10 @@ struct RunTestFnArgs<'args> {
     /// Per-test attribute override for `timeout_secs`, emitted as an
     /// `Option<u64>` const expression.
     attr_test_timeout_secs: &'args TokenStream,
+    /// Outer attributes (`#[cfg(...)]` etc.) attached to the runtime-config
+    /// entry; emitted on the generated `unsafe fn` so the helper is
+    /// elided on non-matching targets.
+    cfg_attrs: &'args [Attribute],
     /// `let ctx` or `let mut ctx`, depending on the test's ctx kind.
     ctx_binding: &'args TokenStream,
     /// Identifier of the per-test `unsafe fn` HRTB run-test entry point.
@@ -51,6 +59,30 @@ struct RunTestFnArgs<'args> {
     /// Either `plain_test_outcome` or `bench_test_outcome` token stream
     /// to be embedded in the per-test body.
     test_outcome_expr: &'args TokenStream,
+}
+
+/// Bundle of inputs for [`runtime_group_owner_impl`]; gathered into a
+/// struct so the helper does not exceed clippy's `too_many_arguments`
+/// threshold.
+struct RuntimeGroupOwnerImplArgs<'args> {
+    /// Outer attributes (`#[cfg(...)]` etc.) attached to the runtime-config
+    /// entry; emitted on every item this helper produces so the entire
+    /// per-entry expansion vanishes when the cfg doesn't hold.
+    cfg_attrs: &'args [Attribute],
+    /// Stable string keying the runtime group; matches the per-test key.
+    group_key_source: &'args str,
+    /// Identifier of the wrapping `mod tests` block.
+    mod_name: &'args Ident,
+    /// Identifier of the per-config `RuntimeGroupOwner` static instance.
+    owner_static: &'args Ident,
+    /// Identifier of the per-config `RuntimeGroupOwner` ZST.
+    owner_struct: &'args Ident,
+    /// Path to the runtime constructor (e.g. `Multithread::new`).
+    runtime_ctor: &'args Path,
+    /// Concrete runtime type for this group.
+    runtime_type: &'args Path,
+    /// Concrete suite type for this group.
+    suite_base: &'args Path,
 }
 
 /// Convert each per-test attribute timeout (`timeout_secs`,
@@ -316,6 +348,7 @@ fn generate_per_config(
     helper_items: &mut Vec<TokenStream>,
     token_statics: &mut Vec<TokenStream>,
 ) -> syn::Result<()> {
+    let cfg_attrs = cfg.attrs.as_slice();
     let runtime_ctor = &cfg.runtime;
     let runtime_type = cfg.runtime_type();
     let suite_base = &cfg.suite;
@@ -333,18 +366,20 @@ fn generate_per_config(
         cfg_idx,
     );
 
-    helper_items.push(runtime_group_owner_impl(
-        &owner_struct,
-        &owner_static,
-        runtime_ctor,
-        &runtime_type,
-        suite_base,
+    helper_items.push(runtime_group_owner_impl(&RuntimeGroupOwnerImplArgs {
+        cfg_attrs,
+        group_key_source: &group_key_source,
         mod_name,
-        &group_key_source,
-    ));
+        owner_static: &owner_static,
+        owner_struct: &owner_struct,
+        runtime_ctor,
+        runtime_type: &runtime_type,
+        suite_base,
+    }));
 
     for test in tests {
         let (helper, token_static) = generate_per_test(&GeneratePerTestArgs {
+            cfg_attrs,
             cfg_idx,
             group_key_source: &group_key_source,
             mod_name,
@@ -365,6 +400,7 @@ fn generate_per_config(
 /// to keep that fn readable and within clippy's per-fn line budget.
 fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream, TokenStream)> {
     let &GeneratePerTestArgs {
+        cfg_attrs,
         cfg_idx,
         group_key_source,
         mod_name,
@@ -444,6 +480,7 @@ fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream
     );
 
     let helper_item = run_test_fn_quote(&RunTestFnArgs {
+        cfg_attrs,
         run_test_fn: &run_test_fn,
         runtime_type,
         suite_base,
@@ -455,6 +492,7 @@ fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream
     });
 
     let token_static = quote! {
+        #(#cfg_attrs)*
         #[::rudzio::linkme::distributed_slice(::rudzio::token::TEST_TOKENS)]
         #[linkme(crate = ::rudzio::linkme)]
         #[doc(hidden)]
@@ -886,6 +924,7 @@ fn run_test_fn_quote(args: &RunTestFnArgs<'_>) -> TokenStream {
         attr_setup_timeout_secs,
         attr_teardown_timeout_secs,
         attr_test_timeout_secs,
+        cfg_attrs,
         ctx_binding,
         run_test_fn,
         runtime_type,
@@ -902,6 +941,7 @@ fn run_test_fn_quote(args: &RunTestFnArgs<'_>) -> TokenStream {
     let teardown_phase = run_test_teardown_phase_quote(runtime_type);
     let lifecycle_complete = run_test_lifecycle_complete_quote();
     quote! {
+        #(#cfg_attrs)*
         #[doc(hidden)]
         unsafe fn #run_test_fn<'s>(
             runtime_ptr: *const (),
@@ -1197,26 +1237,31 @@ fn run_test_timeouts_quote(
 /// Multiple suite blocks declaring the same `(runtime, suite, test)`
 /// triple emit functionally equivalent owners; the runner picks any
 /// one and ignores the rest.
-fn runtime_group_owner_impl(
-    owner_struct: &Ident,
-    owner_static: &Ident,
-    runtime_ctor: &Path,
-    runtime_type: &Path,
-    suite_base: &Path,
-    mod_name: &Ident,
-    group_key_source: &str,
-) -> TokenStream {
+fn runtime_group_owner_impl(args: &RuntimeGroupOwnerImplArgs<'_>) -> TokenStream {
+    let &RuntimeGroupOwnerImplArgs {
+        cfg_attrs,
+        group_key_source,
+        mod_name,
+        owner_static,
+        owner_struct,
+        runtime_ctor,
+        runtime_type,
+        suite_base,
+    } = args;
     let runtime_init = owner_runtime_init_quote(runtime_ctor, runtime_type, mod_name);
     let suite_setup = owner_suite_setup_quote(suite_base, runtime_type);
     let dispatch_loop = owner_dispatch_loop_quote(suite_base, runtime_type);
     let suite_teardown = owner_suite_teardown_quote(runtime_type);
     quote! {
+        #(#cfg_attrs)*
         #[doc(hidden)]
         struct #owner_struct;
 
+        #(#cfg_attrs)*
         #[doc(hidden)]
         static #owner_static: #owner_struct = #owner_struct;
 
+        #(#cfg_attrs)*
         impl ::rudzio::suite::RuntimeGroupOwner for #owner_struct {
             #[inline]
             fn group_key(&self) -> ::rudzio::suite::RuntimeGroupKey {

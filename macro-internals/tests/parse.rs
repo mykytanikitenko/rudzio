@@ -124,4 +124,52 @@ mod tests {
         );
         Ok(())
     }
+
+    #[rudzio::test]
+    fn bare_entry_has_no_cfg_attrs(_ctx: &Test) -> anyhow::Result<()> {
+        let config: RuntimeConfig = syn::parse_str(
+            "( runtime = rudzio::runtime::tokio::Multithread::new, suite = rudzio::common::context::Suite, test = rudzio::common::context::Test )",
+        )?;
+        anyhow::ensure!(
+            config.attrs.is_empty(),
+            "bare entry should carry no outer attributes, got {} attr(s)",
+            config.attrs.len(),
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn parses_single_cfg_attribute(_ctx: &Test) -> anyhow::Result<()> {
+        let config: RuntimeConfig = syn::parse_str(
+            "#[cfg(any(target_os = \"linux\", target_os = \"macos\"))] ( runtime = rudzio::runtime::tokio::Multithread::new, suite = rudzio::common::context::Suite, test = rudzio::common::context::Test )",
+        )?;
+        anyhow::ensure!(
+            config.attrs.len() == 1,
+            "expected 1 attribute, got {}",
+            config.attrs.len(),
+        );
+        let first = config
+            .attrs
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("expected first attribute"))?;
+        let rendered = render(first);
+        anyhow::ensure!(
+            rendered.contains("cfg") && rendered.contains("linux") && rendered.contains("macos"),
+            "attribute rendered as `{rendered}`",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn parses_multiple_attributes(_ctx: &Test) -> anyhow::Result<()> {
+        let config: RuntimeConfig = syn::parse_str(
+            "#[cfg(unix)] #[cfg(target_pointer_width = \"64\")] ( runtime = rudzio::runtime::tokio::Multithread::new, suite = rudzio::common::context::Suite, test = rudzio::common::context::Test )",
+        )?;
+        anyhow::ensure!(
+            config.attrs.len() == 2,
+            "expected 2 attributes, got {}",
+            config.attrs.len(),
+        );
+        Ok(())
+    }
 }
