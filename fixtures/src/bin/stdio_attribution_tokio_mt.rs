@@ -10,10 +10,11 @@
 //!     alpha's or beta's.
 
 use rudzio::common::context::Test;
+use rudzio::runtime::tokio::Multithread;
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
+        runtime = Multithread::new,
         suite = rudzio::common::context::Suite,
         test = rudzio::common::context::Test,
     ),
@@ -22,6 +23,12 @@ mod tests {
     use super::Test;
 
     #[rudzio::test]
+    #[expect(
+        clippy::print_stdout,
+        clippy::print_stderr,
+        clippy::unnecessary_wraps,
+        reason = "this fixture asserts rudzio attributes captured stdout/stderr to the originating test; the integration test greps the combined binary output for these per-test markers, so println!/eprintln! are the deliberate channels and the framework requires the test fn signature to return anyhow::Result<()>"
+    )]
     fn alpha(_ctx: &Test) -> anyhow::Result<()> {
         println!("alpha_stdout_line_1");
         println!("alpha_stdout_line_2");
@@ -33,6 +40,12 @@ mod tests {
     }
 
     #[rudzio::test]
+    #[expect(
+        clippy::print_stdout,
+        clippy::print_stderr,
+        clippy::unnecessary_wraps,
+        reason = "this fixture asserts rudzio attributes captured stdout/stderr to the originating test; the integration test greps the combined binary output for these per-test markers, so println!/eprintln! are the deliberate channels and the framework requires the test fn signature to return anyhow::Result<()>"
+    )]
     fn beta(_ctx: &Test) -> anyhow::Result<()> {
         println!("beta_stdout_line_1");
         println!("beta_stdout_line_2");
@@ -44,6 +57,12 @@ mod tests {
     }
 
     #[rudzio::test]
+    #[expect(
+        clippy::panic,
+        clippy::print_stdout,
+        clippy::print_stderr,
+        reason = "this fixture asserts rudzio attributes the panic message to the failing test (not the surrounding alpha/beta); the panic! is the test scenario being exercised and println!/eprintln! emit the markers the integration test greps"
+    )]
     fn gamma_panics(_ctx: &Test) -> anyhow::Result<()> {
         println!("gamma_stdout_line_1");
         println!("gamma_stdout_line_2");

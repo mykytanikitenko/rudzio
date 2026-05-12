@@ -9,14 +9,18 @@
 
 use std::error::Error;
 use std::fmt;
-use std::marker::PhantomData;
 use std::process::exit;
 use std::sync::{Arc, Barrier, BarrierWaitResult, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use rudzio::Config;
 use rudzio::context;
-use rudzio::runtime::{JoinError, Runtime};
+use rudzio::runtime::compio::Runtime as CompioRuntime;
+use rudzio::runtime::tokio::Multithread;
+use rudzio::runtime::Runtime;
+use rudzio::tokio_util::sync::CancellationToken;
+use rudzio::tokio_util::task::TaskTracker;
 
 /// Maximum time the watchdog thread waits before aborting the process.
 const WATCHDOG_TIMEOUT: Duration = Duration::from_secs(5);
@@ -26,8 +30,12 @@ struct CrossSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
+    /// Per-suite cancellation token.
+    cancel: CancellationToken,
     /// Borrow of the async runtime driving the suite context.
     rt: &'suite_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 /// Per-test context exposing `spawn_blocking` on the group's runtime.
@@ -35,10 +43,14 @@ struct CrossTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'test_context R>,
+    /// Per-test cancellation token.
+    cancel: CancellationToken,
+    /// Resolved CLI/env configuration.
+    config: &'test_context Config,
     /// Borrow of the async runtime driving this test.
     rt: &'test_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 /// Sentinel error type that never occurs in practice.
@@ -62,23 +74,6 @@ where
     }
 }
 
-impl<'test_context, R> CrossTest<'test_context, R>
-where
-    R: Runtime<'test_context> + Sync,
-{
-    /// Hand off a blocking closure to the group's async runtime.
-    fn spawn_blocking<F, T>(
-        &self,
-        func: F,
-    ) -> impl Future<Output = Result<T, JoinError>> + Send + 'test_context
-    where
-        F: FnOnce() -> T + Send + 'static,
-        T: Send + 'static,
-    {
-        self.rt.spawn_blocking(func)
-    }
-}
-
 impl<'test_context, R> fmt::Debug for CrossTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
@@ -90,7 +85,7 @@ where
 
 impl<'suite_context, R> context::Suite<'suite_context, R> for CrossSuite<'suite_context, R>
 where
-    R: for<'r> Runtime<'r> + Sync,
+    R: for<'rt> Runtime<'rt> + Sync,
 {
     type ContextError = NeverFails;
     type SetupError = NeverFails;
@@ -100,28 +95,46 @@ where
     where
         Self: 'test_context;
 
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
     async fn context<'test_context>(
         &'test_context self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
-        _config: &'test_context ::rudzio::Config,
+        cancel: CancellationToken,
+        config: &'test_context Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Ok(CrossTest {
-            _marker: PhantomData,
+            cancel,
+            config,
             rt: self.rt,
+            tracker: self.tracker.clone(),
         })
+    }
+
+    fn rt(&self) -> &'suite_context R {
+        self.rt
     }
 
     async fn setup(
         rt: &'suite_context R,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
-        _config: &'suite_context ::rudzio::Config,
+        cancel: CancellationToken,
+        _config: &'suite_context Config,
     ) -> Result<Self, Self::SetupError> {
         start_watchdog();
-        Ok(Self { rt })
+        Ok(Self {
+            cancel: cancel.child_token(),
+            rt,
+            tracker: TaskTracker::new(),
+        })
     }
 
-    async fn teardown(self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 
@@ -131,8 +144,24 @@ where
 {
     type TeardownError = NeverFails;
 
-    async fn teardown(self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<(), Self::TeardownError> {
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    fn config(&self) -> &Config {
+        self.config
+    }
+
+    fn rt(&self) -> &'test_context R {
+        self.rt
+    }
+
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 
@@ -144,6 +173,11 @@ fn shared_barrier() -> Arc<Barrier> {
 
 /// Spawn a one-shot watchdog thread that aborts the process if the
 /// cross-runtime barrier hasn't released within [`WATCHDOG_TIMEOUT`].
+#[expect(
+    clippy::print_stderr,
+    clippy::exit,
+    reason = "this fixture's watchdog must abort the process with a non-zero code if the cross-runtime barrier never releases (the only way to surface a stuck-serialised run from a thread that has no async runtime), and eprintln! is the deliberate channel for the diagnostic line the integration test greps"
+)]
 fn start_watchdog() {
     static WATCHDOG: OnceLock<()> = OnceLock::new();
     let _init: &() = WATCHDOG.get_or_init(|| {
@@ -160,17 +194,19 @@ fn start_watchdog() {
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
+        runtime = Multithread::new,
         suite = CrossSuite,
         test = CrossTest,
     ),
     (
-        runtime = rudzio::runtime::compio::Runtime::new,
+        runtime = CompioRuntime::new,
         suite = CrossSuite,
         test = CrossTest,
     ),
 ])]
 mod tests {
+    use rudzio::context::Test as _;
+
     use super::{BarrierWaitResult, CrossTest, shared_barrier};
 
     #[rudzio::test]

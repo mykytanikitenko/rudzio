@@ -19,23 +19,33 @@ use std::time::Instant;
 
 use super::events::{LifecycleEvent, TestId};
 
-/// Wrap `inner` so the first `poll` emits a `TestStarted` lifecycle
-/// event. `test_id` should come from [`TestId::next`] at dispatch
-/// site; `module_path`, `test_name`, `runtime_name` are static strings
-/// that end up in the event (and, transitively, in the drawer's
+/// Wrap `inner` so the first `poll` emits `TestStarted`.
+///
+/// `test_id` should come from [`TestId::next`] at dispatch site;
+/// `module_path`, `test_name`, `runtime_name` are static strings that
+/// end up in the event (and, transitively, in the drawer's
 /// [`super::events::TestState`]).
 #[derive(Debug)]
 pub struct FirstPoll<F> {
-    inner: F,
+    /// `true` once the first poll has emitted the `TestStarted` event,
+    /// used to make the announcement idempotent across polls.
     fired: bool,
-    test_id: TestId,
+    /// The wrapped test-body future; subsequent polls delegate to it.
+    inner: F,
+    /// `module_path!()` of the test, forwarded into the event.
     module_path: &'static str,
-    test_name: &'static str,
+    /// Display name of the runtime hosting this test.
     runtime_name: &'static str,
+    /// Identifier used by the drawer to correlate lifecycle and pipe
+    /// events for this test.
+    test_id: TestId,
+    /// The test's identifier within its module.
+    test_name: &'static str,
 }
 
 impl<F> FirstPoll<F> {
     #[must_use]
+    #[inline]
     pub const fn new(
         inner: F,
         test_id: TestId,
@@ -57,6 +67,7 @@ impl<F> FirstPoll<F> {
 impl<F: Future + Unpin> Future for FirstPoll<F> {
     type Output = F::Output;
 
+    #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = Pin::get_mut(self);
         if !this.fired {

@@ -7,10 +7,13 @@
 
 use std::error::Error;
 use std::fmt;
-use std::marker::PhantomData;
 
+use rudzio::Config;
 use rudzio::context;
 use rudzio::runtime::Runtime;
+use rudzio::runtime::tokio::Multithread;
+use rudzio::tokio_util::sync::CancellationToken;
+use rudzio::tokio_util::task::TaskTracker;
 
 /// Error type used to fail context creation on purpose.
 #[derive(Debug)]
@@ -29,8 +32,12 @@ struct BrokenContextSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'suite_context R>,
+    /// Per-suite cancellation token; child of the runner's root token.
+    cancel: CancellationToken,
+    /// Borrow of the async runtime driving this suite.
+    rt: &'suite_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 impl<'suite_context, R> fmt::Debug for BrokenContextSuite<'suite_context, R>
@@ -44,7 +51,7 @@ where
 
 impl<'suite_context, R> context::Suite<'suite_context, R> for BrokenContextSuite<'suite_context, R>
 where
-    R: for<'r> Runtime<'r> + Sync,
+    R: for<'rt> Runtime<'rt> + Sync,
 {
     type ContextError = ContextErr;
     type SetupError = ContextErr;
@@ -54,26 +61,40 @@ where
     where
         Self: 'test_context;
 
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
     async fn context<'test_context>(
         &'test_context self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
-        _config: &'test_context ::rudzio::Config,
+        _cancel: CancellationToken,
+        _config: &'test_context Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Err(ContextErr)
     }
 
+    fn rt(&self) -> &'suite_context R {
+        self.rt
+    }
+
     async fn setup(
-        _rt: &'suite_context R,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
-        _config: &'suite_context ::rudzio::Config,
+        rt: &'suite_context R,
+        cancel: CancellationToken,
+        _config: &'suite_context Config,
     ) -> Result<Self, Self::SetupError> {
         Ok(Self {
-            _marker: PhantomData,
+            cancel: cancel.child_token(),
+            rt,
+            tracker: TaskTracker::new(),
         })
     }
 
-    async fn teardown(self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 
@@ -83,8 +104,14 @@ struct NeverBuiltTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'test_context R>,
+    /// Per-test cancellation token.
+    cancel: CancellationToken,
+    /// Resolved CLI/env configuration.
+    config: &'test_context Config,
+    /// Borrow of the async runtime driving this test.
+    rt: &'test_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 impl<'test_context, R> fmt::Debug for NeverBuiltTest<'test_context, R>
@@ -102,14 +129,30 @@ where
 {
     type TeardownError = ContextErr;
 
-    async fn teardown(self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<(), Self::TeardownError> {
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    fn config(&self) -> &Config {
+        self.config
+    }
+
+    fn rt(&self) -> &'test_context R {
+        self.rt
+    }
+
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
+        runtime = Multithread::new,
         suite = BrokenContextSuite,
         test = NeverBuiltTest,
     ),
@@ -118,11 +161,19 @@ mod tests {
     use super::NeverBuiltTest;
 
     #[rudzio::test]
+    #[expect(
+        clippy::unreachable,
+        reason = "this fixture exercises Suite::context returning Err; the body must be unreachable to confirm the runner reports SETUP without invoking it"
+    )]
     fn first(_ctx: &NeverBuiltTest) -> anyhow::Result<()> {
         unreachable!("body must not run when context() fails")
     }
 
     #[rudzio::test]
+    #[expect(
+        clippy::unreachable,
+        reason = "this fixture exercises Suite::context returning Err; the body must be unreachable to confirm the runner reports SETUP without invoking it"
+    )]
     fn second(_ctx: &NeverBuiltTest) -> anyhow::Result<()> {
         unreachable!("body must not run when context() fails")
     }

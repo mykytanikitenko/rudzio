@@ -1,6 +1,6 @@
 //! Suite-setup timeout fixture.
 //!
-//! Suite::setup sleeps past the per-suite-setup budget. The phase
+//! `Suite::setup` sleeps past the per-suite-setup budget. The phase
 //! wrapper drops the in-flight setup future, every queued test reports
 //! `[CANCEL]`, the lifecycle line for the suite shows `[TIMEOUT]`, and
 //! the binary exits non-zero. Companion to `setup_failure_tokio_mt`
@@ -9,18 +9,45 @@
 
 use std::convert::Infallible;
 use std::fmt;
-use std::marker::PhantomData;
 use std::time::Duration;
 
+use rudzio::Config;
 use rudzio::context;
 use rudzio::runtime::Runtime;
+use rudzio::runtime::tokio::Multithread;
 use rudzio::tokio_util::sync::CancellationToken;
+use rudzio::tokio_util::task::TaskTracker;
+use tokio::time::sleep;
 
+/// Suite whose [`context::Suite::setup`] hangs past the configured
+/// per-suite-setup timeout, exercising the phase wrapper's timeout
+/// branch.
 struct HangingSetupSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
-    _marker: PhantomData<&'suite_context R>,
+    /// Per-suite cancellation token.
+    cancel: CancellationToken,
+    /// Borrow of the async runtime driving this suite.
+    rt: &'suite_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
+}
+
+/// Per-test context placeholder; never actually constructed because
+/// [`HangingSetupSuite::setup`] is dropped on timeout.
+struct NeverBuiltTest<'test_context, R>
+where
+    R: Runtime<'test_context> + Sync,
+{
+    /// Per-test cancellation token.
+    cancel: CancellationToken,
+    /// Resolved CLI/env configuration.
+    config: &'test_context Config,
+    /// Borrow of the async runtime driving this test.
+    rt: &'test_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 impl<'suite_context, R> fmt::Debug for HangingSetupSuite<'suite_context, R>
@@ -32,64 +59,6 @@ where
     }
 }
 
-impl<'suite_context, R> context::Suite<'suite_context, R> for HangingSetupSuite<'suite_context, R>
-where
-    R: for<'r> Runtime<'r> + Sync,
-{
-    type ContextError = Infallible;
-    type SetupError = Infallible;
-    type TeardownError = Infallible;
-    type Test<'test_context>
-        = NeverBuiltTest<'test_context, R>
-    where
-        Self: 'test_context;
-
-    async fn context<'test_context>(
-        &'test_context self,
-        _cancel: CancellationToken,
-        _config: &'test_context ::rudzio::Config,
-    ) -> Result<Self::Test<'test_context>, Self::ContextError> {
-        Ok(NeverBuiltTest {
-            _marker: PhantomData,
-        })
-    }
-
-    async fn setup(
-        _rt: &'suite_context R,
-        cancel: CancellationToken,
-        _config: &'suite_context ::rudzio::Config,
-    ) -> Result<Self, Self::SetupError> {
-        // Hang well past the integration test's `--suite-setup-timeout=1`.
-        // Cooperate with the cancel token so we exit the moment the
-        // wrapper signals timeout (otherwise the test runner has to wait
-        // 30s for the future to be dropped).
-        let _unused = cancel
-            .run_until_cancelled(async {
-                ::tokio::time::sleep(Duration::from_secs(30)).await;
-            })
-            .await;
-        println!("hanging_suite_setup_unreached_marker");
-        Ok(Self {
-            _marker: PhantomData,
-        })
-    }
-
-    async fn teardown(
-        self,
-        _cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
-        println!("teardown_must_not_run_marker");
-        Ok(())
-    }
-}
-
-struct NeverBuiltTest<'test_context, R>
-where
-    R: Runtime<'test_context> + Sync,
-{
-    _marker: PhantomData<&'test_context R>,
-}
-
 impl<'test_context, R> fmt::Debug for NeverBuiltTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
@@ -99,23 +68,113 @@ where
     }
 }
 
+impl<'suite_context, R> context::Suite<'suite_context, R> for HangingSetupSuite<'suite_context, R>
+where
+    R: for<'rt> Runtime<'rt> + Sync,
+{
+    type ContextError = Infallible;
+    type SetupError = Infallible;
+    type TeardownError = Infallible;
+    type Test<'test_context>
+        = NeverBuiltTest<'test_context, R>
+    where
+        Self: 'test_context;
+
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    async fn context<'test_context>(
+        &'test_context self,
+        cancel: CancellationToken,
+        config: &'test_context Config,
+    ) -> Result<Self::Test<'test_context>, Self::ContextError> {
+        Ok(NeverBuiltTest {
+            cancel,
+            config,
+            rt: self.rt,
+            tracker: self.tracker.clone(),
+        })
+    }
+
+    fn rt(&self) -> &'suite_context R {
+        self.rt
+    }
+
+    #[expect(
+        clippy::print_stdout,
+        reason = "this fixture asserts the suite-setup-timeout phase wrapper drops the in-flight setup future before completion; the println! after the sleep is the unreached marker that the integration test greps for absence"
+    )]
+    async fn setup(
+        rt: &'suite_context R,
+        cancel: CancellationToken,
+        _config: &'suite_context Config,
+    ) -> Result<Self, Self::SetupError> {
+        // Hang well past the integration test's `--suite-setup-timeout=1`.
+        // Cooperate with the cancel token so we exit the moment the
+        // wrapper signals timeout (otherwise the test runner has to wait
+        // 30s for the future to be dropped).
+        let _unused = cancel
+            .run_until_cancelled(async {
+                sleep(Duration::from_secs(30_u64)).await;
+            })
+            .await;
+        println!("hanging_suite_setup_unreached_marker");
+        Ok(Self {
+            cancel: cancel.child_token(),
+            rt,
+            tracker: TaskTracker::new(),
+        })
+    }
+
+    #[expect(
+        clippy::print_stdout,
+        reason = "this fixture asserts Suite::teardown does not run when setup timed out; the println! is the unreached marker that the integration test greps for absence"
+    )]
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
+        println!("teardown_must_not_run_marker");
+        Ok(())
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
+    }
+}
+
 impl<'test_context, R> context::Test<'test_context, R> for NeverBuiltTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
 {
     type TeardownError = Infallible;
 
-    async fn teardown(
-        self,
-        _cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    fn config(&self) -> &Config {
+        self.config
+    }
+
+    fn rt(&self) -> &'test_context R {
+        self.rt
+    }
+
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "this fixture asserts queued tests are Cancelled when Suite::setup times out; the never_runs() body trivially returns Ok(()) so its anyhow::Result<()> wrapper is redundant, but the framework requires the test fn signature to return anyhow::Result<()>"
+)]
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
+        runtime = Multithread::new,
         suite = HangingSetupSuite,
         test = NeverBuiltTest,
     ),

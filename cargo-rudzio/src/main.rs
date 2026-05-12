@@ -1,15 +1,26 @@
+//! `cargo-rudzio` subcommand binary.
+//!
+//! Wraps three operations behind a single cargo subcommand: generate the
+//! aggregator crate (`generate-runner`), generate-and-run the aggregator
+//! (`test`), and forward to `rudzio-migrate`.
+
 #![allow(
     unused_results,
     clippy::needless_pass_by_value,
     reason = "toml_edit's insert/push API routinely returns the previous value; CLI glue does not care about the dropped option"
 )]
 
-use std::path::PathBuf;
+use std::env;
+use std::io::{Result as IoResult, Write as _, stderr, stdout};
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use anyhow::{Context as _, Result, bail};
+use cargo_rudzio::cli::{aggregator_cargo_args, format_target_flag_warning, parse_test_args};
 use cargo_rudzio::{generate, spawn_env};
+use rudzio_migrate::run::entry_with_args as rudzio_migrate_entry;
 
+/// Top-level usage string printed for `--help` / unknown subcommands.
 const USAGE: &str = "\
 cargo-rudzio - Cargo subcommand: single-binary test aggregation + rudzio-migrate
 
@@ -17,10 +28,90 @@ USAGE:
     cargo rudzio <COMMAND> [ARGS...]
 
 COMMANDS:
-    test [ARGS...]                   Build every rudzio test in the workspace
+    test [SELECTORS...] [ARGS...]    Build every rudzio test in the workspace
                                      into ONE binary (grouped by runtime and
-                                     suite) and run it. ARGS forward to the
-                                     runner (filter patterns, --skip, etc.).
+                                     suite) and run it.
+
+                                     SELECTORS narrow the aggregator to a
+                                     subset of workspace members BEFORE the
+                                     binary is built (cheaper than filtering
+                                     at runtime):
+                                       -p, --package <NAME>  exact Cargo
+                                         package-name match. Repeatable.
+                                       --exclude <NAME>  exact Cargo
+                                         package-name match for members to
+                                         drop. Repeatable. Combine with -p
+                                         to keep all-but-N, or use alone to
+                                         skip noisy crates from the
+                                         workspace-wide default.
+                                       <PATH>  any positional argument that
+                                         resolves to a directory on disk
+                                         restricts the aggregator to members
+                                         at-or-under that path. Repeatable.
+
+                                     CARGO-COMPAT FLAGS consumed locally:
+                                       --manifest-path <PATH>  point
+                                         cargo-rudzio at a workspace
+                                         other than the current
+                                         directory's. Repeated use is
+                                         last-wins (mirrors cargo).
+                                       --no-run  build the aggregator
+                                         binary but skip running it. Cargo
+                                         build output is in
+                                         json-render-diagnostics format on
+                                         stdout, so tooling can extract the
+                                         binary path with
+                                         `jq -r 'select(.executable != null) | .executable'`.
+                                       --workspace, --all  silently
+                                         accepted; rudzio always operates on
+                                         the whole workspace by default.
+                                       --nocapture, --show-output  silently
+                                         accepted; rudzio's structured
+                                         output already surfaces test
+                                         stdout/stderr.
+                                       --no-fail-fast  silently accepted;
+                                         the rudzio runner already keeps
+                                         going on a per-test failure.
+                                       --lib, --bins, --bin <NAME>,
+                                       --example <NAME>, --examples,
+                                       --test <NAME>, --tests,
+                                       --bench <NAME>, --benches,
+                                       --all-targets, --doc  consumed
+                                         with one consolidated stderr
+                                         warning. The aggregator is one
+                                         binary, so per-target selection
+                                         has no rudzio analog.
+
+                                     CARGO BUILD-GRAPH FLAGS forwarded to
+                                     the spawned `cargo run`/`cargo build`
+                                     before `--` (so they shape the build,
+                                     not the runner):
+                                       --release, -r (short for --release),
+                                       --profile <NAME>,
+                                       --features <FEATURES>,
+                                       -F <FEATURES> (short for --features),
+                                       --all-features,
+                                       --no-default-features,
+                                       --target <TRIPLE> (repeatable),
+                                       --target-dir <DIR>,
+                                       --lockfile-path <PATH>,
+                                       -j/--jobs <N>, --keep-going,
+                                       --frozen, --locked, --offline,
+                                       -v/--verbose (repeatable),
+                                       -q/--quiet, --message-format <FMT>,
+                                       --config <K=V> (repeatable),
+                                       -Z <FLAG> (repeatable, nightly),
+                                       --ignore-rust-version, --unit-graph,
+                                       --future-incompat-report.
+                                     Both space (`--features ci`) and
+                                     equals (`--features=ci`) forms are
+                                     accepted; the user's spelling is
+                                     forwarded unchanged.
+
+                                     Anything else in ARGS forwards verbatim
+                                     to the rudzio runner (positional filter,
+                                     --skip, --output=plain, etc.). Run the
+                                     binary with --help to see runner flags.
     migrate [ARGS...]                Run rudzio-migrate (converts stock cargo
                                      tests to rudzio). ARGS are forwarded
                                      verbatim. See `cargo rudzio migrate --help`.
@@ -28,77 +119,120 @@ COMMANDS:
                                      without running it (default:
                                      <target-dir>/rudzio-auto-runner).
     help, --help, -h                 Print this message.
+
+EXAMPLES:
+    Run only one workspace member's rudzio tests:
+        cargo rudzio test -p rudzio-migrate
+
+    Combine package selection with a runner filter:
+        cargo rudzio test -p rudzio-migrate my_failing_test
+
+    Pipe-safe output for an AI agent or log shipper:
+        cargo rudzio test -- --output=plain --color=never
+
+    Build the aggregator without running it; print the binary path:
+        cargo rudzio test --no-run \\
+          | jq -r 'select(.executable != null) | .executable'
 ";
 
+/// Write `text` to stdout, ignoring any I/O error.
+fn write_stdout(text: &str) {
+    let _io_result: IoResult<()> = stdout().lock().write_all(text.as_bytes());
+}
+
+/// Write `text` to stderr, ignoring any I/O error.
+fn write_stderr(text: &str) {
+    let _io_result: IoResult<()> = stderr().lock().write_all(text.as_bytes());
+}
+
 fn main() -> ExitCode {
-    let argv: Vec<String> = std::env::args().collect();
+    let argv: Vec<String> = env::args().collect();
     match dispatch(&argv) {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("cargo-rudzio: {err:#}");
+            write_stderr(&format!("cargo-rudzio: {err:#}\n"));
             ExitCode::from(1)
         }
     }
 }
 
+/// Match the user-supplied argv against the command grammar and dispatch to one of the per-subcommand handlers.
 fn dispatch(argv: &[String]) -> Result<ExitCode> {
-    let mut args = argv.iter().skip(1);
-    let first = args.next().map(String::as_str);
+    let mut walker = argv.iter().skip(1);
+    let first = walker.next().map(String::as_str);
     let subcommand = match first {
-        Some("rudzio") => args.next().map(String::as_str),
+        Some("rudzio") => walker.next().map(String::as_str),
         other => other,
     };
-    let rest: Vec<String> = args.cloned().collect();
+    let rest: Vec<String> = walker.cloned().collect();
     match subcommand {
         None | Some("help" | "--help" | "-h") => {
-            print!("{USAGE}");
+            write_stdout(USAGE);
             Ok(ExitCode::SUCCESS)
         }
         Some("generate-runner") => run_generate(&rest).map(|()| ExitCode::SUCCESS),
         Some("test") => run_test(&rest),
         Some("migrate") => Ok(run_migrate(&rest)),
         Some(cmd) => {
-            eprint!("cargo-rudzio: unknown subcommand `{cmd}`\n\n{USAGE}");
+            write_stderr(&format!(
+                "cargo-rudzio: unknown subcommand `{cmd}`\n\n{USAGE}"
+            ));
             Ok(ExitCode::from(2))
         }
     }
 }
 
+/// Handler for `cargo rudzio generate-runner`: produce an aggregator crate at the requested output directory.
 fn run_generate(rest: &[String]) -> Result<()> {
     let output = parse_output_flag(rest)?;
     let plan = generate::plan_from_cwd()?;
     emit_diagnostic_warnings(&plan);
     let target = output.unwrap_or_else(|| plan.default_output_dir());
     generate::write_runner(&plan, &target)?;
-    println!(
-        "cargo-rudzio: generated aggregator at {}",
+    write_stdout(&format!(
+        "cargo-rudzio: generated aggregator at {}\n",
         target.display()
-    );
+    ));
     Ok(())
 }
 
+/// Handler for `cargo rudzio test`: generate the aggregator crate then `cargo run` it with the user's runner args.
 fn run_test(rest: &[String]) -> Result<ExitCode> {
-    let plan = generate::plan_from_cwd()?;
+    let parsed = parse_test_args(rest, Path::is_dir)?;
+    if let Some(warning) = format_target_flag_warning(&parsed.ignored_target_flags) {
+        write_stderr(&format!("warning: {warning}\n"));
+    }
+    let mut plan = match parsed.manifest_path.as_deref() {
+        Some(manifest) => generate::plan_from_manifest(manifest)?,
+        None => generate::plan_from_cwd()?,
+    };
+    if !parsed.filters.include_paths.is_empty() {
+        plan.restrict_to_paths(&parsed.filters.include_paths)?;
+    }
+    if !parsed.filters.include_packages.is_empty() {
+        plan.restrict_to_packages(&parsed.filters.include_packages)?;
+    }
+    plan.exclude_packages(&parsed.filters.exclude_packages)?;
     emit_diagnostic_warnings(&plan);
     let target = plan.default_output_dir();
     generate::write_runner(&plan, &target)?;
     let manifest = target.join("Cargo.toml");
-    let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    let manifest_str = manifest.to_str().ok_or_else(|| {
+        anyhow::anyhow!("manifest path is not valid UTF-8: {}", manifest.display())
+    })?;
+    let cargo_argv = aggregator_cargo_args(&parsed, manifest_str);
+    let mut cmd = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     for (key, value) in &spawn_env() {
         cmd.env(key, value);
     }
     let status = cmd
-        .arg("run")
-        .arg("--manifest-path")
-        .arg(&manifest)
-        .arg("--")
-        .args(rest)
+        .args(&cargo_argv)
         .status()
-        .with_context(|| format!("failed to spawn cargo run --manifest-path {}", manifest.display()))?;
-    Ok(match status.code() {
-        Some(code) => ExitCode::from(u8::try_from(code & 0xFF).unwrap_or(1)),
-        None => ExitCode::from(1),
-    })
+        .with_context(|| format!("failed to spawn cargo with args {cargo_argv:?}"))?;
+    Ok(status.code().map_or_else(
+        || ExitCode::from(1),
+        |code| ExitCode::from(u8::try_from(code & 0xFF_i32).unwrap_or(1)),
+    ))
 }
 
 /// Print warnings from the src-scan diagnostic pass before the
@@ -106,32 +240,34 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
 /// the build on them, because silent failure is worse than visible
 /// warnings for the rare false-positive case.
 fn emit_diagnostic_warnings(plan: &generate::Plan) {
-    for w in generate::scan_unbroadened_cfg_test_mods_in_plan(plan) {
-        eprintln!("warning: {w}");
+    for warning in generate::scan_unbroadened_cfg_test_mods_in_plan(plan) {
+        write_stderr(&format!("warning: {warning}\n"));
     }
 }
 
+/// Handler for `cargo rudzio migrate`: forward every arg verbatim into `rudzio_migrate::run::entry_with_args`.
 fn run_migrate(rest: &[String]) -> ExitCode {
-    let mut argv: Vec<String> = Vec::with_capacity(rest.len() + 1);
+    let mut argv: Vec<String> = Vec::with_capacity(rest.len().saturating_add(1));
     argv.push("rudzio-migrate".to_owned());
     argv.extend(rest.iter().cloned());
-    rudzio_migrate::run::entry_with_args(argv)
+    rudzio_migrate_entry(argv)
 }
 
+/// Parse the `--output DIR` / `-o DIR` / `--output=DIR` flag from the args list.
 fn parse_output_flag(rest: &[String]) -> Result<Option<PathBuf>> {
     let mut out: Option<PathBuf> = None;
     let mut idx = 0;
-    while idx < rest.len() {
-        let arg = &rest[idx];
+    while let Some(arg) = rest.get(idx) {
         if arg == "--output" || arg == "-o" {
+            let next_idx = idx.saturating_add(1);
             let val = rest
-                .get(idx + 1)
+                .get(next_idx)
                 .ok_or_else(|| anyhow::anyhow!("`{arg}` requires a value"))?;
             out = Some(PathBuf::from(val));
-            idx += 2;
+            idx = idx.saturating_add(2);
         } else if let Some(val) = arg.strip_prefix("--output=") {
             out = Some(PathBuf::from(val));
-            idx += 1;
+            idx = idx.saturating_add(1);
         } else {
             bail!("unexpected argument: `{arg}`");
         }

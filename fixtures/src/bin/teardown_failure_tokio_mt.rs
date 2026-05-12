@@ -8,10 +8,13 @@
 
 use std::error::Error;
 use std::fmt;
-use std::marker::PhantomData;
 
+use rudzio::Config;
 use rudzio::context;
 use rudzio::runtime::Runtime;
+use rudzio::runtime::tokio::Multithread;
+use rudzio::tokio_util::sync::CancellationToken;
+use rudzio::tokio_util::task::TaskTracker;
 
 /// Error type used to fail teardown on purpose.
 #[derive(Debug)]
@@ -31,8 +34,12 @@ struct FailingTeardownSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'suite_context R>,
+    /// Per-suite cancellation token.
+    cancel: CancellationToken,
+    /// Borrow of the async runtime driving this suite.
+    rt: &'suite_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 impl<'suite_context, R> fmt::Debug for FailingTeardownSuite<'suite_context, R>
@@ -48,7 +55,7 @@ where
 impl<'suite_context, R> context::Suite<'suite_context, R>
     for FailingTeardownSuite<'suite_context, R>
 where
-    R: for<'r> Runtime<'r> + Sync,
+    R: for<'rt> Runtime<'rt> + Sync,
 {
     type ContextError = TeardownErr;
     type SetupError = TeardownErr;
@@ -58,28 +65,45 @@ where
     where
         Self: 'test_context;
 
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
     async fn context<'test_context>(
         &'test_context self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
-        _config: &'test_context ::rudzio::Config,
+        cancel: CancellationToken,
+        config: &'test_context Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         Ok(TrivialTest {
-            _marker: PhantomData,
+            cancel,
+            config,
+            rt: self.rt,
+            tracker: self.tracker.clone(),
         })
+    }
+
+    fn rt(&self) -> &'suite_context R {
+        self.rt
     }
 
     async fn setup(
-        _rt: &'suite_context R,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
-        _config: &'suite_context ::rudzio::Config,
+        rt: &'suite_context R,
+        cancel: CancellationToken,
+        _config: &'suite_context Config,
     ) -> Result<Self, Self::SetupError> {
         Ok(Self {
-            _marker: PhantomData,
+            cancel: cancel.child_token(),
+            rt,
+            tracker: TaskTracker::new(),
         })
     }
 
-    async fn teardown(self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Err(TeardownErr)
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 
@@ -90,8 +114,14 @@ struct TrivialTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
 {
-    /// Ties the struct to the runtime lifetime without carrying any state.
-    _marker: PhantomData<&'test_context R>,
+    /// Per-test cancellation token.
+    cancel: CancellationToken,
+    /// Resolved CLI/env configuration.
+    config: &'test_context Config,
+    /// Borrow of the async runtime driving this test.
+    rt: &'test_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 impl<'test_context, R> fmt::Debug for TrivialTest<'test_context, R>
@@ -109,14 +139,30 @@ where
 {
     type TeardownError = TeardownErr;
 
-    async fn teardown(self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<(), Self::TeardownError> {
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    fn config(&self) -> &Config {
+        self.config
+    }
+
+    fn rt(&self) -> &'test_context R {
+        self.rt
+    }
+
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
+        runtime = Multithread::new,
         suite = FailingTeardownSuite,
         test = TrivialTest,
     ),
@@ -125,6 +171,10 @@ mod tests {
     use super::TrivialTest;
 
     #[rudzio::test]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "this fixture's body must succeed (Ok(())) so suite teardown failure is the unambiguous failure point; the framework requires the test fn signature to return anyhow::Result<()>"
+    )]
     fn body_runs_then_teardown_fails(_ctx: &TrivialTest) -> anyhow::Result<()> {
         Ok(())
     }

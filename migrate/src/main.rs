@@ -4,6 +4,8 @@
 
 use std::process::ExitCode;
 
+use rudzio_migrate::run;
+
 fn main() -> ExitCode {
-    rudzio_migrate::run::entry()
+    run::entry()
 }

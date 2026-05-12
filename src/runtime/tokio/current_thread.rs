@@ -14,6 +14,8 @@ use crate::runtime::tokio::error::tokio_join_error_to_join_error;
 use crate::runtime::{JoinError, Runtime};
 
 pub struct CurrentThread {
+    /// Resolved [`Config`] this runtime was constructed from.
+    config: Config,
     /// Thread-local executor used to drive `!Send` futures. `LocalSet` is
     /// `!Send`/`!Sync`; `SendWrapper` promotes this struct to `Send + Sync`
     /// so context types borrowing `&CurrentThread` can meet the framework's
@@ -23,8 +25,6 @@ pub struct CurrentThread {
     local_set: SendWrapper<LocalSet>,
     /// Underlying tokio current-thread runtime.
     rt: TokioRuntime,
-    /// Resolved [`Config`] this runtime was constructed from.
-    config: Config,
 }
 
 impl fmt::Debug for CurrentThread {
@@ -60,6 +60,15 @@ impl CurrentThread {
 
 impl<'rt> Runtime<'rt> for CurrentThread {
     #[inline]
+    fn block_on<F>(&self, fut: F) -> F::Output
+    where
+        F: Future + 'rt,
+        F::Output: 'static,
+    {
+        self.local_set.block_on(&self.rt, fut)
+    }
+
+    #[inline]
     fn config(&self) -> &Config {
         &self.config
     }
@@ -70,12 +79,8 @@ impl<'rt> Runtime<'rt> for CurrentThread {
     }
 
     #[inline]
-    fn block_on<F>(&self, fut: F) -> F::Output
-    where
-        F: Future + 'rt,
-        F::Output: 'static,
-    {
-        self.local_set.block_on(&self.rt, fut)
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
+        sleep(duration)
     }
 
     #[inline]
@@ -108,10 +113,5 @@ impl<'rt> Runtime<'rt> for CurrentThread {
     {
         let handle = self.local_set.spawn_local(fut);
         async move { handle.await.map_err(tokio_join_error_to_join_error) }
-    }
-
-    #[inline]
-    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
-        sleep(duration)
     }
 }

@@ -5,6 +5,7 @@ use std::fmt;
 use std::io;
 use std::time::Duration;
 
+use compio_runtime::time::sleep as compio_sleep;
 use send_wrapper::SendWrapper;
 
 use crate::config::Config;
@@ -12,6 +13,8 @@ use crate::runtime::JoinError;
 use crate::runtime::Runtime as RuntimeTrait;
 
 pub struct Runtime {
+    /// Resolved [`Config`] this runtime was constructed from.
+    config: Config,
     /// Underlying compio runtime. `compio_runtime::Runtime` is `!Send`/`!Sync`;
     /// `SendWrapper` promotes it to `Send + Sync` so user context types that
     /// borrow the runtime (e.g. `rudzio::common::context::Suite<R>`) can themselves
@@ -19,8 +22,6 @@ pub struct Runtime {
     /// always happens on the group thread, so `SendWrapper`'s thread-locality
     /// check is never triggered in practice.
     rt: SendWrapper<::compio_runtime::Runtime>,
-    /// Resolved [`Config`] this runtime was constructed from.
-    config: Config,
 }
 
 impl fmt::Debug for Runtime {
@@ -33,7 +34,7 @@ impl fmt::Debug for Runtime {
 impl Runtime {
     /// Build a compio runtime.
     ///
-    /// Fields consulted from [`Config`]: **none** — compio's io_uring
+    /// Fields consulted from [`Config`]: **none** — compio's `io_uring`
     /// driver is single-threaded. The full config is still stored and
     /// exposed via [`RuntimeTrait::config`](crate::runtime::Runtime::config).
     ///
@@ -52,6 +53,15 @@ impl Runtime {
 
 impl<'rt> RuntimeTrait<'rt> for Runtime {
     #[inline]
+    fn block_on<F>(&self, fut: F) -> F::Output
+    where
+        F: Future + 'rt,
+        F::Output: 'static,
+    {
+        self.rt.block_on(fut)
+    }
+
+    #[inline]
     fn config(&self) -> &Config {
         &self.config
     }
@@ -62,12 +72,11 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
     }
 
     #[inline]
-    fn block_on<F>(&self, fut: F) -> F::Output
-    where
-        F: Future + 'rt,
-        F::Output: 'static,
-    {
-        self.rt.block_on(fut)
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
+        // compio's timer is single-threaded; `SendWrapper` makes the future
+        // `Send` while the runtime ensures it is always polled on the one
+        // thread that owns the compio runtime.
+        SendWrapper::new(compio_sleep(duration))
     }
 
     #[inline]
@@ -115,14 +124,6 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
                 Err(payload) => Err(compio_join_error_to_join_error(payload.as_ref())),
             }
         }
-    }
-
-    #[inline]
-    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
-        // compio's timer is single-threaded; `SendWrapper` makes the future
-        // `Send` while the runtime ensures it is always polled on the one
-        // thread that owns the compio runtime.
-        SendWrapper::new(::compio_runtime::time::sleep(duration))
     }
 }
 

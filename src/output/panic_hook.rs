@@ -29,6 +29,19 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use super::events::TestId;
 use super::pipe::SavedFds;
 
+thread_local! {
+    /// Set when the thread is currently executing a captured test's
+    /// future (via [`crate::output::first_poll::FirstPoll`]). Read by
+    /// the panic hook to decide whether a panic belongs to a test
+    /// (let the default hook print through captured stderr) or to
+    /// the runner (restore FDs first).
+    static CURRENT_TEST_ID: Cell<Option<TestId>> = const { Cell::new(None) };
+}
+
+/// Tracks whether the rudzio panic hook has already been installed,
+/// so repeated [`install`] calls become no-ops.
+static INSTALLED: AtomicBool = AtomicBool::new(false);
+
 /// Process-wide count of panics observed by the rudzio panic hook
 /// **outside** any per-test `catch_unwind` boundary.
 ///
@@ -45,37 +58,15 @@ use super::pipe::SavedFds;
 /// account for them.
 static UNATTRIBUTED_PANICS: AtomicUsize = AtomicUsize::new(0);
 
-/// Read the unattributed-panic counter. Used by the runner's exit-code
-/// path; tests can also call this to assert background-panic counting.
-#[must_use]
-pub fn unattributed_panic_count() -> usize {
-    UNATTRIBUTED_PANICS.load(Ordering::Relaxed)
-}
-
-thread_local! {
-    /// Set when the thread is currently executing a captured test's
-    /// future (via [`crate::output::first_poll::FirstPoll`]). Read by
-    /// the panic hook to decide whether a panic belongs to a test
-    /// (let the default hook print through captured stderr) or to
-    /// the runner (restore FDs first).
-    static CURRENT_TEST_ID: Cell<Option<TestId>> = const { Cell::new(None) };
-}
-
-/// Mark the calling thread as running the given test. Pass `None` to
-/// clear. Cheap — a thread-local `Cell::set`.
-pub fn set_current_test(id: Option<TestId>) {
-    CURRENT_TEST_ID.with(|c| c.set(id));
-}
-
-static INSTALLED: AtomicBool = AtomicBool::new(false);
-
-/// Install the custom panic hook once. Idempotent; subsequent calls
-/// are no-ops. `saved_fds` is an `Arc` shared with the
-/// [`crate::output::CaptureGuard`] so either side can restore
-/// FDs (restore is internally idempotent — whichever runs first
-/// takes ownership via atomic swap; the loser no-ops). Pass `None`
-/// from plain-mode init — the counter still bumps but no FD restore
-/// is needed because nothing was captured.
+/// Install the custom panic hook once.
+///
+/// Idempotent; subsequent calls are no-ops. `saved_fds` is an `Arc`
+/// shared with the [`crate::output::CaptureGuard`] so either side can
+/// restore FDs (restore is internally idempotent — whichever runs
+/// first takes ownership via atomic swap; the loser no-ops). Pass
+/// `None` from plain-mode init — the counter still bumps but no FD
+/// restore is needed because nothing was captured.
+#[inline]
 pub fn install(saved_fds: Option<Arc<SavedFds>>) {
     if INSTALLED.swap(true, Ordering::AcqRel) {
         return;
@@ -97,4 +88,19 @@ pub fn install(saved_fds: Option<Arc<SavedFds>>) {
         }
         prev(info);
     }));
+}
+
+/// Mark the calling thread as running the given test. Pass `None` to
+/// clear. Cheap — a thread-local `Cell::set`.
+#[inline]
+pub fn set_current_test(id: Option<TestId>) {
+    CURRENT_TEST_ID.with(|cell| cell.set(id));
+}
+
+/// Read the unattributed-panic counter. Used by the runner's exit-code
+/// path; tests can also call this to assert background-panic counting.
+#[must_use]
+#[inline]
+pub fn unattributed_panic_count() -> usize {
+    UNATTRIBUTED_PANICS.load(Ordering::Relaxed)
 }

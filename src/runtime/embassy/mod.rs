@@ -5,16 +5,7 @@
 //! as embassy tasks via a `Spawner` and results are communicated back through
 //! `std::sync::mpsc` channels.
 
+/// Embassy backend wired to a dedicated thread.
 mod runtime;
 
 pub use runtime::Runtime;
-
-/// Create a new embassy runtime instance.
-///
-/// # Errors
-///
-/// Returns an error if the background executor thread cannot be started.
-#[inline]
-pub fn new(config: &crate::config::Config) -> std::io::Result<Runtime> {
-    Runtime::new(config)
-}

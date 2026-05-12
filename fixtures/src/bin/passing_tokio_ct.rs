@@ -1,13 +1,16 @@
 use rudzio::common::context::Test;
+use rudzio::runtime::tokio::CurrentThread;
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::CurrentThread::new,
+        runtime = CurrentThread::new,
         suite = rudzio::common::context::Suite,
         test = rudzio::common::context::Test,
     ),
 ])]
 mod tests {
+    use rudzio::context::Test as _;
+
     use super::Test;
 
     #[rudzio::test]

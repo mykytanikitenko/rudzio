@@ -2,15 +2,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use rudzio::common::context::Test;
+use rudzio::runtime::tokio::Multithread;
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
+        runtime = Multithread::new,
         suite = rudzio::common::context::Suite,
         test = rudzio::common::context::Test,
     ),
 ])]
 mod tests {
+    use rudzio::context::Test as _;
+
     use super::{Arc, AtomicBool, Ordering, Test};
 
     #[rudzio::test]

@@ -8,19 +8,28 @@
 
 use std::time::Duration;
 
+use rudzio::common::context::Suite;
 use rudzio::common::context::Test;
+use rudzio::runtime::tokio::Multithread;
+use tokio::time::sleep;
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
+        runtime = Multithread::new,
+        suite = Suite,
+        test = Test,
     ),
 ])]
 mod tests {
-    use super::{Duration, Test};
+    use rudzio::context::Test as _;
+
+    use super::{Duration, Test, sleep};
 
     #[rudzio::test]
+    #[expect(
+        clippy::print_stdout,
+        reason = "this fixture coordinates a SIGINT delivery from the integration test by emitting readiness/observed markers on stdout that the parent process greps; println! is the deliberate channel"
+    )]
     async fn waits_for_sigint(ctx: &Test) -> anyhow::Result<()> {
         // Tell the outer process it is safe to send SIGINT now — waiting on
         // this marker avoids a race where the signal is delivered before the
@@ -29,7 +38,7 @@ mod tests {
         let completed = ctx
             .cancel_token()
             .run_until_cancelled(async {
-                ::tokio::time::sleep(Duration::from_secs(30)).await;
+                sleep(Duration::from_secs(30)).await;
             })
             .await;
         if completed.is_none() {
@@ -39,6 +48,10 @@ mod tests {
     }
 
     #[rudzio::test]
+    #[expect(
+        clippy::print_stdout,
+        reason = "this fixture asserts the queued test never runs after SIGINT cancellation; the println! marker would only appear if the runner failed to honor cancellation"
+    )]
     async fn never_runs_after_sigint(_ctx: &Test) -> anyhow::Result<()> {
         println!("never_runs_after_sigint_unreached_marker");
         Ok(())

@@ -8,6 +8,13 @@ default:
 nix:
     nix develop
 
+# Activate the in-repo git hooks (.githooks/) for this checkout.
+# Currently installs a commit-msg hook that rejects AI-attribution
+# trailers (`Co-Authored-By: Claude`, etc.). Run once per clone.
+setup-hooks:
+    git config core.hooksPath .githooks
+    @echo "Hooks active: .githooks/"
+
 # Format Rust code
 fix-fmt:
     cargo fmt --all
@@ -48,21 +55,91 @@ check-udeps:
 # Uses `cargo run -p cargo-rudzio -- test` so the recipe works on a fresh
 # clone without requiring `cargo install cargo-rudzio`.
 test:
-    #!/usr/bin/env bash
-    if [ -f .config/.env ]; then
-        set -a && source .config/.env && set +a
-    fi
     cargo run -p cargo-rudzio -- test
 
 # Per-crate stock path: `cargo test --workspace`. Useful when debugging a
 # single crate's integration tests or reproducing what a user who doesn't
 # have cargo-rudzio installed would see.
 test-stock:
-    #!/usr/bin/env bash
-    if [ -f .config/.env ]; then
-        set -a && source .config/.env && set +a
-    fi
     cargo test --workspace
+
+# --- Security & policy ---
+
+# Check for security advisories in the dep graph (RustSec)
+check-audit:
+    cargo audit
+
+# Check license / advisory / source / banned-crate policy (deny.toml)
+check-deny:
+    cargo deny check
+
+# Check API semver compatibility against the most recent crates.io release
+check-semver:
+    cargo semver-checks check-release --workspace \
+        --exclude rudzio-fixtures
+
+# --- CI/CD ---
+
+# Recent CI runs
+ci-status:
+    gh run list --workflow=ci.yml --limit 10
+
+# Trigger CI on the current branch
+ci-trigger:
+    gh workflow run ci.yml --ref "$(git rev-parse --abbrev-ref HEAD)"
+
+# Watch the most recent CI run
+ci-watch:
+    gh run watch
+
+# Recent release runs
+release-status:
+    gh run list --workflow=release.yml --limit 10
+
+# Watch the most recent release run
+release-watch:
+    gh run watch
+
+# Dry-run `cargo publish` in dep order — sanity check before tagging.
+# Pre-first-publish: each crate's dry-run will fail at the verify step
+# because cargo strips path deps and tries to resolve workspace siblings
+# from crates.io. Use `--no-verify` to package-only check, or run live
+# in order via the release.yml workflow on a tag push.
+release-dry-run:
+    cargo publish --dry-run --no-verify -p rudzio-macro-internals
+    cargo publish --dry-run --no-verify -p rudzio-macro
+    cargo publish --dry-run --no-verify -p rudzio
+    cargo publish --dry-run --no-verify -p rudzio-migrate
+    cargo publish --dry-run --no-verify -p cargo-rudzio
+
+# Tag current commit and instruct on push, e.g. `just release-tag 0.2.0`
+release-tag VERSION:
+    git tag -a "v{{VERSION}}" -m "Release v{{VERSION}}"
+    @echo "Created tag v{{VERSION}}. Push it to trigger crates.io publish:"
+    @echo "    git push origin v{{VERSION}}"
+
+# --- Demo ---
+
+# Regenerate assets/demo.gif from assets/demo.sh.
+#   * asciinema records the script to a .cast file (terminal-native, no
+#     headless browser involved — works on minimal nix shells).
+#   * agg (asciinema-agg) renders the cast as a gif.
+# Requires asciinema and agg on PATH. The gif is committed so consumers
+# don't need either tool to view the README.
+demo:
+    @command -v asciinema >/dev/null || { echo "missing: asciinema"; exit 1; }
+    @command -v agg       >/dev/null || { echo "missing: agg (asciinema-agg)"; exit 1; }
+    @# Make sure `cargo rudzio` resolves as a cargo subcommand during the
+    @# recording — otherwise the demo would have to fall back to `cargo run`.
+    cargo install --path cargo-rudzio --locked --quiet
+    asciinema rec --quiet --overwrite \
+        --cols 140 --rows 40 \
+        --command 'bash assets/demo.sh' \
+        /tmp/rudzio-demo.cast
+    agg --speed 2.0 --theme monokai --cols 140 --rows 40 \
+        /tmp/rudzio-demo.cast assets/demo.gif
+    rm -f /tmp/rudzio-demo.cast
+    @echo "→ assets/demo.gif regenerated ($(du -h assets/demo.gif | cut -f1))"
 
 # --- Aggregate ---
 
@@ -71,3 +148,10 @@ fix: fix-fmt fix-taplo fix-clippy
 
 # Run all checks and tests (pre-commit)
 pre-commit: check-fmt check-taplo check check-clippy check-udeps test
+
+# One command for the entire CI/CD pipeline — every gate the
+# self-hosted runner executes on push to main runs here. `check-semver`
+# is intentionally NOT in this aggregate until the first crates.io
+# publish creates a baseline (it errors with "not found in registry"
+# pre-publish). After v0.1.0 lands, add `check-semver` to this list.
+ci: check-fmt check-taplo check-clippy check-audit check-deny test

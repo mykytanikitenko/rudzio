@@ -1,5 +1,10 @@
 target
-.cargo
+# Ignore everything in .cargo/ except audit.toml — that file carries
+# the cargo-audit advisory ignore list and must be tracked so
+# `just check-audit` behaves the same on every checkout. Cargo's own
+# generated dirs (registry, git, credentials.toml) stay ignored.
+.cargo/*
+!.cargo/audit.toml
 .idea
 *.iml
 .vscode
@@ -11,3 +16,6 @@ target
 .cache
 .config
 .local
+
+# bacon-ls and other bacon logs
+*.log

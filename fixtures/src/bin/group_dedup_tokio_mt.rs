@@ -10,20 +10,48 @@
 
 use std::convert::Infallible;
 use std::fmt;
-use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use rudzio::Config;
 use rudzio::context;
 use rudzio::runtime::Runtime;
+use rudzio::runtime::tokio::Multithread;
+use rudzio::tokio_util::sync::CancellationToken;
+use rudzio::tokio_util::task::TaskTracker;
 
+/// Number of `Suite::setup` invocations observed across all groups.
 static SETUP_CALLS: AtomicUsize = AtomicUsize::new(0);
+/// Number of `Suite::teardown` invocations observed across all groups.
 static TEARDOWN_CALLS: AtomicUsize = AtomicUsize::new(0);
 
+/// Suite context counting `setup`/`teardown` invocations to assert
+/// duplicate `(runtime, suite, test)` tuples collapse into one group.
 struct CountingSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
-    _marker: PhantomData<&'suite_context R>,
+    /// Per-suite cancellation token.
+    cancel: CancellationToken,
+    /// Borrow of the async runtime driving this suite.
+    rt: &'suite_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
+}
+
+/// Per-test context with no state; the test bodies inspect
+/// [`SETUP_CALLS`] directly.
+struct CountingTest<'test_context, R>
+where
+    R: Runtime<'test_context> + Sync,
+{
+    /// Per-test cancellation token.
+    cancel: CancellationToken,
+    /// Resolved CLI/env configuration.
+    config: &'test_context Config,
+    /// Borrow of the async runtime driving this test.
+    rt: &'test_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 impl<'suite_context, R> fmt::Debug for CountingSuite<'suite_context, R>
@@ -35,54 +63,6 @@ where
     }
 }
 
-impl<'suite_context, R> context::Suite<'suite_context, R> for CountingSuite<'suite_context, R>
-where
-    R: for<'r> Runtime<'r> + Sync,
-{
-    type ContextError = Infallible;
-    type SetupError = Infallible;
-    type TeardownError = Infallible;
-    type Test<'test_context>
-        = CountingTest<'test_context, R>
-    where
-        Self: 'test_context;
-
-    async fn context<'test_context>(
-        &'test_context self,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
-        _config: &'test_context ::rudzio::Config,
-    ) -> Result<Self::Test<'test_context>, Self::ContextError> {
-        Ok(CountingTest {
-            _marker: PhantomData,
-        })
-    }
-
-    async fn setup(
-        _rt: &'suite_context R,
-        _cancel: ::rudzio::tokio_util::sync::CancellationToken,
-        _config: &'suite_context ::rudzio::Config,
-    ) -> Result<Self, Self::SetupError> {
-        let prev = SETUP_CALLS.fetch_add(1, Ordering::SeqCst);
-        println!("COUNTING_SUITE_SETUP (new count: {})", prev + 1);
-        Ok(Self {
-            _marker: PhantomData,
-        })
-    }
-
-    async fn teardown(self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<(), Self::TeardownError> {
-        let prev = TEARDOWN_CALLS.fetch_add(1, Ordering::SeqCst);
-        println!("COUNTING_SUITE_TEARDOWN (new count: {})", prev + 1);
-        Ok(())
-    }
-}
-
-struct CountingTest<'test_context, R>
-where
-    R: Runtime<'test_context> + Sync,
-{
-    _marker: PhantomData<&'test_context R>,
-}
-
 impl<'test_context, R> fmt::Debug for CountingTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
@@ -92,20 +72,108 @@ where
     }
 }
 
+impl<'suite_context, R> context::Suite<'suite_context, R> for CountingSuite<'suite_context, R>
+where
+    R: for<'rt> Runtime<'rt> + Sync,
+{
+    type ContextError = Infallible;
+    type SetupError = Infallible;
+    type TeardownError = Infallible;
+    type Test<'test_context>
+        = CountingTest<'test_context, R>
+    where
+        Self: 'test_context;
+
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    async fn context<'test_context>(
+        &'test_context self,
+        cancel: CancellationToken,
+        config: &'test_context Config,
+    ) -> Result<Self::Test<'test_context>, Self::ContextError> {
+        Ok(CountingTest {
+            cancel,
+            config,
+            rt: self.rt,
+            tracker: self.tracker.clone(),
+        })
+    }
+
+    fn rt(&self) -> &'suite_context R {
+        self.rt
+    }
+
+    #[expect(
+        clippy::print_stdout,
+        reason = "this fixture asserts duplicate suite tuples collapse into one group by emitting machine-readable COUNTING_SUITE_SETUP lines that the integration test greps; println! is the deliberate channel"
+    )]
+    async fn setup(
+        rt: &'suite_context R,
+        cancel: CancellationToken,
+        _config: &'suite_context Config,
+    ) -> Result<Self, Self::SetupError> {
+        let prev = SETUP_CALLS.fetch_add(1_usize, Ordering::SeqCst);
+        println!(
+            "COUNTING_SUITE_SETUP (new count: {})",
+            prev.saturating_add(1_usize),
+        );
+        Ok(Self {
+            cancel: cancel.child_token(),
+            rt,
+            tracker: TaskTracker::new(),
+        })
+    }
+
+    #[expect(
+        clippy::print_stdout,
+        reason = "this fixture asserts duplicate suite tuples collapse into one group by emitting machine-readable COUNTING_SUITE_TEARDOWN lines that the integration test greps; println! is the deliberate channel"
+    )]
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
+        let prev = TEARDOWN_CALLS.fetch_add(1_usize, Ordering::SeqCst);
+        println!(
+            "COUNTING_SUITE_TEARDOWN (new count: {})",
+            prev.saturating_add(1_usize),
+        );
+        Ok(())
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
+    }
+}
+
 impl<'test_context, R> context::Test<'test_context, R> for CountingTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
 {
     type TeardownError = Infallible;
 
-    async fn teardown(self, _cancel: ::rudzio::tokio_util::sync::CancellationToken) -> Result<(), Self::TeardownError> {
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    fn config(&self) -> &Config {
+        self.config
+    }
+
+    fn rt(&self) -> &'test_context R {
+        self.rt
+    }
+
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
+        runtime = Multithread::new,
         suite = CountingSuite,
         test = CountingTest,
     ),
@@ -128,7 +196,7 @@ mod first_mod {
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
+        runtime = Multithread::new,
         suite = CountingSuite,
         test = CountingTest,
     ),

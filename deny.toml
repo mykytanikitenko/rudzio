@@ -1,0 +1,59 @@
+# Policy enforced by `cargo deny check` (and `just check-deny`).
+#
+# Four sub-checks:
+#   advisories — RustSec advisory database
+#   licenses   — SPDX expressions on every transitive crate
+#   bans       — multiple-version / wildcard / banned-crate guards
+#   sources    — registry / git allowlist
+
+[graph]
+# Walk every feature gate so cargo-only and platform-only deps are
+# included (e.g. compio's `io-uring` driver, embassy's `arch-std`).
+all-features = true
+
+[advisories]
+version = 2
+ignore = [
+    # `paste` is archived and unmaintained, but no safe upgrade exists
+    # — it's pulled in transitively by `compio-driver`/`compio-runtime`,
+    # both of which use the macro internally and don't expose it. The
+    # crate is feature-complete rather than buggy, and the upstream
+    # advisory itself notes "no safe upgrade is available". Revisit
+    # when compio releases a paste-free version (or migrates to
+    # `pastey`).
+    "RUSTSEC-2024-0436",
+]
+
+[licenses]
+version = 2
+# Every transitive license observed in the tree (verified via
+# `cargo deny list`). Permissive only; no copyleft or unlicensed
+# crates allowed.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+]
+# Confidence threshold for matching detected license text against
+# SPDX templates. 0.93 is cargo-deny's recommended default.
+confidence-threshold = 0.93
+
+[bans]
+# Single-version-per-crate is enforced — we don't want surprise
+# version skew sneaking in.
+multiple-versions = "deny"
+# Disallow wildcard versions in workspace `Cargo.toml` files.
+wildcards = "deny"
+# Allow at workspace root: workspace members refer to each other via
+# `workspace = true` shorthand, which deny treats as "wildcard"
+# without this exemption.
+allow-wildcard-paths = true
+
+[sources]
+# Registry / git allowlist. crates.io is the only registry we publish
+# from and consume — a stray git dep would be a red flag.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

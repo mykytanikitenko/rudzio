@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = { workspace = true }
 description = "Internal AST-manipulation library backing `rudzio-macro`. Not a proc-macro crate, so consumers (including the macro's own integration tests) can import its regular items."
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/mykytanikitenko/rudzio"
+readme = "../README.md"
+keywords = ["testing", "async", "macro", "proc-macro", "internal"]
+categories = [
+  "development-tools::testing",
+  "development-tools::procedural-macro-helpers",
+]
 
 # Single `#[rudzio::main]` per crate: one test binary aggregating every
 # `#[rudzio::test]` across the submodules under `tests/`.
@@ -27,7 +34,18 @@ syn = { workspace = true, features = ["full", "extra-traits"] }
 # rudzio-macro -> internals) is fine because dev-deps are not part of the
 # normal dependency graph.
 [dev-dependencies]
-rudzio = { workspace = true, features = ["runtime-tokio-multi-thread", "common"] }
+rudzio = { workspace = true, features = [
+  "common",
+  "runtime-tokio-multi-thread",
+  "runtime-tokio-current-thread",
+  "runtime-tokio-local",
+  "runtime-compio",
+  "runtime-embassy",
+  "runtime-futures",
+  "runtime-async-std",
+  "runtime-smol",
+  "runtime-monoio",
+] }
 anyhow = "=1.0.102"
 
 [[test]]

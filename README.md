@@ -1,4 +1,17 @@
+<p align="center">
+  <img src="assets/logo.png" alt="rudzio — the bandit-cat test framework, fully ginger, kerchief, winking" width="220">
+</p>
+
 # rudzio
+
+[![CI](https://github.com/mykytanikitenko/rudzio/actions/workflows/ci.yml/badge.svg)](https://github.com/mykytanikitenko/rudzio/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/rudzio.svg)](https://crates.io/crates/rudzio)
+[![docs.rs](https://img.shields.io/docsrs/rudzio)](https://docs.rs/rudzio)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
+<p align="center">
+  <img src="assets/demo.gif" alt="cargo rudzio test running rudzio's own ~822-test suite, dispatching across tokio (multi-thread / current-thread / local), compio, embassy, and futures::ThreadPool runtimes simultaneously" width="900">
+</p>
 
 Async test framework for Rust. Tests run against a three-layer lifecycle:
 one `Runtime` per `(runtime, suite)` group, one `Suite` value per group
@@ -10,40 +23,31 @@ per-test concerns.
 
 ## Status
 
-`0.1.x`. Not yet published to crates.io. The shape of `Suite`, `Test`,
-`Runtime`, and the suite macro is intentionally stable — there are tests
-asserting on rendered output format and on cancellation/teardown behaviour.
-Internals (`SuiteRunner`, `TestToken` layout, `RuntimeGroupKey` hashing)
-are `#[doc(hidden)]` and may change.
+`0.1.x`. The shape of `Suite`, `Test`, `Runtime`, and the suite macro is
+intentionally stable — there are tests asserting on rendered output
+format and on cancellation/teardown behaviour. Internals (`SuiteRunner`,
+`TestToken` layout, `RuntimeGroupKey` hashing) are `#[doc(hidden)]` and
+may change.
 
 ## Installation
 
-Add rudzio as a git dependency. Pin to a commit for reproducibility.
-
 ```toml
 [dev-dependencies]
-rudzio = { git = "https://github.com/mykytanikitenko/rudzio", features = ["common", "runtime-tokio-multi-thread"] }
+rudzio = { version = "0.1", features = ["common", "runtime-tokio-multi-thread"] }
 ```
 
 Install the `cargo-rudzio` subcommand (provides both `cargo rudzio test`
 and `cargo rudzio migrate`):
 
 ```sh
-cargo install --git https://github.com/mykytanikitenko/rudzio cargo-rudzio
-```
-
-Or from a clone:
-
-```sh
-git clone https://github.com/mykytanikitenko/rudzio
-cargo install --path rudzio/cargo-rudzio
+cargo install cargo-rudzio
 ```
 
 The migrator can also be installed standalone if you don't want the
 `cargo rudzio test` aggregator:
 
 ```sh
-cargo install --git https://github.com/mykytanikitenko/rudzio rudzio-migrate
+cargo install rudzio-migrate
 ```
 
 ### Features
@@ -155,7 +159,7 @@ path = "tests/main.rs"
 harness = false  # rudzio replaces libtest
 
 [dev-dependencies]
-rudzio = { git = "https://github.com/mykytanikitenko/rudzio", features = ["common", "runtime-tokio-multi-thread"] }
+rudzio = { version = "0.1", features = ["common", "runtime-tokio-multi-thread"] }
 ```
 
 `harness = false` is required — the `#[rudzio::main]` attribute installs
@@ -517,7 +521,7 @@ rudzio without adding a `tests/` directory. Two edits:
 harness = false            # opt out of libtest for the lib's own test target
 
 [dev-dependencies]
-rudzio = { git = "https://github.com/mykytanikitenko/rudzio", features = ["runtime-tokio-multi-thread", "common"] }
+rudzio = { version = "0.1", features = ["runtime-tokio-multi-thread", "common"] }
 ```
 
 ```rust
@@ -570,7 +574,7 @@ integration = []
 e2e         = []
 
 [dev-dependencies]
-rudzio = { git = "https://github.com/mykytanikitenko/rudzio", features = ["runtime-tokio-multi-thread", "common"] }
+rudzio = { version = "0.1", features = ["runtime-tokio-multi-thread", "common"] }
 ```
 
 ```rust
@@ -643,7 +647,7 @@ for you; if you hand-roll, call it once from your aggregator's `build.rs`:
 my-bin-crate = { path = "../my-bin-crate" }
 
 [build-dependencies]
-rudzio = { git = "https://github.com/mykytanikitenko/rudzio", default-features = false, features = ["build"] }
+rudzio = { version = "0.1", default-features = false, features = ["build"] }
 ```
 
 ```rust

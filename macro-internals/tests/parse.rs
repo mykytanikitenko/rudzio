@@ -2,29 +2,48 @@
 //! test body runs under rudzio's own runner.
 
 use quote::ToTokens;
-use rudzio_macro_internals::args::RuntimeConfig;
 
-fn render(p: &impl ToTokens) -> String {
-    p.to_token_stream().to_string().replace(' ', "")
+use rudzio::common::context::{Suite, Test};
+use rudzio::runtime::futures::ThreadPool;
+use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use rudzio::runtime::monoio;
+use rudzio::runtime::{async_std, compio, embassy, smol};
+use rudzio_macro_internals::parse::RuntimeConfig;
+
+/// Render any [`ToTokens`] value to a whitespace-stripped string —
+/// the test suite compares parsed paths by their canonical token
+/// shape rather than by structural equality on `syn` AST nodes.
+fn render(tokens: &impl ToTokens) -> String {
+    tokens.to_token_stream().to_string().replace(' ', "")
 }
 
+/// Parse `source` as a [`RuntimeConfig`] and return the error
+/// message string when it fails. Bails when parsing unexpectedly
+/// succeeds — the rejection cases must surface a `syn::Error`
+/// pointing at the offending token rather than silently accepting
+/// the input.
 fn parse_err_msg(source: &str) -> anyhow::Result<String> {
     match syn::parse_str::<RuntimeConfig>(source) {
         Ok(_) => anyhow::bail!("expected parse to fail for `{source}`"),
-        Err(e) => Ok(e.to_string()),
+        Err(err) => Ok(err.to_string()),
     }
 }
 
 #[rudzio::suite([
-    (
-        runtime = rudzio::runtime::tokio::Multithread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
+    (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
 ])]
 mod tests {
-    use super::{RuntimeConfig, parse_err_msg, render};
-    use rudzio::common::context::Test;
+    use super::{RuntimeConfig, Test, parse_err_msg, render};
 
     #[rudzio::test]
     fn parses_suite_and_test_keywords(_ctx: &Test) -> anyhow::Result<()> {
@@ -106,6 +125,54 @@ mod tests {
             render(&config.runtime_type()) == "my_crate::nested::Multithread",
             "runtime_type rendered as `{}`",
             render(&config.runtime_type()),
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn bare_entry_has_no_cfg_attrs(_ctx: &Test) -> anyhow::Result<()> {
+        let config: RuntimeConfig = syn::parse_str(
+            "( runtime = rudzio::runtime::tokio::Multithread::new, suite = rudzio::common::context::Suite, test = rudzio::common::context::Test )",
+        )?;
+        anyhow::ensure!(
+            config.attrs.is_empty(),
+            "bare entry should carry no outer attributes, got {} attr(s)",
+            config.attrs.len(),
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn parses_single_cfg_attribute(_ctx: &Test) -> anyhow::Result<()> {
+        let config: RuntimeConfig = syn::parse_str(
+            "#[cfg(any(target_os = \"linux\", target_os = \"macos\"))] ( runtime = rudzio::runtime::tokio::Multithread::new, suite = rudzio::common::context::Suite, test = rudzio::common::context::Test )",
+        )?;
+        anyhow::ensure!(
+            config.attrs.len() == 1,
+            "expected 1 attribute, got {}",
+            config.attrs.len(),
+        );
+        let first = config
+            .attrs
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("expected first attribute"))?;
+        let rendered = render(first);
+        anyhow::ensure!(
+            rendered.contains("cfg") && rendered.contains("linux") && rendered.contains("macos"),
+            "attribute rendered as `{rendered}`",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn parses_multiple_attributes(_ctx: &Test) -> anyhow::Result<()> {
+        let config: RuntimeConfig = syn::parse_str(
+            "#[cfg(unix)] #[cfg(target_pointer_width = \"64\")] ( runtime = rudzio::runtime::tokio::Multithread::new, suite = rudzio::common::context::Suite, test = rudzio::common::context::Test )",
+        )?;
+        anyhow::ensure!(
+            config.attrs.len() == 2,
+            "expected 2 attributes, got {}",
+            config.attrs.len(),
         );
         Ok(())
     }

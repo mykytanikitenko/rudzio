@@ -1,10 +1,56 @@
+//! Pin tests for the `spawn_env` recursion-guard contract.
+
 use cargo_rudzio::{EXPOSE_BINS_SENTINEL_ENV, spawn_env};
+use rudzio::common::context::Suite;
+use rudzio::runtime::async_std::Runtime as AsyncStdRuntime;
+use rudzio::runtime::compio::Runtime as CompioRuntime;
+use rudzio::runtime::embassy::Runtime as EmbassyRuntime;
+use rudzio::runtime::futures::ThreadPool as FuturesThreadPool;
+use rudzio::runtime::smol::Runtime as SmolRuntime;
+use rudzio::runtime::tokio::{
+    CurrentThread as TokioCurrentThread, Local as TokioLocal, Multithread as TokioMultithread,
+};
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
+        runtime = TokioMultithread::new,
+        suite = Suite,
+        test = Test,
+    ),
+    (
+        runtime = TokioCurrentThread::new,
+        suite = Suite,
+        test = Test,
+    ),
+    (
+        runtime = TokioLocal::new,
+        suite = Suite,
+        test = Test,
+    ),
+    (
+        runtime = CompioRuntime::new,
+        suite = Suite,
+        test = Test,
+    ),
+    (
+        runtime = EmbassyRuntime::new,
+        suite = Suite,
+        test = Test,
+    ),
+    (
+        runtime = FuturesThreadPool::new,
+        suite = Suite,
+        test = Test,
+    ),
+    (
+        runtime = AsyncStdRuntime::new,
+        suite = Suite,
+        test = Test,
+    ),
+    (
+        runtime = SmolRuntime::new,
+        suite = Suite,
+        test = Test,
     ),
 ])]
 mod tests {
@@ -20,8 +66,8 @@ mod tests {
         let env = spawn_env();
         let sentinel = env
             .iter()
-            .find(|(k, _)| *k == EXPOSE_BINS_SENTINEL_ENV)
-            .map(|(_, v)| v.as_str());
+            .find(|(key, _)| *key == EXPOSE_BINS_SENTINEL_ENV)
+            .map(|(_, value)| value.as_str());
         anyhow::ensure!(
             sentinel == Some("1"),
             "spawn_env must set the expose-bins re-entry sentinel to \"1\", got {sentinel:?}"

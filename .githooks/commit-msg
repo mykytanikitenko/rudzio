@@ -1,0 +1,33 @@
+#!/bin/bash
+# Rejects commit messages that carry AI-attribution trailers added by
+# coding assistants. Catch them before the commit lands so the history
+# stays clean and `git filter-branch` rewrites stop being necessary.
+#
+# Activate per checkout with:  git config core.hooksPath .githooks
+# (or via `just setup-hooks`).
+
+set -euo pipefail
+
+msg_file="$1"
+
+# Patterns the hook rejects. Add new offenders to this list as they
+# appear; case-insensitive grep keeps it forgiving.
+patterns=(
+    'Co-Authored-By:.*Claude'
+    'Co-Authored-By:.*Anthropic'
+    'Generated with.*\[Claude'
+    'Generated with.*Cursor'
+    'Generated with.*Copilot'
+)
+
+for pat in "${patterns[@]}"; do
+    if grep -qiE "$pat" "$msg_file"; then
+        match=$(grep -iE "$pat" "$msg_file" | head -1)
+        echo "ERROR: commit message contains AI-attribution trailer:" >&2
+        echo "    $match" >&2
+        echo "" >&2
+        echo "Strip it before committing. To bypass for a single commit (not recommended):" >&2
+        echo "    git commit --no-verify ..." >&2
+        exit 1
+    fi
+done

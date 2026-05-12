@@ -12,56 +12,75 @@
 //! `#[rudzio::suite]` block can target multiple runtimes.
 
 use std::collections::BTreeMap;
+use std::env::current_exe;
+use std::ffi::OsStr;
+use std::num::NonZeroUsize;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
-use rudzio::Config;
+use rudzio::bench::Report;
+use rudzio::bench::strategy::{Concurrent, Sequential};
+use rudzio::bin::__resolve_at_runtime;
+use rudzio::build::{
+    NESTED_SENTINEL_ENV, SentinelAction, decide_sentinel_action, sentinel_indicates_nested_call,
+};
+use rudzio::common::context::{Suite, Test};
+use rudzio::runtime::futures::ThreadPool;
+use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use rudzio::runtime::monoio;
+use rudzio::runtime::{async_std, compio, embassy, smol};
+use rudzio::suite::SummaryOutcomes;
+use rudzio::test_case::{BoxError, box_error};
+use rudzio::{
+    BenchMode, Config, EnsureTimes, EnsureTimeViolation, Format, RunIgnoredMode, SuiteSummary,
+    TestSummary, normalize_module_path, qualified_test_name, token_passes_filters,
+};
 
+/// Build a `Vec<String>` argv from string slices — the `Config`
+/// parser takes owned strings (matches `std::env::args()`'s shape),
+/// so tests need a small helper to materialise them from `&str`.
 fn argv(items: &[&str]) -> Vec<String> {
     items.iter().map(|item| (*item).to_owned()).collect()
 }
 
+/// Build a `BTreeMap` for the env half of `Config::from_argv_and_env`,
+/// optionally pre-populating `RUST_TEST_THREADS` so a test can pin
+/// the env-var contribution without polluting the real process env.
 fn env_with(rust_test_threads: Option<&str>) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
-    if let Some(v) = rust_test_threads {
-        let _inserted = env.insert("RUST_TEST_THREADS".to_owned(), v.to_owned());
+    if let Some(value) = rust_test_threads {
+        let _inserted = env.insert("RUST_TEST_THREADS".to_owned(), value.to_owned());
     }
     env
 }
 
 #[rudzio::suite([
-    (
-        runtime = rudzio::runtime::tokio::Multithread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::tokio::CurrentThread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::tokio::Local::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::compio::Runtime::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::embassy::Runtime::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::futures::ThreadPool::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
+    (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
 ])]
 mod config_parser {
-    use super::{Config, argv, env_with};
-    use rudzio::common::context::Test;
+    use std::env::temp_dir;
+    use std::fs;
+    use std::process;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use rudzio::output::logfile::Writer as LogfileWriter;
+    use rudzio::shuffle::permute_with_seed;
+
+    use super::{
+        BenchMode, Config, Duration, EnsureTimes, EnsureTimeViolation, Format, NonZeroUsize,
+        PathBuf, SuiteSummary, SummaryOutcomes, Test, TestSummary, argv, env_with,
+    };
 
     // `#[rudzio::test]` accepts fns that don't take a context parameter
     // at all. The runner still creates the per-test context + runs its
@@ -70,93 +89,93 @@ mod config_parser {
     fn body_without_ctx_parameter() -> anyhow::Result<()> {
         // Pure-sync test with no ctx — exercises the `CtxKind::None`
         // codegen branch.
-        anyhow::ensure!(1 + 1 == 2);
+        anyhow::ensure!(1_i32 + 1_i32 == 2_i32);
         Ok(())
     }
 
     #[rudzio::test]
     async fn async_body_without_ctx_parameter() -> anyhow::Result<()> {
-        anyhow::ensure!(1 + 1 == 2);
+        anyhow::ensure!(1_i32 + 1_i32 == 2_i32);
         Ok(())
     }
 
     #[rudzio::test]
     fn joined_argv_form_is_parsed(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--test-threads=4"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-threads=4"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
-        anyhow::ensure!(c.threads == 4, "threads = {}", c.threads);
+        anyhow::ensure!(cfg.threads == 4, "threads = {}", cfg.threads);
         Ok(())
     }
 
     #[rudzio::test]
     fn split_argv_form_is_parsed(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--test-threads", "8"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-threads", "8"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
-        anyhow::ensure!(c.threads == 8);
+        anyhow::ensure!(cfg.threads == 8);
         Ok(())
     }
 
     #[rudzio::test]
     fn env_var_alone_is_used(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(argv(&[]), env_with(Some("3")), rudzio::cargo_meta!());
-        anyhow::ensure!(c.threads == 3);
+        let cfg = Config::from_argv_and_env(&argv(&[]), env_with(Some("3")), rudzio::cargo_meta!());
+        anyhow::ensure!(cfg.threads == 3);
         Ok(())
     }
 
     #[rudzio::test]
     fn argv_takes_precedence_over_env(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--test-threads=2"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-threads=2"]),
             env_with(Some("7")),
             rudzio::cargo_meta!(),
         );
-        anyhow::ensure!(c.threads == 2);
+        anyhow::ensure!(cfg.threads == 2);
         Ok(())
     }
 
     #[rudzio::test]
     fn zero_threads_falls_through_to_available_parallelism(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--test-threads=0"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-threads=0"]),
             env_with(Some("0")),
             rudzio::cargo_meta!(),
         );
-        anyhow::ensure!(c.threads >= 1);
+        anyhow::ensure!(cfg.threads >= 1);
         Ok(())
     }
 
     #[rudzio::test]
     fn garbage_threads_falls_through(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--test-threads=abc"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-threads=abc"]),
             env_with(Some("xyz")),
             rudzio::cargo_meta!(),
         );
-        anyhow::ensure!(c.threads >= 1);
+        anyhow::ensure!(cfg.threads >= 1);
         Ok(())
     }
 
     #[rudzio::test]
     fn zero_in_env_is_ignored_when_argv_is_valid(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--test-threads=5"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-threads=5"]),
             env_with(Some("0")),
             rudzio::cargo_meta!(),
         );
-        anyhow::ensure!(c.threads == 5);
+        anyhow::ensure!(cfg.threads == 5);
         Ok(())
     }
 
     #[rudzio::test]
     fn unknown_flags_are_preserved_in_unparsed(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&[
+        let cfg = Config::from_argv_and_env(
+            &argv(&[
                 "--nocapture",
                 "--color=always",
                 "--test-threads=3",
@@ -165,198 +184,717 @@ mod config_parser {
             env_with(None),
             rudzio::cargo_meta!(),
         );
-        anyhow::ensure!(c.threads == 3);
+        anyhow::ensure!(cfg.threads == 3);
         anyhow::ensure!(
-            c.unparsed.iter().any(|s| s == "--nocapture"),
+            cfg.unparsed.iter().any(|item| item == "--nocapture"),
             "unparsed = {:?}",
-            c.unparsed,
+            cfg.unparsed,
         );
         Ok(())
     }
 
     #[rudzio::test]
     fn split_form_without_value_falls_through(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--test-threads"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-threads"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
-        anyhow::ensure!(c.threads >= 1);
+        anyhow::ensure!(cfg.threads >= 1);
         Ok(())
     }
 
     #[rudzio::test]
     fn both_unset_uses_available_parallelism(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(argv(&[]), env_with(None), rudzio::cargo_meta!());
-        anyhow::ensure!(c.threads >= 1);
+        let cfg = Config::from_argv_and_env(&argv(&[]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(cfg.threads >= 1);
         Ok(())
     }
 
     #[rudzio::test]
     fn filter_substring_is_captured(_ctx: &Test) -> anyhow::Result<()> {
-        let c =
-            Config::from_argv_and_env(argv(&["my_filter"]), env_with(None), rudzio::cargo_meta!());
-        anyhow::ensure!(c.filter.as_deref() == Some("my_filter"));
+        let cfg =
+            Config::from_argv_and_env(&argv(&["my_filter"]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(cfg.filter.as_deref() == Some("my_filter"));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn logfile_absent_is_none(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(&argv(&[]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(cfg.logfile.is_none(), "logfile = {:?}", cfg.logfile);
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn logfile_space_form_is_captured(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--logfile", "out.log"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            cfg.logfile.as_deref() == Some(PathBuf::from("out.log").as_path()),
+            "logfile = {:?}",
+            cfg.logfile,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn logfile_equals_form_is_captured(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--logfile=out.log"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            cfg.logfile.as_deref() == Some(PathBuf::from("out.log").as_path()),
+            "logfile = {:?}",
+            cfg.logfile,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn logfile_does_not_leak_into_filter(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--logfile", "out.log", "my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(cfg.filter.as_deref() == Some("my_filter"));
+        anyhow::ensure!(
+            cfg.logfile.as_deref() == Some(PathBuf::from("out.log").as_path()),
+            "logfile = {:?}",
+            cfg.logfile,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn logfile_writer_disabled_when_no_path(_ctx: &Test) -> anyhow::Result<()> {
+        let writer = LogfileWriter::open(None);
+        writer.write_line("ok", "any::name");
+        anyhow::ensure!(!writer.is_enabled(), "writer should be a no-op when path is None");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn logfile_writer_emits_libtest_format_lines(_ctx: &Test) -> anyhow::Result<()> {
+        let path = temp_dir().join(format!(
+            "rudzio-logfile-emits-{}-{}.log",
+            process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or_default(),
+        ));
+        let writer = LogfileWriter::open(Some(&path));
+        anyhow::ensure!(writer.is_enabled(), "writer should be enabled when path opens");
+        writer.write_line("ok", "foo::bar");
+        writer.write_line("failed", "foo::baz");
+        writer.write_line("ignored", "foo::qux");
+        writer.flush();
+        let contents = fs::read_to_string(&path)?;
+        let _removed = fs::remove_file(&path);
+        anyhow::ensure!(
+            contents == "ok foo::bar\nfailed foo::baz\nignored foo::qux\n",
+            "got {contents:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn shuffle_flag_defaults_to_off(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(&argv(&[]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(!cfg.shuffle, "shuffle should default to false");
+        anyhow::ensure!(
+            cfg.shuffle_seed.is_none(),
+            "shuffle_seed should default to None, got {:?}",
+            cfg.shuffle_seed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn shuffle_flag_alone_enables_shuffle_without_seed(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--shuffle"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(cfg.shuffle, "shuffle should be true");
+        anyhow::ensure!(
+            cfg.shuffle_seed.is_none(),
+            "shuffle_seed should still be None without --shuffle-seed",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn shuffle_seed_equals_form_implies_shuffle(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--shuffle-seed=42"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(cfg.shuffle, "shuffle should be implicitly true");
+        anyhow::ensure!(
+            cfg.shuffle_seed == Some(42),
+            "shuffle_seed = {:?}",
+            cfg.shuffle_seed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn shuffle_seed_space_form_implies_shuffle(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--shuffle-seed", "1234567890"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(cfg.shuffle);
+        anyhow::ensure!(cfg.shuffle_seed == Some(1_234_567_890));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn shuffle_with_seed_is_deterministic(_ctx: &Test) -> anyhow::Result<()> {
+        let mut first: Vec<u32> = (0..50_u32).collect();
+        let mut second: Vec<u32> = (0..50_u32).collect();
+        permute_with_seed(&mut first, 12345);
+        permute_with_seed(&mut second, 12345);
+        anyhow::ensure!(first == second, "same seed must yield same permutation");
+        anyhow::ensure!(
+            first != (0..50_u32).collect::<Vec<_>>(),
+            "shuffle should change the order with overwhelming probability",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn shuffle_with_different_seeds_yields_different_orders(_ctx: &Test) -> anyhow::Result<()> {
+        let mut first: Vec<u32> = (0..50_u32).collect();
+        let mut second: Vec<u32> = (0..50_u32).collect();
+        permute_with_seed(&mut first, 1);
+        permute_with_seed(&mut second, 2);
+        anyhow::ensure!(first != second, "different seeds should permute differently");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn shuffle_preserves_multiset(_ctx: &Test) -> anyhow::Result<()> {
+        let original: Vec<u32> = (0..100_u32).collect();
+        let mut permuted = original.clone();
+        permute_with_seed(&mut permuted, 0xDEAD_BEEF);
+        let mut sorted = permuted.clone();
+        sorted.sort_unstable();
+        anyhow::ensure!(sorted == original, "shuffle must be a permutation");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn shuffle_seed_garbage_value_falls_through(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--shuffle-seed=not-a-number", "my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            !cfg.shuffle,
+            "garbage shuffle-seed value should not enable shuffle",
+        );
+        anyhow::ensure!(cfg.shuffle_seed.is_none());
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn report_time_flag_is_silently_consumed(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--report-time", "my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(cfg.filter.as_deref() == Some("my_filter"));
+        anyhow::ensure!(
+            !cfg.unparsed.iter().any(|item| item == "--report-time"),
+            "--report-time should not leak into unparsed: {:?}",
+            cfg.unparsed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn compat_consumed_records_report_time(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--report-time", "my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            cfg.compat_consumed == vec!["--report-time".to_owned()],
+            "got {:?}",
+            cfg.compat_consumed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn compat_consumed_empty_when_no_silent_compat_flags(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            cfg.compat_consumed.is_empty(),
+            "got {:?}",
+            cfg.compat_consumed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn compat_consumed_preserves_order_for_duplicates(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--report-time", "my_filter", "--report-time"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            cfg.compat_consumed
+                == vec!["--report-time".to_owned(), "--report-time".to_owned()],
+            "got {:?}",
+            cfg.compat_consumed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_flag_bare_is_silently_consumed(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--ensure-time", "my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(cfg.filter.as_deref() == Some("my_filter"));
+        anyhow::ensure!(
+            !cfg.unparsed.iter().any(|item| item == "--ensure-time"),
+            "--ensure-time should not leak into unparsed: {:?}",
+            cfg.unparsed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_flag_with_value_is_silently_consumed(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--ensure-time=1,5", "my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(cfg.filter.as_deref() == Some("my_filter"));
+        anyhow::ensure!(
+            !cfg.unparsed
+                .iter()
+                .any(|item| item.starts_with("--ensure-time")),
+            "--ensure-time=… should not leak into unparsed: {:?}",
+            cfg.unparsed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_absent_means_none(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg =
+            Config::from_argv_and_env(&argv(&["my_filter"]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(
+            cfg.ensure_time.is_none(),
+            "expected None, got {:?}",
+            cfg.ensure_time,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_bare_uses_libtest_integration_defaults(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--ensure-time", "my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        let thresholds = cfg
+            .ensure_time
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("expected Some, got None"))?;
+        anyhow::ensure!(
+            thresholds.warn == Duration::from_millis(500),
+            "warn = {:?}",
+            thresholds.warn,
+        );
+        anyhow::ensure!(
+            thresholds.critical == Duration::from_secs(1),
+            "critical = {:?}",
+            thresholds.critical,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_bare_honors_rust_test_time_integration_env(_ctx: &Test) -> anyhow::Result<()> {
+        let mut env = env_with(None);
+        let _prev =
+            env.insert("RUST_TEST_TIME_INTEGRATION".to_owned(), "120,250".to_owned());
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--ensure-time", "my_filter"]),
+            env,
+            rudzio::cargo_meta!(),
+        );
+        let thresholds = cfg
+            .ensure_time
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("expected Some, got None"))?;
+        anyhow::ensure!(
+            thresholds.warn == Duration::from_millis(120),
+            "warn = {:?}",
+            thresholds.warn,
+        );
+        anyhow::ensure!(
+            thresholds.critical == Duration::from_millis(250),
+            "critical = {:?}",
+            thresholds.critical,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_explicit_value_overrides_env(_ctx: &Test) -> anyhow::Result<()> {
+        let mut env = env_with(None);
+        let _prev =
+            env.insert("RUST_TEST_TIME_INTEGRATION".to_owned(), "999,9999".to_owned());
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--ensure-time=42,84", "my_filter"]),
+            env,
+            rudzio::cargo_meta!(),
+        );
+        let thresholds = cfg
+            .ensure_time
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("expected Some, got None"))?;
+        anyhow::ensure!(
+            thresholds.warn == Duration::from_millis(42),
+            "warn = {:?}",
+            thresholds.warn,
+        );
+        anyhow::ensure!(
+            thresholds.critical == Duration::from_millis(84),
+            "critical = {:?}",
+            thresholds.critical,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_garbage_value_falls_back_to_defaults(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--ensure-time=not-a-pair", "my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        let thresholds = cfg
+            .ensure_time
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("expected Some, got None"))?;
+        anyhow::ensure!(
+            thresholds.warn == Duration::from_millis(500),
+            "warn = {:?}",
+            thresholds.warn,
+        );
+        anyhow::ensure!(
+            thresholds.critical == Duration::from_secs(1),
+            "critical = {:?}",
+            thresholds.critical,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_violation_below_warn_returns_none(_ctx: &Test) -> anyhow::Result<()> {
+        let thresholds = EnsureTimes::integration_defaults();
+        let outcome = thresholds.violation(Duration::from_millis(100));
+        anyhow::ensure!(
+            outcome.is_none(),
+            "elapsed below warn must return None, got {outcome:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_violation_at_warn_returns_warn(_ctx: &Test) -> anyhow::Result<()> {
+        let thresholds = EnsureTimes::integration_defaults();
+        let outcome = thresholds.violation(Duration::from_millis(500));
+        anyhow::ensure!(
+            matches!(outcome, Some(EnsureTimeViolation::Warn)),
+            "elapsed at warn threshold must return Warn, got {outcome:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_violation_at_critical_returns_critical(_ctx: &Test) -> anyhow::Result<()> {
+        let thresholds = EnsureTimes::integration_defaults();
+        let outcome = thresholds.violation(Duration::from_secs(1));
+        anyhow::ensure!(
+            matches!(outcome, Some(EnsureTimeViolation::Critical)),
+            "elapsed at critical threshold must return Critical, got {outcome:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_violation_well_above_critical_returns_critical(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
+        let thresholds = EnsureTimes::integration_defaults();
+        let outcome = thresholds.violation(Duration::from_mins(1));
+        anyhow::ensure!(
+            matches!(outcome, Some(EnsureTimeViolation::Critical)),
+            "elapsed well above critical must return Critical, got {outcome:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn ensure_time_no_longer_recorded_in_compat_consumed(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--ensure-time", "my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            !cfg.compat_consumed
+                .iter()
+                .any(|item| item.starts_with("--ensure-time")),
+            "ensure-time has real semantics now; should not be in compat_consumed: {:?}",
+            cfg.compat_consumed,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn logfile_writer_truncates_existing_file_on_open(_ctx: &Test) -> anyhow::Result<()> {
+        let path = temp_dir().join(format!(
+            "rudzio-logfile-trunc-{}-{}.log",
+            process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or_default(),
+        ));
+        fs::write(&path, "stale content from a previous run\n")?;
+        let writer = LogfileWriter::open(Some(&path));
+        writer.write_line("ok", "fresh::test");
+        writer.flush();
+        let contents = fs::read_to_string(&path)?;
+        let _removed = fs::remove_file(&path);
+        anyhow::ensure!(contents == "ok fresh::test\n", "got {contents:?}");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn exact_match_defaults_to_false(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg =
+            Config::from_argv_and_env(&argv(&["my_filter"]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(!cfg.exact_match);
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn exact_flag_sets_exact_match(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--exact", "my_filter"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(cfg.exact_match);
+        anyhow::ensure!(cfg.filter.as_deref() == Some("my_filter"));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn quiet_long_form_selects_terse_format(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg =
+            Config::from_argv_and_env(&argv(&["--quiet"]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(matches!(cfg.format, Format::Terse));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn quiet_short_form_selects_terse_format(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(&argv(&["-q"]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(matches!(cfg.format, Format::Terse));
         Ok(())
     }
 
     #[rudzio::test]
     fn skip_filters_accumulate(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--skip=foo", "--skip", "bar"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--skip=foo", "--skip", "bar"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
-        anyhow::ensure!(c.skip_filters == vec!["foo".to_owned(), "bar".to_owned()]);
+        anyhow::ensure!(cfg.skip_filters == vec!["foo".to_owned(), "bar".to_owned()]);
         Ok(())
     }
 
     #[rudzio::test]
     fn concurrency_limit_defaults_to_threads(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--test-threads=4"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-threads=4"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
-        anyhow::ensure!(c.threads == 4);
-        anyhow::ensure!(c.concurrency_limit == 4);
+        anyhow::ensure!(cfg.threads == 4);
+        anyhow::ensure!(cfg.concurrency_limit == 4);
         Ok(())
     }
 
     #[rudzio::test]
     fn concurrency_limit_is_independent_when_set(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8", "--concurrency-limit=2"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-threads=8", "--concurrency-limit=2"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
-        anyhow::ensure!(c.threads == 8);
-        anyhow::ensure!(c.concurrency_limit == 2);
+        anyhow::ensure!(cfg.threads == 8);
+        anyhow::ensure!(cfg.concurrency_limit == 2);
         Ok(())
     }
 
     #[rudzio::test]
     fn concurrency_limit_split_form(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--concurrency-limit", "3"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--concurrency-limit", "3"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
-        anyhow::ensure!(c.concurrency_limit == 3);
+        anyhow::ensure!(cfg.concurrency_limit == 3);
         Ok(())
     }
 
     #[rudzio::test]
     fn parallel_hardlimit_defaults_to_threads(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-threads=8"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
         anyhow::ensure!(
-            c.parallel_hardlimit.map(std::num::NonZeroUsize::get) == Some(8),
+            cfg.parallel_hardlimit.map(NonZeroUsize::get) == Some(8),
             "expected Some(8), got {:?}",
-            c.parallel_hardlimit
+            cfg.parallel_hardlimit
         );
         Ok(())
     }
 
     #[rudzio::test]
     fn parallel_hardlimit_equals_form(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8", "--threads-parallel-hardlimit=3"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-threads=8", "--threads-parallel-hardlimit=3"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
-        anyhow::ensure!(c.parallel_hardlimit.map(std::num::NonZeroUsize::get) == Some(3));
+        anyhow::ensure!(cfg.parallel_hardlimit.map(NonZeroUsize::get) == Some(3));
         Ok(())
     }
 
     #[rudzio::test]
     fn parallel_hardlimit_split_form(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8", "--threads-parallel-hardlimit", "3"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-threads=8", "--threads-parallel-hardlimit", "3"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
-        anyhow::ensure!(c.parallel_hardlimit.map(std::num::NonZeroUsize::get) == Some(3));
+        anyhow::ensure!(cfg.parallel_hardlimit.map(NonZeroUsize::get) == Some(3));
         Ok(())
     }
 
     #[rudzio::test]
     fn parallel_hardlimit_none_disables_equals_form(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8", "--threads-parallel-hardlimit=none"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-threads=8", "--threads-parallel-hardlimit=none"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
-        anyhow::ensure!(c.parallel_hardlimit.is_none());
+        anyhow::ensure!(cfg.parallel_hardlimit.is_none());
         Ok(())
     }
 
     #[rudzio::test]
     fn parallel_hardlimit_none_disables_split_form(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8", "--threads-parallel-hardlimit", "none"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-threads=8", "--threads-parallel-hardlimit", "none"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
-        anyhow::ensure!(c.parallel_hardlimit.is_none());
+        anyhow::ensure!(cfg.parallel_hardlimit.is_none());
         Ok(())
     }
 
     #[rudzio::test]
     fn parallel_hardlimit_threads_keyword(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8", "--threads-parallel-hardlimit=threads"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-threads=8", "--threads-parallel-hardlimit=threads"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
-        anyhow::ensure!(c.parallel_hardlimit.map(std::num::NonZeroUsize::get) == Some(8));
+        anyhow::ensure!(cfg.parallel_hardlimit.map(NonZeroUsize::get) == Some(8));
         Ok(())
     }
 
     #[rudzio::test]
     fn parallel_hardlimit_zero_falls_back_to_default(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8", "--threads-parallel-hardlimit=0"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-threads=8", "--threads-parallel-hardlimit=0"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
-        anyhow::ensure!(c.parallel_hardlimit.map(std::num::NonZeroUsize::get) == Some(8));
+        anyhow::ensure!(cfg.parallel_hardlimit.map(NonZeroUsize::get) == Some(8));
         Ok(())
     }
 
     #[rudzio::test]
     fn parallel_hardlimit_invalid_falls_back_to_default(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8", "--threads-parallel-hardlimit=foo"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-threads=8", "--threads-parallel-hardlimit=foo"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
-        anyhow::ensure!(c.parallel_hardlimit.map(std::num::NonZeroUsize::get) == Some(8));
+        anyhow::ensure!(cfg.parallel_hardlimit.map(NonZeroUsize::get) == Some(8));
         Ok(())
     }
 
     #[rudzio::test]
     fn parallel_hardlimit_bench_auto_disables_when_unset(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8", "--bench"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-threads=8", "--bench"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
         anyhow::ensure!(
-            c.parallel_hardlimit.is_none(),
+            cfg.parallel_hardlimit.is_none(),
             "expected None under --bench with no explicit flag, got {:?}",
-            c.parallel_hardlimit
+            cfg.parallel_hardlimit
         );
         Ok(())
     }
 
     #[rudzio::test]
     fn parallel_hardlimit_explicit_survives_bench(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&[
+        let cfg = Config::from_argv_and_env(
+            &argv(&[
                 "--test-threads=8",
                 "--bench",
                 "--threads-parallel-hardlimit=4",
@@ -364,48 +902,51 @@ mod config_parser {
             env_with(None),
             rudzio::cargo_meta!(),
         );
-        anyhow::ensure!(c.parallel_hardlimit.map(std::num::NonZeroUsize::get) == Some(4));
+        anyhow::ensure!(cfg.parallel_hardlimit.map(NonZeroUsize::get) == Some(4));
         Ok(())
     }
 
     #[rudzio::test]
     fn parallel_hardlimit_explicit_none_survives_non_bench(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--test-threads=8", "--threads-parallel-hardlimit=none"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-threads=8", "--threads-parallel-hardlimit=none"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
-        anyhow::ensure!(c.parallel_hardlimit.is_none());
+        anyhow::ensure!(cfg.parallel_hardlimit.is_none());
         Ok(())
     }
 
     #[rudzio::test]
     fn env_is_propagated_into_config(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(argv(&[]), env_with(Some("4")), rudzio::cargo_meta!());
-        anyhow::ensure!(c.env.get("RUST_TEST_THREADS").map(String::as_str) == Some("4"));
+        let cfg = Config::from_argv_and_env(&argv(&[]), env_with(Some("4")), rudzio::cargo_meta!());
+        anyhow::ensure!(cfg.env.get("RUST_TEST_THREADS").map(String::as_str) == Some("4"));
         Ok(())
     }
 
     #[rudzio::test]
     fn bench_mode_defaults_to_smoke(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(argv(&[]), env_with(None), rudzio::cargo_meta!());
-        anyhow::ensure!(c.bench_mode == rudzio::BenchMode::Smoke);
+        let cfg = Config::from_argv_and_env(&argv(&[]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(cfg.bench_mode == BenchMode::Smoke);
         Ok(())
     }
 
     #[rudzio::test]
     fn bench_flag_sets_full_mode(_ctx: &Test) -> anyhow::Result<()> {
-        let c =
-            Config::from_argv_and_env(argv(&["--bench"]), env_with(None), rudzio::cargo_meta!());
-        anyhow::ensure!(c.bench_mode == rudzio::BenchMode::Full);
+        let cfg =
+            Config::from_argv_and_env(&argv(&["--bench"]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(cfg.bench_mode == BenchMode::Full);
         Ok(())
     }
 
     #[rudzio::test]
     fn no_bench_flag_sets_skip_mode(_ctx: &Test) -> anyhow::Result<()> {
-        let c =
-            Config::from_argv_and_env(argv(&["--no-bench"]), env_with(None), rudzio::cargo_meta!());
-        anyhow::ensure!(c.bench_mode == rudzio::BenchMode::Skip);
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--no-bench"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(cfg.bench_mode == BenchMode::Skip);
         Ok(())
     }
 
@@ -415,22 +956,22 @@ mod config_parser {
     #[rudzio::test]
     fn parses_suite_setup_timeout_flag(_ctx: &Test) -> anyhow::Result<()> {
         let equals = Config::from_argv_and_env(
-            argv(&["--suite-setup-timeout=12"]),
+            &argv(&["--suite-setup-timeout=12"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
         anyhow::ensure!(
-            equals.suite_setup_timeout == Some(std::time::Duration::from_secs(12)),
+            equals.suite_setup_timeout == Some(Duration::from_secs(12)),
             "equals form: got {:?}",
             equals.suite_setup_timeout
         );
         let split = Config::from_argv_and_env(
-            argv(&["--suite-setup-timeout", "7"]),
+            &argv(&["--suite-setup-timeout", "7"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
         anyhow::ensure!(
-            split.suite_setup_timeout == Some(std::time::Duration::from_secs(7)),
+            split.suite_setup_timeout == Some(Duration::from_secs(7)),
             "split form: got {:?}",
             split.suite_setup_timeout
         );
@@ -441,15 +982,15 @@ mod config_parser {
     /// phase. Same dual-form parsing.
     #[rudzio::test]
     fn parses_suite_teardown_timeout_flag(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--suite-teardown-timeout=4"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--suite-teardown-timeout=4"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
         anyhow::ensure!(
-            c.suite_teardown_timeout == Some(std::time::Duration::from_secs(4)),
+            cfg.suite_teardown_timeout == Some(Duration::from_secs(4)),
             "got {:?}",
-            c.suite_teardown_timeout
+            cfg.suite_teardown_timeout
         );
         Ok(())
     }
@@ -459,15 +1000,15 @@ mod config_parser {
     /// override this; the parser just records the default.
     #[rudzio::test]
     fn parses_test_setup_timeout_flag(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--test-setup-timeout=3"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-setup-timeout=3"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
         anyhow::ensure!(
-            c.test_setup_timeout == Some(std::time::Duration::from_secs(3)),
+            cfg.test_setup_timeout == Some(Duration::from_secs(3)),
             "got {:?}",
-            c.test_setup_timeout
+            cfg.test_setup_timeout
         );
         Ok(())
     }
@@ -476,15 +1017,15 @@ mod config_parser {
     /// teardown phase.
     #[rudzio::test]
     fn parses_test_teardown_timeout_flag(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--test-teardown-timeout=9"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-teardown-timeout=9"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
         anyhow::ensure!(
-            c.test_teardown_timeout == Some(std::time::Duration::from_secs(9)),
+            cfg.test_teardown_timeout == Some(Duration::from_secs(9)),
             "got {:?}",
-            c.test_teardown_timeout
+            cfg.test_teardown_timeout
         );
         Ok(())
     }
@@ -496,15 +1037,15 @@ mod config_parser {
     fn unrecognised_phase_timeout_value_falls_through_to_unparsed(
         _ctx: &Test,
     ) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--suite-setup-timeout=banana"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--suite-setup-timeout=banana"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
         anyhow::ensure!(
-            c.suite_setup_timeout.is_none(),
+            cfg.suite_setup_timeout.is_none(),
             "non-numeric must not populate field, got {:?}",
-            c.suite_setup_timeout
+            cfg.suite_setup_timeout
         );
         Ok(())
     }
@@ -514,11 +1055,11 @@ mod config_parser {
     /// unbounded behaviour.
     #[rudzio::test]
     fn defaults_are_none_for_all_phase_timeouts(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(argv(&[]), env_with(None), rudzio::cargo_meta!());
-        anyhow::ensure!(c.suite_setup_timeout.is_none());
-        anyhow::ensure!(c.suite_teardown_timeout.is_none());
-        anyhow::ensure!(c.test_setup_timeout.is_none());
-        anyhow::ensure!(c.test_teardown_timeout.is_none());
+        let cfg = Config::from_argv_and_env(&argv(&[]), env_with(None), rudzio::cargo_meta!());
+        anyhow::ensure!(cfg.suite_setup_timeout.is_none());
+        anyhow::ensure!(cfg.suite_teardown_timeout.is_none());
+        anyhow::ensure!(cfg.test_setup_timeout.is_none());
+        anyhow::ensure!(cfg.test_teardown_timeout.is_none());
         Ok(())
     }
 
@@ -528,22 +1069,22 @@ mod config_parser {
     #[rudzio::test]
     fn parses_cancel_grace_period_flag(_ctx: &Test) -> anyhow::Result<()> {
         let equals = Config::from_argv_and_env(
-            argv(&["--cancel-grace-period=12"]),
+            &argv(&["--cancel-grace-period=12"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
         anyhow::ensure!(
-            equals.cancel_grace_period == Some(std::time::Duration::from_secs(12)),
+            equals.cancel_grace_period == Some(Duration::from_secs(12)),
             "equals form: got {:?}",
             equals.cancel_grace_period
         );
         let split = Config::from_argv_and_env(
-            argv(&["--cancel-grace-period", "7"]),
+            &argv(&["--cancel-grace-period", "7"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
         anyhow::ensure!(
-            split.cancel_grace_period == Some(std::time::Duration::from_secs(7)),
+            split.cancel_grace_period == Some(Duration::from_secs(7)),
             "split form: got {:?}",
             split.cancel_grace_period
         );
@@ -556,15 +1097,15 @@ mod config_parser {
     /// from the option discriminant.
     #[rudzio::test]
     fn cancel_grace_period_zero_disables_watchdog(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--cancel-grace-period=0"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--cancel-grace-period=0"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
         anyhow::ensure!(
-            c.cancel_grace_period.is_none(),
+            cfg.cancel_grace_period.is_none(),
             "zero must disable, got {:?}",
-            c.cancel_grace_period
+            cfg.cancel_grace_period
         );
         Ok(())
     }
@@ -576,11 +1117,11 @@ mod config_parser {
     /// allow before they SIGKILL the runner themselves.
     #[rudzio::test]
     fn cancel_grace_period_defaults_to_five_seconds(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(argv(&[]), env_with(None), rudzio::cargo_meta!());
+        let cfg = Config::from_argv_and_env(&argv(&[]), env_with(None), rudzio::cargo_meta!());
         anyhow::ensure!(
-            c.cancel_grace_period == Some(std::time::Duration::from_secs(5)),
+            cfg.cancel_grace_period == Some(Duration::from_secs(5)),
             "default must be Some(5s), got {:?}",
-            c.cancel_grace_period
+            cfg.cancel_grace_period
         );
         Ok(())
     }
@@ -588,18 +1129,16 @@ mod config_parser {
     /// L1.4b. A non-numeric value falls through to `unparsed`, like
     /// every other timeout flag. Field stays at the default (5s).
     #[rudzio::test]
-    fn cancel_grace_period_garbage_falls_through_to_default(
-        _ctx: &Test,
-    ) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--cancel-grace-period=banana"]),
+    fn cancel_grace_period_garbage_falls_through_to_default(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--cancel-grace-period=banana"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
         anyhow::ensure!(
-            c.cancel_grace_period == Some(std::time::Duration::from_secs(5)),
+            cfg.cancel_grace_period == Some(Duration::from_secs(5)),
             "garbage value must leave default in place, got {:?}",
-            c.cancel_grace_period
+            cfg.cancel_grace_period
         );
         Ok(())
     }
@@ -610,22 +1149,22 @@ mod config_parser {
     #[rudzio::test]
     fn parses_phase_hang_grace_flag(_ctx: &Test) -> anyhow::Result<()> {
         let equals = Config::from_argv_and_env(
-            argv(&["--phase-hang-grace=4"]),
+            &argv(&["--phase-hang-grace=4"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
         anyhow::ensure!(
-            equals.phase_hang_grace == Some(std::time::Duration::from_secs(4)),
+            equals.phase_hang_grace == Some(Duration::from_secs(4)),
             "equals form: got {:?}",
             equals.phase_hang_grace
         );
         let split = Config::from_argv_and_env(
-            argv(&["--phase-hang-grace", "9"]),
+            &argv(&["--phase-hang-grace", "9"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
         anyhow::ensure!(
-            split.phase_hang_grace == Some(std::time::Duration::from_secs(9)),
+            split.phase_hang_grace == Some(Duration::from_secs(9)),
             "split form: got {:?}",
             split.phase_hang_grace
         );
@@ -637,15 +1176,15 @@ mod config_parser {
     /// immediately rather than waiting and escalating to `Hung`.
     #[rudzio::test]
     fn phase_hang_grace_zero_disables_layer2(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(
-            argv(&["--phase-hang-grace=0"]),
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--phase-hang-grace=0"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
         anyhow::ensure!(
-            c.phase_hang_grace.is_none(),
+            cfg.phase_hang_grace.is_none(),
             "zero must disable, got {:?}",
-            c.phase_hang_grace
+            cfg.phase_hang_grace
         );
         Ok(())
     }
@@ -661,11 +1200,11 @@ mod config_parser {
     /// `--phase-hang-grace=<secs>`.
     #[rudzio::test]
     fn phase_hang_grace_defaults_to_none(_ctx: &Test) -> anyhow::Result<()> {
-        let c = Config::from_argv_and_env(argv(&[]), env_with(None), rudzio::cargo_meta!());
+        let cfg = Config::from_argv_and_env(&argv(&[]), env_with(None), rudzio::cargo_meta!());
         anyhow::ensure!(
-            c.phase_hang_grace.is_none(),
+            cfg.phase_hang_grace.is_none(),
             "default must be None (Layer-2 opt-in), got {:?}",
-            c.phase_hang_grace
+            cfg.phase_hang_grace
         );
         Ok(())
     }
@@ -676,17 +1215,9 @@ mod config_parser {
     /// every other counter on the struct.
     #[rudzio::test]
     fn suite_summary_merge_includes_hung(_ctx: &Test) -> anyhow::Result<()> {
-        let a = ::rudzio::SuiteSummary {
-            hung: 2,
-            total: 2,
-            ..::rudzio::SuiteSummary::zero()
-        };
-        let b = ::rudzio::SuiteSummary {
-            hung: 1,
-            total: 1,
-            ..::rudzio::SuiteSummary::zero()
-        };
-        let merged = a.merge(b);
+        let summary_a = SuiteSummary::new(SummaryOutcomes::new(0, 0, 2, 0, 0, 0, 0), 0, 2);
+        let summary_b = SuiteSummary::new(SummaryOutcomes::new(0, 0, 1, 0, 0, 0, 0), 0, 1);
+        let merged = summary_a.merge(summary_b);
         anyhow::ensure!(
             merged.hung == 3,
             "merge must sum hung counters, got {}",
@@ -702,8 +1233,8 @@ mod config_parser {
     /// corrupt every run's count.
     #[rudzio::test]
     fn suite_summary_zero_initialises_hung_to_zero(_ctx: &Test) -> anyhow::Result<()> {
-        let z = ::rudzio::SuiteSummary::zero();
-        anyhow::ensure!(z.hung == 0, "zero() must give hung=0, got {}", z.hung);
+        let zero = SuiteSummary::zero();
+        anyhow::ensure!(zero.hung == 0, "zero() must give hung=0, got {}", zero.hung);
         Ok(())
     }
 
@@ -718,7 +1249,7 @@ mod config_parser {
     /// pattern external users have to follow.
     #[rudzio::test]
     fn test_summary_is_success_false_when_hung_gt_zero(_ctx: &Test) -> anyhow::Result<()> {
-        let mut summary = ::rudzio::TestSummary::zero();
+        let mut summary = TestSummary::zero();
         summary.passed = 5;
         summary.hung = 1;
         summary.total = 6;
@@ -727,7 +1258,7 @@ mod config_parser {
             "is_success must return false when hung > 0"
         );
         anyhow::ensure!(
-            summary.exit_code() == 1,
+            summary.exit_code() == 1_i32,
             "exit_code must be 1 when hung > 0, got {}",
             summary.exit_code()
         );
@@ -741,7 +1272,7 @@ mod config_parser {
     fn test_summary_is_success_true_when_all_failure_counts_zero(
         _ctx: &Test,
     ) -> anyhow::Result<()> {
-        let mut summary = ::rudzio::TestSummary::zero();
+        let mut summary = TestSummary::zero();
         summary.passed = 10;
         summary.ignored = 2;
         summary.total = 12;
@@ -750,7 +1281,7 @@ mod config_parser {
             "is_success must remain true when no failures and hung=0"
         );
         anyhow::ensure!(
-            summary.exit_code() == 0,
+            summary.exit_code() == 0_i32,
             "exit_code must be 0, got {}",
             summary.exit_code()
         );
@@ -761,17 +1292,67 @@ mod config_parser {
     /// hung counts 4 and 2 merge to 6.
     #[rudzio::test]
     fn test_summary_merge_includes_hung(_ctx: &Test) -> anyhow::Result<()> {
-        let mut a = ::rudzio::TestSummary::zero();
-        a.hung = 4;
-        a.total = 4;
-        let mut b = ::rudzio::TestSummary::zero();
-        b.hung = 2;
-        b.total = 2;
-        let merged = a.merge(b);
+        let mut left = TestSummary::zero();
+        left.hung = 4;
+        left.total = 4;
+        let mut right = TestSummary::zero();
+        right.hung = 2;
+        right.total = 2;
+        let merged = left.merge(right);
         anyhow::ensure!(
             merged.hung == 6,
             "TestSummary::merge must sum hung counters, got {}",
             merged.hung
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn test_summary_is_success_false_when_ensure_time_exceeded_gt_zero(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
+        let mut summary = TestSummary::zero();
+        summary.passed = 5;
+        summary.ensure_time_exceeded = 1;
+        summary.total = 5;
+        anyhow::ensure!(
+            !summary.is_success(),
+            "is_success must return false when ensure_time_exceeded > 0",
+        );
+        anyhow::ensure!(
+            summary.exit_code() == 1_i32,
+            "exit_code must be 1 when ensure_time_exceeded > 0, got {}",
+            summary.exit_code(),
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn test_summary_merge_includes_ensure_time_exceeded(_ctx: &Test) -> anyhow::Result<()> {
+        let mut left = TestSummary::zero();
+        left.ensure_time_exceeded = 3;
+        left.total = 3;
+        let mut right = TestSummary::zero();
+        right.ensure_time_exceeded = 4;
+        right.total = 4;
+        let merged = left.merge(right);
+        anyhow::ensure!(
+            merged.ensure_time_exceeded == 7,
+            "TestSummary::merge must sum ensure_time_exceeded counters, got {}",
+            merged.ensure_time_exceeded,
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn test_summary_zero_initialises_ensure_time_exceeded_to_zero(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
+        let zero = TestSummary::zero();
+        anyhow::ensure!(
+            zero.ensure_time_exceeded == 0,
+            "zero() must give ensure_time_exceeded=0, got {}",
+            zero.ensure_time_exceeded,
         );
         Ok(())
     }
@@ -782,54 +1363,35 @@ mod config_parser {
 /// `futures::join_all`, so they're independent of the runtime's
 /// concurrency model — proving that on every backend is a cheap POC.
 #[rudzio::suite([
-    (
-        runtime = rudzio::runtime::tokio::Multithread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::tokio::CurrentThread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::tokio::Local::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::compio::Runtime::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::embassy::Runtime::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::futures::ThreadPool::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
+    (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
 ])]
 mod bench_strategies {
-    use rudzio::bench::{
-        BenchReport, Strategy,
-        strategy::{Concurrent, Sequential},
-    };
-    use rudzio::common::context::Test;
+    use rudzio::bench::Strategy as _;
+
+    use super::{AtomicUsize, BoxError, Concurrent, Ordering, Report, Sequential, Test, box_error};
 
     #[rudzio::test]
     async fn sequential_runs_body_n_times(_ctx: &Test) -> anyhow::Result<()> {
-        let count = std::sync::atomic::AtomicUsize::new(0);
-        let report: BenchReport = Sequential(7)
-            .run(|| async {
-                let _prev = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Ok(())
-            })
+        let count = AtomicUsize::new(0);
+        let report: Report = Sequential::new(7)
+            .run(
+                || async {
+                    let _prev = count.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+                |_| {},
+            )
             .await;
-        anyhow::ensure!(count.load(std::sync::atomic::Ordering::SeqCst) == 7);
+        anyhow::ensure!(count.load(Ordering::SeqCst) == 7);
         anyhow::ensure!(report.iterations == 7, "iterations = {}", report.iterations);
         anyhow::ensure!(report.samples.len() == 7);
         anyhow::ensure!(report.failures.is_empty());
@@ -841,14 +1403,17 @@ mod bench_strategies {
 
     #[rudzio::test]
     async fn concurrent_runs_body_n_times(_ctx: &Test) -> anyhow::Result<()> {
-        let count = std::sync::atomic::AtomicUsize::new(0);
-        let report: BenchReport = Concurrent(5)
-            .run(|| async {
-                let _prev = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Ok(())
-            })
+        let count = AtomicUsize::new(0);
+        let report: Report = Concurrent::new(5)
+            .run(
+                || async {
+                    let _prev = count.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+                |_| {},
+            )
             .await;
-        anyhow::ensure!(count.load(std::sync::atomic::Ordering::SeqCst) == 5);
+        anyhow::ensure!(count.load(Ordering::SeqCst) == 5);
         anyhow::ensure!(report.iterations == 5);
         anyhow::ensure!(report.samples.len() == 5);
         anyhow::ensure!(report.is_success());
@@ -858,16 +1423,19 @@ mod bench_strategies {
 
     #[rudzio::test]
     async fn sequential_captures_failures(_ctx: &Test) -> anyhow::Result<()> {
-        let counter = std::sync::atomic::AtomicUsize::new(0);
-        let report = Sequential(4)
-            .run(|| async {
-                let i = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                if i % 2 == 0 {
-                    Ok(())
-                } else {
-                    Err(rudzio::test_case::box_error("even iteration required"))
-                }
-            })
+        let counter = AtomicUsize::new(0);
+        let report = Sequential::new(4)
+            .run(
+                || async {
+                    let prev = counter.fetch_add(1, Ordering::SeqCst);
+                    if prev.is_multiple_of(2) {
+                        Ok(())
+                    } else {
+                        Err(box_error("even iteration required"))
+                    }
+                },
+                |_| {},
+            )
             .await;
         anyhow::ensure!(report.samples.len() == 2);
         anyhow::ensure!(report.failures.len() == 2);
@@ -877,27 +1445,27 @@ mod bench_strategies {
 
     #[rudzio::test]
     async fn empty_samples_return_none_for_stats(_ctx: &Test) -> anyhow::Result<()> {
-        let report = Sequential(0)
-            .run(|| async { Ok::<(), rudzio::test_case::BoxError>(()) })
+        let report = Sequential::new(0)
+            .run(|| async { Ok::<(), BoxError>(()) }, |_| {})
             .await;
         anyhow::ensure!(report.min().is_none());
         anyhow::ensure!(report.max().is_none());
         anyhow::ensure!(report.mean().is_none());
         anyhow::ensure!(report.median().is_none());
-        anyhow::ensure!(report.percentile(0.5).is_none());
+        anyhow::ensure!(report.percentile_permille(500_u32).is_none());
         anyhow::ensure!(report.ascii_histogram(8, 20).is_empty());
         Ok(())
     }
 
     #[rudzio::test]
-    async fn percentile_rejects_out_of_range(_ctx: &Test) -> anyhow::Result<()> {
-        let report = Sequential(3)
-            .run(|| async { Ok::<(), rudzio::test_case::BoxError>(()) })
+    async fn percentile_clamps_high_permille(_ctx: &Test) -> anyhow::Result<()> {
+        let report = Sequential::new(3)
+            .run(|| async { Ok::<(), BoxError>(()) }, |_| {})
             .await;
-        anyhow::ensure!(report.percentile(-0.1).is_none());
-        anyhow::ensure!(report.percentile(1.01).is_none());
-        anyhow::ensure!(report.percentile(0.0).is_some());
-        anyhow::ensure!(report.percentile(1.0).is_some());
+        // permille saturates at 1000; well-defined for any non-empty run.
+        anyhow::ensure!(report.percentile_permille(0_u32).is_some());
+        anyhow::ensure!(report.percentile_permille(1000_u32).is_some());
+        anyhow::ensure!(report.percentile_permille(2000_u32).is_some());
         Ok(())
     }
 
@@ -906,61 +1474,39 @@ mod bench_strategies {
     // collection). Under `cargo test -- --bench` it runs with the
     // strategy. The iteration count stays tiny so the smoke path
     // doesn't dominate the runtime sweep.
-    #[rudzio::test(benchmark = rudzio::bench::strategy::Sequential(3))]
+    #[rudzio::test(benchmark = Sequential::new(3))]
     async fn sample_sequential_bench(_ctx: &Test) -> anyhow::Result<()> {
         Ok(())
     }
 
-    #[rudzio::test(benchmark = rudzio::bench::strategy::Concurrent(3))]
+    #[rudzio::test(benchmark = Concurrent::new(3))]
     async fn sample_concurrent_bench(_ctx: &Test) -> anyhow::Result<()> {
         Ok(())
     }
 
     // Bench tests without a context parameter also work — setup and
     // teardown still run around the strategy invocation.
-    #[rudzio::test(benchmark = rudzio::bench::strategy::Sequential(2))]
+    #[rudzio::test(benchmark = Sequential::new(2))]
     async fn sample_bench_without_ctx() -> anyhow::Result<()> {
         Ok(())
     }
 }
 
 #[rudzio::suite([
-    (
-        runtime = rudzio::runtime::tokio::Multithread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::tokio::CurrentThread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::tokio::Local::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::compio::Runtime::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::embassy::Runtime::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::futures::ThreadPool::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
+    (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
 ])]
 mod build_sentinel {
-    use std::ffi::OsStr;
-
-    use rudzio::build::{
-        NESTED_SENTINEL_ENV, SentinelAction, decide_sentinel_action,
+    use super::{
+        NESTED_SENTINEL_ENV, OsStr, SentinelAction, decide_sentinel_action,
         sentinel_indicates_nested_call,
     };
 
@@ -1032,46 +1578,26 @@ mod build_sentinel {
 }
 
 #[rudzio::suite([
-    (
-        runtime = rudzio::runtime::tokio::Multithread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::tokio::CurrentThread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::tokio::Local::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::compio::Runtime::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::embassy::Runtime::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::futures::ThreadPool::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
+    (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
 ])]
 mod bin_resolver {
-    use rudzio::bin::__resolve_at_runtime;
+    use super::{__resolve_at_runtime, Path, current_exe};
 
     #[rudzio::test]
     fn runtime_walk_reaches_a_directory_that_exists() -> anyhow::Result<()> {
-        let current = std::env::current_exe()?;
+        let current = current_exe()?;
         let profile_dir = current
             .parent()
-            .and_then(std::path::Path::parent)
+            .and_then(Path::parent)
             .ok_or_else(|| anyhow::anyhow!("test binary has no grandparent dir"))?;
         anyhow::ensure!(
             profile_dir.is_dir(),
@@ -1083,8 +1609,12 @@ mod bin_resolver {
 
     #[rudzio::test]
     fn missing_bin_error_names_the_bin_and_suggests_fixes() -> anyhow::Result<()> {
-        let err = __resolve_at_runtime("this-bin-definitely-does-not-exist-xyz-123")
-            .expect_err("bogus bin name must not resolve");
+        // `expect_err` would panic on `Ok` — and panics are forbidden in
+        // src/. Convert the Ok path into a typed failure instead so the
+        // assertion is a proper Result-bail, not a panic.
+        let Err(err) = __resolve_at_runtime("this-bin-definitely-does-not-exist-xyz-123") else {
+            anyhow::bail!("bogus bin name must not resolve");
+        };
         let msg = err.to_string();
         anyhow::ensure!(
             msg.contains("this-bin-definitely-does-not-exist-xyz-123"),
@@ -1097,6 +1627,380 @@ mod bin_resolver {
         anyhow::ensure!(
             msg.contains("expose_self_bins"),
             "error should point at `expose_self_bins` as a fix; got: {msg}",
+        );
+        Ok(())
+    }
+}
+
+#[rudzio::suite([
+    (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
+])]
+mod filter_matching {
+    use super::{RunIgnoredMode, Test, token_passes_filters};
+
+    /// Build a `Vec<String>` skip list from string slices — same shape
+    /// as `argv` but local to this module so the suite spec only
+    /// imports what each module needs.
+    fn skips(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| (*item).to_owned()).collect()
+    }
+
+    // Regression: a path-shaped substring copied from runner output must
+    // match the test it came from. Before the fix this returned false
+    // because the filter looked at the leaf name only.
+    #[rudzio::test]
+    fn path_shaped_filter_matches_qualified_name(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(token_passes_filters(
+            "crate::write_layer::main::e2e_inproc::doput",
+            false,
+            Some("e2e_inproc"),
+            &[],
+            RunIgnoredMode::Normal,
+            false,
+        ));
+        Ok(())
+    }
+
+    // Existing leaf-name workflow keeps working under the new rule
+    // because the leaf is a substring of the qualified name.
+    #[rudzio::test]
+    fn leaf_name_filter_still_matches(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(token_passes_filters(
+            "crate::write_layer::main::e2e_inproc::doput",
+            false,
+            Some("doput"),
+            &[],
+            RunIgnoredMode::Normal,
+            false,
+        ));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn non_matching_filter_rejects(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(!token_passes_filters(
+            "crate::write_layer::main::e2e_inproc::doput",
+            false,
+            Some("nope"),
+            &[],
+            RunIgnoredMode::Normal,
+            false,
+        ));
+        Ok(())
+    }
+
+    // Regression: --skip with a path-shaped substring must reject tests
+    // in that module. Before the fix, --skip "file_v3::" matched no
+    // tests because skip looked at the leaf only.
+    #[rudzio::test]
+    fn path_shaped_skip_rejects(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(!token_passes_filters(
+            "crate::storage::file_v3::reads::ok",
+            false,
+            None,
+            &skips(&["file_v3::"]),
+            RunIgnoredMode::Normal,
+            false,
+        ));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn path_shaped_skip_leaves_siblings(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(token_passes_filters(
+            "crate::storage::file_v2::reads::ok",
+            false,
+            None,
+            &skips(&["file_v3::"]),
+            RunIgnoredMode::Normal,
+            false,
+        ));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn skip_wins_over_filter(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(!token_passes_filters(
+            "crate::e2e_inproc::doput",
+            false,
+            Some("e2e_inproc"),
+            &skips(&["doput"]),
+            RunIgnoredMode::Normal,
+            false,
+        ));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn run_ignored_only_rejects_non_ignored(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(!token_passes_filters(
+            "crate::any::test",
+            false,
+            None,
+            &[],
+            RunIgnoredMode::Only,
+            false,
+        ));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn run_ignored_only_keeps_ignored(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(token_passes_filters(
+            "crate::any::test",
+            true,
+            None,
+            &[],
+            RunIgnoredMode::Only,
+            false,
+        ));
+        Ok(())
+    }
+
+    // --exact (libtest compat): filter must equal the qualified name,
+    // not merely be a substring of it.
+    #[rudzio::test]
+    fn exact_filter_rejects_substring(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(!token_passes_filters(
+            "crate::foo::doput",
+            false,
+            Some("doput"),
+            &[],
+            RunIgnoredMode::Normal,
+            true,
+        ));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn exact_filter_accepts_full_match(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(token_passes_filters(
+            "crate::foo::doput",
+            false,
+            Some("crate::foo::doput"),
+            &[],
+            RunIgnoredMode::Normal,
+            true,
+        ));
+        Ok(())
+    }
+
+    // Skip is sibling-symmetric with filter under --exact: only an
+    // entire-name match excludes a test, partial-name skip values
+    // become no-ops.
+    #[rudzio::test]
+    fn exact_skip_rejects_only_full_match(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(!token_passes_filters(
+            "crate::foo::doput",
+            false,
+            None,
+            &skips(&["crate::foo::doput"]),
+            RunIgnoredMode::Normal,
+            true,
+        ));
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn exact_skip_ignores_substring(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(token_passes_filters(
+            "crate::foo::doput",
+            false,
+            None,
+            &skips(&["doput"]),
+            RunIgnoredMode::Normal,
+            true,
+        ));
+        Ok(())
+    }
+}
+
+#[rudzio::suite([
+    (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
+])]
+mod path_normalize {
+    use super::{Test, normalize_module_path, qualified_test_name};
+
+    // Per-crate mode: the cargo `[[test]] name = "main"` test binary
+    // makes the leading segment `main`. Drop it so the displayed path
+    // begins at the user's first real module.
+    #[rudzio::test]
+    fn per_crate_main_prefix_is_stripped(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(normalize_module_path("main::runner::test_case") == "runner::test_case");
+        Ok(())
+    }
+
+    // Aggregator mode: `<aggregator>::tests::<crate>::main::<rest>` —
+    // drop the aggregator crate, the `tests` wrapper, and the inner
+    // `main` shim, leaving the user's crate at the head.
+    #[rudzio::test]
+    fn aggregator_prefix_is_stripped(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            normalize_module_path("rudzio_auto_runner::tests::write_layer::main::e2e::doput")
+                == "write_layer::e2e::doput"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn tests_wrapper_only_dropped_after_crate(_ctx: &Test) -> anyhow::Result<()> {
+        // A `tests` segment further down the path stays intact —
+        // only the aggregator's immediate `tests::` wrapper is
+        // autogenerated.
+        anyhow::ensure!(
+            normalize_module_path("crate::user_mod::tests::case") == "user_mod::tests::case"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn inner_main_segments_are_stripped(_ctx: &Test) -> anyhow::Result<()> {
+        // An interior `main` segment (the aggregator's `tests/main.rs`
+        // shim mounted as `mod main`) is rudzio convention, not user
+        // code, so drop it.
+        anyhow::ensure!(
+            normalize_module_path("agg::tests::crate_x::main::body::leaf") == "crate_x::body::leaf"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn empty_after_strip_returns_empty(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(normalize_module_path("main") == "");
+        anyhow::ensure!(normalize_module_path("") == "");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn qualified_name_joins_normalized_path(_ctx: &Test) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            qualified_test_name("main::runner::sub", "test_case") == "runner::sub::test_case"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn qualified_name_omits_separator_when_path_empty(_ctx: &Test) -> anyhow::Result<()> {
+        // No leading `::` when normalization produces nothing.
+        anyhow::ensure!(qualified_test_name("main", "test_case") == "test_case");
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn bridge_build_rs_overrides_cargo_manifest_dir_for_env_macro(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
+        // Pin that the bridge `build.rs` directive
+        // `cargo:rustc-env=CARGO_MANIFEST_DIR=<member dir>` reaches
+        // the `env!()` channel — cargo could silently strip overrides
+        // of reserved env vars there. The const captures
+        // `env!("CARGO_MANIFEST_DIR")` at rudzio lib's compile site;
+        // under the aggregator that compile runs through the bridge.
+        let captured = ::rudzio::__BRIDGE_OBSERVED_MANIFEST_DIR;
+        anyhow::ensure!(
+            !captured.contains("rudzio-auto-runner"),
+            "bridge CARGO_MANIFEST_DIR override is being stripped from `env!()`: \
+             rudzio's compile saw `{captured}` (the bridge dir under the \
+             aggregator's target), not the member's original manifest dir."
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn bridge_build_rs_overrides_cargo_manifest_dir_for_proc_macros(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
+        // Same redirect, different observation channel: `std::env::var`
+        // at proc-macro expansion time. Third-party proc-macros like
+        // `refinery::embed_migrations!` and `sqlx::migrate!` resolve
+        // their path arguments through `std::env::var`. Cargo may pass
+        // build-script env overrides to rustc via a private channel
+        // that only `env!` reads — this test catches that case so we
+        // know whether the redirect actually closes the proc-macro
+        // path-resolution gap or only the compile-time `env!` one.
+        let captured = ::rudzio::__BRIDGE_PROC_MACRO_OBSERVED_MANIFEST_DIR;
+        anyhow::ensure!(
+            !captured.contains("rudzio-auto-runner"),
+            "bridge CARGO_MANIFEST_DIR override is not reaching proc-macros: \
+             `std::env::var(\"CARGO_MANIFEST_DIR\")` at rudzio lib's compile \
+             site saw `{captured}` (the bridge dir under the aggregator's \
+             target), so any path-resolving proc-macro in member src \
+             (`refinery::embed_migrations!`, `sqlx::migrate!`, askama, …) \
+             still looks in the wrong place. The bridge directory needs a \
+             different rerouting strategy (full-mirror symlink tree, or \
+             different env-passing approach)."
+        );
+        Ok(())
+    }
+}
+
+#[rudzio::suite([
+    (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
+])]
+mod runtime_ctx_api {
+    use std::time::{Duration, Instant};
+
+    use rudzio::context::Test as _;
+
+    use super::Test;
+
+    /// `Test::sleep` delegates to the suite's runtime, so test bodies can
+    /// sleep runtime-agnostically — no `tokio::time::sleep` or other
+    /// adapter-specific timer is needed. Asserted across all six adapters
+    /// so the contract holds wherever the suite is dispatched.
+    #[rudzio::test]
+    async fn ctx_sleep_completes_after_requested_duration(
+        ctx: &Test,
+    ) -> anyhow::Result<()> {
+        let start = Instant::now();
+        ctx.sleep(Duration::from_millis(15_u64)).await;
+        let elapsed = start.elapsed();
+        anyhow::ensure!(
+            elapsed >= Duration::from_millis(10_u64),
+            "ctx.sleep must wait at least roughly the requested duration, elapsed={elapsed:?}"
+        );
+        Ok(())
+    }
+
+    /// `Test::name` surfaces `Runtime::name` so test bodies can branch on
+    /// the active adapter without coupling to a specific runtime type.
+    /// Asserted across all six adapters: each must return a non-empty,
+    /// stable identifier.
+    #[rudzio::test]
+    async fn ctx_name_returns_nonempty_runtime_identifier(
+        ctx: &Test,
+    ) -> anyhow::Result<()> {
+        let name = ctx.name();
+        anyhow::ensure!(
+            !name.is_empty(),
+            "ctx.name must return a non-empty runtime identifier"
         );
         Ok(())
     }

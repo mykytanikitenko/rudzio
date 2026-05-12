@@ -1,9 +1,11 @@
 use std::fmt;
+use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 use crate::config::Config;
-use crate::runtime::Runtime;
+use crate::runtime::{JoinError, Runtime};
 
 /// Per-runtime shared state.
 ///
@@ -20,9 +22,16 @@ use crate::runtime::Runtime;
 /// 6. Release borrow on suite
 /// 7. Teardown suite
 /// 8. Drop runtime
+///
+/// User-facing API methods (`block_on`, `spawn`, `spawn_blocking`,
+/// `spawn_local`, `sleep`, `yield_now`, `name`) are provided as default
+/// implementations that pass through to [`Runtime`] via [`Self::rt`]. A
+/// concrete implementor only needs to supply the accessors
+/// ([`Self::rt`], [`Self::cancel_token`], [`Self::tracker`]) plus the
+/// lifecycle hooks ([`Self::context`], [`Self::setup`], [`Self::teardown`]).
 pub trait Suite<'suite_context, R>: Send + Sync + 'suite_context
 where
-    R: for<'r> Runtime<'r> + Sync,
+    R: for<'rt> Runtime<'rt> + Sync,
 {
     /// Error returned by [`Self::context`].
     type ContextError: fmt::Display + fmt::Debug + Send + Sync + 'suite_context;
@@ -48,6 +57,23 @@ where
     where
         Self: 'test_context;
 
+    /// Block the calling thread until `fut` completes, dispatching through
+    /// [`Runtime::block_on`].
+    #[inline]
+    fn block_on<F>(&self, fut: F) -> F::Output
+    where
+        F: Future + 'suite_context,
+        F::Output: 'static,
+    {
+        self.rt().block_on(fut)
+    }
+
+    /// Root cancellation token of this suite. The runner builds it as a
+    /// child of its run-level token and hands it to [`Self::setup`];
+    /// implementations should expose it here so per-test contexts and
+    /// background tasks can react to suite-level cancellation.
+    fn cancel_token(&self) -> &CancellationToken;
+
     /// Create a fresh per-test context.
     ///
     /// `cancel` is a per-test cancellation token provided by the runner, a
@@ -68,6 +94,18 @@ where
         config: &'test_context Config,
     ) -> impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>> + Send + 'test_context;
 
+    /// Stable identifier of the runtime driving this suite, surfaced from
+    /// [`Runtime::name`].
+    #[inline]
+    fn name(&self) -> &'static str {
+        self.rt().name()
+    }
+
+    /// Borrow of the runtime driving this suite. The default-implemented
+    /// API methods on this trait dispatch through this accessor, so the
+    /// chain is `Suite → Runtime` for every passthrough.
+    fn rt(&self) -> &'suite_context R;
+
     /// Create the shared state. Called once per runtime group.
     ///
     /// `cancel` is the runner's root cancellation token for this run. The
@@ -86,6 +124,53 @@ where
     where
         Self: Sized;
 
+    /// Sleep for `duration` using the runtime's native timer
+    /// ([`Runtime::sleep`]).
+    #[inline]
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'suite_context {
+        self.rt().sleep(duration)
+    }
+
+    /// Spawn a `Send` future onto the runtime ([`Runtime::spawn`]).
+    #[inline]
+    fn spawn<F>(
+        &self,
+        fut: F,
+    ) -> impl Future<Output = Result<F::Output, JoinError>> + Send + 'suite_context
+    where
+        F: Future + Send + 'static,
+        F::Output: Send,
+    {
+        self.rt().spawn(fut)
+    }
+
+    /// Spawn a blocking closure onto a thread suitable for blocking I/O
+    /// ([`Runtime::spawn_blocking`]).
+    #[inline]
+    fn spawn_blocking<F, T>(
+        &self,
+        func: F,
+    ) -> impl Future<Output = Result<T, JoinError>> + Send + 'suite_context
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        self.rt().spawn_blocking(func)
+    }
+
+    /// Spawn a `!Send` future onto a thread-local executor
+    /// ([`Runtime::spawn_local`]).
+    #[inline]
+    fn spawn_local<F>(
+        &self,
+        fut: F,
+    ) -> impl Future<Output = Result<F::Output, JoinError>> + 'suite_context
+    where
+        F: Future + 'static,
+    {
+        self.rt().spawn_local(fut)
+    }
+
     /// Tear down the shared state. Called after all tests in the group.
     ///
     /// `cancel` is a per-phase cancellation token (a child of the
@@ -97,4 +182,15 @@ where
         self,
         cancel: CancellationToken,
     ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'suite_context;
+
+    /// Shared task tracker for background tasks the suite (or its tests)
+    /// spawn through `spawn_tracked`. Surfaced so suite-teardown can
+    /// `close()` + `wait()` for outstanding work.
+    fn tracker(&self) -> &TaskTracker;
+
+    /// Yield control back to the runtime scheduler ([`Runtime::yield_now`]).
+    #[inline]
+    fn yield_now(&self) -> impl Future<Output = ()> + 'suite_context {
+        self.rt().yield_now()
+    }
 }

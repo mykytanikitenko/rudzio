@@ -7,18 +7,28 @@
 
 use std::convert::Infallible;
 use std::fmt;
-use std::marker::PhantomData;
 use std::time::Duration;
 
+use rudzio::Config;
 use rudzio::context;
 use rudzio::runtime::Runtime;
+use rudzio::runtime::tokio::Multithread;
 use rudzio::tokio_util::sync::CancellationToken;
+use rudzio::tokio_util::task::TaskTracker;
+use tokio::time::sleep;
 
+/// Suite whose per-test [`context::Suite::context`] always hangs until
+/// the cancel token fires (or 30s, whichever comes first).
 struct HangingContextSuite<'suite_context, R>
 where
     R: Runtime<'suite_context> + Sync,
 {
-    _marker: PhantomData<&'suite_context R>,
+    /// Per-suite cancellation token.
+    cancel: CancellationToken,
+    /// Borrow of the async runtime driving this suite.
+    rt: &'suite_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 impl<'suite_context, R> fmt::Debug for HangingContextSuite<'suite_context, R>
@@ -31,10 +41,9 @@ where
     }
 }
 
-impl<'suite_context, R> context::Suite<'suite_context, R>
-    for HangingContextSuite<'suite_context, R>
+impl<'suite_context, R> context::Suite<'suite_context, R> for HangingContextSuite<'suite_context, R>
 where
-    R: for<'r> Runtime<'r> + Sync,
+    R: for<'rt> Runtime<'rt> + Sync,
 {
     type ContextError = Infallible;
     type SetupError = Infallible;
@@ -44,44 +53,68 @@ where
     where
         Self: 'test_context;
 
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
     async fn context<'test_context>(
         &'test_context self,
         cancel: CancellationToken,
-        _config: &'test_context ::rudzio::Config,
+        config: &'test_context Config,
     ) -> Result<Self::Test<'test_context>, Self::ContextError> {
         let _unused = cancel
             .run_until_cancelled(async {
-                ::tokio::time::sleep(Duration::from_secs(30)).await;
+                sleep(Duration::from_secs(30)).await;
             })
             .await;
         Ok(NeverBuiltTest {
-            _marker: PhantomData,
+            cancel,
+            config,
+            rt: self.rt,
+            tracker: self.tracker.clone(),
         })
+    }
+
+    fn rt(&self) -> &'suite_context R {
+        self.rt
     }
 
     async fn setup(
-        _rt: &'suite_context R,
-        _cancel: CancellationToken,
-        _config: &'suite_context ::rudzio::Config,
+        rt: &'suite_context R,
+        cancel: CancellationToken,
+        _config: &'suite_context Config,
     ) -> Result<Self, Self::SetupError> {
         Ok(Self {
-            _marker: PhantomData,
+            cancel: cancel.child_token(),
+            rt,
+            tracker: TaskTracker::new(),
         })
     }
 
-    async fn teardown(
-        self,
-        _cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 
+/// Per-test context placeholder; never actually constructed because
+/// [`HangingContextSuite::context`] hangs past the per-test setup
+/// timeout.
 struct NeverBuiltTest<'test_context, R>
 where
     R: Runtime<'test_context> + Sync,
 {
-    _marker: PhantomData<&'test_context R>,
+    /// Per-test cancellation token.
+    cancel: CancellationToken,
+    /// Resolved CLI/env configuration.
+    config: &'test_context Config,
+    /// Borrow of the async runtime driving this test.
+    rt: &'test_context R,
+    /// Suite-shared task tracker.
+    tracker: TaskTracker,
 }
 
 impl<'test_context, R> fmt::Debug for NeverBuiltTest<'test_context, R>
@@ -99,17 +132,30 @@ where
 {
     type TeardownError = Infallible;
 
-    async fn teardown(
-        self,
-        _cancel: CancellationToken,
-    ) -> Result<(), Self::TeardownError> {
+    fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    fn config(&self) -> &Config {
+        self.config
+    }
+
+    fn rt(&self) -> &'test_context R {
+        self.rt
+    }
+
+    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
         Ok(())
+    }
+
+    fn tracker(&self) -> &TaskTracker {
+        &self.tracker
     }
 }
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
+        runtime = Multithread::new,
         suite = HangingContextSuite,
         test = NeverBuiltTest,
     ),
@@ -118,6 +164,10 @@ mod tests {
     use super::NeverBuiltTest;
 
     #[rudzio::test(setup_timeout = 1)]
+    #[expect(
+        clippy::unreachable,
+        reason = "this fixture exercises the per-test #[rudzio::test(setup_timeout=1)] override; Suite::context hangs and is killed by the per-test setup timeout, so the body must be unreachable"
+    )]
     fn attr_setup_times_out(_ctx: &NeverBuiltTest) -> anyhow::Result<()> {
         unreachable!("body must not run when attribute setup timeout fires");
     }

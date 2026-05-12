@@ -2,10 +2,14 @@
 name = "rudzio-migrate"
 version = "0.1.0"
 edition = { workspace = true }
-publish = false
 description = "Best-effort converter of stock cargo-style Rust tests into rudzio tests. Runs on a clean git tree, rewrites sources in place, keeps backups and pre-migration copies as block comments, and asks before wiring a shared runner."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/mykytanikitenko/rudzio"
 readme = "README.md"
+keywords = ["testing", "async", "migration", "cargo-test", "rudzio"]
+categories = ["development-tools::testing", "command-line-utilities"]
 autotests = false
+exclude = ["fixtures/"]
 
 [lib]
 name = "rudzio_migrate"
@@ -22,153 +26,37 @@ test = false
 anyhow = { workspace = true }
 cargo_metadata = { workspace = true }
 ignore = { workspace = true }
-miette = { workspace = true }
 prettyplease = { workspace = true }
 proc-macro2 = { workspace = true, features = ["span-locations"] }
 quote = { workspace = true }
-syn = { workspace = true, features = ["full", "extra-traits", "visit", "visit-mut"] }
+syn = { workspace = true, features = [
+  "full",
+  "extra-traits",
+  "visit",
+  "visit-mut",
+] }
 thiserror = { workspace = true }
 toml_edit = { workspace = true }
-rudzio = { path = "..", features = ["common", "runtime-tokio-multi-thread"] }
+rudzio = { workspace = true, features = [
+  "common",
+  "runtime-tokio-multi-thread",
+  "runtime-tokio-current-thread",
+  "runtime-tokio-local",
+  "runtime-compio",
+  "runtime-embassy",
+  "runtime-futures",
+  "runtime-async-std",
+  "runtime-smol",
+  "runtime-monoio",
+] }
 
 [dev-dependencies]
-tempfile = "=3.10.1"
+tempfile = "=3.27.0"
 
-# This crate is a pragmatic migration CLI, not library code. The
-# workspace lint set is inherited in spirit — same restriction and
-# pedantic groups — with targeted overrides for lints that either
-# bury the intent in a best-effort source rewriter (missing docs on
-# every field) or actively work against the binary's purpose
-# (print_stdout / print_stderr on a CLI tool). Cargo does not allow
-# mixing `lints.workspace = true` with additional `[lints.clippy]`
-# overrides, so the workspace lint set is duplicated inline below.
-[lints.rust]
-warnings = "deny"
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rudzio_test)"] }
-future_incompatible = { level = "deny", priority = -1 }
-keyword_idents = { level = "deny", priority = -1 }
-let_underscore = { level = "deny", priority = -1 }
-nonstandard_style = { level = "deny", priority = -1 }
-refining_impl_trait = { level = "deny", priority = -1 }
-rust_2018_idioms = { level = "deny", priority = -1 }
-rust_2021_compatibility = { level = "deny", priority = -1 }
-rust_2024_compatibility = { level = "deny", priority = -1 }
-unused = { level = "deny", priority = -1 }
-unsafe_code = "deny"
-macro_use_extern_crate = "deny"
-meta_variable_misuse = "deny"
-missing_copy_implementations = "deny"
-missing_debug_implementations = "deny"
-non_ascii_idents = "deny"
-redundant_imports = "deny"
-redundant_lifetimes = "deny"
-trivial_casts = "deny"
-trivial_numeric_casts = "deny"
-unit_bindings = "deny"
-unused_import_braces = "deny"
-unused_lifetimes = "deny"
-unused_qualifications = "deny"
-unused_results = "deny"
-variant_size_differences = "deny"
-
-[lints.clippy]
-all = { level = "deny", priority = -1 }
-cargo = { level = "deny", priority = -1 }
-complexity = { level = "deny", priority = -1 }
-correctness = { level = "deny", priority = -1 }
-nursery = { level = "deny", priority = -1 }
-pedantic = { level = "deny", priority = -1 }
-perf = { level = "deny", priority = -1 }
-restriction = { level = "deny", priority = -1 }
-style = { level = "deny", priority = -1 }
-suspicious = { level = "deny", priority = -1 }
-
-blanket_clippy_restriction_lints = "allow"
-cargo_common_metadata = "allow"
-multiple_crate_versions = "allow"
-error_impl_error = "allow"
-field_scoped_visibility_modifiers = "allow"
-implicit_return = "allow"
-missing_trait_methods = "allow"
-mod_module_files = "allow"
-multiple_inherent_impl = "allow"
-pattern_type_mismatch = "allow"
-pub_use = "allow"
-pub_with_shorthand = "allow"
-question_mark_used = "allow"
-redundant_pub_crate = "allow"
-redundant_type_annotations = "allow"
-semicolon_outside_block = "allow"
-std_instead_of_alloc = "allow"
-std_instead_of_core = "allow"
-separated_literal_suffix = "allow"
-single_call_fn = "allow"
-tests_outside_test_module = "allow"
-unnecessary_wraps = "allow"
-panic_in_result_fn = "allow"
-
-# CLI-specific relaxations
-absolute_paths = "allow"
-allow_attributes = "allow"
-allow_attributes_without_reason = "allow"
-arbitrary_source_item_ordering = "allow"
-arithmetic_side_effects = "allow"
-collapsible_if = "allow"
-doc_markdown = "allow"
-else_if_without_else = "allow"
-expect_used = "allow"
-filetype_is_file = "allow"
-if_then_some_else_none = "allow"
-impl_trait_in_params = "allow"
-implicit_clone = "allow"
-indexing_slicing = "allow"
-manual_let_else = "allow"
-match_same_arms = "allow"
-min_ident_chars = "allow"
-missing_const_for_fn = "allow"
-missing_docs_in_private_items = "allow"
-non_ascii_literal = "allow"
-option_if_let_else = "allow"
-print_stderr = "allow"
-print_stdout = "allow"
-ptr_arg = "allow"
-redundant_closure_for_method_calls = "allow"
-renamed_function_params = "allow"
-shadow_reuse = "allow"
-significant_drop_tightening = "allow"
-single_char_lifetime_names = "allow"
-string_slice = "allow"
-too_many_lines = "allow"
-use_debug = "allow"
-wildcard_enum_match_arm = "allow"
-
-# `Arc<String>` is what miette's NamedSource expects for owned
-# source bytes; rc_buffer would push us to `Arc<str>` which forces
-# an `into_boxed_str` round-trip on every file read for no gain.
-rc_buffer = "allow"
-
-# Lib-target-only lints — these fire because the crate now has a
-# `[lib]` target alongside the bin so integration tests can reach
-# the orchestration surface. The lib is internal to the workspace,
-# not published, so API-ergonomics lints don't apply.
-exhaustive_enums = "allow"
-exhaustive_structs = "allow"
-missing_errors_doc = "allow"
-missing_inline_in_public_items = "allow"
-module_name_repetitions = "allow"
-must_use_candidate = "allow"
-too_long_first_doc_paragraph = "allow"
+[lints]
+workspace = true
 
 [[test]]
 name = "main"
 path = "tests/main.rs"
 harness = false
-
-# The golden-test harness relies on CARGO_MANIFEST_DIR pointing at
-# migrate/ to locate its fixture trees. When the aggregator
-# `#[path]`-includes the file, CARGO_MANIFEST_DIR becomes the
-# aggregator's dir and the fixtures can't be found — runtime panics.
-# Keep the golden tests on the per-crate `cargo test -p rudzio-migrate`
-# path and skip them in `cargo rudzio test`.
-[package.metadata.rudzio]
-exclude = ["tests/golden.rs"]

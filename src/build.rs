@@ -1,7 +1,8 @@
-//! Build-script helper: make `[[bin]]` targets reachable from
-//! `env!("CARGO_BIN_EXE_<name>")` in the calling crate's compiled
-//! sources, in the two cases where cargo does *not* set those env vars
-//! automatically:
+//! Build-script helper for `[[bin]]` env-var exposure.
+//!
+//! Make `[[bin]]` targets reachable from `env!("CARGO_BIN_EXE_<name>")`
+//! in the calling crate's compiled sources, in the two cases where
+//! cargo does *not* set those env vars automatically:
 //!
 //! 1. **Cross-crate aggregator** — a workspace-wide test runner that
 //!    spawns bins owned by *different* crates.
@@ -26,7 +27,7 @@
 //!
 //! ```rust,no_run
 //! // my-runner/build.rs
-//! fn main() -> Result<(), rudzio::build::Error> {
+//! fn main() -> Result<(), rudzio::build::ExposeError> {
 //!     rudzio::build::expose_bins("my-bin-crate")
 //! }
 //! ```
@@ -46,7 +47,7 @@
 //!
 //! ```rust,no_run
 //! // build.rs of a crate that owns both the bins and the lib tests
-//! fn main() -> Result<(), rudzio::build::Error> {
+//! fn main() -> Result<(), rudzio::build::ExposeError> {
 //!     rudzio::build::expose_bins("my-crate")
 //! }
 //! ```
@@ -119,22 +120,28 @@
 //!
 //! Every failure (missing env var, package not in metadata, no bin
 //! targets, nested cargo exit != 0, missing expected output) surfaces
-//! as an explicit [`Error`] with context. There are no silent fallbacks:
+//! as an explicit [`ExposeError`] with context. There are no silent fallbacks:
 //! if the helper can't do its job, your build breaks loudly.
 
+use std::env;
 use std::error::Error as StdError;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::result::Result as StdResult;
 
 use cargo_metadata::{MetadataCommand, TargetKind};
 
+use crate::output::write_stdout;
+
 /// Sentinel env var set on every nested `cargo build` spawned by
-/// [`expose_bins`]. Its presence in the ambient env at the top of
-/// [`expose_bins`] means some enclosing invocation is already driving
-/// the build; the current call must not spawn a fresh nested cargo or
-/// the whole thing will recurse unboundedly.
+/// [`expose_bins`].
+///
+/// Its presence in the ambient env at the top of [`expose_bins`] means
+/// some enclosing invocation is already driving the build; the current
+/// call must not spawn a fresh nested cargo or the whole thing will
+/// recurse unboundedly.
 ///
 /// Also set by `cargo rudzio test` before spawning the aggregator
 /// build, so that any `expose_self_bins()` call downstream in the
@@ -150,12 +157,15 @@ pub const NESTED_SENTINEL_ENV: &str = "__RUDZIO_EXPOSE_BINS_ACTIVE";
 /// cause (missing env var, cargo metadata failure, nested build failure,
 /// etc.) with a human-readable message.
 #[derive(Debug)]
-pub struct Error {
+pub struct ExposeError {
+    /// Human-readable description shown via [`fmt::Display`].
     message: String,
+    /// Underlying cause when the failure wraps a lower-level error.
     source: Option<Box<dyn StdError + Send + Sync + 'static>>,
 }
 
-impl Error {
+impl ExposeError {
+    /// Build a standalone error carrying only a message (no source).
     fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
@@ -163,6 +173,7 @@ impl Error {
         }
     }
 
+    /// Build an error wrapping a lower-level error as its source.
     fn with_source(
         message: impl Into<String>,
         source: impl StdError + Send + Sync + 'static,
@@ -174,28 +185,135 @@ impl Error {
     }
 }
 
-impl fmt::Display for Error {
+impl fmt::Display for ExposeError {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message)
     }
 }
 
-impl StdError for Error {
+impl StdError for ExposeError {
+    #[inline]
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         // `Box<dyn Error + Send + Sync>::deref` yields `&(dyn Error + Send + Sync)`,
         // which coerces directly to `&(dyn Error + 'static)`.
         self.source.as_deref().map(|err| {
-            let err: &(dyn StdError + 'static) = err;
-            err
+            let upcast: &(dyn StdError + 'static) = err;
+            upcast
         })
     }
 }
 
 /// Convenience alias used across this crate's surface.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = StdResult<T, ExposeError>;
 
-/// Build `bin_crate`'s `[[bin]]` targets into a sandboxed cache inside
-/// the caller's `OUT_DIR` and emit `cargo:rustc-env=CARGO_BIN_EXE_<n>`
+/// Required build-script environment variables, read up-front so errors
+/// surface in one place rather than at the site of first use.
+struct BuildEnv {
+    /// Path to the cargo binary (`$CARGO`) used to spawn the nested
+    /// `cargo build`.
+    cargo: OsString,
+    /// `$CARGO_MANIFEST_DIR` — directory of the calling build script.
+    manifest_dir: PathBuf,
+    /// `$OUT_DIR` — where the nested target dir and emitted artifacts
+    /// live.
+    out_dir: PathBuf,
+    /// `CARGO_PKG_NAME` — the crate whose build script is currently
+    /// running. Compared against `bin_crate` when the sentinel is set
+    /// to distinguish expected same-crate re-entry (silent Ok) from
+    /// unexpected cross-crate re-entry (warn + Ok).
+    pkg_name: String,
+    /// `$PROFILE` — `debug` or `release`, forwarded to the nested
+    /// build.
+    profile: String,
+}
+
+/// Maps cargo's `PROFILE` env var (set to `debug` or `release` for
+/// build scripts) onto the flag we pass to the nested `cargo build` and
+/// onto the output subdirectory cargo writes the binary into.
+enum ProfileFlag {
+    /// `cargo build` (no flag); output lives under `target/debug`.
+    Debug,
+    /// `cargo build --release`; output lives under `target/release`.
+    Release,
+}
+
+/// What [`expose_bins`] should do based on the sentinel env var and the
+/// relationship between `bin_crate` and the calling crate.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SentinelAction {
+    /// No nested invocation in progress — run the full
+    /// metadata/build/emit pipeline.
+    Proceed,
+    /// Nested invocation is for the same crate the caller is already
+    /// building. Return `Ok(())` silently — the outer call will emit
+    /// the env vars after its nested cargo finishes. This is the
+    /// expected re-entry triggered by `expose_bins("self-crate")` from
+    /// the same crate's own build.rs.
+    SilentOk,
+    /// Sentinel is set but `bin_crate` differs from the calling crate
+    /// — possible cross-crate cycle. Emit a `cargo:warning=` and
+    /// return `Ok(())` to break the recursion.
+    WarnAndOk,
+}
+
+impl BuildEnv {
+    /// Read every required env var up-front so missing-cargo failures
+    /// surface in one place rather than at the first use.
+    fn capture() -> Result<Self> {
+        Ok(Self {
+            manifest_dir: require_path_env("CARGO_MANIFEST_DIR")?,
+            out_dir: require_path_env("OUT_DIR")?,
+            profile: require_string_env("PROFILE")?,
+            cargo: env::var_os("CARGO").ok_or_else(|| {
+                ExposeError::new(
+                    "`CARGO` env var missing; `expose_bins` must be called \
+                     from a cargo-driven build script",
+                )
+            })?,
+            pkg_name: require_string_env("CARGO_PKG_NAME")?,
+        })
+    }
+}
+
+impl ProfileFlag {
+    /// CLI flag to pass to `cargo build` for this profile, if any.
+    const fn cli_flag(&self) -> Option<&'static str> {
+        match self {
+            Self::Debug => None,
+            Self::Release => Some("--release"),
+        }
+    }
+
+    /// Parse cargo's `$PROFILE` value into a known profile flag.
+    fn from_env_profile(profile: &str) -> Result<Self> {
+        match profile {
+            "debug" => Ok(Self::Debug),
+            "release" => Ok(Self::Release),
+            other => Err(ExposeError::new(format!(
+                "unrecognised `PROFILE={other}`; rudzio-build only knows how \
+                 to forward `debug` or `release`. Custom profiles with \
+                 non-standard `inherits` would need explicit handling."
+            ))),
+        }
+    }
+
+    /// Subdirectory under cargo's target dir where the built artifacts
+    /// land for this profile.
+    fn output_subdir(&self) -> &'static Path {
+        match self {
+            Self::Debug => Path::new("debug"),
+            Self::Release => Path::new("release"),
+        }
+    }
+}
+
+/// Build `bin_crate`'s `[[bin]]` targets and expose them via cargo env.
+///
+/// Targets are built into a sandboxed cache inside the caller's
+/// `OUT_DIR`; the function emits `cargo:rustc-env=CARGO_BIN_EXE_<n>`
 /// directives so `env!("CARGO_BIN_EXE_<n>")` resolves in the caller's
 /// compiled sources.
 ///
@@ -215,44 +333,55 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// - `bin_crate` declares no `[[bin]]` targets.
 /// - The nested `cargo build` invocation exits non-zero.
 /// - A bin's expected output file does not exist after the nested build.
+#[inline]
 pub fn expose_bins(bin_crate: &str) -> Result<()> {
     let env = BuildEnv::capture()?;
-    let sentinel = std::env::var_os(NESTED_SENTINEL_ENV);
+    let sentinel = env::var_os(NESTED_SENTINEL_ENV);
     match decide_sentinel_action(sentinel.as_deref(), bin_crate, &env.pkg_name) {
         SentinelAction::Proceed => {}
         SentinelAction::SilentOk => return Ok(()),
         SentinelAction::WarnAndOk => {
-            // `cargo:warning=` is cargo's only in-tree surface for
-            // non-fatal build-script messages. Emit one so a genuine
-            // cycle isn't hidden behind a silent Ok — the user needs
-            // the signal to investigate.
-            println!(
-                "cargo:warning=rudzio::build::expose_bins: detected a re-entrant \
-                 call for `{bin_crate}` while building `{}` (the \
-                 `{NESTED_SENTINEL_ENV}` sentinel is set, meaning an enclosing \
-                 `expose_bins` invocation spawned this build). Returning Ok \
-                 without a nested `cargo build` to prevent runaway recursion. \
-                 If you did not expect this, look for a build-script cycle \
-                 where two crates' `expose_bins` calls trigger one another.",
-                env.pkg_name
-            );
+            emit_reentry_warning(bin_crate, &env.pkg_name);
             return Ok(());
         }
     }
+    expose_bins_after_sentinel(bin_crate, &env)
+}
+
+/// `cargo:warning=` is cargo's only in-tree surface for non-fatal
+/// build-script messages. Emit one so a genuine cycle isn't hidden
+/// behind a silent Ok — the user needs the signal to investigate.
+fn emit_reentry_warning(bin_crate: &str, host_pkg: &str) {
+    write_stdout(&format!(
+        "cargo:warning=rudzio::build::expose_bins: detected a re-entrant \
+         call for `{bin_crate}` while building `{host_pkg}` (the \
+         `{NESTED_SENTINEL_ENV}` sentinel is set, meaning an enclosing \
+         `expose_bins` invocation spawned this build). Returning Ok \
+         without a nested `cargo build` to prevent runaway recursion. \
+         If you did not expect this, look for a build-script cycle \
+         where two crates' `expose_bins` calls trigger one another.\n"
+    ));
+}
+
+/// Post-sentinel body of [`expose_bins`]: resolve `bin_crate` via
+/// `cargo metadata`, run the nested `cargo build --bins -p <bin_crate>`,
+/// and emit `cargo:rustc-env=CARGO_BIN_EXE_*` per bin target plus
+/// `cargo:rerun-if-changed=` for the package's manifest and `src/`.
+fn expose_bins_after_sentinel(bin_crate: &str, env: &BuildEnv) -> Result<()> {
     // NOT `.no_deps()`: when the aggregator is its own workspace, the
     // bin crate shows up only as a dependency in this view, and
     // `no_deps()` would filter it out.
     let metadata = MetadataCommand::new()
         .current_dir(&env.manifest_dir)
         .exec()
-        .map_err(|e| Error::with_source("`cargo metadata` failed", e))?;
+        .map_err(|err| ExposeError::with_source("`cargo metadata` failed", err))?;
 
     let pkg = metadata
         .packages
         .iter()
-        .find(|p| p.name.as_str() == bin_crate)
+        .find(|pkg| pkg.name.as_str() == bin_crate)
         .ok_or_else(|| {
-            Error::new(format!(
+            ExposeError::new(format!(
                 "`cargo metadata` did not list a package named `{bin_crate}`. \
                  Add it to the aggregator's `[dependencies]` or \
                  `[dev-dependencies]` so it shows up in the metadata view."
@@ -262,10 +391,15 @@ pub fn expose_bins(bin_crate: &str) -> Result<()> {
     let bin_targets: Vec<&cargo_metadata::Target> = pkg
         .targets
         .iter()
-        .filter(|t| t.kind.iter().any(|k| matches!(k, TargetKind::Bin)))
+        .filter(|target| {
+            target
+                .kind
+                .iter()
+                .any(|kind| matches!(kind, TargetKind::Bin))
+        })
         .collect();
     if bin_targets.is_empty() {
-        return Err(Error::new(format!(
+        return Err(ExposeError::new(format!(
             "package `{bin_crate}` declares no `[[bin]]` targets"
         )));
     }
@@ -292,18 +426,18 @@ pub fn expose_bins(bin_crate: &str) -> Result<()> {
         let _: &mut Command = cmd.arg(flag);
     }
 
-    let status = cmd.status().map_err(|e| {
-        Error::with_source(
+    let status = cmd.status().map_err(|err| {
+        let cargo_display = Path::new(&env.cargo).display();
+        ExposeError::with_source(
             format!(
                 "failed to spawn nested `cargo build --bins -p {bin_crate}` \
-                 (CARGO={:?})",
-                env.cargo
+                 (CARGO={cargo_display})"
             ),
-            e,
+            err,
         )
     })?;
     if !status.success() {
-        return Err(Error::new(format!(
+        return Err(ExposeError::new(format!(
             "nested `cargo build --bins -p {bin_crate}` exited with {status}"
         )));
     }
@@ -312,43 +446,44 @@ pub fn expose_bins(bin_crate: &str) -> Result<()> {
     for target in &bin_targets {
         let bin_path = bin_dir.join(&target.name);
         if !bin_path.exists() {
-            return Err(Error::new(format!(
+            return Err(ExposeError::new(format!(
                 "nested build reported success but bin `{}` is missing at `{}`",
                 target.name,
                 bin_path.display()
             )));
         }
-        println!(
-            "cargo:rustc-env=CARGO_BIN_EXE_{}={}",
+        write_stdout(&format!(
+            "cargo:rustc-env=CARGO_BIN_EXE_{}={}\n",
             target.name,
             bin_path.display()
-        );
+        ));
     }
 
-    println!(
-        "cargo:rerun-if-changed={}",
+    write_stdout(&format!(
+        "cargo:rerun-if-changed={}\n",
         pkg.manifest_path.as_std_path().display()
-    );
+    ));
     if let Some(pkg_root) = pkg.manifest_path.as_std_path().parent() {
         let src_dir: PathBuf = pkg_root.join("src");
         if src_dir.exists() {
-            println!("cargo:rerun-if-changed={}", src_dir.display());
+            write_stdout(&format!("cargo:rerun-if-changed={}\n", src_dir.display()));
         }
     }
 
     Ok(())
 }
 
-/// Same as [`expose_bins`] but reads `CARGO_PKG_NAME` so the caller
-/// doesn't have to hardcode their own crate's name. Intended for the
-/// `cargo test --lib` + `#[cfg(test)] #[rudzio::main]` pattern where
-/// cargo doesn't auto-populate `CARGO_BIN_EXE_*` for the `--lib` test
-/// binary.
+/// Same as [`expose_bins`] but reads `CARGO_PKG_NAME`.
+///
+/// The caller doesn't have to hardcode their own crate's name. Intended
+/// for the `cargo test --lib` + `#[cfg(test)] #[rudzio::main]` pattern
+/// where cargo doesn't auto-populate `CARGO_BIN_EXE_*` for the `--lib`
+/// test binary.
 ///
 /// ```rust,no_run
 /// // build.rs — make this crate's own bins reachable to tests run by
 /// // `cargo test --lib`.
-/// fn main() -> Result<(), rudzio::build::Error> {
+/// fn main() -> Result<(), rudzio::build::ExposeError> {
 ///     rudzio::build::expose_self_bins()
 /// }
 /// ```
@@ -358,60 +493,10 @@ pub fn expose_bins(bin_crate: &str) -> Result<()> {
 /// Same failure modes as [`expose_bins`]; additionally errors if
 /// `CARGO_PKG_NAME` is missing from the env (build scripts without a
 /// cargo parent).
+#[inline]
 pub fn expose_self_bins() -> Result<()> {
     let pkg_name = require_string_env("CARGO_PKG_NAME")?;
     expose_bins(&pkg_name)
-}
-
-/// Required build-script environment variables, read up-front so errors
-/// surface in one place rather than at the site of first use.
-struct BuildEnv {
-    manifest_dir: PathBuf,
-    out_dir: PathBuf,
-    profile: String,
-    cargo: OsString,
-    /// `CARGO_PKG_NAME` — the crate whose build script is currently
-    /// running. Compared against `bin_crate` when the sentinel is set
-    /// to distinguish expected same-crate re-entry (silent Ok) from
-    /// unexpected cross-crate re-entry (warn + Ok).
-    pkg_name: String,
-}
-
-impl BuildEnv {
-    fn capture() -> Result<Self> {
-        Ok(Self {
-            manifest_dir: require_path_env("CARGO_MANIFEST_DIR")?,
-            out_dir: require_path_env("OUT_DIR")?,
-            profile: require_string_env("PROFILE")?,
-            cargo: std::env::var_os("CARGO").ok_or_else(|| {
-                Error::new(
-                    "`CARGO` env var missing; `expose_bins` must be called \
-                     from a cargo-driven build script",
-                )
-            })?,
-            pkg_name: require_string_env("CARGO_PKG_NAME")?,
-        })
-    }
-}
-
-/// What [`expose_bins`] should do based on the sentinel env var and the
-/// relationship between `bin_crate` and the calling crate.
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SentinelAction {
-    /// No nested invocation in progress — run the full
-    /// metadata/build/emit pipeline.
-    Proceed,
-    /// Nested invocation is for the same crate the caller is already
-    /// building. Return `Ok(())` silently — the outer call will emit
-    /// the env vars after its nested cargo finishes. This is the
-    /// expected re-entry triggered by `expose_bins("self-crate")` from
-    /// the same crate's own build.rs.
-    SilentOk,
-    /// Sentinel is set but `bin_crate` differs from the calling crate
-    /// — possible cross-crate cycle. Emit a `cargo:warning=` and
-    /// return `Ok(())` to break the recursion.
-    WarnAndOk,
 }
 
 /// Decide what [`expose_bins`] should do given the current sentinel
@@ -421,8 +506,10 @@ pub enum SentinelAction {
 /// reads the sentinel and the calling crate's `CARGO_PKG_NAME` once,
 /// then feeds them through here.
 #[doc(hidden)]
+#[inline]
+#[must_use]
 pub fn decide_sentinel_action(
-    sentinel: Option<&std::ffi::OsStr>,
+    sentinel: Option<&OsStr>,
     bin_crate: &str,
     current_pkg: &str,
 ) -> SentinelAction {
@@ -439,59 +526,27 @@ pub fn decide_sentinel_action(
 /// Returns `true` when the sentinel env var looks like it was set by
 /// an enclosing `expose_bins` invocation (present and non-empty).
 #[doc(hidden)]
-pub fn sentinel_indicates_nested_call(value: Option<&std::ffi::OsStr>) -> bool {
-    matches!(value, Some(v) if !v.is_empty())
+#[inline]
+#[must_use]
+pub fn sentinel_indicates_nested_call(value: Option<&OsStr>) -> bool {
+    matches!(value, Some(val) if !val.is_empty())
 }
 
+/// Read a required env var as a string, mapping a missing/invalid
+/// value to a contextful build-script error.
 fn require_string_env(name: &str) -> Result<String> {
-    std::env::var(name).map_err(|e| {
-        Error::with_source(
+    env::var(name).map_err(|err| {
+        ExposeError::with_source(
             format!(
                 "`{name}` env var missing; `expose_bins` must be called from \
                  a cargo-driven build script"
             ),
-            e,
+            err,
         )
     })
 }
 
+/// Read a required env var and parse it as a [`PathBuf`].
 fn require_path_env(name: &str) -> Result<PathBuf> {
     require_string_env(name).map(PathBuf::from)
 }
-
-/// Maps cargo's `PROFILE` env var (set to `debug` or `release` for
-/// build scripts) onto the flag we pass to the nested `cargo build` and
-/// onto the output subdirectory cargo writes the binary into.
-enum ProfileFlag {
-    Debug,
-    Release,
-}
-
-impl ProfileFlag {
-    fn from_env_profile(profile: &str) -> Result<Self> {
-        match profile {
-            "debug" => Ok(Self::Debug),
-            "release" => Ok(Self::Release),
-            other => Err(Error::new(format!(
-                "unrecognised `PROFILE={other}`; rudzio-build only knows how \
-                 to forward `debug` or `release`. Custom profiles with \
-                 non-standard `inherits` would need explicit handling."
-            ))),
-        }
-    }
-
-    fn cli_flag(&self) -> Option<&'static str> {
-        match self {
-            Self::Debug => None,
-            Self::Release => Some("--release"),
-        }
-    }
-
-    fn output_subdir(&self) -> &'static Path {
-        match self {
-            Self::Debug => Path::new("debug"),
-            Self::Release => Path::new("release"),
-        }
-    }
-}
-

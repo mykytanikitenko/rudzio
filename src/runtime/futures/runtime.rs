@@ -4,13 +4,14 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::fmt;
 use std::io;
+use std::panic::{self, AssertUnwindSafe};
 use std::time::Duration;
 
 use ::futures_executor::{
     LocalPool, LocalSpawner, ThreadPool as FuturesThreadPool, ThreadPoolBuilder,
 };
 use ::futures_timer::Delay;
-use ::futures_util::FutureExt;
+use ::futures_util::FutureExt as _;
 use ::futures_util::task::{LocalSpawnExt as _, SpawnExt as _};
 use send_wrapper::SendWrapper;
 
@@ -18,16 +19,16 @@ use crate::config::Config;
 use crate::runtime::{JoinError, Runtime};
 
 pub struct ThreadPool {
-    /// Shared Send thread pool used by `spawn` / `spawn_blocking`.
-    pool: FuturesThreadPool,
+    /// Resolved [`Config`] this runtime was constructed from.
+    config: Config,
     /// Per-runtime `LocalPool` driving `spawn_local` tasks. `!Send`, so
     /// wrapped in `SendWrapper` — only ever touched on the group thread
     /// that owns the runtime.
     local: SendWrapper<RefCell<LocalPool>>,
     /// Cached handle used to enqueue `!Send` futures onto `local`.
     local_spawner: SendWrapper<LocalSpawner>,
-    /// Resolved [`Config`] this runtime was constructed from.
-    config: Config,
+    /// Shared Send thread pool used by `spawn` / `spawn_blocking`.
+    pool: FuturesThreadPool,
 }
 
 impl fmt::Debug for ThreadPool {
@@ -65,16 +66,6 @@ impl ThreadPool {
 
 impl<'rt> Runtime<'rt> for ThreadPool {
     #[inline]
-    fn config(&self) -> &Config {
-        &self.config
-    }
-
-    #[inline]
-    fn name(&self) -> &'static str {
-        "futures::ThreadPool"
-    }
-
-    #[inline]
     fn block_on<F>(&self, fut: F) -> F::Output
     where
         F: Future + 'rt,
@@ -86,6 +77,21 @@ impl<'rt> Runtime<'rt> for ThreadPool {
     }
 
     #[inline]
+    fn config(&self) -> &Config {
+        &self.config
+    }
+
+    #[inline]
+    fn name(&self) -> &'static str {
+        "futures::ThreadPool"
+    }
+
+    #[inline]
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
+        Delay::new(duration)
+    }
+
+    #[inline]
     fn spawn<F>(&self, fut: F) -> impl Future<Output = Result<F::Output, JoinError>> + Send + 'rt
     where
         F: Future + Send + 'static,
@@ -93,7 +99,7 @@ impl<'rt> Runtime<'rt> for ThreadPool {
     {
         let handle = self
             .pool
-            .spawn_with_handle(std::panic::AssertUnwindSafe(fut).catch_unwind());
+            .spawn_with_handle(AssertUnwindSafe(fut).catch_unwind());
         async move {
             match handle {
                 Ok(remote) => match remote.await {
@@ -117,9 +123,9 @@ impl<'rt> Runtime<'rt> for ThreadPool {
         // No dedicated blocking pool; delegate to the main ThreadPool. Heavy
         // blocking workloads can starve executor threads — pick a different
         // runtime for those.
-        let handle = self.pool.spawn_with_handle(async move {
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(func))
-        });
+        let handle = self
+            .pool
+            .spawn_with_handle(async move { panic::catch_unwind(AssertUnwindSafe(func)) });
         async move {
             match handle {
                 Ok(remote) => match remote.await {
@@ -138,7 +144,7 @@ impl<'rt> Runtime<'rt> for ThreadPool {
     {
         let handle = self
             .local_spawner
-            .spawn_local_with_handle(std::panic::AssertUnwindSafe(fut).catch_unwind());
+            .spawn_local_with_handle(AssertUnwindSafe(fut).catch_unwind());
         async move {
             match handle {
                 Ok(remote) => match remote.await {
@@ -148,11 +154,6 @@ impl<'rt> Runtime<'rt> for ThreadPool {
                 Err(err) => Err(JoinError::cancelled(io::Error::other(err.to_string()))),
             }
         }
-    }
-
-    #[inline]
-    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
-        Delay::new(duration)
     }
 }
 

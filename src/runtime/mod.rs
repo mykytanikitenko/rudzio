@@ -5,12 +5,21 @@ mod join_error;
 /// The [`Runtime`] trait defining the async runtime abstraction.
 mod rt;
 
+#[cfg(feature = "runtime-async-std")]
+pub mod async_std;
 #[cfg(feature = "runtime-compio")]
 pub mod compio;
 #[cfg(feature = "runtime-embassy")]
 pub mod embassy;
 #[cfg(feature = "runtime-futures")]
 pub mod futures;
+#[cfg(all(
+    feature = "runtime-monoio",
+    any(target_os = "linux", target_os = "macos"),
+))]
+pub mod monoio;
+#[cfg(feature = "runtime-smol")]
+pub mod smol;
 #[cfg(any(
     feature = "runtime-tokio-multi-thread",
     feature = "runtime-tokio-current-thread",

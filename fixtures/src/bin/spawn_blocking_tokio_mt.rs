@@ -11,6 +11,7 @@ use std::thread;
 use std::thread::ThreadId;
 
 use rudzio::common::context::Test;
+use rudzio::runtime::tokio::Multithread;
 
 /// Deterministic CPU-bound work. Expected sum: 500500.
 fn triangular_sum(n: u64) -> u64 {
@@ -19,12 +20,14 @@ fn triangular_sum(n: u64) -> u64 {
 
 #[rudzio::suite([
     (
-        runtime = rudzio::runtime::tokio::Multithread::new,
+        runtime = Multithread::new,
         suite = rudzio::common::context::Suite,
         test = rudzio::common::context::Test,
     ),
 ])]
 mod tests {
+    use rudzio::context::Test as _;
+
     use super::{Test, ThreadId, thread, triangular_sum};
 
     #[rudzio::test]

@@ -1,67 +1,113 @@
-//! Test-attribute classification. Given a `syn::Attribute`, decide
-//! whether it's a recognised test/runtime macro and, if so, what
-//! runtime hint (if any) it carries.
+//! Test-attribute classification.
+//!
+//! Given a `syn::Attribute`, decide whether it's a recognised
+//! test/runtime macro and, if so, what runtime hint (if any) it
+//! carries.
 
 use syn::{Attribute, Lit, Meta};
 
 use crate::cli::RuntimeChoice;
 
+/// Recognised test-attribute kinds. Any unfamiliar attribute is
+/// classified as `None` upstream rather than added here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TestKind {
-    /// Plain `#[test]`. No forced runtime.
-    PlainTest,
-    /// `#[tokio::test]` without `flavor=` → Tokio multi-thread.
-    TokioDefault,
-    /// `#[tokio::test(flavor = "multi_thread", ...)]`.
-    TokioMulti,
-    /// `#[tokio::test(flavor = "current_thread", ...)]`.
-    TokioCurrent,
+    /// `#[actix_rt::test]` / `#[actix_web::test]`.
+    Actix,
     /// `#[async_std::test]`.
     AsyncStd,
     /// `#[compio::test]`.
     Compio,
-    /// `#[actix_rt::test]` / `#[actix_web::test]`.
-    Actix,
     /// `#[futures_test::test]`.
     FuturesTest,
+    /// Plain `#[test]`. No forced runtime.
+    PlainTest,
+    /// `#[tokio::test(flavor = "current_thread", ...)]`.
+    TokioCurrent,
+    /// `#[tokio::test]` without `flavor=` → Tokio multi-thread.
+    TokioDefault,
+    /// `#[tokio::test(flavor = "multi_thread", ...)]`.
+    TokioMulti,
 }
 
 impl TestKind {
+    /// Forced-runtime mapping: returns `Some(_)` when the attribute
+    /// itself dictates the runtime (Tokio variants, Compio); returns
+    /// `None` for kinds that fall back to `--runtime default` (plain
+    /// `#[test]` and the runtime families rudzio doesn't ship a
+    /// dedicated equivalent for in v1).
+    #[inline]
+    #[must_use]
     pub const fn forced_runtime(self) -> Option<RuntimeChoice> {
         match self {
-            Self::TokioMulti | Self::TokioDefault => Some(RuntimeChoice::TokioMt),
-            Self::TokioCurrent => Some(RuntimeChoice::TokioCt),
             Self::Compio => Some(RuntimeChoice::Compio),
-            Self::PlainTest => None,
-            // async-std / actix / futures-test don't have dedicated rudzio
-            // runtimes in v1. We rewrite them but emit a warning; the chosen
-            // runtime falls back to --runtime default.
-            Self::AsyncStd | Self::Actix | Self::FuturesTest => None,
+            Self::TokioCurrent => Some(RuntimeChoice::TokioCt),
+            Self::TokioDefault | Self::TokioMulti => Some(RuntimeChoice::TokioMt),
+            // PlainTest plus the "no dedicated rudzio runtime in v1"
+            // family (async-std / actix / futures-test) all fall back
+            // to --runtime default. These collapse to None — the
+            // distinction is preserved upstream via
+            // `needs_compat_warning`.
+            Self::Actix | Self::AsyncStd | Self::FuturesTest | Self::PlainTest => None,
         }
     }
 
+    /// Compatibility warning text for kinds whose runtime rudzio v1
+    /// doesn't ship a dedicated equivalent for. Returns `None` when no
+    /// warning is needed.
+    #[inline]
+    #[must_use]
     pub const fn needs_compat_warning(self) -> Option<&'static str> {
         match self {
-            Self::AsyncStd => Some(
-                "async-std runtime replaced with the --runtime default; async-std-specific APIs may not behave identically",
-            ),
             Self::Actix => Some(
                 "actix runtime replaced with the --runtime default; actix-rt actor setup must be added manually if tests depend on it",
             ),
+            Self::AsyncStd => Some(
+                "async-std runtime replaced with the --runtime default; async-std-specific APIs may not behave identically",
+            ),
             Self::FuturesTest => Some("futures-test runtime replaced with the --runtime default"),
-            _ => None,
+            Self::Compio
+            | Self::PlainTest
+            | Self::TokioCurrent
+            | Self::TokioDefault
+            | Self::TokioMulti => None,
         }
     }
 }
 
+/// Outcome of classifying a single attribute: the kind, plus any extra
+/// `tokio::test(...)` arguments the rewriter should warn about.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Detected {
-    pub kind: TestKind,
-    /// True if `#[tokio::test(worker_threads = ...)]` was present — the
-    /// tool drops the arg silently and warns the user about it.
+    /// Tokio attribute arguments the rewriter cannot translate (e.g.
+    /// `worker_threads`, `start_paused`) — preserved as a list of
+    /// `key = value` strings for the warning channel.
     pub extra_tokio_args: Vec<String>,
+    /// Classified kind of the attribute.
+    pub kind: TestKind,
 }
 
+/// Returns the `T` in `#[test_context(T)]` if that's what this
+/// attribute is; returns `None` otherwise.
+#[inline]
+#[must_use]
+pub fn as_test_context(attr: &Attribute) -> Option<syn::Path> {
+    if path_to_string(attr.path()) != "test_context" {
+        return None;
+    }
+    let Meta::List(list) = &attr.meta else {
+        return None;
+    };
+    list.parse_args::<syn::Path>().ok()
+}
+
+/// Classify an attribute. Returns `Some(_)` if it's a recognised
+/// test/runtime macro; `None` otherwise (the rewriter then leaves the
+/// attribute alone).
+#[inline]
+#[must_use]
 pub fn classify_test_attr(attr: &Attribute) -> Option<Detected> {
     let path = path_to_string(attr.path());
     let kind = match path.as_str() {
@@ -83,6 +129,9 @@ pub fn classify_test_attr(attr: &Attribute) -> Option<Detected> {
     })
 }
 
+/// Tokio-specific helper: parse the attribute's nested-meta args to
+/// pick `flavor = ...` and capture extras like `worker_threads` and
+/// `start_paused` for the warning channel.
 fn classify_tokio_attr(attr: &Attribute) -> Detected {
     let mut kind = TestKind::TokioDefault;
     let mut extras = Vec::new();
@@ -93,21 +142,27 @@ fn classify_tokio_attr(attr: &Attribute) -> Detected {
             kind = TestKind::TokioMulti;
         } else if tokens.contains("\"current_thread\"") {
             kind = TestKind::TokioCurrent;
+        } else {
+            // Neither flavor literal present — leave kind at default.
         }
         let _unused = attr.parse_nested_meta(|meta| {
             let name = meta.path.get_ident().map(ToString::to_string);
             match name.as_deref() {
                 Some("flavor") => {
-                    let _unused = meta.value().and_then(|v| v.parse::<syn::LitStr>());
+                    let _unused = meta
+                        .value()
+                        .and_then(syn::parse::ParseBuffer::parse::<syn::LitStr>);
                 }
                 Some("worker_threads") => {
-                    if let Ok(v) = meta.value().and_then(|v| v.parse::<Lit>()) {
-                        extras.push(format!("worker_threads = {}", lit_to_string(&v)));
+                    if let Ok(parsed) = meta.value().and_then(syn::parse::ParseBuffer::parse::<Lit>)
+                    {
+                        extras.push(format!("worker_threads = {}", lit_to_string(&parsed)));
                     }
                 }
                 Some("start_paused") => {
-                    if let Ok(v) = meta.value().and_then(|v| v.parse::<Lit>()) {
-                        extras.push(format!("start_paused = {}", lit_to_string(&v)));
+                    if let Ok(parsed) = meta.value().and_then(syn::parse::ParseBuffer::parse::<Lit>)
+                    {
+                        extras.push(format!("start_paused = {}", lit_to_string(&parsed)));
                     }
                 }
                 _ => {
@@ -124,53 +179,33 @@ fn classify_tokio_attr(attr: &Attribute) -> Detected {
     }
 }
 
-pub fn path_to_string(path: &syn::Path) -> String {
-    let mut s = String::new();
-    if path.leading_colon.is_some() {
-        s.push_str("::");
-    }
-    for (i, seg) in path.segments.iter().enumerate() {
-        if i > 0 {
-            s.push_str("::");
-        }
-        s.push_str(&seg.ident.to_string());
-    }
-    s
-}
-
-pub fn lit_to_string(lit: &Lit) -> String {
-    match lit {
-        Lit::Str(s) => format!("\"{}\"", s.value()),
-        Lit::Int(i) => i.base10_digits().to_owned(),
-        Lit::Bool(b) => b.value.to_string(),
-        other => quote::ToTokens::to_token_stream(other).to_string(),
-    }
-}
-
-/// Returns `true` if the attribute is any `#[ignore]` form, so the
-/// rewriter knows to preserve it verbatim.
-pub fn is_ignore_attr(attr: &Attribute) -> bool {
-    path_to_string(attr.path()) == "ignore"
-}
-
-/// Returns `true` if the attribute is `#[should_panic]` / `#[should_panic(expected = ...)]`.
-pub fn is_should_panic_attr(attr: &Attribute) -> bool {
-    path_to_string(attr.path()) == "should_panic"
-}
-
 /// Returns `true` if the attribute is `#[bench]` (unstable libtest).
+#[inline]
+#[must_use]
 pub fn is_bench_attr(attr: &Attribute) -> bool {
     path_to_string(attr.path()) == "bench"
 }
 
-/// Returns `true` if the attribute is from the `rstest` family — the
-/// outer `#[rstest]` wrapper or the `#[case(...)]` / `#[values(...)]`
-/// parameter-site markers. None of these have a rudzio equivalent in
-/// v1; the conversion path should skip these fns entirely.
+/// Returns `true` if the attribute is any `#[ignore]` form, so the
+/// rewriter knows to preserve it verbatim.
+#[inline]
+#[must_use]
+pub fn is_ignore_attr(attr: &Attribute) -> bool {
+    path_to_string(attr.path()) == "ignore"
+}
+
+/// Returns `true` if the attribute is from the `rstest` family.
+///
+/// That includes the outer `#[rstest]` wrapper plus the `#[case(...)]`
+/// / `#[values(...)]` parameter-site markers. None of these have a
+/// rudzio equivalent in v1; the conversion path should skip these fns
+/// entirely.
+#[inline]
+#[must_use]
 pub fn is_rstest_attr(attr: &Attribute) -> bool {
-    let s = path_to_string(attr.path());
+    let path = path_to_string(attr.path());
     matches!(
-        s.as_str(),
+        path.as_str(),
         "rstest"
             | "::rstest::rstest"
             | "rstest::rstest"
@@ -183,14 +218,48 @@ pub fn is_rstest_attr(attr: &Attribute) -> bool {
     )
 }
 
-/// Returns the `T` in `#[test_context(T)]` if that's what this attribute
-/// is; returns `None` otherwise.
-pub fn as_test_context(attr: &Attribute) -> Option<syn::Path> {
-    if path_to_string(attr.path()) != "test_context" {
-        return None;
+/// Returns `true` if the attribute is `#[should_panic]` /
+/// `#[should_panic(expected = ...)]`.
+#[inline]
+#[must_use]
+pub fn is_should_panic_attr(attr: &Attribute) -> bool {
+    path_to_string(attr.path()) == "should_panic"
+}
+
+/// Render a `syn::Path` to its colon-separated string form.
+#[inline]
+#[must_use]
+pub fn lit_to_string(lit: &Lit) -> String {
+    match lit {
+        Lit::Bool(boolean) => boolean.value.to_string(),
+        Lit::Int(int) => int.base10_digits().to_owned(),
+        Lit::Str(string) => format!("\"{}\"", string.value()),
+        // Every non-Bool/Int/Str variant — and any future-added one,
+        // since syn's `Lit` is `#[non_exhaustive]` — falls through to
+        // the verbatim token-stream rendering.
+        other @ (Lit::Byte(_)
+        | Lit::ByteStr(_)
+        | Lit::CStr(_)
+        | Lit::Char(_)
+        | Lit::Float(_)
+        | Lit::Verbatim(_))
+        | other => quote::ToTokens::to_token_stream(other).to_string(),
     }
-    let Meta::List(list) = &attr.meta else {
-        return None;
-    };
-    list.parse_args::<syn::Path>().ok()
+}
+
+/// Render a `syn::Path` to its colon-separated string form.
+#[inline]
+#[must_use]
+pub fn path_to_string(path: &syn::Path) -> String {
+    let mut out = String::new();
+    if path.leading_colon.is_some() {
+        out.push_str("::");
+    }
+    for (idx, seg) in path.segments.iter().enumerate() {
+        if idx > 0 {
+            out.push_str("::");
+        }
+        out.push_str(&seg.ident.to_string());
+    }
+    out
 }

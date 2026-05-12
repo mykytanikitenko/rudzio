@@ -14,6 +14,7 @@
 //! fast as the kernel produces data, so the pipe buffer rarely fills
 //! and test `write`s rarely block.
 
+use std::fs::File;
 use std::io::{self, Read as _};
 use std::os::fd::OwnedFd;
 use std::thread::{self, JoinHandle};
@@ -22,18 +23,26 @@ use crossbeam_channel::Sender;
 
 use super::events::{PipeChunk, StdStream};
 
+/// Per-iteration heap buffer size for the blocking `read()` loop —
+/// sized to amortise syscall overhead against memory waste.
 const READ_BUF_SIZE: usize = 16 * 1024;
 
 /// Spawn a reader thread for one pipe. The thread takes ownership of
 /// `fd` and exits when `read` returns 0 (writer end closed) or the
 /// drawer hangs up the receiver.
+///
+/// # Errors
+///
+/// Returns an error when the OS refuses to spawn the named reader
+/// thread (e.g. resource exhaustion).
+#[inline]
 pub fn spawn(fd: OwnedFd, stream: StdStream, tx: Sender<PipeChunk>) -> io::Result<JoinHandle<()>> {
     let name = match stream {
         StdStream::Stdout => "rudzio-output-reader-stdout",
         StdStream::Stderr => "rudzio-output-reader-stderr",
     };
     thread::Builder::new().name(name.to_owned()).spawn(move || {
-        let mut file = std::fs::File::from(fd);
+        let mut file = File::from(fd);
         let mut buf = vec![0_u8; READ_BUF_SIZE];
         loop {
             match file.read(&mut buf) {
@@ -41,14 +50,14 @@ pub fn spawn(fd: OwnedFd, stream: StdStream, tx: Sender<PipeChunk>) -> io::Resul
                 Ok(n) => {
                     let chunk = PipeChunk {
                         stream,
-                        bytes: buf[..n].to_vec(),
+                        bytes: buf.get(..n).unwrap_or(&buf).to_vec(),
                     };
                     if tx.send(chunk).is_err() {
                         // Drawer hung up; no point reading any more.
                         break;
                     }
                 }
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
                 Err(_) => break,
             }
         }

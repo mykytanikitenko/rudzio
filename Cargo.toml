@@ -22,14 +22,36 @@ futures-util = { workspace = true, features = ["channel"] }
 # (`src/output/render.rs`) to multiplex lifecycle events, pipe byte chunks,
 # a redraw timer, and a shutdown signal.
 crossbeam-channel = { workspace = true }
+# Runtime-agnostic async semaphore backing
+# `crate::parallelism::HardLimit`. Works under any executor that polls
+# futures and honors wakers (tokio, compio, futures-executor, embassy,
+# …) — see the parallelism module docs for why the previous
+# `Mutex+Condvar` primitive was replaced.
+futures-intrusive = { workspace = true }
 linkme = { workspace = true }
 rudzio-macro = { workspace = true }
 tokio-util = { workspace = true }
 tokio = { workspace = true, optional = true }
 compio-runtime = { workspace = true, features = ["time"], optional = true }
+# compio-runtime depends on compio-driver with `default-features = false`,
+# which leaves the I/O driver as a stub on Linux ("Stub driver does not
+# support any operations" → every compio test panics on first poll). Add
+# a direct dep on compio-driver so we can opt in to the io-uring driver
+# explicitly. The `io-uring` cargo feature is the same name as compio's
+# default — it's a no-op on macOS / Windows (their cfg_if branches skip
+# it), so a single feature flip works across platforms.
+compio-driver = { workspace = true, optional = true }
 embassy-executor = { workspace = true, optional = true }
-futures-executor = { workspace = true, features = ["thread-pool"], optional = true }
+futures-executor = { workspace = true, features = [
+  "thread-pool",
+], optional = true }
 futures-timer = { workspace = true, optional = true }
+async-std = { workspace = true, features = ["unstable"], optional = true }
+smol = { workspace = true, optional = true }
+# `monoio` is a thread-per-core, !Send io_uring/kqueue runtime. Declared
+# unconditionally; the `runtime-monoio` feature is platform-gated at the
+# module + suite-entry level (linux + macos only).
+monoio = { workspace = true, optional = true }
 send_wrapper = { workspace = true, features = ["futures"], optional = true }
 # Only compiled when the `build` feature is on (the `rudzio::build`
 # module). Kept optional so rudzio used purely as a runtime dep doesn't
@@ -52,8 +74,24 @@ libc = { workspace = true }
 # cause a duplicate build.
 [dev-dependencies]
 # Dogfood under every runtime rudzio ships.
-rudzio = { path = ".", features = ["build", "common", "runtime-tokio-multi-thread", "runtime-tokio-current-thread", "runtime-tokio-local", "runtime-compio", "runtime-embassy", "runtime-futures"] }
+rudzio = { version = "0.1.0", path = ".", features = [
+  "build",
+  "common",
+  "runtime-tokio-multi-thread",
+  "runtime-tokio-current-thread",
+  "runtime-tokio-local",
+  "runtime-compio",
+  "runtime-embassy",
+  "runtime-futures",
+  "runtime-async-std",
+  "runtime-smol",
+  "runtime-monoio",
+] }
 anyhow = "=1.0.102"
+# Renderer regression tests construct a `Drawer` directly and feed it
+# synthetic lifecycle events; that requires the same channel primitives
+# the production code uses.
+crossbeam-channel = { workspace = true }
 
 [[test]]
 name = "main"
@@ -72,25 +110,38 @@ build = ["dep:cargo_metadata"]
 # Off by default so consumers that implement their own context types don't
 # pay for code they don't use.
 common = []
-runtime-tokio-multi-thread = ["dep:tokio", "dep:send_wrapper", "tokio/rt-multi-thread"]
+runtime-tokio-multi-thread = [
+  "dep:tokio",
+  "dep:send_wrapper",
+  "tokio/rt-multi-thread",
+]
 runtime-tokio-current-thread = ["dep:tokio", "dep:send_wrapper"]
 runtime-tokio-local = ["dep:tokio", "dep:send_wrapper"]
-runtime-compio = ["dep:compio-runtime", "dep:send_wrapper"]
+runtime-compio = [
+  "dep:compio-runtime",
+  "dep:compio-driver",
+  "compio-driver/io-uring",
+  "dep:send_wrapper",
+]
 runtime-embassy = ["dep:embassy-executor", "dep:send_wrapper"]
-runtime-futures = ["dep:futures-executor", "dep:futures-timer", "dep:send_wrapper"]
+runtime-futures = [
+  "dep:futures-executor",
+  "dep:futures-timer",
+  "dep:send_wrapper",
+]
+runtime-async-std = ["dep:async-std", "dep:send_wrapper"]
+runtime-smol = ["dep:smol", "dep:send_wrapper"]
+# Monoio adapter. The dep itself compiles only on linux/macos; the
+# `runtime/monoio` module is additionally cfg-gated so enabling this
+# feature on other targets is a no-op rather than a hard build failure.
+runtime-monoio = ["dep:monoio", "dep:send_wrapper"]
 
 [lints]
 workspace = true
 
 [workspace]
 resolver = "3"
-members = [
-  "cargo-rudzio",
-  "fixtures",
-  "macro",
-  "macro-internals",
-  "migrate",
-]
+members = ["cargo-rudzio", "fixtures", "macro", "macro-internals", "migrate"]
 
 [workspace.package]
 edition = "2024"
@@ -100,90 +151,282 @@ edition = "2024"
 rudzio = { version = "0.1.0", path = "." }
 rudzio-macro = { version = "0.1.0", path = "macro" }
 rudzio-macro-internals = { version = "0.1.0", path = "macro-internals" }
+rudzio-migrate = { version = "0.1.0", path = "migrate" }
 
 # External crates (pinned to exact versions for reproducible builds)
 anyhow = "=1.0.102"
-cargo_metadata = "=0.19.2"
+async-std = "=1.13.2"
+cargo_metadata = "=0.23.1"
 compio-runtime = "=0.11.0"
+compio-driver = "=0.11.4"
 crossbeam-channel = "=0.5.15"
-libc = "=0.2.185"
+libc = "=0.2.186"
 signal-hook = "=0.4.4"
-embassy-executor = { version = "=0.7.0", features = ["arch-std"] }
+embassy-executor = { version = "=0.10.0", features = ["platform-std"] }
 futures-executor = "=0.3.32"
+futures-intrusive = "=0.5.0"
 futures-timer = "=3.0.3"
 futures-util = "=0.3.32"
-ignore = "=0.4.23"
-miette = { version = "=7.5.0", features = ["fancy-no-backtrace"] }
+ignore = "=0.4.25"
 prettyplease = "=0.2.37"
 thiserror = "=2.0.18"
 proc-macro2 = "=1.0.106"
 quote = "=1.0.45"
 send_wrapper = "=0.6.0"
+smol = "=2.0.2"
 syn = "=2.0.117"
-toml_edit = "=0.22.22"
+toml_edit = "=0.25.11"
 tokio = { version = "=1.52.1", features = ["rt", "macros", "time"] }
 tokio-util = { version = "=0.7.18", features = ["rt"] }
 trybuild = "=1.0.116"
-linkme = "=0.3.31"
+linkme = "=0.3.36"
+# Keep monoio's default features (`iouring`, `legacy`, `macros`, `bytes`,
+# `utils`, `async-cancel`) so `FusionDriver` is available on linux+macos
+# (the only platforms where the runtime adapter compiles). The `iouring`
+# feature flag is a no-op on non-linux because the `io-uring` crate is
+# itself `target_os = "linux"`-gated inside monoio's manifest.
+#
+# `sync` is mandatory because rudzio multiplexes per-runtime worker
+# threads under one `thread::scope` and shares a runtime-agnostic
+# `futures_intrusive::Semaphore` (the `HardLimit` permit pool) across
+# them. When another runtime's thread releases a permit, monoio's body
+# task waker fires from a non-owner thread; without `sync`, monoio
+# either panics ("waker can only be sent across threads when `sync`
+# feature enabled") or, when the state machine is in the right corner,
+# silently no-ops the wake — the body's parked driver never unparks
+# and the whole multi-runtime suite deadlocks. `sync` switches the
+# cross-thread wake path to a flume-channel + driver-unpark bridge
+# that delivers the waker to monoio's owner thread and breaks its
+# `driver.park()`.
+monoio = { version = "=0.2.4", features = ["sync"] }
 
 # ===========================================================================
 # Rust compiler lints
 # ===========================================================================
 [workspace.lints.rust]
+# `warnings` stays at `deny` (not `forbid`) because the rudzio `#[suite]`
+# macro emits `#[allow(unused_mut)]` into user code; forbidding the
+# meta-warnings group would block that allow.
 warnings = "deny"
+# `#[cfg(rudzio_test)]` is set by the migrate crate's integration-test runner
+# to gate test-only behavior in the binary's source. Declaring it here keeps
+# `unexpected_cfgs` quiet across the workspace without site-local allows.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rudzio_test)"] }
 
-future_incompatible = { level = "deny", priority = -1 }
-keyword_idents = { level = "deny", priority = -1 }
-let_underscore = { level = "deny", priority = -1 }
-nonstandard_style = { level = "deny", priority = -1 }
-refining_impl_trait = { level = "deny", priority = -1 }
-rust_2018_idioms = { level = "deny", priority = -1 }
-rust_2021_compatibility = { level = "deny", priority = -1 }
-rust_2024_compatibility = { level = "deny", priority = -1 }
+future_incompatible = { level = "forbid", priority = -1 }
+keyword_idents = { level = "forbid", priority = -1 }
+let_underscore = { level = "forbid", priority = -1 }
+nonstandard_style = { level = "forbid", priority = -1 }
+refining_impl_trait = { level = "forbid", priority = -1 }
+rust_2018_idioms = { level = "forbid", priority = -1 }
+rust_2021_compatibility = { level = "forbid", priority = -1 }
+rust_2024_compatibility = { level = "forbid", priority = -1 }
+# `unused` stays at `deny` (not `forbid`) because rudzio's `#[suite]`
+# macro emits `#[allow(unused_mut)]` into user code (the codegen can't
+# always prove that emitted bindings are mutated). Forbid would turn
+# every such `#[allow(unused_mut)]` into a hard error.
 unused = { level = "deny", priority = -1 }
 
+# `unsafe_code` stays at `deny` (not `forbid`) so the few documented
+# `#[expect(unsafe_code, reason = "…")]` blocks (`src/output/pipe.rs`,
+# `src/runtime/embassy/runtime.rs`, `src/suite.rs`, `src/runner.rs`)
+# keep working. Forbid would turn each into a hard compile error.
 unsafe_code = "deny"
 
-macro_use_extern_crate = "deny"
-meta_variable_misuse = "deny"
-missing_copy_implementations = "deny"
-missing_debug_implementations = "deny"
-non_ascii_idents = "deny"
-redundant_imports = "deny"
-redundant_lifetimes = "deny"
-trivial_casts = "deny"
-trivial_numeric_casts = "deny"
-unit_bindings = "deny"
+macro_use_extern_crate = "forbid"
+meta_variable_misuse = "forbid"
+missing_copy_implementations = "forbid"
+missing_debug_implementations = "forbid"
+non_ascii_idents = "forbid"
+redundant_imports = "forbid"
+redundant_lifetimes = "forbid"
+trivial_casts = "forbid"
+trivial_numeric_casts = "forbid"
+unit_bindings = "forbid"
+# `unreachable_pub` stays at `deny`: `migrate/src/lib.rs`,
+# `migrate/src/runner_scaffold.rs` (template), and
+# `migrate/tests/main.rs` `#![allow]` it because they recompile
+# `pub mod`s as test-only modules. Forbid would block those.
 unreachable_pub = "deny"
-unused_import_braces = "deny"
-unused_lifetimes = "deny"
-unused_qualifications = "deny"
+unused_import_braces = "forbid"
+unused_lifetimes = "forbid"
+unused_qualifications = "forbid"
+# `unused_results` stays at `deny`: `cargo-rudzio/src/{lib,main}.rs`
+# `#![allow]` it for `toml_edit::insert/push` calls whose previous-
+# value return is intentionally dropped. Forbid would block that.
 unused_results = "deny"
-variant_size_differences = "deny"
+variant_size_differences = "forbid"
 
 # ===========================================================================
 # Clippy lints
 # ===========================================================================
 [workspace.lints.clippy]
-all = { level = "deny", priority = -1 }
+# `correctness` / `complexity` / `perf` / `style` are flipped to `forbid`:
+# locking those in is the whole point of Phase 5. Nothing in the workspace
+# `#[allow]`s a lint from these groups, so the upgrade is free.
+#
+# `cargo` is held at `deny` (one notch below `forbid`) so the
+# `multiple_crate_versions` allow further down can take effect — async-std
+# unavoidably pulls duplicate async-channel / event-listener majors, and
+# Rust's lint resolution disallows overriding a forbidden group lint. The
+# group will go back to `forbid` when the async-std adapter is retired.
 cargo = { level = "deny", priority = -1 }
-complexity = { level = "deny", priority = -1 }
-correctness = { level = "deny", priority = -1 }
+complexity = { level = "forbid", priority = -1 }
+correctness = { level = "forbid", priority = -1 }
+perf = { level = "forbid", priority = -1 }
+style = { level = "forbid", priority = -1 }
+# `suspicious` stays at `deny` because `blanket_clippy_restriction_lints`
+# (which fires when `restriction` is denied wholesale) lives in this
+# group and we silence it with `allow` further down. Forbid here would
+# block that override.
+suspicious = { level = "deny", priority = -1 }
+# `all` is the alias for `correctness + suspicious + style + complexity
+# + perf`; keep it at `deny` so the `suspicious` exception above
+# survives — the higher-priority individual groups still win.
+all = { level = "deny", priority = -1 }
+# `pedantic` / `nursery` / `restriction` stay at `deny` at the GROUP
+# level so future-added lints from those groups don't slip in unnoticed.
+# Specific lints from these groups are flipped to `forbid` individually
+# below (see "individual restriction lints"); a few are kept at `deny`
+# (or bumped to `allow`) when they're intentionally `#[expect]`-ed in
+# fixtures or the golden-test harness:
+#   • `pedantic`: `manual_assert` (test panic patterns),
+#     `format_push_string` (test format-into-buffer pattern), …
+#   • `nursery`: `branches_sharing_code` (idiomatic match arms)
+#   • `restriction`: `panic`, `unreachable`, `exit`, `print_stdout`,
+#     `print_stderr`, `expect_used` — required by `migrate/fixtures/**`
+#     and `migrate/tests/golden.rs`. These stay at the GROUP default
+#     (`deny`) so file-level `#[expect]`/`#![allow]` keeps working.
 nursery = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
-perf = { level = "deny", priority = -1 }
 restriction = { level = "deny", priority = -1 }
-style = { level = "deny", priority = -1 }
-suspicious = { level = "deny", priority = -1 }
+
+# ----- individual restriction lints flipped to `forbid` -----
+# Every restriction lint that is NOT in the keep-at-deny set above and
+# NOT in the keep-at-allow block below is forbidden individually so the
+# group default is, in effect, `forbid` for everything we actually rely
+# on. New restriction lints introduced by future clippy versions land
+# under the group `deny` until explicitly upgraded here.
+absolute_paths = "forbid"
+alloc_instead_of_core = "forbid"
+allow_attributes = "forbid"
+allow_attributes_without_reason = "forbid"
+arbitrary_source_item_ordering = "forbid"
+arithmetic_side_effects = "forbid"
+as_conversions = "forbid"
+as_pointer_underscore = "forbid"
+as_underscore = "forbid"
+assertions_on_result_states = "forbid"
+big_endian_bytes = "forbid"
+cfg_not_test = "forbid"
+clone_on_ref_ptr = "forbid"
+cognitive_complexity = "forbid"
+create_dir = "forbid"
+dbg_macro = "forbid"
+decimal_literal_representation = "forbid"
+default_numeric_fallback = "forbid"
+default_union_representation = "forbid"
+deref_by_slicing = "forbid"
+disallowed_script_idents = "forbid"
+doc_include_without_cfg = "forbid"
+doc_paragraphs_missing_punctuation = "forbid"
+else_if_without_else = "forbid"
+empty_drop = "forbid"
+empty_enum_variants_with_brackets = "forbid"
+empty_structs_with_brackets = "forbid"
+error_impl_error = "forbid"
+exhaustive_enums = "forbid"
+exhaustive_structs = "forbid"
+field_scoped_visibility_modifiers = "forbid"
+filetype_is_file = "forbid"
+float_arithmetic = "forbid"
+float_cmp_const = "forbid"
+fn_to_numeric_cast_any = "forbid"
+get_unwrap = "forbid"
+host_endian_bytes = "forbid"
+if_then_some_else_none = "forbid"
+impl_trait_in_params = "forbid"
+indexing_slicing = "forbid"
+infinite_loop = "forbid"
+inline_asm_x86_att_syntax = "forbid"
+inline_asm_x86_intel_syntax = "forbid"
+integer_division = "forbid"
+integer_division_remainder_used = "forbid"
+iter_over_hash_type = "forbid"
+large_include_file = "forbid"
+let_underscore_must_use = "forbid"
+let_underscore_untyped = "forbid"
+little_endian_bytes = "forbid"
+lossy_float_literal = "forbid"
+map_err_ignore = "forbid"
+map_with_unused_argument_over_ranges = "forbid"
+mem_forget = "forbid"
+min_ident_chars = "forbid"
+missing_assert_message = "forbid"
+missing_asserts_for_indexing = "forbid"
+missing_docs_in_private_items = "forbid"
+missing_inline_in_public_items = "forbid"
+mixed_read_write_in_expression = "forbid"
+module_name_repetitions = "forbid"
+modulo_arithmetic = "forbid"
+multiple_unsafe_ops_per_block = "forbid"
+mutex_atomic = "forbid"
+mutex_integer = "forbid"
+needless_raw_strings = "forbid"
+non_ascii_literal = "forbid"
+non_zero_suggestions = "forbid"
+partial_pub_fields = "forbid"
+pathbuf_init_then_push = "forbid"
+pointer_format = "forbid"
+precedence_bits = "forbid"
+pub_without_shorthand = "forbid"
+rc_buffer = "forbid"
+rc_mutex = "forbid"
+redundant_test_prefix = "forbid"
+ref_patterns = "forbid"
+renamed_function_params = "forbid"
+rest_pat_in_fully_bound_structs = "forbid"
+return_and_then = "forbid"
+same_name_method = "forbid"
+self_named_module_files = "forbid"
+semicolon_inside_block = "forbid"
+shadow_reuse = "forbid"
+shadow_same = "forbid"
+shadow_unrelated = "forbid"
+single_char_lifetime_names = "forbid"
+str_to_string = "forbid"
+string_add = "forbid"
+string_lit_chars_any = "forbid"
+string_slice = "forbid"
+suspicious_xor_used_as_pow = "forbid"
+todo = "forbid"
+try_err = "forbid"
+undocumented_unsafe_blocks = "forbid"
+unimplemented = "forbid"
+unnecessary_safety_comment = "forbid"
+unnecessary_safety_doc = "forbid"
+unnecessary_self_imports = "forbid"
+unneeded_field_pattern = "forbid"
+unseparated_literal_suffix = "forbid"
+unused_result_ok = "forbid"
+unused_trait_names = "forbid"
+unwrap_in_result = "forbid"
+unwrap_used = "forbid"
+use_debug = "forbid"
+verbose_file_reads = "forbid"
+wildcard_enum_match_arm = "forbid"
 
 blanket_clippy_restriction_lints = { level = "allow", priority = 1 }
-cargo_common_metadata = { level = "allow", priority = 1 }
-multiple_crate_versions = { level = "allow", priority = 1 }
-error_impl_error = { level = "allow", priority = 1 }
-field_scoped_visibility_modifiers = { level = "allow", priority = 1 }
 implicit_return = { level = "allow", priority = 1 }
 missing_trait_methods = { level = "allow", priority = 1 }
 mod_module_files = { level = "allow", priority = 1 }
+# Workaround for async-std (abandoned upstream, slated for removal once
+# the POC stabilises): async-std 1.13.2 simultaneously pulls async-channel
+# 1.x + 2.x and event-listener 2.x + 5.x through its own dep tree. There
+# is no single-version satisfaction across the major-version boundary, so
+# the workspace tolerates the duplication for as long as runtime-async-std
+# ships. Drop this allow when the async-std adapter is retired.
+multiple_crate_versions = { level = "allow", priority = 1 }
 multiple_inherent_impl = { level = "allow", priority = 1 }
 pattern_type_mismatch = { level = "allow", priority = 1 }
 pub_use = { level = "allow", priority = 1 }
@@ -197,9 +440,7 @@ std_instead_of_core = { level = "allow", priority = 1 }
 separated_literal_suffix = { level = "allow", priority = 1 }
 single_call_fn = { level = "allow", priority = 1 }
 tests_outside_test_module = { level = "allow", priority = 1 }
-# Test bodies under #[rudzio::test] must return Result<(), E> to match the
-# runner's match arms, even when the body can never produce an error.
-unnecessary_wraps = { level = "allow", priority = 1 }
+
 # Many test binaries include intentional panics and unreachable! calls to
 # exercise the framework's panic handling. Their signature keeps a Result
 # return so the surrounding framework machinery still type-checks.

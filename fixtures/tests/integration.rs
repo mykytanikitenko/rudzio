@@ -3,46 +3,68 @@
 //! `#[rudzio::suite]` module driven by a tokio multi-thread runtime.
 
 use std::io::Read as _;
-use std::process::{Command, Output, Stdio};
+use std::io::Result as IoResult;
+use std::process::{Command, ExitStatus, Output, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-fn run(exe: &str) -> Output {
+use anyhow::Context as _;
+use rudzio::common::context::Suite;
+use rudzio::common::context::Test;
+use rudzio::runtime::futures::ThreadPool;
+use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use rudzio::runtime::monoio;
+use rudzio::runtime::{async_std, compio, embassy, smol};
+
+/// Find `needle` in `hay` and return its byte index, or an error
+/// naming the missing needle. Used by `ordered` for stdio-attribution
+/// stream-order checks.
+fn index_of(hay: &str, needle: &str) -> anyhow::Result<usize> {
+    hay.find(needle)
+        .ok_or_else(|| anyhow::anyhow!("`{needle}` missing"))
+}
+
+/// Combine the child's stdout and stderr into one buffer (framework
+/// diagnostics show up on both streams in plain mode).
+fn log_of(out: &Output) -> String {
+    let mut buf = String::from_utf8_lossy(&out.stdout).into_owned();
+    buf.push_str(&String::from_utf8_lossy(&out.stderr));
+    buf
+}
+
+/// Assert that each entry of `needles` appears in `hay` in the given
+/// order (the byte index of every needle is monotonically increasing).
+fn ordered(hay: &str, needles: &[&str]) -> anyhow::Result<()> {
+    let mut last: usize = 0_usize;
+    for needle in needles {
+        let pos =
+            index_of(hay, needle).map_err(|err| anyhow::anyhow!("{err} in stream:\n{hay}"))?;
+        anyhow::ensure!(
+            pos >= last,
+            "`{needle}` found at {pos} but expected at >= {last} (previous neighbour). Stream:\n{hay}",
+        );
+        last = pos;
+    }
+    Ok(())
+}
+
+/// Run the fixture binary at `exe` with `NO_COLOR=1`, returning its
+/// captured stdout+stderr `Output` or an error explaining the spawn
+/// failure.
+fn run(exe: &str) -> anyhow::Result<Output> {
     Command::new(exe)
         .env("NO_COLOR", "1")
         .output()
-        .unwrap_or_else(|e| panic!("failed to spawn {exe}: {e}"))
+        .with_context(|| format!("failed to spawn {exe}"))
 }
 
-fn run_serial_with_args(exe: &str, args: &[&str]) -> Output {
-    Command::new(exe)
-        .env("NO_COLOR", "1")
-        .env("RUST_TEST_THREADS", "1")
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("failed to spawn {exe}: {e}"))
-}
-
-fn run_serial(exe: &str) -> Output {
-    Command::new(exe)
-        .env("NO_COLOR", "1")
-        .env("RUST_TEST_THREADS", "1")
-        .output()
-        .unwrap_or_else(|e| panic!("failed to spawn {exe}: {e}"))
-}
-
-fn run_parallel(exe: &str, threads: u32) -> Output {
-    Command::new(exe)
-        .env("NO_COLOR", "1")
-        .env("RUST_TEST_THREADS", threads.to_string())
-        .output()
-        .unwrap_or_else(|e| panic!("failed to spawn {exe}: {e}"))
-}
-
-/// Spawn the fixture, wait for a readiness marker on its stdout, then send
-/// the given Unix signal. Returns the combined stdout+stderr of the child.
+/// Run the fixture binary `exe` and once it prints `ready_marker` on
+/// stdout, deliver `signal` to it. Combined stdout+stderr is returned
+/// in `Output`. Unix-only; the fixture must print a deterministic
+/// readiness marker so the integration test can race-free signal it.
 #[cfg(unix)]
-fn run_and_signal(exe: &str, ready_marker: &str, signal: i32) -> Output {
+fn run_and_signal(exe: &str, ready_marker: &str, signal: i32) -> anyhow::Result<Output> {
     use std::os::unix::process::ExitStatusExt as _;
 
     let mut child = Command::new(exe)
@@ -51,76 +73,127 @@ fn run_and_signal(exe: &str, ready_marker: &str, signal: i32) -> Output {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .unwrap_or_else(|e| panic!("failed to spawn {exe}: {e}"));
+        .with_context(|| format!("failed to spawn {exe}"))?;
 
     // Read stdout incrementally until we see the readiness marker.
-    let mut stdout = child.stdout.take().expect("child stdout");
-    let mut stdout_buf = Vec::new();
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let mut tmp = [0u8; 256];
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("child stdout missing"))?;
+    let mut stdout_buf: Vec<u8> = Vec::new();
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(10_u64))
+        .ok_or_else(|| anyhow::anyhow!("deadline overflow"))?;
+    let mut tmp = [0_u8; 256_usize];
     while !String::from_utf8_lossy(&stdout_buf).contains(ready_marker) {
-        if std::time::Instant::now() >= deadline {
-            let _killed = child.kill();
-            let _waited = child.wait();
-            panic!("readiness marker {ready_marker:?} never appeared");
+        if Instant::now() >= deadline {
+            let _killed: IoResult<()> = child.kill();
+            let _waited: IoResult<ExitStatus> = child.wait();
+            anyhow::bail!("readiness marker {ready_marker:?} never appeared");
         }
         match stdout.read(&mut tmp) {
             Ok(0) => break,
-            Ok(n) => stdout_buf.extend_from_slice(&tmp[..n]),
-            Err(e) => panic!("read child stdout: {e}"),
+            Ok(read) => {
+                let slice = tmp
+                    .get(..read)
+                    .ok_or_else(|| anyhow::anyhow!("child read returned {read} > buf len"))?;
+                stdout_buf.extend_from_slice(slice);
+            }
+            Err(err) => anyhow::bail!("read child stdout: {err}"),
         }
     }
 
     // Give the runner a short grace period to install its signal handler.
-    thread::sleep(Duration::from_millis(100));
+    thread::sleep(Duration::from_millis(100_u64));
 
-    #[allow(unsafe_code, reason = "integration test helper delivering a signal")]
-    // SAFETY: `kill(2)` is signal-safe and the child pid is valid.
-    let rc = unsafe { libc::kill(child.id() as libc::pid_t, signal) };
-    assert_eq!(rc, 0, "kill({signal}) failed");
+    let pid = libc::pid_t::try_from(child.id())
+        .with_context(|| format!("child pid {} does not fit in pid_t", child.id()))?;
+    #[expect(
+        unsafe_code,
+        reason = "integration test helper delivering a signal via libc::kill — the kill(2) call must be unsafe"
+    )]
+    // SAFETY: `kill(2)` is signal-safe and the child pid is valid (just spawned + still alive).
+    let rc = unsafe { libc::kill(pid, signal) };
+    anyhow::ensure!(rc == 0_i32, "kill({signal}) failed");
 
     // Drain the rest of stdout concurrently with stderr.
-    let mut stderr = child.stderr.take().expect("child stderr");
-    let stderr_handle = thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _read = stderr.read_to_end(&mut buf);
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("child stderr missing"))?;
+    let stderr_handle = thread::spawn(move || -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        let _read: IoResult<usize> = stderr.read_to_end(&mut buf);
         buf
     });
-    let _read = stdout.read_to_end(&mut stdout_buf);
-    let stderr_buf = stderr_handle.join().expect("stderr thread");
+    let _read: IoResult<usize> = stdout.read_to_end(&mut stdout_buf);
+    let stderr_buf = stderr_handle
+        .join()
+        .map_err(|_join_err| anyhow::anyhow!("stderr thread panicked"))?;
 
-    let status = child.wait().expect("wait child");
-    Output {
-        status: std::process::ExitStatus::from_raw(status.into_raw()),
+    let status = child.wait().context("wait child")?;
+    Ok(Output {
+        status: ExitStatus::from_raw(status.into_raw()),
         stdout: stdout_buf,
         stderr: stderr_buf,
-    }
+    })
 }
 
-fn log_of(out: &Output) -> String {
-    // Combine stdout and stderr; framework output goes to both.
-    let mut buf = String::from_utf8_lossy(&out.stdout).into_owned();
-    buf.push_str(&String::from_utf8_lossy(&out.stderr));
-    buf
+/// Run the fixture binary at `exe` with `RUST_TEST_THREADS=1` (forces
+/// strict serial dispatch) and return its captured `Output`.
+fn run_serial(exe: &str) -> anyhow::Result<Output> {
+    Command::new(exe)
+        .env("NO_COLOR", "1")
+        .env("RUST_TEST_THREADS", "1")
+        .output()
+        .with_context(|| format!("failed to spawn {exe}"))
+}
+
+/// Run the fixture binary at `exe` with `RUST_TEST_THREADS=1` and the
+/// given extra `args`, returning its captured `Output`.
+fn run_serial_with_args(exe: &str, args: &[&str]) -> anyhow::Result<Output> {
+    Command::new(exe)
+        .env("NO_COLOR", "1")
+        .env("RUST_TEST_THREADS", "1")
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to spawn {exe}"))
+}
+
+/// Run the fixture binary at `exe` with `RUST_TEST_THREADS=threads` so
+/// the runner dispatches up to `threads` tests concurrently.
+fn run_parallel(exe: &str, threads: u32) -> anyhow::Result<Output> {
+    Command::new(exe)
+        .env("NO_COLOR", "1")
+        .env("RUST_TEST_THREADS", threads.to_string())
+        .output()
+        .with_context(|| format!("failed to spawn {exe}"))
 }
 
 #[rudzio::suite([
-    (
-        runtime = rudzio::runtime::tokio::Multithread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
+    (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
 ])]
 mod tests {
-    use super::*;
-    use rudzio::common::context::Test;
+    use super::{
+        Command, Duration, ExitStatus, Instant, IoResult, Test, log_of, run, run_parallel,
+        run_serial, run_serial_with_args, thread,
+    };
 
     #[rudzio::test]
     fn mut_test_context_is_borrowable(_ctx: &Test) -> anyhow::Result<()> {
-        let out = run(env!("CARGO_BIN_EXE_mutable_test_context"));
+        let out = run(env!("CARGO_BIN_EXE_mutable_test_context"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(0),
+            out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("3 passed"), "output:\n{log}");
@@ -136,10 +209,10 @@ mod tests {
 
     #[rudzio::test]
     fn passing_tokio_mt_succeeds(_ctx: &Test) -> anyhow::Result<()> {
-        let out = run(env!("CARGO_BIN_EXE_passing_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_passing_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(0),
+            out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("first_passes"), "output:\n{log}");
@@ -152,10 +225,10 @@ mod tests {
 
     #[rudzio::test]
     fn failing_tokio_mt_exits_one(_ctx: &Test) -> anyhow::Result<()> {
-        let out = run(env!("CARGO_BIN_EXE_failing_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_failing_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1, output:\n{log}"
         );
         anyhow::ensure!(log.contains("[FAIL]"), "output:\n{log}");
@@ -166,10 +239,10 @@ mod tests {
 
     #[rudzio::test]
     fn ignored_tests_are_skipped(_ctx: &Test) -> anyhow::Result<()> {
-        let out = run(env!("CARGO_BIN_EXE_ignored_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_ignored_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(0),
+            out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("[IGNORE]"), "output:\n{log}");
@@ -182,10 +255,10 @@ mod tests {
 
     #[rudzio::test]
     fn tokio_current_thread_runtime_works(_ctx: &Test) -> anyhow::Result<()> {
-        let out = run(env!("CARGO_BIN_EXE_passing_tokio_ct"));
+        let out = run(env!("CARGO_BIN_EXE_passing_tokio_ct"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(0),
+            out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("yields_then_passes"), "output:\n{log}");
@@ -195,10 +268,10 @@ mod tests {
 
     #[rudzio::test]
     fn compio_runtime_works(_ctx: &Test) -> anyhow::Result<()> {
-        let out = run(env!("CARGO_BIN_EXE_passing_compio"));
+        let out = run(env!("CARGO_BIN_EXE_passing_compio"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(0),
+            out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("passes_under_compio"), "output:\n{log}");
@@ -208,10 +281,10 @@ mod tests {
 
     #[rudzio::test]
     fn futures_runtime_works(_ctx: &Test) -> anyhow::Result<()> {
-        let out = run(env!("CARGO_BIN_EXE_passing_futures"));
+        let out = run(env!("CARGO_BIN_EXE_passing_futures"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(0),
+            out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("passes_under_futures"), "output:\n{log}");
@@ -223,10 +296,10 @@ mod tests {
 
     #[rudzio::test]
     fn multi_runtime_runs_every_config(_ctx: &Test) -> anyhow::Result<()> {
-        let out = run(env!("CARGO_BIN_EXE_multi_runtime"));
+        let out = run(env!("CARGO_BIN_EXE_multi_runtime"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(0),
+            out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("Multithread"), "output:\n{log}");
@@ -240,7 +313,7 @@ mod tests {
         // Expected behavior: a panic in one test is isolated — subsequent tests
         // in the same runtime group still execute and the summary reports
         // 2 passed, 1 panicked, 3 total.
-        let out = run(env!("CARGO_BIN_EXE_panics_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_panics_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(log.contains("before_panic"), "output:\n{log}");
         anyhow::ensure!(
@@ -256,10 +329,10 @@ mod tests {
     #[rudzio::test]
     fn sync_tests_mix_pass_fail_panic(_ctx: &Test) -> anyhow::Result<()> {
         // All three sync tests run; isolation keeps panics from killing the thread.
-        let out = run(env!("CARGO_BIN_EXE_sync_mixed_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_sync_mixed_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1, output:\n{log}"
         );
         anyhow::ensure!(log.contains("sync_passes"), "output:\n{log}");
@@ -274,10 +347,10 @@ mod tests {
 
     #[rudzio::test]
     fn custom_suite_and_test_impls_work(_ctx: &Test) -> anyhow::Result<()> {
-        let out = run(env!("CARGO_BIN_EXE_custom_context_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_custom_context_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(0),
+            out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("runs_on_custom_context"), "output:\n{log}");
@@ -288,10 +361,10 @@ mod tests {
 
     #[rudzio::test]
     fn suite_setup_failure_aborts_the_runtime_group(_ctx: &Test) -> anyhow::Result<()> {
-        let out = run(env!("CARGO_BIN_EXE_setup_failure_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_setup_failure_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1, output:\n{log}"
         );
         // The new lifecycle line + the error's Display must both appear.
@@ -309,10 +382,10 @@ mod tests {
 
     #[rudzio::test]
     fn context_creation_failure_counts_as_failed(_ctx: &Test) -> anyhow::Result<()> {
-        let out = run(env!("CARGO_BIN_EXE_context_creation_failure_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_context_creation_failure_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1, output:\n{log}"
         );
         anyhow::ensure!(log.contains("first"), "output:\n{log}");
@@ -334,17 +407,15 @@ mod tests {
     }
 
     #[rudzio::test]
-    fn suite_setup_and_teardown_lines_appear_in_passing_run(
-        _ctx: &Test,
-    ) -> anyhow::Result<()> {
+    fn suite_setup_and_teardown_lines_appear_in_passing_run(_ctx: &Test) -> anyhow::Result<()> {
         // A normal passing run must emit visible setup/teardown
         // lifecycle lines so the user knows the suite phases happened
         // (the whole point of the new output: see *that* it's
         // happening, not just *whether* it failed).
-        let out = run(env!("CARGO_BIN_EXE_passing_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_passing_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(0),
+            out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
         // "started" lines for setup and teardown both fire in plain
@@ -371,10 +442,10 @@ mod tests {
         // were easy to miss. Now they emit a `[FAIL] teardown` line
         // carrying the error message and contribute to the
         // teardown_failures count, which drives the run's exit code.
-        let out = run(env!("CARGO_BIN_EXE_teardown_failure_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_teardown_failure_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1 (teardown failure fails the run), output:\n{log}"
         );
         // Setup succeeded → an [OK] line for setup must be present.
@@ -387,7 +458,10 @@ mod tests {
         anyhow::ensure!(log.contains("teardown "), "output:\n{log}");
         anyhow::ensure!(log.contains("teardown_failed_by_design"), "output:\n{log}");
         // The test body itself ran successfully.
-        anyhow::ensure!(log.contains("body_runs_then_teardown_fails"), "output:\n{log}");
+        anyhow::ensure!(
+            log.contains("body_runs_then_teardown_fails"),
+            "output:\n{log}"
+        );
         anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
         anyhow::ensure!(log.contains("1 teardown failed"), "output:\n{log}");
         Ok(())
@@ -399,10 +473,10 @@ mod tests {
         // into a structured `[FAIL] setup` line carrying the panic
         // message instead of unwinding through the runtime thread
         // (which would print the generic "runtime thread panicked").
-        let out = run(env!("CARGO_BIN_EXE_panic_in_suite_setup_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_panic_in_suite_setup_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1, output:\n{log}"
         );
         anyhow::ensure!(log.contains("[FAIL]"), "missing FAIL tag:\n{log}");
@@ -423,10 +497,10 @@ mod tests {
 
     #[rudzio::test]
     fn suite_teardown_panic_is_caught_and_reported(_ctx: &Test) -> anyhow::Result<()> {
-        let out = run(env!("CARGO_BIN_EXE_panic_in_suite_teardown_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_panic_in_suite_teardown_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1, output:\n{log}"
         );
         // Setup ran ok; body ran ok; teardown panicked.
@@ -454,10 +528,10 @@ mod tests {
         // catch_unwind around `Suite::context` turns a per-test setup
         // panic into a `TestOutcome::SetupFailed` carrying the panic
         // message — rendered with the `[SETUP]` status tag.
-        let out = run(env!("CARGO_BIN_EXE_panic_in_test_setup_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_panic_in_test_setup_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1, output:\n{log}"
         );
         anyhow::ensure!(log.contains("[SETUP]"), "missing SETUP tag:\n{log}");
@@ -480,10 +554,10 @@ mod tests {
         // through the structured `report_test_teardown_failure`
         // method (no `report_warning` escape hatch), bumps the
         // per-test teardown counter, and the run exits non-zero.
-        let out = run(env!("CARGO_BIN_EXE_panic_in_test_teardown_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_panic_in_test_teardown_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1, output:\n{log}"
         );
         anyhow::ensure!(log.contains("[PANIC]"), "missing PANIC tag:\n{log}");
@@ -506,10 +580,10 @@ mod tests {
 
     #[rudzio::test]
     fn plain_test_attribute_is_recognized(_ctx: &Test) -> anyhow::Result<()> {
-        let out = run(env!("CARGO_BIN_EXE_plain_test_attr_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_plain_test_attr_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(0),
+            out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(
@@ -528,10 +602,10 @@ mod tests {
         // don't have to rewrite void bodies into `-> anyhow::Result`.
         // If `rudzio::IntoRudzioResult` loses an impl, this fixture
         // stops compiling; regressions surface at the PR level.
-        let out = run(env!("CARGO_BIN_EXE_bare_return_types_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_bare_return_types_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(0),
+            out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
         for name in [
@@ -554,10 +628,10 @@ mod tests {
     fn multiple_panics_are_isolated_and_ordered(_ctx: &Test) -> anyhow::Result<()> {
         // RUST_TEST_THREADS=1 forces strict serial execution so the
         // source-order assertion below is meaningful.
-        let out = run_serial(env!("CARGO_BIN_EXE_multi_panic_ordering_tokio_mt"));
+        let out = run_serial(env!("CARGO_BIN_EXE_multi_panic_ordering_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1, output:\n{log}"
         );
         anyhow::ensure!(log.contains("3 passed"), "output:\n{log}");
@@ -566,21 +640,23 @@ mod tests {
         anyhow::ensure!(log.contains("5 total"), "output:\n{log}");
 
         // Sequential source-order execution: each test name must come before the next.
-        let positions: Vec<_> = [
+        let mut positions: Vec<usize> = Vec::new();
+        for name in [
             "step_1_pass",
             "step_2_panic",
             "step_3_pass",
             "step_4_panic",
             "step_5_pass",
-        ]
-        .iter()
-        .map(|name| {
-            log.find(name)
-                .unwrap_or_else(|| panic!("missing {name} in output:\n{log}"))
-        })
-        .collect();
+        ] {
+            let pos = log
+                .find(name)
+                .ok_or_else(|| anyhow::anyhow!("missing {name} in output:\n{log}"))?;
+            positions.push(pos);
+        }
         anyhow::ensure!(
-            positions.windows(2).all(|w| w[0] < w[1]),
+            positions
+                .windows(2_usize)
+                .all(|win| win.first() < win.get(1_usize)),
             "tests ran out of order; positions {positions:?}, output:\n{log}"
         );
         Ok(())
@@ -588,10 +664,10 @@ mod tests {
 
     #[rudzio::test]
     fn tracker_drains_on_suite_teardown(_ctx: &Test) -> anyhow::Result<()> {
-        let out = run(env!("CARGO_BIN_EXE_tracker_drain_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_tracker_drain_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(0),
+            out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("[OK]"), "output:\n{log}");
@@ -605,10 +681,10 @@ mod tests {
 
     #[rudzio::test]
     fn per_test_teardown_cancels_the_cancel_token(_ctx: &Test) -> anyhow::Result<()> {
-        let out = run(env!("CARGO_BIN_EXE_cancel_token_propagation_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_cancel_token_propagation_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(0),
+            out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("[OK]"), "output:\n{log}");
@@ -621,10 +697,10 @@ mod tests {
 
     #[rudzio::test]
     fn spawn_tracked_test_passes(_ctx: &Test) -> anyhow::Result<()> {
-        let out = run(env!("CARGO_BIN_EXE_spawn_tracked"));
+        let out = run(env!("CARGO_BIN_EXE_spawn_tracked"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(0),
+            out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("spawn_awaits_result"), "output:\n{log}");
@@ -635,10 +711,10 @@ mod tests {
 
     #[rudzio::test]
     fn sync_work_runs_on_the_runtimes_blocking_pool(_ctx: &Test) -> anyhow::Result<()> {
-        let out = run(env!("CARGO_BIN_EXE_spawn_blocking_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_spawn_blocking_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(0),
+            out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(
@@ -658,10 +734,10 @@ mod tests {
     fn parallel_runner_executes_tests_concurrently(_ctx: &Test) -> anyhow::Result<()> {
         // The fixture has three tests that synchronise on a Barrier::new(3) with a 2s timeout.
         // If the runner dispatches all three concurrently, the barrier releases and every test passes.
-        let out = run_parallel(env!("CARGO_BIN_EXE_parallel_tokio_mt"), 3);
+        let out = run_parallel(env!("CARGO_BIN_EXE_parallel_tokio_mt"), 3)?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(0),
+            out.status.code() == Some(0_i32),
             "expected exit 0 under parallel dispatch, output:\n{log}"
         );
         anyhow::ensure!(log.contains("3 passed"), "output:\n{log}");
@@ -676,10 +752,10 @@ mod tests {
         // Fixture has two runtime groups (tokio multi-thread + compio), each with one test.
         // Both tests block on a shared Barrier(2) via spawn_blocking. If the groups' threads
         // run in parallel, both arrive at the barrier and it releases.
-        let out = run(env!("CARGO_BIN_EXE_cross_runtime_parallel"));
+        let out = run(env!("CARGO_BIN_EXE_cross_runtime_parallel"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(0),
+            out.status.code() == Some(0_i32),
             "expected exit 0 (watchdog exit 2 means groups serialised), output:\n{log}"
         );
         anyhow::ensure!(log.contains("Multithread"), "output:\n{log}");
@@ -696,10 +772,10 @@ mod tests {
         let out = run_serial_with_args(
             env!("CARGO_BIN_EXE_teardown_always_runs_tokio_mt"),
             &["--test-timeout=1"],
-        );
+        )?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1, output:\n{log}"
         );
         anyhow::ensure!(log.contains("[TIMEOUT]"), "output:\n{log}");
@@ -725,10 +801,10 @@ mod tests {
         let out = run_serial_with_args(
             env!("CARGO_BIN_EXE_per_test_timeout_tokio_mt"),
             &["--test-timeout=1"],
-        );
+        )?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1 on per-test timeout, output:\n{log}"
         );
         anyhow::ensure!(log.contains("[TIMEOUT]"), "output:\n{log}");
@@ -750,10 +826,10 @@ mod tests {
         let out = run_serial_with_args(
             env!("CARGO_BIN_EXE_run_timeout_tokio_mt"),
             &["--run-timeout=1"],
-        );
+        )?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1 after run-timeout cancel, output:\n{log}"
         );
         anyhow::ensure!(
@@ -787,10 +863,10 @@ mod tests {
         let out = run_serial_with_args(
             env!("CARGO_BIN_EXE_suite_setup_timeout_tokio_mt"),
             &["--suite-setup-timeout=1"],
-        );
+        )?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1, output:\n{log}"
         );
         anyhow::ensure!(
@@ -820,10 +896,10 @@ mod tests {
         let out = run_serial_with_args(
             env!("CARGO_BIN_EXE_suite_teardown_timeout_tokio_mt"),
             &["--suite-teardown-timeout=1"],
-        );
+        )?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1, output:\n{log}"
         );
         anyhow::ensure!(
@@ -847,10 +923,10 @@ mod tests {
         let out = run_serial_with_args(
             env!("CARGO_BIN_EXE_test_setup_timeout_tokio_mt"),
             &["--test-setup-timeout=1"],
-        );
+        )?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1, output:\n{log}"
         );
         anyhow::ensure!(
@@ -876,10 +952,10 @@ mod tests {
         let out = run_serial_with_args(
             env!("CARGO_BIN_EXE_test_teardown_timeout_tokio_mt"),
             &["--test-teardown-timeout=1"],
-        );
+        )?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1, output:\n{log}"
         );
         anyhow::ensure!(
@@ -902,10 +978,10 @@ mod tests {
         let out = run_serial_with_args(
             env!("CARGO_BIN_EXE_per_test_attr_body_timeout_tokio_mt"),
             &[],
-        );
+        )?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1 from attribute-driven body timeout, output:\n{log}"
         );
         anyhow::ensure!(log.contains("[TIMEOUT]"), "output:\n{log}");
@@ -929,10 +1005,10 @@ mod tests {
         let out = run_serial_with_args(
             env!("CARGO_BIN_EXE_per_test_attr_setup_timeout_tokio_mt"),
             &[],
-        );
+        )?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1, output:\n{log}"
         );
         anyhow::ensure!(
@@ -953,10 +1029,10 @@ mod tests {
         let out = run_serial_with_args(
             env!("CARGO_BIN_EXE_per_test_attr_teardown_timeout_tokio_mt"),
             &[],
-        );
+        )?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1, output:\n{log}"
         );
         anyhow::ensure!(
@@ -976,10 +1052,10 @@ mod tests {
         // binary exits 0 and the summary lies. With it, the runner
         // detects the unattributed panic, prints a warning, and exits
         // 1.
-        let out = run_serial(env!("CARGO_BIN_EXE_bg_thread_panic_in_setup_tokio_mt"));
+        let out = run_serial(env!("CARGO_BIN_EXE_bg_thread_panic_in_setup_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1 from bg-panic safety net, output:\n{log}"
         );
         anyhow::ensure!(
@@ -1024,7 +1100,7 @@ mod tests {
     /// `process::exit(2)`. Total wall-clock budget: ≤ 5s.
     #[rudzio::test]
     fn cancel_grace_force_exits_with_code_2(_ctx: &Test) -> anyhow::Result<()> {
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         let out = run_serial_with_args(
             env!("CARGO_BIN_EXE_hung_run_grace_tokio_mt"),
             &[
@@ -1032,15 +1108,15 @@ mod tests {
                 "--cancel-grace-period=1",
                 "--phase-hang-grace=0",
             ],
-        );
+        )?;
         let elapsed = start.elapsed();
         let log = log_of(&out);
         anyhow::ensure!(
-            elapsed < Duration::from_secs(5),
+            elapsed < Duration::from_secs(5_u64),
             "watchdog must force-exit within run-timeout + grace + slack, took {elapsed:?}; output:\n{log}"
         );
         anyhow::ensure!(
-            out.status.code() == Some(2),
+            out.status.code() == Some(2_i32),
             "expected exit code 2 (force-exit), got {:?}; output:\n{log}",
             out.status.code()
         );
@@ -1075,31 +1151,32 @@ mod tests {
     fn cancel_grace_zero_does_not_force_exit(_ctx: &Test) -> anyhow::Result<()> {
         // Use a 1-thread tokio runtime so the body's spawn_blocking
         // sleep can't be exited cooperatively. Bound at 8s.
-        use std::process::Command;
         let mut child = Command::new(env!("CARGO_BIN_EXE_hung_run_grace_tokio_mt"))
             .env("NO_COLOR", "1")
             .env("RUST_TEST_THREADS", "1")
             .args(["--run-timeout=1", "--cancel-grace-period=0"])
             .spawn()?;
-        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(8_u64))
+            .ok_or_else(|| anyhow::anyhow!("deadline overflow"))?;
         loop {
             if let Some(status) = child.try_wait()? {
                 anyhow::ensure!(
-                    status.code() != Some(2),
+                    status.code() != Some(2_i32),
                     "with watchdog disabled, exit code must NOT be 2 (force-exit); got {:?}",
                     status.code()
                 );
                 return Ok(());
             }
-            if std::time::Instant::now() >= deadline {
-                let _killed = child.kill();
-                let _waited = child.wait();
+            if Instant::now() >= deadline {
+                let _killed: IoResult<()> = child.kill();
+                let _waited: IoResult<ExitStatus> = child.wait();
                 // If we hit the deadline without the watchdog firing,
                 // that itself confirms the watchdog is off — the test
                 // passes.
                 return Ok(());
             }
-            thread::sleep(Duration::from_millis(100));
+            thread::sleep(Duration::from_millis(100_u64));
         }
     }
 
@@ -1134,10 +1211,10 @@ mod tests {
         let out = run_serial_with_args(
             env!("CARGO_BIN_EXE_gradual_cancel_tokio_mt"),
             &["--run-timeout=1"],
-        );
+        )?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(0),
+            out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(
@@ -1152,10 +1229,10 @@ mod tests {
     fn multi_file_suites_share_one_main_runner(_ctx: &Test) -> anyhow::Result<()> {
         // Tokens registered by separate source files must all show up in a
         // single run under a single `rudzio::run()` call.
-        let out = run(env!("CARGO_BIN_EXE_multi_file_suite"));
+        let out = run(env!("CARGO_BIN_EXE_multi_file_suite"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(0),
+            out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("module_a_first"), "output:\n{log}");
@@ -1172,10 +1249,10 @@ mod tests {
     fn serial_runner_does_not_execute_tests_concurrently(_ctx: &Test) -> anyhow::Result<()> {
         // With RUST_TEST_THREADS=1 the barrier fixture must fail:
         // the first test hits the barrier and times out before the others arrive.
-        let out = run_serial(env!("CARGO_BIN_EXE_parallel_tokio_mt"));
+        let out = run_serial(env!("CARGO_BIN_EXE_parallel_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1 under serial dispatch, output:\n{log}"
         );
         anyhow::ensure!(
@@ -1188,15 +1265,19 @@ mod tests {
 
 #[cfg(unix)]
 #[rudzio::suite([
-    (
-        runtime = rudzio::runtime::tokio::Multithread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
+    (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
 ])]
 mod unix_tests {
-    use super::*;
-    use rudzio::common::context::Test;
+    use super::{Test, log_of, ordered, run, run_and_signal};
 
     #[rudzio::test]
     fn sigint_cancels_run_gracefully(_ctx: &Test) -> anyhow::Result<()> {
@@ -1204,10 +1285,10 @@ mod unix_tests {
             env!("CARGO_BIN_EXE_sigint_cancel_tokio_mt"),
             "sigint_cancel_ready_marker",
             libc::SIGINT,
-        );
+        )?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1 after SIGINT cancellation, output:\n{log}"
         );
         anyhow::ensure!(
@@ -1239,52 +1320,37 @@ mod unix_tests {
         // to stderr — must appear AFTER gamma's stderr markers and
         // proves the runner routed the panic through the owning
         // test's stream.
-        let out = run(env!("CARGO_BIN_EXE_stdio_attribution_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_stdio_attribution_tokio_mt"))?;
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1 (one panic)\nstdout:\n{stdout}\nstderr:\n{stderr}",
         );
 
-        fn index_of<'a>(hay: &'a str, needle: &str) -> anyhow::Result<usize> {
-            hay.find(needle)
-                .ok_or_else(|| anyhow::anyhow!("`{needle}` missing"))
-        }
-        fn ordered<'a>(hay: &'a str, needles: &[&str]) -> anyhow::Result<()> {
-            let mut last = 0_usize;
-            for n in needles {
-                let pos = index_of(hay, n).map_err(|e| {
-                    anyhow::anyhow!("{e} in stream:\n{hay}")
-                })?;
-                anyhow::ensure!(
-                    pos >= last,
-                    "`{n}` found at {pos} but expected at >= {last} (previous neighbour). Stream:\n{hay}",
-                );
-                last = pos;
-            }
-            Ok(())
-        }
-
         // stdout stream: each test's stdout lines appear between its
         // own lifecycle start and the next test's lifecycle start,
-        // in the order alpha < beta < gamma.
+        // in the order alpha < beta < gamma. Test display names go
+        // through `normalize_module_path` which strips the crate name
+        // and any `tests` segment auto-generated by the suite macro,
+        // so the rendered names are bare (`alpha`, `setup`, …) for
+        // single-binary fixtures like this one.
         ordered(
             &stdout,
             &[
-                "[OK]      setup stdio_attribution_tokio_mt::tests",
+                "[OK]      setup",
                 "alpha_stdout_line_1",
                 "alpha_stdout_line_2",
                 "alpha_stdout_line_3",
-                "[OK]      stdio_attribution_tokio_mt::alpha",
+                "[OK]      alpha",
                 "beta_stdout_line_1",
                 "beta_stdout_line_2",
                 "beta_stdout_line_3",
-                "[OK]      stdio_attribution_tokio_mt::beta",
+                "[OK]      beta",
                 "gamma_stdout_line_1",
                 "gamma_stdout_line_2",
                 "gamma_stdout_line_3",
-                "[PANIC]   stdio_attribution_tokio_mt::gamma_panics",
+                "[PANIC]   gamma_panics",
             ],
         )?;
 
@@ -1314,25 +1380,25 @@ mod unix_tests {
         // stderr and stderr markers never appear on stdout. If the
         // runner ever starts routing stdio through a shared channel,
         // this guard triggers.
-        for s in [
+        for marker in [
             "alpha_stderr_line_1",
             "beta_stderr_line_1",
             "gamma_stderr_line_1",
             "gamma_panic_message_line_1",
         ] {
             anyhow::ensure!(
-                !stdout.contains(s),
-                "stderr marker `{s}` leaked into stdout:\n{stdout}",
+                !stdout.contains(marker),
+                "stderr marker `{marker}` leaked into stdout:\n{stdout}",
             );
         }
-        for s in [
+        for marker in [
             "alpha_stdout_line_1",
             "beta_stdout_line_1",
             "gamma_stdout_line_1",
         ] {
             anyhow::ensure!(
-                !stderr.contains(s),
-                "stdout marker `{s}` leaked into stderr:\n{stderr}",
+                !stderr.contains(marker),
+                "stdout marker `{marker}` leaked into stderr:\n{stderr}",
             );
         }
 
@@ -1350,18 +1416,20 @@ mod unix_tests {
         //      matching teardown before it returns.
         // The fixture's Suite::teardown prints one INVARIANTS_CHECK
         // line with the eight counters; we parse it and assert.
-        let out = run(env!("CARGO_BIN_EXE_teardown_invariants_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_teardown_invariants_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1 (fail + panic by design), output:\n{log}",
         );
         let line = log
             .lines()
-            .find(|l| l.contains("INVARIANTS_CHECK"))
-            .ok_or_else(|| anyhow::anyhow!(
-                "INVARIANTS_CHECK line missing — Suite::teardown never ran, output:\n{log}"
-            ))?;
+            .find(|line| line.contains("INVARIANTS_CHECK"))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "INVARIANTS_CHECK line missing — Suite::teardown never ran, output:\n{log}"
+                )
+            })?;
         let expected = "INVARIANTS_CHECK suite_setup=1 suite_teardown=1 test_setup=3 test_teardown=3 test_tasks_spawned=3 test_tasks_completed=3 suite_tasks_spawned=1 suite_tasks_completed=1";
         anyhow::ensure!(
             line.contains(expected),
@@ -1372,10 +1440,10 @@ mod unix_tests {
 
     #[rudzio::test]
     fn two_suites_same_tuple_collapse_into_one_group(_ctx: &Test) -> anyhow::Result<()> {
-        let out = run(env!("CARGO_BIN_EXE_group_dedup_tokio_mt"));
+        let out = run(env!("CARGO_BIN_EXE_group_dedup_tokio_mt"))?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(0),
+            out.status.code() == Some(0_i32),
             "fixture must exit 0 (both tests pass), output:\n{log}"
         );
         let setup_lines = log.matches("COUNTING_SUITE_SETUP").count();
@@ -1407,10 +1475,10 @@ mod unix_tests {
             env!("CARGO_BIN_EXE_sigint_cancel_tokio_mt"),
             "sigint_cancel_ready_marker",
             libc::SIGTERM,
-        );
+        )?;
         let log = log_of(&out);
         anyhow::ensure!(
-            out.status.code() == Some(1),
+            out.status.code() == Some(1_i32),
             "expected exit 1 after SIGTERM cancellation, output:\n{log}"
         );
         anyhow::ensure!(

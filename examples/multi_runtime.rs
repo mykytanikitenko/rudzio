@@ -7,26 +7,18 @@
 //! cargo run --example multi_runtime
 //! ```
 
-use rudzio::common::context::Test;
+use rudzio::common::context::{Suite, Test};
+use rudzio::runtime::compio;
+use rudzio::runtime::tokio::{CurrentThread, Multithread};
 
 #[rudzio::suite([
-    (
-        runtime = rudzio::runtime::tokio::Multithread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::tokio::CurrentThread::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
-    (
-        runtime = rudzio::runtime::compio::Runtime::new,
-        suite = rudzio::common::context::Suite,
-        test = rudzio::common::context::Test,
-    ),
+    (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
 ])]
 mod tests {
+    use rudzio::context::Test as _;
+
     use super::Test;
 
     #[rudzio::test]

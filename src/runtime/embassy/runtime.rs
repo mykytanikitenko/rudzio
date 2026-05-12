@@ -12,11 +12,15 @@
 )]
 
 use std::fmt;
+use std::future;
 use std::io;
+use std::mem;
 use std::pin::Pin;
 use std::ptr;
 use std::sync::mpsc;
-use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, Mutex, PoisonError};
+use std::task::Poll;
+use std::thread;
 use std::time::Duration;
 
 use embassy_executor::Spawner;
@@ -46,11 +50,15 @@ fn __pender(context: *mut ()) {
 /// issued from a timer thread inside `sleep`). `block_on` calls `wait()` on
 /// the group thread to sleep until that happens.
 struct Signaler {
-    flag: Mutex<bool>,
+    /// Condvar woken by `signal()` to release a parked `wait()` caller.
     condvar: Condvar,
+    /// Latch set by `signal()` so a `wait()` racing against `signal()`
+    /// observes the wake.
+    flag: Mutex<bool>,
 }
 
 impl Signaler {
+    /// Build a signaler with the latch cleared and no waiters.
     const fn new() -> Self {
         Self {
             flag: Mutex::new(false),
@@ -58,18 +66,26 @@ impl Signaler {
         }
     }
 
-    fn wait(&self) {
-        let mut guard = self.flag.lock().expect("signaler flag poisoned");
-        while !*guard {
-            guard = self.condvar.wait(guard).expect("signaler condvar poisoned");
+    /// Set the latch and wake any thread parked in [`Self::wait`].
+    fn signal(&self) {
+        {
+            let mut guard = self.flag.lock().unwrap_or_else(PoisonError::into_inner);
+            *guard = true;
         }
-        *guard = false;
+        self.condvar.notify_one();
     }
 
-    fn signal(&self) {
-        let mut guard = self.flag.lock().expect("signaler flag poisoned");
-        *guard = true;
-        self.condvar.notify_one();
+    /// Block until [`Self::signal`] is observed, clearing the latch
+    /// before returning so the next wait can be re-armed.
+    fn wait(&self) {
+        let mut guard = self.flag.lock().unwrap_or_else(PoisonError::into_inner);
+        while !*guard {
+            guard = self
+                .condvar
+                .wait(guard)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        *guard = false;
     }
 }
 
@@ -78,6 +94,8 @@ impl Signaler {
 type ErasedTask = Pin<Box<dyn Future<Output = ()> + 'static>>;
 
 pub struct Runtime {
+    /// Resolved [`Config`] this runtime was constructed from.
+    config: Config,
     /// Raw executor leaked to `'static` so it can hand out `Spawner`s.
     ///
     /// `Executor` contains a `PhantomData<*mut ()>` which marks it `!Sync`;
@@ -86,10 +104,8 @@ pub struct Runtime {
     executor: SendWrapper<&'static Executor>,
     /// Shared signaler driving the `block_on` parking loop.
     signaler: &'static Signaler,
-    /// Cached spawner. Also `!Send` via a `*mut ()` PhantomData.
+    /// Cached spawner. Also `!Send` via a `*mut ()` `PhantomData`.
     spawner: SendWrapper<Spawner>,
-    /// Resolved [`Config`] this runtime was constructed from.
-    config: Config,
 }
 
 impl fmt::Debug for Runtime {
@@ -100,6 +116,24 @@ impl fmt::Debug for Runtime {
 }
 
 impl Runtime {
+    /// Drive the executor until `done` returns `Some`, then return its value.
+    fn drive_until<T>(&self, mut done: impl FnMut() -> Option<T>) -> T {
+        loop {
+            if let Some(value) = done() {
+                return value;
+            }
+            // SAFETY: the executor was initialized by `Runtime::new` and we
+            // never re-enter `poll` (this loop is the sole caller).
+            unsafe {
+                self.executor.poll();
+            }
+            if let Some(value) = done() {
+                return value;
+            }
+            self.signaler.wait();
+        }
+    }
+
     /// Build an embassy runtime.
     ///
     /// Fields consulted from [`Config`]: **none** — embassy's executor is
@@ -126,42 +160,21 @@ impl Runtime {
 
     /// Spawn `task` onto the executor; `TaskStorage` is leaked per spawn so
     /// it outlives the task. Acceptable because test processes are short.
+    ///
+    /// `TaskStorage::spawn` only returns `Err(SpawnError::Busy)` when the
+    /// storage already holds a task; the storage we just leaked is fresh,
+    /// so the `Err` arm is unreachable. If embassy's contract ever changes
+    /// the spawn becomes a no-op and `block_on` surfaces as a `--run-timeout`
+    /// — preferable to a panic.
     fn spawn_erased(&self, task: ErasedTask) {
         let storage: &'static TaskStorage<ErasedTask> = Box::leak(Box::new(TaskStorage::new()));
-        let token = TaskStorage::spawn(storage, || task);
-        self.spawner.must_spawn(token);
-    }
-
-    /// Drive the executor until `done` returns `Some`, then return its value.
-    fn drive_until<T>(&self, mut done: impl FnMut() -> Option<T>) -> T {
-        loop {
-            if let Some(value) = done() {
-                return value;
-            }
-            // SAFETY: the executor was initialized by `Runtime::new` and we
-            // never re-enter `poll` (this loop is the sole caller).
-            unsafe {
-                self.executor.poll();
-            }
-            if let Some(value) = done() {
-                return value;
-            }
-            self.signaler.wait();
+        if let Ok(token) = TaskStorage::spawn(storage, || task) {
+            self.spawner.spawn(token);
         }
     }
 }
 
 impl<'rt> RuntimeTrait<'rt> for Runtime {
-    #[inline]
-    fn config(&self) -> &Config {
-        &self.config
-    }
-
-    #[inline]
-    fn name(&self) -> &'static str {
-        "embassy::Runtime"
-    }
-
     #[inline]
     fn block_on<F>(&self, fut: F) -> F::Output
     where
@@ -175,12 +188,13 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
         let mut slot: Option<F::Output> = None;
         let slot_ptr: SlotPtr<F::Output> = SlotPtr(ptr::from_mut(&mut slot));
 
-        // Lifetime extension: the `drive_until` loop below blocks this thread
-        // until the task has completed, so the task can never outlive borrows
-        // captured by `fut`.
-        #[allow(trivial_casts)]
+        // SAFETY: lifetime extension from `'rt` to `'static`. The
+        // `drive_until` loop below blocks this thread until the task has
+        // completed, so the task can never outlive borrows captured by
+        // `fut`. The transmute changes only the lifetime parameter; the
+        // boxed future's layout is unchanged.
         let fut_static: Pin<Box<dyn Future<Output = F::Output> + 'static>> = unsafe {
-            core::mem::transmute::<
+            mem::transmute::<
                 Pin<Box<dyn Future<Output = F::Output> + 'rt>>,
                 Pin<Box<dyn Future<Output = F::Output> + 'static>>,
             >(Box::pin(fut))
@@ -197,6 +211,31 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
         }));
 
         self.drive_until(|| slot.take())
+    }
+
+    #[inline]
+    fn config(&self) -> &Config {
+        &self.config
+    }
+
+    #[inline]
+    fn name(&self) -> &'static str {
+        "embassy::Runtime"
+    }
+
+    #[inline]
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
+        // No native timer; delegate to an OS thread. Its `tx.send` wakes the
+        // pending task via the receiver's future, which in turn fires
+        // `__pender` and unparks the executor loop.
+        let (tx, rx) = mpsc::channel::<()>();
+        let _timer_handle: thread::JoinHandle<()> = thread::spawn(move || {
+            thread::sleep(duration);
+            let _send_ret: Result<(), mpsc::SendError<()>> = tx.send(());
+        });
+        async move {
+            let _poll_ret: Result<(), JoinError> = poll_channel(rx).await;
+        }
     }
 
     #[inline]
@@ -218,7 +257,7 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
         T: Send + 'static,
     {
         let (tx, rx) = mpsc::channel::<T>();
-        let _unused = std::thread::spawn(move || {
+        let _unused = thread::spawn(move || {
             let _unused = tx.send(func());
         });
         poll_channel(rx)
@@ -230,21 +269,6 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
         F: Future + 'static,
     {
         spawn_task_local(&self.spawner, fut)
-    }
-
-    #[inline]
-    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
-        // No native timer; delegate to an OS thread. Its `tx.send` wakes the
-        // pending task via the receiver's future, which in turn fires
-        // `__pender` and unparks the executor loop.
-        let (tx, rx) = mpsc::channel::<()>();
-        let _unused = std::thread::spawn(move || {
-            std::thread::sleep(duration);
-            let _unused = tx.send(());
-        });
-        async move {
-            let _unused = poll_channel(rx).await;
-        }
     }
 }
 
@@ -274,8 +298,9 @@ where
         let _unused = tx.send(fut.await);
     });
     let storage: &'static TaskStorage<ErasedTask> = Box::leak(Box::new(TaskStorage::new()));
-    let token = TaskStorage::spawn(storage, || erased);
-    spawner.must_spawn(token);
+    if let Ok(token) = TaskStorage::spawn(storage, || erased) {
+        spawner.spawn(token);
+    }
     poll_channel(rx)
 }
 
@@ -295,35 +320,34 @@ where
         let _unused = tx.send(wrapped_fut.await);
     });
     let storage: &'static TaskStorage<ErasedTask> = Box::leak(Box::new(TaskStorage::new()));
-    let token = TaskStorage::spawn(storage, || erased);
-    spawner.must_spawn(token);
+    if let Ok(token) = TaskStorage::spawn(storage, || erased) {
+        spawner.spawn(token);
+    }
     async move {
-        match rx.recv() {
-            Ok(wrapped) => Ok(wrapped.take()),
-            Err(_) => Err(JoinError::cancelled(io::Error::other(
-                "embassy local task dropped",
-            ))),
-        }
+        rx.recv().map_or_else(
+            |_| {
+                Err(JoinError::cancelled(io::Error::other(
+                    "embassy local task dropped",
+                )))
+            },
+            |wrapped| Ok(wrapped.take()),
+        )
     }
 }
 
 /// Poll an `mpsc::Receiver` from an async context, yielding between empty
 /// attempts so the executor can make progress on the sender side.
-fn poll_channel<T: Send + 'static>(
-    rx: mpsc::Receiver<T>,
-) -> impl Future<Output = Result<T, JoinError>> + Send + 'static {
-    async move {
-        loop {
-            match rx.try_recv() {
-                Ok(val) => return Ok(val),
-                Err(mpsc::TryRecvError::Empty) => {
-                    yield_once().await;
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    return Err(JoinError::cancelled(io::Error::other(
-                        "embassy task dropped before sending result",
-                    )));
-                }
+async fn poll_channel<T: Send + 'static>(rx: mpsc::Receiver<T>) -> Result<T, JoinError> {
+    loop {
+        match rx.try_recv() {
+            Ok(val) => return Ok(val),
+            Err(mpsc::TryRecvError::Empty) => {
+                yield_once().await;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err(JoinError::cancelled(io::Error::other(
+                    "embassy task dropped before sending result",
+                )));
             }
         }
     }
@@ -335,13 +359,13 @@ fn poll_channel<T: Send + 'static>(
 #[inline]
 fn yield_once() -> impl Future<Output = ()> + Send + 'static {
     let mut yielded = false;
-    std::future::poll_fn(move |cx| {
+    future::poll_fn(move |cx| {
         if yielded {
-            std::task::Poll::Ready(())
+            Poll::Ready(())
         } else {
             yielded = true;
             cx.waker().wake_by_ref();
-            std::task::Poll::Pending
+            Poll::Pending
         }
     })
 }

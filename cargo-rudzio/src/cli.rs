@@ -1,0 +1,667 @@
+//! Cargo-style command-line parsing for `cargo rudzio test`.
+//!
+//! Lives in the library (rather than `main.rs`) so integration tests can
+//! drive each parser directly with synthetic argv slices and assert the
+//! consumed-vs-forwarded split is correct for every flag spelling.
+//!
+//! The composition entry point is [`parse_test_args`]: it threads the
+//! per-flag parsers in a fixed order and returns a structured result so
+//! `run_test` can wire selectors into the `Plan` without re-parsing.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{Result, bail};
+
+/// Filters applied to the aggregator's `Plan` BEFORE the binary is built.
+///
+/// Field order encodes the application order in `run_test`: paths
+/// restrict first, packages narrow further, excludes drop last.
+#[derive(Debug, Default)]
+#[non_exhaustive]
+pub struct PlanFilters {
+    /// Cargo package names to drop from the workspace member set
+    /// (`--exclude <NAME>`, exact match, repeatable).
+    pub exclude_packages: Vec<String>,
+    /// Cargo package names to keep in the aggregator's member set
+    /// (`-p`/`--package <NAME>`, exact match, repeatable).
+    pub include_packages: Vec<String>,
+    /// Path roots; only members whose manifest dir sits under one of
+    /// these survive (positional path arg that resolves to a directory).
+    pub include_paths: Vec<PathBuf>,
+}
+
+impl PlanFilters {
+    /// Empty filter set — every workspace member passes through.
+    #[inline]
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            exclude_packages: Vec::new(),
+            include_packages: Vec::new(),
+            include_paths: Vec::new(),
+        }
+    }
+}
+
+/// Structured result of parsing a `cargo rudzio test` argv tail.
+///
+/// Splits the input into Plan filters (consumed locally to narrow the
+/// aggregator) and runner args (forwarded verbatim to the rudzio test
+/// binary after `--`).
+#[derive(Debug, Default)]
+#[non_exhaustive]
+pub struct ParsedTestArgs {
+    /// Cargo-test-compat flags that rudzio silently accepts because
+    /// the requested behaviour is already a rudzio default
+    /// (`--workspace`, `--all`, `--nocapture`, `--show-output`,
+    /// `--no-fail-fast`). Recorded in original input order so debug
+    /// tooling, integration tests, and a future verbose mode can
+    /// surface "we saw this flag and intentionally did nothing with
+    /// it" without spamming stderr on every invocation.
+    pub compat_consumed: Vec<String>,
+    /// Plan-shaping selectors consumed by `cargo-rudzio` itself.
+    pub filters: PlanFilters,
+    /// Cargo build-graph args spliced into the spawned `cargo
+    /// run`/`cargo build` invocation BEFORE the `--` separator (so
+    /// they shape the build, not the runner). Order is preserved
+    /// from the user's original argv; the user's flag spelling
+    /// (space vs equals form) is preserved verbatim.
+    pub forwarded_cargo_args: Vec<String>,
+    /// Cargo target-selection flags consumed but not honoured. The
+    /// aggregator is one binary, so per-target selection has no
+    /// rudzio analog. The caller emits one consolidated stderr warning
+    /// listing these so the user knows their flag was a no-op rather
+    /// than silently honoured.
+    pub ignored_target_flags: Vec<String>,
+    /// `--manifest-path PATH` if the user pointed cargo-rudzio at a
+    /// workspace other than CWD. `None` means "use CWD". Repeated
+    /// occurrences resolve last-wins, mirroring cargo's own behaviour.
+    pub manifest_path: Option<PathBuf>,
+    /// `--no-run` was passed: build the aggregator binary but skip
+    /// running it (mirrors `cargo test --no-run`).
+    pub no_run: bool,
+    /// Args forwarded verbatim to the rudzio runner after `--`.
+    pub runner_args: Vec<String>,
+}
+
+impl ParsedTestArgs {
+    /// Empty parse result — equivalent to passing no args at all.
+    #[inline]
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            compat_consumed: Vec::new(),
+            filters: PlanFilters::empty(),
+            forwarded_cargo_args: Vec::new(),
+            ignored_target_flags: Vec::new(),
+            manifest_path: None,
+            no_run: false,
+            runner_args: Vec::new(),
+        }
+    }
+}
+
+/// Build the argv we hand to `cargo` for the aggregator invocation.
+///
+/// Default (`no_run = false`):
+/// `cargo run --manifest-path X <forwarded_cargo_args> -- <runner args>`.
+/// `--no-run`:
+/// `cargo build --manifest-path X <forwarded_cargo_args> [--message-format=json-render-diagnostics]`,
+/// dropping the `--` separator and any runner args (the aggregator
+/// won't be spawned, so forwarding them is dead weight). The
+/// `json-render-diagnostics` format keeps human-friendly diagnostics
+/// on stderr while emitting machine-readable artifact records on
+/// stdout, so downstream tooling (or AI agents) can extract the
+/// built binary path with `jq -r 'select(.executable != null) | .executable'`.
+/// Auto-injection of `--message-format` is skipped when the user
+/// already supplied one (last-wins would also work, but skipping
+/// keeps the spawned argv clean).
+#[inline]
+#[must_use]
+pub fn aggregator_cargo_args(parsed: &ParsedTestArgs, manifest: &str) -> Vec<String> {
+    let capacity = parsed
+        .runner_args
+        .len()
+        .saturating_add(parsed.forwarded_cargo_args.len())
+        .saturating_add(8_usize);
+    let mut argv = Vec::with_capacity(capacity);
+    if parsed.no_run {
+        argv.push("build".to_owned());
+        argv.push("--manifest-path".to_owned());
+        argv.push(manifest.to_owned());
+        argv.extend(parsed.forwarded_cargo_args.iter().cloned());
+        if !user_supplied_message_format(&parsed.forwarded_cargo_args) {
+            argv.push("--message-format=json-render-diagnostics".to_owned());
+        }
+    } else {
+        argv.push("run".to_owned());
+        argv.push("--manifest-path".to_owned());
+        argv.push(manifest.to_owned());
+        argv.extend(parsed.forwarded_cargo_args.iter().cloned());
+        argv.push("--".to_owned());
+        argv.extend(parsed.runner_args.iter().cloned());
+    }
+    argv
+}
+
+/// Pull `--exclude <name>` / `--exclude=<name>` out of `args`.
+///
+/// Returns the collected package names and the args list with those
+/// entries removed. Mirrors cargo's own `--exclude` semantics:
+/// repeatable, takes one name per occurrence, name match is exact
+/// against the Cargo package name (hyphenated form). No short form
+/// (cargo doesn't define one).
+///
+/// Without this consumption, `--exclude` would land in the
+/// aggregator's argv where the rudzio runner would warn about an
+/// unrecognised flag and treat the package name as a positional
+/// substring filter that almost never matches a fully-qualified test.
+///
+/// # Errors
+///
+/// Returns an error when `--exclude` is the last arg with no
+/// following value, or when the equals form supplies an empty name.
+#[inline]
+pub fn parse_exclude_filters(args: &[String]) -> Result<(Vec<String>, Vec<String>)> {
+    let mut excluded = Vec::new();
+    let mut remaining = Vec::new();
+    let mut idx = 0_usize;
+    while let Some(arg) = args.get(idx) {
+        if arg == "--exclude" {
+            let next_idx = idx.saturating_add(1_usize);
+            let value = args
+                .get(next_idx)
+                .ok_or_else(|| anyhow::anyhow!("`{arg}` requires a package name"))?;
+            excluded.push(value.clone());
+            idx = next_idx.saturating_add(1_usize);
+        } else if let Some(value) = arg.strip_prefix("--exclude=") {
+            if value.is_empty() {
+                bail!("`{arg}` requires a non-empty package name");
+            }
+            excluded.push(value.to_owned());
+            idx = idx.saturating_add(1_usize);
+        } else {
+            remaining.push(arg.clone());
+            idx = idx.saturating_add(1_usize);
+        }
+    }
+    Ok((excluded, remaining))
+}
+
+/// Pull cargo build-graph forwarder flags out of `args`.
+///
+/// Unit (no value): `-r`/`--release`, `--frozen`, `--locked`,
+/// `--offline`, `--keep-going`, `--ignore-rust-version`, `-q`/`--quiet`,
+/// `-v`/`--verbose` (repeatable), `--all-features`,
+/// `--no-default-features`, `--unit-graph`, `--future-incompat-report`.
+///
+/// Value (next-arg or `=value` form): `-F`/`--features`, `--profile`,
+/// `--target` (repeatable), `--target-dir`, `-j`/`--jobs`,
+/// `--message-format`, `--config` (repeatable), `-Z` (repeatable),
+/// `--lockfile-path`.
+///
+/// Forwarded args preserve the user's original spelling (space form
+/// vs equals form) so the spawned cargo sees what the user intended,
+/// and order is preserved within the consumed slice. The caller
+/// splices them into the spawned `cargo` invocation BEFORE the `--`
+/// separator (so they shape cargo's build, not the rudzio runner).
+///
+/// # Errors
+///
+/// Returns an error when a value flag is the last arg with no
+/// following value, or when the equals form supplies an empty value.
+#[inline]
+pub fn parse_build_forwarder_flags(args: &[String]) -> Result<(Vec<String>, Vec<String>)> {
+    let mut forwarded = Vec::new();
+    let mut remaining = Vec::new();
+    let mut idx = 0_usize;
+    while let Some(arg) = args.get(idx) {
+        if is_unit_build_flag(arg) {
+            forwarded.push(arg.clone());
+            idx = idx.saturating_add(1_usize);
+        } else if is_value_build_flag(arg) {
+            let next_idx = idx.saturating_add(1_usize);
+            let value = args
+                .get(next_idx)
+                .ok_or_else(|| anyhow::anyhow!("`{arg}` requires a value"))?;
+            forwarded.push(arg.clone());
+            forwarded.push(value.clone());
+            idx = next_idx.saturating_add(1_usize);
+        } else if let Some(value_pos) = arg.find('=')
+            && let Some(head) = arg.get(..value_pos)
+            && is_value_build_flag(head)
+        {
+            let value = arg.get(value_pos.saturating_add(1_usize)..).unwrap_or("");
+            if value.is_empty() {
+                bail!("`{head}=` requires a non-empty value");
+            }
+            forwarded.push(arg.clone());
+            idx = idx.saturating_add(1_usize);
+        } else {
+            remaining.push(arg.clone());
+            idx = idx.saturating_add(1_usize);
+        }
+    }
+    Ok((forwarded, remaining))
+}
+
+/// Return `true` if `arg` is a recognised unit (no-value) cargo
+/// build-graph forwarder flag.
+#[inline]
+fn is_unit_build_flag(arg: &str) -> bool {
+    matches!(
+        arg,
+        "-r"
+            | "--release"
+            | "--frozen"
+            | "--locked"
+            | "--offline"
+            | "--keep-going"
+            | "--ignore-rust-version"
+            | "-q"
+            | "--quiet"
+            | "-v"
+            | "--verbose"
+            | "--all-features"
+            | "--no-default-features"
+            | "--unit-graph"
+            | "--future-incompat-report"
+    )
+}
+
+/// Return `true` if `arg` is a recognised value-bearing cargo
+/// build-graph forwarder flag (matches the bare flag name; the equals
+/// form is detected at the call site by stripping after `=`).
+#[inline]
+fn is_value_build_flag(arg: &str) -> bool {
+    matches!(
+        arg,
+        "-F"
+            | "--features"
+            | "--profile"
+            | "--target"
+            | "--target-dir"
+            | "-j"
+            | "--jobs"
+            | "--message-format"
+            | "--config"
+            | "-Z"
+            | "--lockfile-path"
+    )
+}
+
+/// Return `true` if `forwarded` already contains a `--message-format`
+/// (any spelling) so the no-run auto-injection can be skipped.
+#[inline]
+#[must_use]
+fn user_supplied_message_format(forwarded: &[String]) -> bool {
+    forwarded
+        .iter()
+        .any(|arg| arg == "--message-format" || arg.starts_with("--message-format="))
+}
+
+/// Drop every arg matching one of `flags` from `args`, returning the
+/// consumed list (in original input order) and the remaining args.
+///
+/// Shared engine for silent-consume compat helpers
+/// (`parse_workspace_flag`, `parse_capture_flags`,
+/// `parse_no_fail_fast_flag`). Centralising the loop keeps the
+/// "honest no-op" audit trail consistent and lets `parse_test_args`
+/// accumulate `compat_consumed` from one place.
+#[inline]
+fn consume_compat_flag(args: &[String], flags: &[&str]) -> (Vec<String>, Vec<String>) {
+    let mut consumed = Vec::new();
+    let mut remaining = Vec::with_capacity(args.len());
+    for arg in args {
+        if flags.iter().any(|flag| arg == *flag) {
+            consumed.push(arg.clone());
+        } else {
+            remaining.push(arg.clone());
+        }
+    }
+    (consumed, remaining)
+}
+
+/// Drop `--nocapture` and `--show-output` from `args`.
+///
+/// Both are libtest stdout/stderr capture toggles. rudzio's structured
+/// event output already surfaces test stdout/stderr to the contributor,
+/// so there's no rudzio-side knob to flip — but cargo-test users (and
+/// AI agents that have memorised cargo-test's flag set) reach for them
+/// reflexively, so we accept-and-discard rather than letting them fall
+/// through to the runner where they'd warn about an unknown flag.
+///
+/// Silent consumer (no warning) by design: emitting a "we ignored
+/// your flag" message every time would be noise, since the user's
+/// intent (see test stdout/stderr) is already satisfied. Each consumed
+/// occurrence is recorded on `ParsedTestArgs::compat_consumed` for
+/// debug tooling.
+#[inline]
+#[must_use]
+pub fn parse_capture_flags(args: &[String]) -> Vec<String> {
+    consume_compat_flag(args, &["--nocapture", "--show-output"]).1
+}
+
+/// Pull `--manifest-path <PATH>` / `--manifest-path=<PATH>` out of `args`.
+///
+/// Lets `cargo rudzio test` operate on a workspace other than CWD.
+/// Returns the resolved path (or `None` if the flag was absent) and
+/// the args list with the flag entries removed. Repeated flags
+/// resolve last-wins, mirroring cargo's own semantics.
+///
+/// # Errors
+///
+/// Returns an error when `--manifest-path` is the last arg with no
+/// following value, or when the equals form supplies an empty path.
+#[inline]
+pub fn parse_manifest_path_flag(args: &[String]) -> Result<(Option<PathBuf>, Vec<String>)> {
+    let mut manifest: Option<PathBuf> = None;
+    let mut remaining = Vec::new();
+    let mut idx = 0_usize;
+    while let Some(arg) = args.get(idx) {
+        if arg == "--manifest-path" {
+            let next_idx = idx.saturating_add(1_usize);
+            let value = args
+                .get(next_idx)
+                .ok_or_else(|| anyhow::anyhow!("`{arg}` requires a path"))?;
+            manifest = Some(PathBuf::from(value));
+            idx = next_idx.saturating_add(1_usize);
+        } else if let Some(value) = arg.strip_prefix("--manifest-path=") {
+            if value.is_empty() {
+                bail!("`--manifest-path=` requires a non-empty path");
+            }
+            manifest = Some(PathBuf::from(value));
+            idx = idx.saturating_add(1_usize);
+        } else {
+            remaining.push(arg.clone());
+            idx = idx.saturating_add(1_usize);
+        }
+    }
+    Ok((manifest, remaining))
+}
+
+/// Drop `--no-run` from `args` and return whether it was present.
+///
+/// Mirrors cargo test's `--no-run`: a unit flag (no value), repeatable
+/// without semantic effect — present means "build the aggregator
+/// binary but don't execute it". Consumed locally because we have to
+/// branch from `cargo run` to `cargo build` ourselves; cargo can't see
+/// it through the `cargo run` we'd otherwise spawn.
+#[inline]
+#[must_use]
+pub fn parse_no_run_flag(args: &[String]) -> (bool, Vec<String>) {
+    let mut found = false;
+    let mut remaining = Vec::with_capacity(args.len());
+    for arg in args {
+        if arg == "--no-run" {
+            found = true;
+        } else {
+            remaining.push(arg.clone());
+        }
+    }
+    (found, remaining)
+}
+
+/// Pull `-p <name>` / `-p=<name>` / `--package <name>` / `--package=<name>` out of `args`.
+///
+/// Returns the collected package names and the args list with those
+/// entries removed (so downstream parsing — path restriction, runner
+/// forwarding — only ever sees what's left).
+///
+/// Mirrors cargo's own `-p` semantics: repeatable, takes one name per
+/// occurrence, name match is exact against the Cargo package name
+/// (hyphenated form). Without this consumption, `-p` would land in
+/// the aggregator's argv where the rudzio runner would warn about an
+/// unrecognised flag and treat the package name as a positional
+/// substring filter that almost never matches a fully-qualified test.
+///
+/// # Errors
+///
+/// Returns an error when `-p` / `--package` is the last arg with no
+/// following value, or when the equals form supplies an empty name.
+#[inline]
+pub fn parse_package_filters(args: &[String]) -> Result<(Vec<String>, Vec<String>)> {
+    let mut packages = Vec::new();
+    let mut remaining = Vec::new();
+    let mut idx = 0_usize;
+    while let Some(arg) = args.get(idx) {
+        if arg == "-p" || arg == "--package" {
+            let next_idx = idx.saturating_add(1_usize);
+            let value = args
+                .get(next_idx)
+                .ok_or_else(|| anyhow::anyhow!("`{arg}` requires a package name"))?;
+            packages.push(value.clone());
+            idx = next_idx.saturating_add(1_usize);
+        } else if let Some(value) = arg
+            .strip_prefix("-p=")
+            .or_else(|| arg.strip_prefix("--package="))
+        {
+            if value.is_empty() {
+                bail!("`{arg}` requires a non-empty package name");
+            }
+            packages.push(value.to_owned());
+            idx = idx.saturating_add(1_usize);
+        } else {
+            remaining.push(arg.clone());
+            idx = idx.saturating_add(1_usize);
+        }
+    }
+    Ok((packages, remaining))
+}
+
+/// Pull cargo's per-target selection flags out of `args`.
+///
+/// Recognised: `--lib`, `--bins`, `--examples`, `--tests`, `--benches`,
+/// `--all-targets`, `--doc` (unit flags) and `--bin <NAME>`, `--bin=<NAME>`,
+/// `--example <NAME>`, `--example=<NAME>`, `--test <NAME>`, `--test=<NAME>`,
+/// `--bench <NAME>`, `--bench=<NAME>` (value flags).
+///
+/// All are consumed but not honoured — the rudzio aggregator is one
+/// binary, so per-target selection has no semantic analog. The
+/// returned `Vec<String>` records what was consumed, in input order,
+/// so the caller can emit a single consolidated warning rather than a
+/// silent no-op (silence here would be confusing: the user thought
+/// they were narrowing the run, and got a workspace-wide one
+/// instead).
+///
+/// # Errors
+///
+/// Returns an error when `--bin` / `--example` / `--test` / `--bench`
+/// is the last arg with no following value, or when the equals form
+/// supplies an empty name.
+#[inline]
+pub fn parse_target_selection_flags(args: &[String]) -> Result<(Vec<String>, Vec<String>)> {
+    let mut consumed = Vec::new();
+    let mut remaining = Vec::new();
+    let mut idx = 0_usize;
+    while let Some(arg) = args.get(idx) {
+        if matches!(
+            arg.as_str(),
+            "--lib" | "--bins" | "--examples" | "--tests" | "--benches" | "--all-targets" | "--doc"
+        ) {
+            consumed.push(arg.clone());
+            idx = idx.saturating_add(1_usize);
+        } else if matches!(arg.as_str(), "--bin" | "--example" | "--test" | "--bench") {
+            let next_idx = idx.saturating_add(1_usize);
+            let value = args
+                .get(next_idx)
+                .ok_or_else(|| anyhow::anyhow!("`{arg}` requires a target name"))?;
+            consumed.push(format!("{arg} {value}"));
+            idx = next_idx.saturating_add(1_usize);
+        } else if let Some(value_pos) = arg.find('=') {
+            let head = arg.get(..value_pos).unwrap_or("");
+            if matches!(head, "--bin" | "--example" | "--test" | "--bench") {
+                let value = arg.get(value_pos.saturating_add(1_usize)..).unwrap_or("");
+                if value.is_empty() {
+                    bail!("`{head}=` requires a non-empty target name");
+                }
+                consumed.push(arg.clone());
+            } else {
+                remaining.push(arg.clone());
+            }
+            idx = idx.saturating_add(1_usize);
+        } else {
+            remaining.push(arg.clone());
+            idx = idx.saturating_add(1_usize);
+        }
+    }
+    Ok((consumed, remaining))
+}
+
+/// Render the consolidated stderr warning for ignored target flags.
+///
+/// Returns `None` when the input is empty (no warning to emit), so the
+/// caller's print site can be a flat `if let Some(msg) =` without
+/// needing its own emptiness check. Returning a single multi-line
+/// `String` rather than streaming directly keeps the formatter pure
+/// and unit-testable.
+#[inline]
+#[must_use]
+pub fn format_target_flag_warning(consumed: &[String]) -> Option<String> {
+    if consumed.is_empty() {
+        return None;
+    }
+    let joined = consumed.join(", ");
+    Some(format!(
+        "ignored cargo target-selection flags: {joined} (the rudzio aggregator is one binary; \
+         per-target selection has no analog — every workspace member's tests will run)"
+    ))
+}
+
+/// Compose every `cargo rudzio test` parser into a single structured result.
+///
+/// `is_dir` is injected so the path-vs-runner split is testable without
+/// touching disk. Production callers pass `Path::is_dir`; tests pass a
+/// closure that recognises a curated set of paths.
+///
+/// Parser order is: `--manifest-path` → `-p`/`--package` →
+/// `--exclude` → `--no-run` → `--workspace`/`--all` →
+/// `--no-fail-fast` → `--nocapture`/`--show-output` →
+/// target-selection (`--lib`,
+/// `--bin <NAME>`, etc.) → build-graph forwarders (`--release`,
+/// `--features`, etc.) → positional paths, with everything else
+/// flowing into `runner_args` in original order. Each step operates
+/// on what the previous step left behind, so a flag consumed early
+/// can never collide with a later one.
+///
+/// # Errors
+///
+/// Bubbles errors from any underlying parser (missing values, empty
+/// equals-form values).
+#[inline]
+pub fn parse_test_args<F>(args: &[String], is_dir: F) -> Result<ParsedTestArgs>
+where
+    F: Fn(&Path) -> bool,
+{
+    let (manifest_path, after_manifest) = parse_manifest_path_flag(args)?;
+    let (include_packages, after_packages) = parse_package_filters(&after_manifest)?;
+    let (exclude_packages, after_excludes) = parse_exclude_filters(&after_packages)?;
+    let (no_run, after_no_run) = parse_no_run_flag(&after_excludes);
+    let (workspace_consumed, after_workspace) =
+        consume_compat_flag(&after_no_run, &["--workspace", "--all"]);
+    let (no_fail_fast_consumed, after_no_fail_fast) =
+        consume_compat_flag(&after_workspace, &["--no-fail-fast"]);
+    let (capture_consumed, after_capture) =
+        consume_compat_flag(&after_no_fail_fast, &["--nocapture", "--show-output"]);
+    let mut compat_consumed = Vec::with_capacity(
+        workspace_consumed
+            .len()
+            .saturating_add(no_fail_fast_consumed.len())
+            .saturating_add(capture_consumed.len()),
+    );
+    compat_consumed.extend(workspace_consumed);
+    compat_consumed.extend(no_fail_fast_consumed);
+    compat_consumed.extend(capture_consumed);
+    let (ignored_target_flags, after_targets) = parse_target_selection_flags(&after_capture)?;
+    let (forwarded_cargo_args, after_forwarders) = parse_build_forwarder_flags(&after_targets)?;
+    let (include_paths, runner_args) = split_path_args(&after_forwarders, is_dir);
+    Ok(ParsedTestArgs {
+        compat_consumed,
+        filters: PlanFilters {
+            exclude_packages,
+            include_packages,
+            include_paths,
+        },
+        forwarded_cargo_args,
+        ignored_target_flags,
+        manifest_path,
+        no_run,
+        runner_args,
+    })
+}
+
+/// Drop `--workspace` and its `--all` alias from `args`.
+///
+/// `cargo rudzio test` already operates on every workspace member by
+/// default (the aggregator is built from a workspace-wide `Plan`), so
+/// these flags are redundant — but they're the cargo-test invocations
+/// most contributors and AI agents reach for first ("run all the
+/// tests"). Accepting and discarding them keeps the muscle-memory path
+/// from emitting an "unrecognised flag" warning at the runner.
+///
+/// Silent consumer (no warning): the user got exactly what they asked
+/// for, since the flag matches the default behaviour.
+#[inline]
+#[must_use]
+pub fn parse_workspace_flag(args: &[String]) -> Vec<String> {
+    consume_compat_flag(args, &["--workspace", "--all"]).1
+}
+
+/// Drop `--no-fail-fast` from `args`.
+///
+/// In stock cargo test, `--no-fail-fast` keeps cargo running additional
+/// test binaries after one has failed; with rudzio every test in the
+/// workspace is collected into a single linkme aggregator, so there is
+/// no "next binary" to gate on, and rudzio already runs every test it
+/// has scheduled regardless of earlier failures. The flag is therefore
+/// implicitly satisfied, and we accept-and-discard it the same way as
+/// `--workspace` rather than letting it fall through to the runner.
+///
+/// Silent consumer (no warning): the user got exactly what they asked
+/// for, since the flag matches the default behaviour.
+#[inline]
+#[must_use]
+pub fn parse_no_fail_fast_flag(args: &[String]) -> Vec<String> {
+    consume_compat_flag(args, &["--no-fail-fast"]).1
+}
+
+/// Split positional `cargo rudzio test` args into directory paths
+/// (used to restrict the aggregator to a subset of workspace members)
+/// and runner-bound args (filters, --skip, etc., forwarded verbatim).
+///
+/// An arg counts as a path iff it is path-shaped (starts with `./`,
+/// `../`, `/`, or is exactly `.` / `..`) AND `is_dir` returns `true`
+/// for it. The directory check guards against runner filters that
+/// happen to look path-shaped — rudzio test names use `::`, so a real
+/// path arg practically must exist as a directory at the time of the
+/// run. `is_dir` is injected so tests can drive synthetic paths.
+#[inline]
+pub fn split_path_args<F>(args: &[String], is_dir: F) -> (Vec<PathBuf>, Vec<String>)
+where
+    F: Fn(&Path) -> bool,
+{
+    let mut paths = Vec::new();
+    let mut runner = Vec::new();
+    for arg in args {
+        if is_existing_dir_path_arg(arg, &is_dir) {
+            paths.push(PathBuf::from(arg));
+        } else {
+            runner.push(arg.clone());
+        }
+    }
+    (paths, runner)
+}
+
+/// Return `true` iff `arg` looks path-shaped AND `is_dir` accepts it.
+#[inline]
+fn is_existing_dir_path_arg<F>(arg: &str, is_dir: &F) -> bool
+where
+    F: Fn(&Path) -> bool,
+{
+    let path_shaped = arg == "."
+        || arg == ".."
+        || arg.starts_with("./")
+        || arg.starts_with("../")
+        || arg.starts_with('/');
+    path_shaped && is_dir(Path::new(arg))
+}

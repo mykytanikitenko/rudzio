@@ -1,64 +1,52 @@
-//! Proc-macro entry points. All parsing, transformation, and codegen live
-//! in [`rudzio_macro_internals`]; this crate is only the `proc-macro = true`
-//! wrapper that crosses the `proc_macro::TokenStream` boundary.
+//! Proc-macro entry points.
+//!
+//! Rust requires every `#[proc_macro_*]` function to live at the crate
+//! root of a `proc-macro = true` crate. Bodies in this file therefore
+//! exist only to forward into [`rudzio_macro_internals`] across the
+//! `proc_macro::TokenStream` boundary — they must stay one-line
+//! forwarders. Add new logic to `rudzio-macro-internals`, never here.
 
 use proc_macro::TokenStream;
 
-use rudzio_macro_internals::args::MainArgs;
-use rudzio_macro_internals::suite_codegen::expand_suite;
+use rudzio_macro_internals::{main_codegen, proc_macro_env_codegen, suite_codegen};
+use syn::Error;
 
+#[inline]
 #[proc_macro_attribute]
 pub fn main(args: TokenStream, input: TokenStream) -> TokenStream {
-    if !args.is_empty() {
-        let span = proc_macro2::TokenStream::from(args)
-            .into_iter()
-            .next()
-            .map_or_else(proc_macro2::Span::call_site, |t| t.span());
-        return syn::Error::new(
-            span,
-            "`#[rudzio::main]` no longer accepts inline configuration; use \
-             `#[rudzio::suite([...])] mod ... { ... }` for each runtime config \
-             and a separate `#[rudzio::main] fn main() {}` to install the \
-             runner",
-        )
-        .to_compile_error()
-        .into();
-    }
-
-    let _unused: syn::ItemFn = match syn::parse(input) {
-        Ok(f) => f,
-        Err(e) => return e.to_compile_error().into(),
-    };
-    quote::quote! {
-        fn main() {
-            // `cargo_meta!()` expands to `env!(CARGO_MANIFEST_DIR)` etc.
-            // at THIS call site (the user's crate), so `manifest_dir`
-            // resolves to the user's package, not to rudzio's.
-            ::rudzio::run(::rudzio::cargo_meta!());
-        }
-    }
-    .into()
+    main_codegen::expand(args.into(), input.into())
+        .unwrap_or_else(Error::into_compile_error)
+        .into()
 }
 
+#[inline]
 #[proc_macro_attribute]
 pub fn suite(args: TokenStream, input: TokenStream) -> TokenStream {
-    let args: MainArgs = match syn::parse(args) {
-        Ok(args) => args,
-        Err(e) => return e.to_compile_error().into(),
-    };
-
-    let input_mod: syn::ItemMod = match syn::parse(input) {
-        Ok(m) => m,
-        Err(e) => return e.to_compile_error().into(),
-    };
-
-    match expand_suite(args, input_mod) {
-        Ok(ts) => ts.into(),
-        Err(e) => e.to_compile_error().into(),
-    }
+    suite_codegen::expand_entry(args.into(), input.into())
+        .unwrap_or_else(Error::into_compile_error)
+        .into()
 }
 
+#[inline]
 #[proc_macro_attribute]
 pub fn test(_args: TokenStream, input: TokenStream) -> TokenStream {
     input
+}
+
+/// Internal helper: reads the env var named by `input` (a string
+/// literal) via `std::env::var` at expansion time and emits the value
+/// as a string literal. Used by rudzio's own tests to verify that
+/// `cargo:rustc-env=CARGO_MANIFEST_DIR=<override>` directives in a
+/// bridge `build.rs` reach proc-macros (which read env via
+/// `std::env::var` rather than the `env!` mechanism that bakes values
+/// in at rustc compile time).
+///
+/// Not a stability guarantee — `#[doc(hidden)]` and underscore-prefixed.
+#[doc(hidden)]
+#[inline]
+#[proc_macro]
+pub fn __proc_macro_env(input: TokenStream) -> TokenStream {
+    proc_macro_env_codegen::expand(input.into())
+        .unwrap_or_else(Error::into_compile_error)
+        .into()
 }

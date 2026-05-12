@@ -6,7 +6,7 @@ use std::io;
 use std::time::Duration;
 
 use send_wrapper::SendWrapper;
-use tokio::runtime::{Builder, LocalRuntime};
+use tokio::runtime::{Builder, LocalOptions, LocalRuntime};
 use tokio::time::sleep;
 
 use crate::config::Config;
@@ -14,13 +14,13 @@ use crate::runtime::tokio::error::tokio_join_error_to_join_error;
 use crate::runtime::{JoinError, Runtime};
 
 pub struct Local {
+    /// Resolved [`Config`] this runtime was constructed from.
+    config: Config,
     /// Underlying tokio local runtime. `LocalRuntime` is `!Send`/`!Sync`;
     /// `SendWrapper` promotes this struct to `Send + Sync` so context types
     /// borrowing `&Local` can meet the framework's `Send + Sync` bounds.
     /// Access stays on the one group thread that owns the runtime.
     rt: SendWrapper<LocalRuntime>,
-    /// Resolved [`Config`] this runtime was constructed from.
-    config: Config,
 }
 
 impl fmt::Debug for Local {
@@ -45,7 +45,7 @@ impl Local {
     pub fn new(config: &Config) -> io::Result<Self> {
         let rt = Builder::new_current_thread()
             .enable_all()
-            .build_local(Default::default())?;
+            .build_local(LocalOptions::default())?;
         Ok(Self {
             rt: SendWrapper::new(rt),
             config: config.clone(),
@@ -54,6 +54,15 @@ impl Local {
 }
 
 impl<'rt> Runtime<'rt> for Local {
+    #[inline]
+    fn block_on<F>(&self, fut: F) -> F::Output
+    where
+        F: Future + 'rt,
+        F::Output: 'static,
+    {
+        self.rt.block_on(fut)
+    }
+
     #[inline]
     fn config(&self) -> &Config {
         &self.config
@@ -65,12 +74,8 @@ impl<'rt> Runtime<'rt> for Local {
     }
 
     #[inline]
-    fn block_on<F>(&self, fut: F) -> F::Output
-    where
-        F: Future + 'rt,
-        F::Output: 'static,
-    {
-        self.rt.block_on(fut)
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
+        sleep(duration)
     }
 
     #[inline]
@@ -105,10 +110,5 @@ impl<'rt> Runtime<'rt> for Local {
     {
         let handle = self.rt.spawn_local(fut);
         async move { handle.await.map_err(tokio_join_error_to_join_error) }
-    }
-
-    #[inline]
-    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
-        sleep(duration)
     }
 }

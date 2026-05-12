@@ -14,6 +14,17 @@ use crate::runtime::JoinError;
 /// `Send + Sync` assertion happens one level up, inside the `DynRuntime`
 /// adapter that the runner actually holds.
 pub trait Runtime<'rt>: 'rt {
+    /// Block the current thread until `fut` completes.
+    ///
+    /// `fut` is not required to be `Send`: `block_on` drives it on the
+    /// calling thread and never hands it off. Runtimes whose underlying
+    /// `block_on` primitive does demand `Send` are expected to wrap the
+    /// future internally with `send_wrapper::SendWrapper`.
+    fn block_on<F>(&self, fut: F) -> F::Output
+    where
+        F: Future + 'rt,
+        F::Output: 'static;
+
     /// The [`Config`] this runtime was constructed from. Exposed so suite
     /// contexts (and anything downstream) can reach the resolved CLI and
     /// environment without re-parsing.
@@ -25,16 +36,8 @@ pub trait Runtime<'rt>: 'rt {
     /// vs `compio::Runtime`).
     fn name(&self) -> &'static str;
 
-    /// Block the current thread until `fut` completes.
-    ///
-    /// `fut` is not required to be `Send`: `block_on` drives it on the
-    /// calling thread and never hands it off. Runtimes whose underlying
-    /// `block_on` primitive does demand `Send` are expected to wrap the
-    /// future internally with `send_wrapper::SendWrapper`.
-    fn block_on<F>(&self, fut: F) -> F::Output
-    where
-        F: Future + 'rt,
-        F::Output: 'static;
+    /// Sleep for the given `duration` using the runtime's native timer.
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt;
 
     /// Spawn a `Send` future onto the runtime.
     fn spawn<F>(&self, fut: F) -> impl Future<Output = Result<F::Output, JoinError>> + Send + 'rt
@@ -77,7 +80,4 @@ pub trait Runtime<'rt>: 'rt {
             }
         })
     }
-
-    /// Sleep for the given `duration` using the runtime's native timer.
-    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt;
 }

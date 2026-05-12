@@ -1,8 +1,8 @@
 //! Resolve a `[[bin]]` target's executable path at test call sites.
 //!
 //! The primary entry point is the [`crate::bin!`] macro; this module
-//! holds the runtime backing that the macro falls back to when cargo
-//! hasn't populated `CARGO_BIN_EXE_<name>`.
+//! also holds the runtime backing that the macro falls back to when
+//! cargo hasn't populated `CARGO_BIN_EXE_<name>`.
 //!
 //! # Why this exists
 //!
@@ -30,25 +30,71 @@
 //! 3. If neither resolves, panic with a message that tells the user
 //!    exactly which fix applies (pre-build, or add `build.rs`).
 
+use std::env;
+use std::error::Error;
 use std::ffi::OsString;
+use std::fmt;
 use std::path::PathBuf;
+
+/// Resolve a `[[bin]]` target's executable path at a test call site,
+/// returning a [`PathBuf`](std::path::PathBuf).
+///
+/// Drop-in replacement for `PathBuf::from(env!("CARGO_BIN_EXE_<name>"))`
+/// that also works in the two layouts cargo doesn't populate
+/// `CARGO_BIN_EXE_*` for on its own:
+///
+/// - **Shared runner** — an aggregator crate hosting tests that spawn
+///   another crate's bins. Requires [`crate::build::expose_bins`] in
+///   the aggregator's `build.rs`.
+/// - **`cargo test --lib`** — `#[cfg(test)] #[rudzio::main]` in
+///   `src/lib.rs`. Either add [`crate::build::expose_self_bins`] to the
+///   crate's `build.rs`, or pre-build with `cargo build --bins`.
+///
+/// Resolution chain:
+///
+/// 1. `option_env!(concat!("CARGO_BIN_EXE_", <name>))` at compile time.
+/// 2. Runtime walk from `std::env::current_exe()` to
+///    `target/<profile>/<name>` if step 1 missed.
+/// 3. Panic with an actionable message (which fix to apply) if both
+///    miss.
+///
+/// ```rust,ignore
+/// let mut child = std::process::Command::new(rudzio::bin!("my-server"))
+///     .arg("--port=0")
+///     .spawn()?;
+/// ```
+///
+/// The argument must be a string literal (the bin's Cargo target name).
+#[macro_export]
+macro_rules! bin {
+    ($name:literal) => {{
+        match ::core::option_env!(::core::concat!("CARGO_BIN_EXE_", $name)) {
+            ::core::option::Option::Some(path) => ::std::path::PathBuf::from(path),
+            ::core::option::Option::None => match $crate::bin::__resolve_at_runtime($name) {
+                ::core::result::Result::Ok(path) => path,
+                ::core::result::Result::Err(err) => ::core::panic!("{err}"),
+            },
+        }
+    }};
+}
 
 /// Error reported by the runtime fallback behind the [`crate::bin!`]
 /// macro. Exposed so the macro can render its `Display` form in a
 /// `panic!` — users do not construct this directly.
 #[derive(Debug)]
 #[doc(hidden)]
-pub struct BinNotFound {
+pub struct NotFound {
     message: String,
 }
 
-impl std::fmt::Display for BinNotFound {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for NotFound {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message)
     }
 }
 
-impl std::error::Error for BinNotFound {}
+impl Error for NotFound {}
 
 /// Runtime backing for the [`crate::bin!`] macro. Only called when
 /// `option_env!("CARGO_BIN_EXE_<name>")` was `None` at compile time.
@@ -61,19 +107,20 @@ impl std::error::Error for BinNotFound {}
 ///
 /// # Errors
 ///
-/// Returns [`BinNotFound`] if `current_exe()` fails, the expected
+/// Returns [`NotFound`] if `current_exe()` fails, the expected
 /// ancestor directories are missing, or the bin file isn't on disk.
 #[doc(hidden)]
-pub fn __resolve_at_runtime(bin_name: &str) -> Result<PathBuf, BinNotFound> {
-    let current = std::env::current_exe().map_err(|e| BinNotFound {
+#[inline]
+pub fn __resolve_at_runtime(bin_name: &str) -> Result<PathBuf, NotFound> {
+    let current = env::current_exe().map_err(|err| NotFound {
         message: format!(
             "rudzio::bin!(\"{bin_name}\"): failed to read \
-             `std::env::current_exe()`: {e}. Cargo's test runner normally \
+             `std::env::current_exe()`: {err}. Cargo's test runner normally \
              makes this reliable, so something unusual is going on with the \
              process environment."
         ),
     })?;
-    let deps_dir = current.parent().ok_or_else(|| BinNotFound {
+    let deps_dir = current.parent().ok_or_else(|| NotFound {
         message: format!(
             "rudzio::bin!(\"{bin_name}\"): the current exe `{}` has no \
              parent directory, so the runtime fallback can't locate a \
@@ -81,7 +128,7 @@ pub fn __resolve_at_runtime(bin_name: &str) -> Result<PathBuf, BinNotFound> {
             current.display()
         ),
     })?;
-    let profile_dir = deps_dir.parent().ok_or_else(|| BinNotFound {
+    let profile_dir = deps_dir.parent().ok_or_else(|| NotFound {
         message: format!(
             "rudzio::bin!(\"{bin_name}\"): the deps directory `{}` has no \
              parent, so the runtime fallback can't walk up to a \
@@ -98,7 +145,7 @@ pub fn __resolve_at_runtime(bin_name: &str) -> Result<PathBuf, BinNotFound> {
     if candidate.exists() {
         return Ok(candidate);
     }
-    Err(BinNotFound {
+    Err(NotFound {
         message: format!(
             "rudzio::bin!(\"{bin_name}\"): no binary at `{}`. \
              `CARGO_BIN_EXE_{bin_name}` wasn't set at compile time and the \
@@ -112,4 +159,3 @@ pub fn __resolve_at_runtime(bin_name: &str) -> Result<PathBuf, BinNotFound> {
         ),
     })
 }
-
