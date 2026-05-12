@@ -1,0 +1,78 @@
+# rudzio CI — runs on the cx32 Hetzner builder's self-hosted runner.
+#
+# Targeting matrix:
+#   runs-on: [self-hosted, hetzner-builder, rust]
+#   The builder host advertises this label set for the runner instance
+#   registered against mykytanikitenko/rudzio (see
+#   PorfiryPetrovich-ai/infra: infra-config.nix.gh_runner.targets[]
+#   where slug="rudzio").
+#
+# Steps:
+#   1. Install the nightly toolchain (check-udeps needs `cargo +nightly
+#      udeps`). rustup state persists in /var/lib/cache/gh-runner/<i>/.rustup
+#      via the cache volume, so this is ~30s on first run, near-zero
+#      on subsequent runs.
+#   2. `nix develop --command just pre-commit` — the canonical aggregate
+#      that runs check-fmt + check-taplo + check + check-clippy +
+#      check-udeps + test (see Justfile:73).
+#
+# sccache S3 wiring: the SCCACHE_* env vars override the local-disk
+# default from flake.nix's shellHook (which is appropriate for laptop
+# use; CI needs the shared S3 backend for cross-PR cache sharing).
+# Credentials come from repo secrets HCLOUD_S3_{ACCESS,SECRET}_KEY.
+#
+# nix-cache substituter: the runner host's /etc/nix/nix.conf already
+# includes porfiry-nix-cache as a substituter (image-baked by
+# fcos-image/Containerfile in PorfiryPetrovich-ai/infra). Every
+# `nix develop` invocation here hits the shared cache for free —
+# no explicit substituter wiring needed at the workflow level.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel in-progress runs for the same ref on new push — saves runner
+# minutes when force-pushing PR branches mid-CI.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pre-commit:
+    runs-on: [self-hosted, hetzner-builder, rust]
+    timeout-minutes: 30
+
+    env:
+      # sccache S3 backend — overrides flake.nix's local-disk default.
+      # Bucket + endpoint + region match PorfiryPetrovich-ai/infra's
+      # infra-config.nix.s3.{buckets.sccache, endpoint, region}.
+      SCCACHE_BUCKET: porfiry-sccache
+      SCCACHE_ENDPOINT: https://fsn1.your-objectstorage.com
+      SCCACHE_REGION: fsn1
+      SCCACHE_S3_USE_SSL: "true"
+      AWS_ACCESS_KEY_ID: ${{ secrets.HCLOUD_S3_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.HCLOUD_S3_SECRET_KEY }}
+
+      # rustup state persists in the cache volume — set RUSTUP_HOME
+      # explicitly so a fresh runner instance picks up an existing
+      # depot instead of re-downloading every toolchain.
+      RUSTUP_HOME: /var/lib/cache/gh-runner/rudzio/.rustup
+      CARGO_HOME: /var/lib/cache/gh-runner/rudzio/.cargo
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: rustup — ensure stable + nightly toolchains installed
+        run: |
+          set -euxo pipefail
+          # Stable comes from rust-toolchain.toml. Nightly is needed
+          # for `cargo +nightly udeps`. Profile=minimal keeps the
+          # download small (no docs, no rust-src).
+          rustup toolchain install nightly --profile minimal --no-self-update
+          rustup show
+
+      - name: just pre-commit (check-fmt + taplo + check + clippy + udeps + test)
+        run: nix develop --command just pre-commit
