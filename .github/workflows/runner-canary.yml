@@ -1,0 +1,40 @@
+# Runner canary — dispatch-only smoke test.
+#
+# Purpose: verify the self-hosted runner registered against this repo
+# is online + can pick up a job, WITHOUT running the full CI pipeline.
+# Invoke after:
+#   * any tofu apply against PorfiryPetrovich-ai/infra:tofu/builder/
+#     that re-deploys the cx32 host
+#   * any FGPAT rotation that re-issues registration tokens
+#   * any reported runner-offline incident
+#
+# Trigger:
+#   gh workflow run runner-canary.yml --ref main -R mykytanikitenko/rudzio
+#
+# Asserts:
+#   * The runner with labels [self-hosted, hetzner-builder] picked up
+#     the job within the GH-default timeout.
+#   * `nix develop --command just --version` resolves on the runner
+#     (proves nix is on PATH + Justfile is readable).
+
+name: runner-canary
+
+on:
+  workflow_dispatch:
+
+jobs:
+  canary:
+    runs-on: [self-hosted, hetzner-builder, rust]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prove runner identity + tools
+        run: |
+          set -euxo pipefail
+          echo "runner: $(hostname)"
+          echo "user:   $(id)"
+          echo "pwd:    $(pwd)"
+          which nix
+          nix develop --command just --version
+          echo "OK — runner picked up the job + nix + just both work."

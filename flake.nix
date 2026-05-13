@@ -88,9 +88,6 @@
             # Podman/Docker socket for host access (macOS only)
             ${if isDarwin then ''export DOCKER_HOST="unix://$HOME/.local/share/containers/podman/machine/podman.sock"'' else ""}
 
-            # Alias just to use Justfile.nix inside nix shell
-            alias just='just -f Justfile.nix'
-
             # Start fish shell as default (if not already in fish)
             if [ "$SHELL" != "${pkgs.fish}/bin/fish" ]
             then
