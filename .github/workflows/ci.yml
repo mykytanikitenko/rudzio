@@ -22,15 +22,13 @@ concurrency:
 jobs:
   ci:
     name: just ci
-    runs-on: [self-hosted, linux, nix, rust]
-    container:
-      image: registry-local:5000/porfiry/ci-base:0505e3bdd7dd
-      # io_uring_setup is blocked by the default podman seccomp profile.
-      # rudzio's compio-based runtime tests need it; opt the JOB
-      # container out of seccomp filtering. The OUTER runner container
-      # already has --security-opt seccomp=unconfined via the
-      # gh-runner@.container quadlet.
-      options: --security-opt seccomp=unconfined
+    # Bare actions/runner on cx33 (post PorfiryPetrovich-ai/infra PR #193
+    # multi-target runner architecture). Tools come from the flake
+    # devShell at runtime via `nix develop`; no nested container, no
+    # local registry, no docker.sock. The runner process runs as
+    # User=core on FCOS with the host's default seccomp — io_uring is
+    # permitted under that profile (no opt-out needed).
+    runs-on: [self-hosted, linux, hetzner-builder, nix, rust]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,14 +36,5 @@ jobs:
           # once it's added back to the aggregate post-first-publish.
           fetch-depth: 0
 
-      - name: Toolchain info
-        run: |
-          rustc --version
-          cargo --version
-          just --version
-          taplo --version
-          cargo audit --version
-          cargo deny --version
-
       - name: just ci
-        run: just ci
+        run: nix develop --extra-experimental-features 'nix-command flakes' --command just ci
