@@ -1221,7 +1221,7 @@ mod tests {
         let Err(err) = parse_build_forwarder_flags(&argv(&["--features"])) else {
             anyhow::bail!("expected error for trailing --features");
         };
-        anyhow::ensure!(err.to_string().contains("requires a value"), "got {err}",);
+        anyhow::ensure!(err.to_string().contains("requires a value"), "got {err}");
         Ok(())
     }
 
@@ -1230,7 +1230,7 @@ mod tests {
         let Err(err) = parse_build_forwarder_flags(&argv(&["--features="])) else {
             anyhow::bail!("expected error for empty --features=");
         };
-        anyhow::ensure!(err.to_string().contains("non-empty value"), "got {err}",);
+        anyhow::ensure!(err.to_string().contains("non-empty value"), "got {err}");
         Ok(())
     }
 
@@ -1311,7 +1311,7 @@ mod tests {
         let after: &[String] = invocation
             .get(separator_index.saturating_add(1_usize)..)
             .unwrap_or(&[]);
-        anyhow::ensure!(after == ["my_filter".to_owned()], "got {after:?}",);
+        anyhow::ensure!(after == ["my_filter".to_owned()], "got {after:?}");
         Ok(())
     }
 
@@ -1413,7 +1413,7 @@ mod tests {
         let Err(err) = parse_manifest_path_flag(&argv(&["--manifest-path"])) else {
             anyhow::bail!("expected error for trailing --manifest-path");
         };
-        anyhow::ensure!(err.to_string().contains("requires a path"), "got {err}",);
+        anyhow::ensure!(err.to_string().contains("requires a path"), "got {err}");
         Ok(())
     }
 
@@ -1422,7 +1422,7 @@ mod tests {
         let Err(err) = parse_manifest_path_flag(&argv(&["--manifest-path="])) else {
             anyhow::bail!("expected error for empty --manifest-path=");
         };
-        anyhow::ensure!(err.to_string().contains("non-empty path"), "got {err}",);
+        anyhow::ensure!(err.to_string().contains("non-empty path"), "got {err}");
         Ok(())
     }
 
