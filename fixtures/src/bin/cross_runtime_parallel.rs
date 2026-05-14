@@ -16,9 +16,9 @@ use std::time::Duration;
 
 use rudzio::Config;
 use rudzio::context;
+use rudzio::runtime::Runtime;
 use rudzio::runtime::compio::Runtime as CompioRuntime;
 use rudzio::runtime::tokio::Multithread;
-use rudzio::runtime::Runtime;
 use rudzio::tokio_util::sync::CancellationToken;
 use rudzio::tokio_util::task::TaskTracker;
 

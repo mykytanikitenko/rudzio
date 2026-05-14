@@ -2,9 +2,9 @@
 
 use rudzio::common::context::Suite;
 use rudzio::runtime::futures::ThreadPool;
-use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use rudzio::runtime::monoio;
+use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
 use rudzio::runtime::{async_std, compio, embassy, smol};
 
 #[rudzio::suite([

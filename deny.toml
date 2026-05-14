@@ -22,6 +22,14 @@ ignore = [
     # when compio releases a paste-free version (or migrates to
     # `pastey`).
     "RUSTSEC-2024-0436",
+    # async-std discontinued. Only reachable via the `runtime-async-std`
+    # feature flag, opt-in by callers who explicitly want the adapter.
+    # Default features avoid it. Will revisit / drop the adapter when
+    # callers stop using it.
+    "RUSTSEC-2025-0052",
+    # fxhash unmaintained. Pulled in transitively by an optional
+    # runtime adapter; same default-features-off rationale as above.
+    "RUSTSEC-2025-0057",
 ]
 
 [licenses]
@@ -35,15 +43,25 @@ allow = [
     "MIT",
     "Unicode-3.0",
     "Unlicense",
+    # Zlib — used by `nanorand` (pulled via flume → monoio runtime
+    # adapter). OSI-approved + FSF Free; permissive, no copyleft.
+    "Zlib",
 ]
 # Confidence threshold for matching detected license text against
 # SPDX templates. 0.93 is cargo-deny's recommended default.
 confidence-threshold = 0.93
 
 [bans]
-# Single-version-per-crate is enforced — we don't want surprise
-# version skew sneaking in.
-multiple-versions = "deny"
+# Different async-runtime adapter features (tokio / async-std / monoio
+# / compio / embassy / smol) pull different transitive versions of the
+# same crate (socket2, bitflags, windows-sys, flume, io-uring, ...).
+# `all-features = true` in [graph] above means cargo-deny walks every
+# feature gate, so these duplicates are structurally unavoidable
+# unless all the upstream runtime crates agree on identical version
+# pins (they don't). Downgrade to "warn" so the situation stays
+# visible in CI output without failing the gate. Default-features-only
+# builds remain single-version.
+multiple-versions = "warn"
 # Disallow wildcard versions in workspace `Cargo.toml` files.
 wildcards = "deny"
 # Allow at workspace root: workspace members refer to each other via

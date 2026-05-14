@@ -17,28 +17,6 @@ pub mod suite;
 pub mod test_case;
 pub mod token;
 
-pub use bench::{Report, Strategy};
-#[doc(hidden)]
-pub use bridge_meta::{__BRIDGE_OBSERVED_MANIFEST_DIR, __BRIDGE_PROC_MACRO_OBSERVED_MANIFEST_DIR};
-pub use config::{
-    BenchMode, CargoMeta, ColorMode, Config, EnsureTimes, EnsureTimeViolation, Format, OutputMode,
-    PrintOnly, RunIgnoredMode,
-};
-pub use context::{Suite, Test};
-pub use futures_util;
-#[doc(hidden)]
-pub use linkme;
-pub use rudzio_macro::{__proc_macro_env, main, suite, test};
-pub use runner::{
-    TestSummary, normalize_module_path, qualified_test_name, run, token_passes_filters,
-};
-pub use runtime::{JoinError, Runtime};
-pub use suite::{
-    Id as SuiteId, Reporter as SuiteReporter, RunRequest as SuiteRunRequest, RuntimeGroupKey,
-    RuntimeGroupOwner, Summary as SuiteSummary, TestOutcome, TestRunFn, fnv1a64,
-};
-pub use test_case::{BoxError, IntoRudzioResult, TestCase, TestFn, box_error};
-pub use token::{TEST_TOKENS, Token as TestToken};
 /// Re-export of the `async-std` runtime crate. Available whenever the
 /// `runtime-async-std` cargo feature is on; lets downstream tests reach
 /// `async_std::*` items without listing async-std as a separate dev-dep
@@ -46,6 +24,17 @@ pub use token::{TEST_TOKENS, Token as TestToken};
 #[doc(hidden)]
 #[cfg(feature = "runtime-async-std")]
 pub use async_std;
+pub use bench::{Report, Strategy};
+#[doc(hidden)]
+pub use bridge_meta::{__BRIDGE_OBSERVED_MANIFEST_DIR, __BRIDGE_PROC_MACRO_OBSERVED_MANIFEST_DIR};
+pub use config::{
+    BenchMode, CargoMeta, ColorMode, Config, EnsureTimeViolation, EnsureTimes, Format, OutputMode,
+    PrintOnly, RunIgnoredMode,
+};
+pub use context::{Suite, Test};
+pub use futures_util;
+#[doc(hidden)]
+pub use linkme;
 /// Re-export of the `monoio` runtime crate. Available whenever the
 /// `runtime-monoio` cargo feature is on AND the target supports monoio
 /// (linux or macos). Lets downstream tests reach `monoio::*` items
@@ -57,6 +46,11 @@ pub use async_std;
     any(target_os = "linux", target_os = "macos"),
 ))]
 pub use monoio;
+pub use rudzio_macro::{__proc_macro_env, main, suite, test};
+pub use runner::{
+    TestSummary, normalize_module_path, qualified_test_name, run, token_passes_filters,
+};
+pub use runtime::{JoinError, Runtime};
 /// Re-export of the `smol` runtime crate. Available whenever the
 /// `runtime-smol` cargo feature is on; lets downstream tests reach
 /// `smol::*` items without listing smol as a separate dev-dep (mirrors
@@ -64,6 +58,12 @@ pub use monoio;
 #[doc(hidden)]
 #[cfg(feature = "runtime-smol")]
 pub use smol;
+pub use suite::{
+    Id as SuiteId, Reporter as SuiteReporter, RunRequest as SuiteRunRequest, RuntimeGroupKey,
+    RuntimeGroupOwner, Summary as SuiteSummary, TestOutcome, TestRunFn, fnv1a64,
+};
+pub use test_case::{BoxError, IntoRudzioResult, TestCase, TestFn, box_error};
+pub use token::{TEST_TOKENS, Token as TestToken};
 /// Re-export of the `tokio` runtime crate. Available whenever any of
 /// the `runtime-tokio-*` cargo features is on; lets downstream tests
 /// reach `tokio::time::sleep` etc. without listing tokio as a separate

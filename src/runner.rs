@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::common::time::fmt_duration;
 use crate::config::{
-    CargoMeta, ColorMode, Config, EnsureTimes, EnsureTimeViolation, Format, OutputMode, PrintOnly,
+    CargoMeta, ColorMode, Config, EnsureTimeViolation, EnsureTimes, Format, OutputMode, PrintOnly,
     RunIgnoredMode, USAGE,
 };
 use crate::output;
@@ -190,7 +190,11 @@ impl ModeReporter {
         match outcome {
             TestOutcome::Passed { .. } => "ok",
             TestOutcome::Benched { report, .. } => {
-                if report.is_success() { "ok" } else { "failed" }
+                if report.is_success() {
+                    "ok"
+                } else {
+                    "failed"
+                }
             }
             TestOutcome::Failed { .. }
             | TestOutcome::Panicked { .. }

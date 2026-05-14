@@ -45,6 +45,15 @@
             # Rust build cache
             pkgs.sccache
 
+            # Security + policy auditors required by `just ci` aggregate
+            # (check-audit + check-deny). cargo's binary lookup goes
+            # `cargo <sub>` -> `cargo-<sub>` on PATH; both ship as nix
+            # packages so they belong in the devShell rather than
+            # `cargo install` at runtime (would be uncached + would
+            # need network at every CI run).
+            pkgs.cargo-audit
+            pkgs.cargo-deny
+
             # Shell environment (fish 4.6.0, starship 1.24.2, atuin 18.13.6)
             pkgs.fish
             pkgs.starship
@@ -88,8 +97,16 @@
             # Podman/Docker socket for host access (macOS only)
             ${if isDarwin then ''export DOCKER_HOST="unix://$HOME/.local/share/containers/podman/machine/podman.sock"'' else ""}
 
-            # Start fish shell as default (if not already in fish)
-            if [ "$SHELL" != "${pkgs.fish}/bin/fish" ]
+            # Start fish shell as default ONLY for interactive shells.
+            # `nix develop --command <CMD>` (CI, `just` recipes, scripts)
+            # MUST stay in bash — otherwise `exec fish` replaces the
+            # current process and the `<CMD>` never runs, producing a
+            # silent 3-second phantom-green workflow. The `[ -t 0 ] &&
+            # [ -t 1 ]` TTY guard detects non-interactive invocation
+            # (no terminal on stdin/stdout) and skips the fish exec.
+            # Same guard pattern used in PorfiryPetrovich-ai/infra
+            # flake.nix:829.
+            if [ -t 0 ] && [ -t 1 ] && [ "$SHELL" != "${pkgs.fish}/bin/fish" ]
             then
               exec ${pkgs.fish}/bin/fish --login
             fi
