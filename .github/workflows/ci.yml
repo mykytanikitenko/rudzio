@@ -12,11 +12,24 @@ on:
     # without waiting for the next push.
     - cron: '0 6 * * 1'
 
-# Cancel in-flight runs on the same branch when a newer push lands.
+# Concurrency policy:
+#   * Pull-request runs: group keyed on the PR ref. A new push to the
+#     PR branch cancels the older run (only the latest commit's CI
+#     matters; intermediate runs are noise).
+#   * Push-to-main runs: group keyed on the unique run_id, so every
+#     main commit's CI runs to completion and is NEVER cancelled by a
+#     subsequent main push. With a single self-hosted runner the
+#     runner naturally serializes them anyway.
+#
+# `cancel-in-progress: true` is universal, but only takes effect when
+# a NEW run's group string matches an EXISTING run's group string.
+# Per-run-id grouping on main means no two main runs ever share a
+# group → cancellation is structurally impossible.
+#
 # Releases (release.yml) intentionally don't share this concurrency
 # group — we never want to cancel a mid-flight publish.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 
 # `bash -exo pipefail` on every `run:` step. Without -e a failing
