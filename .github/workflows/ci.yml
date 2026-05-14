@@ -19,6 +19,17 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# `bash -exo pipefail` on every `run:` step. Without -e a failing
+# command inside a multi-line script does not fail the workflow;
+# without -x we cannot see which command produced which output;
+# without pipefail a pipeline reports the exit of the LAST stage,
+# not the (potentially failing) earlier stage. Pre-merge state had
+# `just ci` produce 0 lines of output in 21s while the workflow
+# reported success — this triple guards against that recurring.
+defaults:
+  run:
+    shell: bash -exo pipefail {0}
+
 jobs:
   ci:
     name: just ci
@@ -35,6 +46,31 @@ jobs:
           # Full history so cargo-semver-checks can resolve prior tags
           # once it's added back to the aggregate post-first-publish.
           fetch-depth: 0
+
+      # Pre-flight: surface disk-full early instead of silently no-op'ing
+      # downstream commands. The cx33 builder's /var/lib/cache is a 196G
+      # Hetzner Volume shared with the runner's `_work/` checkout root
+      # and per-runner build caches; when it fills up, `cargo build` and
+      # `nix develop`'s tmp work silently 0-byte while exiting 0 — the
+      # exact phantom-success failure mode pre-merge state exhibited.
+      - name: Assert disk space on /var/lib/cache
+        run: |
+          free_gb=$(df -BG /var/lib/cache | awk 'NR==2 {gsub("G",""); print $4+0}')
+          echo "Free on /var/lib/cache: ${free_gb}GB"
+          if [ "${free_gb}" -lt 5 ]; then
+            echo "ERROR: /var/lib/cache has only ${free_gb}GB free; need >5GB. Run scripts/cx33-cache-clear.jl from PorfiryPetrovich-ai/infra."
+            exit 1
+          fi
+
+      # Canary: confirms the nix dev-shell entry actually fires the
+      # toolchain. If `nix develop` itself is broken (lock drift,
+      # store-corruption, flake eval error) this step fails LOUD with
+      # the underlying nix error instead of letting `just ci` exit
+      # green-but-empty downstream. Also catches the shellHook TTY-guard
+      # regression that the flake.nix change in this PR fixes — if
+      # `exec fish` fires here, rustc never resolves.
+      - name: Canary — nix shell + rustc resolve
+        run: nix develop --extra-experimental-features 'nix-command flakes' --command rustc --version
 
       - name: just ci
         run: nix develop --extra-experimental-features 'nix-command flakes' --command just ci
