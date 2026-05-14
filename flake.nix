@@ -88,8 +88,16 @@
             # Podman/Docker socket for host access (macOS only)
             ${if isDarwin then ''export DOCKER_HOST="unix://$HOME/.local/share/containers/podman/machine/podman.sock"'' else ""}
 
-            # Start fish shell as default (if not already in fish)
-            if [ "$SHELL" != "${pkgs.fish}/bin/fish" ]
+            # Start fish shell as default ONLY for interactive shells.
+            # `nix develop --command <CMD>` (CI, `just` recipes, scripts)
+            # MUST stay in bash — otherwise `exec fish` replaces the
+            # current process and the `<CMD>` never runs, producing a
+            # silent 3-second phantom-green workflow. The `[ -t 0 ] &&
+            # [ -t 1 ]` TTY guard detects non-interactive invocation
+            # (no terminal on stdin/stdout) and skips the fish exec.
+            # Same guard pattern used in PorfiryPetrovich-ai/infra
+            # flake.nix:829.
+            if [ -t 0 ] && [ -t 1 ] && [ "$SHELL" != "${pkgs.fish}/bin/fish" ]
             then
               exec ${pkgs.fish}/bin/fish --login
             fi
