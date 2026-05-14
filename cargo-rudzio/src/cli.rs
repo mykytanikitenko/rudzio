@@ -251,8 +251,7 @@ pub fn parse_build_forwarder_flags(args: &[String]) -> Result<(Vec<String>, Vec<
 fn is_unit_build_flag(arg: &str) -> bool {
     matches!(
         arg,
-        "-r"
-            | "--release"
+        "-r" | "--release"
             | "--frozen"
             | "--locked"
             | "--offline"
@@ -276,8 +275,7 @@ fn is_unit_build_flag(arg: &str) -> bool {
 fn is_value_build_flag(arg: &str) -> bool {
     matches!(
         arg,
-        "-F"
-            | "--features"
+        "-F" | "--features"
             | "--profile"
             | "--target"
             | "--target-dir"

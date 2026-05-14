@@ -14,15 +14,15 @@ use std::path::Path;
 
 use cargo_rudzio::cli::{
     aggregator_cargo_args, format_target_flag_warning, parse_build_forwarder_flags,
-    parse_capture_flags, parse_exclude_filters, parse_manifest_path_flag,
-    parse_no_fail_fast_flag, parse_no_run_flag, parse_package_filters,
-    parse_target_selection_flags, parse_test_args, parse_workspace_flag,
+    parse_capture_flags, parse_exclude_filters, parse_manifest_path_flag, parse_no_fail_fast_flag,
+    parse_no_run_flag, parse_package_filters, parse_target_selection_flags, parse_test_args,
+    parse_workspace_flag,
 };
 use rudzio::common::context::Suite;
 use rudzio::runtime::futures::ThreadPool;
-use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use rudzio::runtime::monoio;
+use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
 use rudzio::runtime::{async_std, compio, embassy, smol};
 
 #[rudzio::suite([
@@ -55,7 +55,10 @@ mod tests {
     async fn no_package_flag_returns_empty_packages_and_unchanged_args() -> anyhow::Result<()> {
         let input = argv(&["my_filter", "--skip", "slow_"]);
         let (packages, remaining) = parse_package_filters(&input)?;
-        anyhow::ensure!(packages.is_empty(), "expected no packages, got {packages:?}");
+        anyhow::ensure!(
+            packages.is_empty(),
+            "expected no packages, got {packages:?}"
+        );
         anyhow::ensure!(
             remaining == input,
             "expected args untouched, got {remaining:?}",
@@ -177,7 +180,10 @@ mod tests {
     async fn no_exclude_flag_returns_empty_excludes_and_unchanged_args() -> anyhow::Result<()> {
         let input = argv(&["my_filter", "--skip", "slow_"]);
         let (excluded, remaining) = parse_exclude_filters(&input)?;
-        anyhow::ensure!(excluded.is_empty(), "expected no excludes, got {excluded:?}");
+        anyhow::ensure!(
+            excluded.is_empty(),
+            "expected no excludes, got {excluded:?}"
+        );
         anyhow::ensure!(
             remaining == input,
             "expected args untouched, got {remaining:?}",
@@ -281,7 +287,8 @@ mod tests {
             no_dirs,
         )?;
         anyhow::ensure!(
-            parsed.filters.include_packages == vec!["rudzio".to_owned(), "rudzio-migrate".to_owned()],
+            parsed.filters.include_packages
+                == vec!["rudzio".to_owned(), "rudzio-migrate".to_owned()],
             "got {:?}",
             parsed.filters.include_packages,
         );
@@ -291,10 +298,7 @@ mod tests {
 
     #[rudzio::test]
     async fn parse_test_args_collects_excludes_into_filters() -> anyhow::Result<()> {
-        let parsed = parse_test_args(
-            &argv(&["--exclude", "noisy", "--exclude=other"]),
-            no_dirs,
-        )?;
+        let parsed = parse_test_args(&argv(&["--exclude", "noisy", "--exclude=other"]), no_dirs)?;
         anyhow::ensure!(
             parsed.filters.exclude_packages == vec!["noisy".to_owned(), "other".to_owned()],
             "got {:?}",
@@ -387,7 +391,12 @@ mod tests {
             parsed.filters.include_paths,
         );
         anyhow::ensure!(
-            parsed.runner_args == vec!["--skip".to_owned(), "slow_".to_owned(), "my_filter".to_owned()],
+            parsed.runner_args
+                == vec![
+                    "--skip".to_owned(),
+                    "slow_".to_owned(),
+                    "my_filter".to_owned()
+                ],
             "got {:?}",
             parsed.runner_args,
         );
@@ -412,7 +421,10 @@ mod tests {
         let input = argv(&["my_filter", "--skip", "slow_"]);
         let (no_run, remaining) = parse_no_run_flag(&input);
         anyhow::ensure!(!no_run, "expected no_run = false");
-        anyhow::ensure!(remaining == input, "expected args untouched, got {remaining:?}");
+        anyhow::ensure!(
+            remaining == input,
+            "expected args untouched, got {remaining:?}"
+        );
         Ok(())
     }
 
@@ -421,7 +433,10 @@ mod tests {
         let input = argv(&["--no-run"]);
         let (no_run, remaining) = parse_no_run_flag(&input);
         anyhow::ensure!(no_run, "expected no_run = true");
-        anyhow::ensure!(remaining.is_empty(), "expected empty remaining, got {remaining:?}");
+        anyhow::ensure!(
+            remaining.is_empty(),
+            "expected empty remaining, got {remaining:?}"
+        );
         Ok(())
     }
 
@@ -442,7 +457,10 @@ mod tests {
         let input = argv(&["--no-run", "--no-run"]);
         let (no_run, remaining) = parse_no_run_flag(&input);
         anyhow::ensure!(no_run, "expected no_run = true");
-        anyhow::ensure!(remaining.is_empty(), "expected both consumed, got {remaining:?}");
+        anyhow::ensure!(
+            remaining.is_empty(),
+            "expected both consumed, got {remaining:?}"
+        );
         Ok(())
     }
 
@@ -519,7 +537,10 @@ mod tests {
     async fn workspace_flag_absent_returns_args_unchanged() -> anyhow::Result<()> {
         let input = argv(&["my_filter", "--skip", "slow_"]);
         let remaining = parse_workspace_flag(&input);
-        anyhow::ensure!(remaining == input, "expected args untouched, got {remaining:?}");
+        anyhow::ensure!(
+            remaining == input,
+            "expected args untouched, got {remaining:?}"
+        );
         Ok(())
     }
 
@@ -562,7 +583,10 @@ mod tests {
     async fn capture_flags_absent_returns_args_unchanged() -> anyhow::Result<()> {
         let input = argv(&["my_filter", "--skip", "slow_"]);
         let remaining = parse_capture_flags(&input);
-        anyhow::ensure!(remaining == input, "expected args untouched, got {remaining:?}");
+        anyhow::ensure!(
+            remaining == input,
+            "expected args untouched, got {remaining:?}"
+        );
         Ok(())
     }
 
@@ -584,7 +608,13 @@ mod tests {
 
     #[rudzio::test]
     async fn nocapture_and_show_output_together_both_consumed() -> anyhow::Result<()> {
-        let input = argv(&["my_filter", "--nocapture", "--skip", "slow_", "--show-output"]);
+        let input = argv(&[
+            "my_filter",
+            "--nocapture",
+            "--skip",
+            "slow_",
+            "--show-output",
+        ]);
         let remaining = parse_capture_flags(&input);
         anyhow::ensure!(
             remaining == argv(&["my_filter", "--skip", "slow_"]),
@@ -608,7 +638,10 @@ mod tests {
     async fn no_fail_fast_absent_returns_args_unchanged() -> anyhow::Result<()> {
         let input = argv(&["my_filter", "--skip", "slow_"]);
         let remaining = parse_no_fail_fast_flag(&input);
-        anyhow::ensure!(remaining == input, "expected args untouched, got {remaining:?}");
+        anyhow::ensure!(
+            remaining == input,
+            "expected args untouched, got {remaining:?}"
+        );
         Ok(())
     }
 
@@ -629,8 +662,7 @@ mod tests {
     }
 
     #[rudzio::test]
-    async fn parse_test_args_consumes_no_fail_fast_so_runner_never_sees_it() -> anyhow::Result<()>
-    {
+    async fn parse_test_args_consumes_no_fail_fast_so_runner_never_sees_it() -> anyhow::Result<()> {
         let parsed = parse_test_args(&argv(&["--no-fail-fast", "my_filter"]), no_dirs)?;
         anyhow::ensure!(
             parsed.runner_args == vec!["my_filter".to_owned()],
@@ -688,7 +720,11 @@ mod tests {
         let parsed = parse_test_args(&input, no_dirs)?;
         anyhow::ensure!(
             parsed.runner_args
-                == vec!["my_filter".to_owned(), "--skip".to_owned(), "slow_".to_owned()],
+                == vec![
+                    "my_filter".to_owned(),
+                    "--skip".to_owned(),
+                    "slow_".to_owned()
+                ],
             "got {:?}",
             parsed.runner_args,
         );
@@ -767,13 +803,7 @@ mod tests {
 
     #[rudzio::test]
     async fn example_test_bench_value_forms_consumed() -> anyhow::Result<()> {
-        let input = argv(&[
-            "--example",
-            "demo",
-            "--test=integration",
-            "--bench",
-            "perf",
-        ]);
+        let input = argv(&["--example", "demo", "--test=integration", "--bench", "perf"]);
         let (consumed, remaining) = parse_target_selection_flags(&input)?;
         anyhow::ensure!(
             consumed
@@ -805,8 +835,7 @@ mod tests {
             "got {consumed:?}",
         );
         anyhow::ensure!(
-            remaining
-                == argv(&["my_filter", "--skip", "slow_", "--output=plain"]),
+            remaining == argv(&["my_filter", "--skip", "slow_", "--output=plain"]),
             "got {remaining:?}",
         );
         Ok(())
@@ -840,13 +869,9 @@ mod tests {
 
     #[rudzio::test]
     async fn parse_test_args_records_target_flags_in_struct() -> anyhow::Result<()> {
-        let parsed = parse_test_args(
-            &argv(&["--lib", "--bin", "demo", "my_filter"]),
-            no_dirs,
-        )?;
+        let parsed = parse_test_args(&argv(&["--lib", "--bin", "demo", "my_filter"]), no_dirs)?;
         anyhow::ensure!(
-            parsed.ignored_target_flags
-                == vec!["--lib".to_owned(), "--bin demo".to_owned()],
+            parsed.ignored_target_flags == vec!["--lib".to_owned(), "--bin demo".to_owned()],
             "got {:?}",
             parsed.ignored_target_flags,
         );
@@ -880,11 +905,8 @@ mod tests {
 
     #[rudzio::test]
     async fn format_target_flag_warning_lists_consumed_flags() -> anyhow::Result<()> {
-        let warning = format_target_flag_warning(&[
-            "--lib".to_owned(),
-            "--bin demo".to_owned(),
-        ])
-        .ok_or_else(|| anyhow::anyhow!("expected Some(_) for non-empty input"))?;
+        let warning = format_target_flag_warning(&["--lib".to_owned(), "--bin demo".to_owned()])
+            .ok_or_else(|| anyhow::anyhow!("expected Some(_) for non-empty input"))?;
         anyhow::ensure!(
             warning.contains("--lib"),
             "warning should name --lib, got {warning:?}",
@@ -968,7 +990,10 @@ mod tests {
         let (forwarded_short, _) = parse_build_forwarder_flags(&argv(&["-q"]))?;
         let (forwarded_long, _) = parse_build_forwarder_flags(&argv(&["--quiet"]))?;
         anyhow::ensure!(forwarded_short == argv(&["-q"]), "got {forwarded_short:?}");
-        anyhow::ensure!(forwarded_long == argv(&["--quiet"]), "got {forwarded_long:?}");
+        anyhow::ensure!(
+            forwarded_long == argv(&["--quiet"]),
+            "got {forwarded_long:?}"
+        );
         Ok(())
     }
 
@@ -1011,15 +1036,17 @@ mod tests {
     #[rudzio::test]
     async fn build_forwarder_features_equals_form_preserves_user_spelling() -> anyhow::Result<()> {
         let (forwarded, remaining) = parse_build_forwarder_flags(&argv(&["--features=foo,bar"]))?;
-        anyhow::ensure!(forwarded == argv(&["--features=foo,bar"]), "got {forwarded:?}");
+        anyhow::ensure!(
+            forwarded == argv(&["--features=foo,bar"]),
+            "got {forwarded:?}"
+        );
         anyhow::ensure!(remaining.is_empty(), "got {remaining:?}");
         Ok(())
     }
 
     #[rudzio::test]
     async fn build_forwarder_dash_capital_f_short_for_features_space_form() -> anyhow::Result<()> {
-        let (forwarded, remaining) =
-            parse_build_forwarder_flags(&argv(&["-F", "foo,bar", "f"]))?;
+        let (forwarded, remaining) = parse_build_forwarder_flags(&argv(&["-F", "foo,bar", "f"]))?;
         anyhow::ensure!(forwarded == argv(&["-F", "foo,bar"]), "got {forwarded:?}");
         anyhow::ensure!(remaining == argv(&["f"]), "got {remaining:?}");
         Ok(())
@@ -1072,11 +1099,8 @@ mod tests {
 
     #[rudzio::test]
     async fn build_forwarder_profile_and_target_dir() -> anyhow::Result<()> {
-        let (forwarded, remaining) = parse_build_forwarder_flags(&argv(&[
-            "--profile",
-            "ci",
-            "--target-dir=/tmp/td",
-        ]))?;
+        let (forwarded, remaining) =
+            parse_build_forwarder_flags(&argv(&["--profile", "ci", "--target-dir=/tmp/td"]))?;
         anyhow::ensure!(
             forwarded == argv(&["--profile", "ci", "--target-dir=/tmp/td"]),
             "got {forwarded:?}",
@@ -1107,9 +1131,8 @@ mod tests {
 
     #[rudzio::test]
     async fn build_forwarder_jobs_short_and_long_both_forms() -> anyhow::Result<()> {
-        let (forwarded, remaining) = parse_build_forwarder_flags(&argv(&[
-            "-j", "8", "--jobs=4", "--jobs", "2", "-j=1",
-        ]))?;
+        let (forwarded, remaining) =
+            parse_build_forwarder_flags(&argv(&["-j", "8", "--jobs=4", "--jobs", "2", "-j=1"]))?;
         anyhow::ensure!(
             forwarded == argv(&["-j", "8", "--jobs=4", "--jobs", "2", "-j=1"]),
             "got {forwarded:?}",
@@ -1126,12 +1149,7 @@ mod tests {
             "--message-format=json",
         ]))?;
         anyhow::ensure!(
-            forwarded
-                == argv(&[
-                    "--message-format",
-                    "human",
-                    "--message-format=json",
-                ]),
+            forwarded == argv(&["--message-format", "human", "--message-format=json",]),
             "got {forwarded:?}",
         );
         anyhow::ensure!(remaining.is_empty(), "got {remaining:?}");
@@ -1203,10 +1221,7 @@ mod tests {
         let Err(err) = parse_build_forwarder_flags(&argv(&["--features"])) else {
             anyhow::bail!("expected error for trailing --features");
         };
-        anyhow::ensure!(
-            err.to_string().contains("requires a value"),
-            "got {err}",
-        );
+        anyhow::ensure!(err.to_string().contains("requires a value"), "got {err}",);
         Ok(())
     }
 
@@ -1215,10 +1230,7 @@ mod tests {
         let Err(err) = parse_build_forwarder_flags(&argv(&["--features="])) else {
             anyhow::bail!("expected error for empty --features=");
         };
-        anyhow::ensure!(
-            err.to_string().contains("non-empty value"),
-            "got {err}",
-        );
+        anyhow::ensure!(err.to_string().contains("non-empty value"), "got {err}",);
         Ok(())
     }
 
@@ -1276,8 +1288,8 @@ mod tests {
     }
 
     #[rudzio::test]
-    async fn aggregator_cargo_args_default_inserts_forwarded_before_separator()
-    -> anyhow::Result<()> {
+    async fn aggregator_cargo_args_default_inserts_forwarded_before_separator() -> anyhow::Result<()>
+    {
         let parsed = parse_test_args(
             &argv(&["--release", "--features", "ci", "my_filter"]),
             no_dirs,
@@ -1293,18 +1305,13 @@ mod tests {
             "expected --release before separator, got {before:?}",
         );
         anyhow::ensure!(
-            before
-                .iter()
-                .any(|arg| arg == "--features"),
+            before.iter().any(|arg| arg == "--features"),
             "expected --features before separator, got {before:?}",
         );
         let after: &[String] = invocation
             .get(separator_index.saturating_add(1_usize)..)
             .unwrap_or(&[]);
-        anyhow::ensure!(
-            after == ["my_filter".to_owned()],
-            "got {after:?}",
-        );
+        anyhow::ensure!(after == ["my_filter".to_owned()], "got {after:?}",);
         Ok(())
     }
 
@@ -1331,8 +1338,7 @@ mod tests {
     #[rudzio::test]
     async fn aggregator_cargo_args_no_run_skips_auto_message_format_when_user_supplied()
     -> anyhow::Result<()> {
-        let parsed =
-            parse_test_args(&argv(&["--no-run", "--message-format=human"]), no_dirs)?;
+        let parsed = parse_test_args(&argv(&["--no-run", "--message-format=human"]), no_dirs)?;
         let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
         anyhow::ensure!(
             !invocation.contains(&"--message-format=json-render-diagnostics".to_owned()),
@@ -1348,10 +1354,7 @@ mod tests {
     #[rudzio::test]
     async fn aggregator_cargo_args_no_run_skips_auto_when_user_supplied_space_form()
     -> anyhow::Result<()> {
-        let parsed = parse_test_args(
-            &argv(&["--no-run", "--message-format", "human"]),
-            no_dirs,
-        )?;
+        let parsed = parse_test_args(&argv(&["--no-run", "--message-format", "human"]), no_dirs)?;
         let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
         anyhow::ensure!(
             !invocation.contains(&"--message-format=json-render-diagnostics".to_owned()),
@@ -1395,11 +1398,7 @@ mod tests {
 
     #[rudzio::test]
     async fn manifest_path_last_wins_when_repeated() -> anyhow::Result<()> {
-        let input = argv(&[
-            "--manifest-path=/first",
-            "--manifest-path",
-            "/second",
-        ]);
+        let input = argv(&["--manifest-path=/first", "--manifest-path", "/second"]);
         let (manifest, remaining) = parse_manifest_path_flag(&input)?;
         anyhow::ensure!(
             manifest == Some(Path::new("/second").to_path_buf()),
@@ -1414,10 +1413,7 @@ mod tests {
         let Err(err) = parse_manifest_path_flag(&argv(&["--manifest-path"])) else {
             anyhow::bail!("expected error for trailing --manifest-path");
         };
-        anyhow::ensure!(
-            err.to_string().contains("requires a path"),
-            "got {err}",
-        );
+        anyhow::ensure!(err.to_string().contains("requires a path"), "got {err}",);
         Ok(())
     }
 
@@ -1426,10 +1422,7 @@ mod tests {
         let Err(err) = parse_manifest_path_flag(&argv(&["--manifest-path="])) else {
             anyhow::bail!("expected error for empty --manifest-path=");
         };
-        anyhow::ensure!(
-            err.to_string().contains("non-empty path"),
-            "got {err}",
-        );
+        anyhow::ensure!(err.to_string().contains("non-empty path"), "got {err}",);
         Ok(())
     }
 
@@ -1509,8 +1502,7 @@ mod tests {
             no_dirs,
         )?;
         anyhow::ensure!(
-            parsed.compat_consumed
-                == vec!["--nocapture".to_owned(), "--show-output".to_owned()],
+            parsed.compat_consumed == vec!["--nocapture".to_owned(), "--show-output".to_owned()],
             "got {:?}",
             parsed.compat_consumed,
         );
