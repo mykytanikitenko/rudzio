@@ -45,6 +45,15 @@
             # Rust build cache
             pkgs.sccache
 
+            # Security + policy auditors required by `just ci` aggregate
+            # (check-audit + check-deny). cargo's binary lookup goes
+            # `cargo <sub>` -> `cargo-<sub>` on PATH; both ship as nix
+            # packages so they belong in the devShell rather than
+            # `cargo install` at runtime (would be uncached + would
+            # need network at every CI run).
+            pkgs.cargo-audit
+            pkgs.cargo-deny
+
             # Shell environment (fish 4.6.0, starship 1.24.2, atuin 18.13.6)
             pkgs.fish
             pkgs.starship
