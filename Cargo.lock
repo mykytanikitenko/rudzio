@@ -286,7 +286,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-rudzio"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "cargo_metadata",
@@ -1282,7 +1282,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "rudzio"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-std",
@@ -1321,7 +1321,7 @@ dependencies = [
 
 [[package]]
 name = "rudzio-macro"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1331,7 +1331,7 @@ dependencies = [
 
 [[package]]
 name = "rudzio-macro-internals"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "proc-macro2",
@@ -1342,7 +1342,7 @@ dependencies = [
 
 [[package]]
 name = "rudzio-migrate"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "cargo_metadata",
