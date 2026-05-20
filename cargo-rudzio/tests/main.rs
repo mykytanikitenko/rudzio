@@ -7,6 +7,7 @@ mod build_dir_deadlock_spec;
 mod cli_spec;
 mod cross_bridge_spec;
 mod generate_spec;
+mod registry_preservation_spec;
 mod spawn_env_spec;
 
 #[rudzio::main]

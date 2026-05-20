@@ -34,7 +34,14 @@ fn member(name: &str, dev_deps: Vec<DevDepSpec>) -> MemberPlan {
 
 /// Wrap `members` in a `Plan` with a default version-only rudzio spec.
 fn plan_with_members(members: Vec<MemberPlan>, workspace_root: &str) -> Plan {
-    let rudzio_spec = RudzioSpec::new(RudzioLocation::Version("0.1".to_owned()), Vec::new(), true);
+    let rudzio_spec = RudzioSpec::new(
+        RudzioLocation::Version {
+            req: "0.1".to_owned(),
+            registry: None,
+        },
+        Vec::new(),
+        true,
+    );
     let mut plan = Plan::new(
         Utf8PathBuf::from(workspace_root),
         Utf8PathBuf::from("/tmp/target"),
@@ -92,7 +99,7 @@ mod tests {
                 anyhow::ensure!(url == "https://github.com/mykytanikitenko/rudzio");
                 anyhow::ensure!(matches!(reference, Some(GitRef::Rev(rev)) if rev == "deadbeef"));
             }
-            RudzioLocation::Path(_) | RudzioLocation::Version(_) | _ => {
+            RudzioLocation::Path(_) | RudzioLocation::Version { .. } | _ => {
                 anyhow::bail!("expected Git location, got {:?}", spec.location);
             }
         }
@@ -128,7 +135,7 @@ mod tests {
                 anyhow::ensure!(url == "https://github.com/mykytanikitenko/rudzio");
                 anyhow::ensure!(matches!(reference, Some(GitRef::Tag(tag)) if tag == "v0.1.0"));
             }
-            RudzioLocation::Path(_) | RudzioLocation::Version(_) | _ => {
+            RudzioLocation::Path(_) | RudzioLocation::Version { .. } | _ => {
                 anyhow::bail!("expected Git location, got {:?}", spec.location);
             }
         }
@@ -150,7 +157,10 @@ mod tests {
         let spec = collect_rudzio_spec(&members, &BTreeMap::new(), &ws_root())?;
 
         match &spec.location {
-            RudzioLocation::Version(version) => anyhow::ensure!(version == "0.1"),
+            RudzioLocation::Version { req, registry } => {
+                anyhow::ensure!(req == "0.1");
+                anyhow::ensure!(registry.is_none(), "expected no registry, got {registry:?}");
+            }
             RudzioLocation::Git { .. } | RudzioLocation::Path(_) | _ => {
                 anyhow::bail!("expected Version location, got {:?}", spec.location);
             }
@@ -210,7 +220,7 @@ mod tests {
 
         match &spec.location {
             RudzioLocation::Path(path) => anyhow::ensure!(path == Path::new("/tmp/fallback")),
-            RudzioLocation::Git { .. } | RudzioLocation::Version(_) | _ => {
+            RudzioLocation::Git { .. } | RudzioLocation::Version { .. } | _ => {
                 anyhow::bail!("expected fallback Path, got {:?}", spec.location);
             }
         }
@@ -260,7 +270,14 @@ mod tests {
 
     #[rudzio::test]
     fn emit_version_produces_version_key() -> anyhow::Result<()> {
-        let spec = RudzioSpec::new(RudzioLocation::Version("0.1".to_owned()), Vec::new(), true);
+        let spec = RudzioSpec::new(
+            RudzioLocation::Version {
+                req: "0.1".to_owned(),
+                registry: None,
+            },
+            Vec::new(),
+            true,
+        );
         let rendered = build_rudzio_inline_table(&spec).to_string();
 
         anyhow::ensure!(
@@ -269,20 +286,60 @@ mod tests {
         );
         anyhow::ensure!(!rendered.contains("git ="), "rendered: {rendered}");
         anyhow::ensure!(!rendered.contains("path ="), "rendered: {rendered}");
+        anyhow::ensure!(
+            !rendered.contains("registry ="),
+            "registry should NOT appear when None: {rendered}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn emit_version_with_registry_emits_registry_key() -> anyhow::Result<()> {
+        let spec = RudzioSpec::new(
+            RudzioLocation::Version {
+                req: "=0.1.0".to_owned(),
+                registry: Some("fthm".to_owned()),
+            },
+            Vec::new(),
+            true,
+        );
+        let rendered = build_rudzio_inline_table(&spec).to_string();
+
+        anyhow::ensure!(
+            rendered.contains("version = \"=0.1.0\""),
+            "rendered: {rendered}"
+        );
+        anyhow::ensure!(
+            rendered.contains("registry = \"fthm\""),
+            "registry must appear next to version: {rendered}"
+        );
         Ok(())
     }
 
     #[rudzio::test]
     fn emit_default_features_false_appears_only_when_disabled() -> anyhow::Result<()> {
-        let enabled = RudzioSpec::new(RudzioLocation::Version("0.1".to_owned()), Vec::new(), true);
+        let enabled = RudzioSpec::new(
+            RudzioLocation::Version {
+                req: "0.1".to_owned(),
+                registry: None,
+            },
+            Vec::new(),
+            true,
+        );
         let rendered_enabled = build_rudzio_inline_table(&enabled).to_string();
         anyhow::ensure!(
             !rendered_enabled.contains("default-features"),
             "default-features should NOT appear when true: {rendered_enabled}",
         );
 
-        let disabled =
-            RudzioSpec::new(RudzioLocation::Version("0.1".to_owned()), Vec::new(), false);
+        let disabled = RudzioSpec::new(
+            RudzioLocation::Version {
+                req: "0.1".to_owned(),
+                registry: None,
+            },
+            Vec::new(),
+            false,
+        );
         let rendered_disabled = build_rudzio_inline_table(&disabled).to_string();
         anyhow::ensure!(
             rendered_disabled.contains("default-features = false"),

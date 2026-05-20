@@ -232,10 +232,19 @@ fn write_fixture(root: &Path, rudzio_root: &Path, build_dir: &Path) -> io::Resul
     // build.rs takes the `BUILD_RS_HELPERS` branch and inlines the
     // `expose_member_bins("consumer", ..., &["consumer"])` call that
     // spawns the nested `cargo build --bins` we are testing.
+    //
+    // `#[cfg(any(test, rudzio_test))]` (NOT bare `#[cfg(test)]`) is
+    // mandatory here: cargo-rudzio compiles the bridge under
+    // `--cfg rudzio_test` but `cfg!(test)` is FALSE during a normal
+    // `cargo build`. With bare `#[cfg(test)]` the `mod tests` block
+    // is excluded, no `#[rudzio::test]` entries register into
+    // `linkme::distributed_slice TEST_TOKENS`, and the aggregator
+    // runner panics at startup on `slice::from_raw_parts(null, 0)`
+    // when it tries to iterate the empty slice.
     fs::write(
         root.join("consumer").join("src").join("lib.rs"),
         "// rudzio_test marker\n\
-         #[cfg(test)]\n\
+         #[cfg(any(test, rudzio_test))]\n\
          mod tests {\n\
          \x20\x20\x20\x20use rudzio::common::context::{Suite, Test};\n\
          \x20\x20\x20\x20use rudzio::runtime::tokio::Multithread as TokioMultithread;\n\

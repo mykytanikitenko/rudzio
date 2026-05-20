@@ -60,7 +60,14 @@ fn make_plan(
     root: &Path,
     workspace_deps: BTreeMap<String, WorkspaceDepSpec>,
 ) -> Plan {
-    let rudzio_spec = RudzioSpec::new(RudzioLocation::Version("0.1".to_owned()), Vec::new(), true);
+    let rudzio_spec = RudzioSpec::new(
+        RudzioLocation::Version {
+            req: "0.1".to_owned(),
+            registry: None,
+        },
+        Vec::new(),
+        true,
+    );
     let mut plan = Plan::new(
         Utf8PathBuf::from(root.to_string_lossy().into_owned()),
         Utf8PathBuf::from(format!("{}/target", root.display())),

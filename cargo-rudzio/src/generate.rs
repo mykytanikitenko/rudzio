@@ -122,8 +122,19 @@ pub enum RudzioLocation {
     },
     /// Filesystem path to the crate root.
     Path(PathBuf),
-    /// Registry version requirement.
-    Version(String),
+    /// Registry version requirement plus an optional alternative
+    /// registry name. `registry = None` means the default registry
+    /// (crates.io); `registry = Some("name")` is a named alternative
+    /// declared in `[registries.<name>]` in `.cargo/config.toml`.
+    Version {
+        /// Optional named alternative registry. The aggregator emits
+        /// `registry = "<name>"` verbatim so cargo resolves the dep
+        /// against the same registry the consumer declared.
+        registry: Option<String>,
+        /// Cargo-format version requirement string (e.g. `"=0.1.0"`,
+        /// `">=1.2, <2"`).
+        req: String,
+    },
 }
 
 /// Manifest section a `DevDepSpec` was parsed from.
@@ -189,6 +200,17 @@ pub struct DevDepSpec {
     pub optional: bool,
     /// Filesystem path when this dep references a local crate.
     pub path: Option<PathBuf>,
+    /// Optional named alternative registry (`registry = "<name>"`).
+    ///
+    /// `None` means the default registry (crates.io). `Some("fthm")`
+    /// means the entry declared `registry = "fthm"` in the source
+    /// manifest; the aggregator and bridge crates re-emit this key
+    /// verbatim so cargo resolves the dep against the same registry
+    /// the consumer originally pointed at. Lost-registry symptom: the
+    /// generated `target/rudzio-auto-runner/Cargo.toml` strips the
+    /// `registry` key, cargo defaults to crates.io, and the build
+    /// breaks asymmetrically (plain `cargo test` keeps working).
+    pub registry: Option<String>,
     /// The local entry name under which this dep appears, when `package = ...` renames it.
     pub rename: Option<String>,
     /// Which manifest section this dep originated from
@@ -332,6 +354,10 @@ struct ResolvedRudzio {
     member: String,
     /// Filesystem path when the resolved dep is local.
     path: Option<PathBuf>,
+    /// Optional named alternative registry observed on the rudzio
+    /// declaration (or inherited from `[workspace.dependencies.rudzio]`
+    /// when the member said `workspace = true`).
+    registry: Option<String>,
     /// Whether the member kept cargo's `default-features = true`.
     uses_default_features: bool,
     /// Cargo version requirement when the resolved dep is registry-hosted.
@@ -350,6 +376,13 @@ pub struct WorkspaceDepSpec {
     pub git_ref: Option<GitRef>,
     /// Filesystem path when the workspace dep is local.
     pub path: Option<PathBuf>,
+    /// Optional named alternative registry (`registry = "<name>"`).
+    ///
+    /// `None` means the default registry; `Some("fthm")` propagates to
+    /// every member declaring this dep via `workspace = true`, so the
+    /// aggregator's regenerated dep table keeps the same registry
+    /// attribution the consumer's workspace originally declared.
+    pub registry: Option<String>,
     /// Whether to keep cargo's `default-features = true`.
     pub uses_default_features: bool,
     /// Registry version requirement (when present).
@@ -372,6 +405,7 @@ impl DevDepSpec {
             name,
             optional: false,
             path: None,
+            registry: None,
             rename: None,
             section: Section::Regular,
             uses_default_features: true,
@@ -546,6 +580,7 @@ impl WorkspaceDepSpec {
             git: None,
             git_ref: None,
             path: None,
+            registry: None,
             uses_default_features: true,
             version_req: None,
         }
@@ -1022,8 +1057,11 @@ pub fn collect_rudzio_spec(
     } else {
         // No path or git: every declaration is version-only (or
         // workspace-inherited from a version-only entry). Take the
-        // first non-None version_req.
-        let version = resolved
+        // first non-None version_req and pair it with the first
+        // non-None registry across the same declarations (cargo
+        // doesn't permit mixed registries on the same dep name; the
+        // first wins for the spec we emit).
+        let req = resolved
             .iter()
             .find_map(|entry| entry.version_req.clone())
             .ok_or_else(|| {
@@ -1031,7 +1069,8 @@ pub fn collect_rudzio_spec(
                     "rudzio is declared by workspace members but none of the declarations carry `path`, `git`, or `version` \u{2014} aggregator can't reference rudzio"
                 )
             })?;
-        RudzioLocation::Version(version)
+        let registry = resolved.iter().find_map(|entry| entry.registry.clone());
+        RudzioLocation::Version { req, registry }
     };
 
     let mut features: BTreeSet<String> = BTreeSet::new();
@@ -1073,11 +1112,17 @@ fn resolve_rudzio_declarations(
                 })?;
                 let mut feats: Vec<String> = ws.features.clone();
                 feats.extend(dep.features.iter().cloned());
+                // Member-level `registry = "<name>"` wins over the
+                // workspace entry's (member overrides workspace, same
+                // as cargo's own merge rules for features /
+                // default-features). Either side may be `None`.
+                let registry = dep.registry.clone().or_else(|| ws.registry.clone());
                 resolved.push(ResolvedRudzio {
                     member: member.package_name.clone(),
                     path: ws.path.clone(),
                     git: ws.git.clone(),
                     git_ref: ws.git_ref.clone(),
+                    registry,
                     version_req: ws.version_req.clone(),
                     features: feats,
                     uses_default_features: dep.uses_default_features && ws.uses_default_features,
@@ -1093,6 +1138,7 @@ fn resolve_rudzio_declarations(
                     path: dep.path.clone(),
                     git: dep.git.clone(),
                     git_ref: dep.git_ref.clone(),
+                    registry: dep.registry.clone(),
                     version_req,
                     features: dep.features.clone(),
                     uses_default_features: dep.uses_default_features,
@@ -1191,8 +1237,11 @@ pub fn build_rudzio_inline_table(spec: &RudzioSpec) -> InlineTable {
                 None => {}
             }
         }
-        RudzioLocation::Version(version) => {
-            tbl.insert("version", Value::String(Formatted::new(version.clone())));
+        RudzioLocation::Version { req, registry } => {
+            tbl.insert("version", Value::String(Formatted::new(req.clone())));
+            if let Some(name) = registry {
+                tbl.insert("registry", Value::String(Formatted::new(name.clone())));
+            }
         }
     }
     if !spec.features.is_empty() {
@@ -1468,6 +1517,7 @@ fn extract_workspace_dep_spec(item: &Item, workspace_root: &Path) -> WorkspaceDe
         git_ref: None,
         features: Vec::new(),
         uses_default_features: true,
+        registry: None,
     };
     match item {
         Item::Value(Value::String(version_str)) => {
@@ -1534,6 +1584,11 @@ fn apply_ws_dep_field(spec: &mut WorkspaceDepSpec, key: &str, val: &Value, base:
         "default-features" => {
             if let Some(flag) = val.as_bool() {
                 spec.uses_default_features = flag;
+            }
+        }
+        "registry" => {
+            if let Some(text) = val.as_str() {
+                spec.registry = Some(text.to_owned());
             }
         }
         _ => {}
@@ -1626,6 +1681,7 @@ fn parse_dev_dep_entry(
         rename: None,
         version_req: String::new(),
         path: None,
+        registry: None,
         git: None,
         git_ref: None,
         features: Vec::new(),
@@ -1728,6 +1784,11 @@ fn apply_dev_dep_field(spec: &mut DevDepSpec, key: &str, val: &Value, manifest_d
             if let Some(text) = val.as_str() {
                 spec.rename = Some(spec.name.clone());
                 text.clone_into(&mut spec.name);
+            }
+        }
+        "registry" => {
+            if let Some(text) = val.as_str() {
+                spec.registry = Some(text.to_owned());
             }
         }
         _ => {}
@@ -2592,97 +2653,23 @@ fn render_dev_dep(dep: &DevDepSpec, plan: &Plan) -> Result<Item> {
     if let Some(item) = render_sibling_bridge_dep(dep, plan) {
         return Ok(item);
     }
-
+    let registry = resolve_dev_dep_registry(dep, plan);
     let mut tbl = InlineTable::new();
     if dep.workspace_inherited {
-        // Expand the workspace-inherited dev-dep to a concrete path/version
-        // spec, merging the member's extra fields. The aggregator has its
-        // own `[workspace]` stanza (empty), so `workspace = true` would not
-        // resolve here.
-        let ws = plan
-            .workspace_deps
-            .get(&dep.name)
-            .ok_or_else(|| anyhow!("dev-dep `{}` says `workspace = true` but root Cargo.toml has no `[workspace.dependencies.{}]` entry", dep.name, dep.name))?;
-        if let Some(path_buf) = &ws.path {
-            tbl.insert(
-                "path",
-                Value::String(Formatted::new(path_buf.to_string_lossy().into_owned())),
-            );
-        } else if let Some(version) = &ws.version_req {
-            tbl.insert("version", Value::String(Formatted::new(version.clone())));
-        } else if let Some(url) = &ws.git {
-            tbl.insert("git", Value::String(Formatted::new(url.clone())));
-            match &ws.git_ref {
-                Some(GitRef::Rev(rev)) => {
-                    tbl.insert("rev", Value::String(Formatted::new(rev.clone())));
-                }
-                Some(GitRef::Branch(branch)) => {
-                    tbl.insert("branch", Value::String(Formatted::new(branch.clone())));
-                }
-                Some(GitRef::Tag(tag)) => {
-                    tbl.insert("tag", Value::String(Formatted::new(tag.clone())));
-                }
-                None => {}
-            }
-        } else {
-            bail!(
-                "workspace dep `{}` has neither `path`, `version`, nor `git` to inherit",
-                dep.name
-            );
-        }
-        let mut feats: Vec<String> = ws.features.clone();
-        feats.extend(dep.features.iter().cloned());
-        feats.sort();
-        feats.dedup();
-        if !feats.is_empty() {
-            let mut arr = Array::new();
-            for feat in feats {
-                arr.push(Value::String(Formatted::new(feat)));
-            }
-            tbl.insert("features", Value::Array(arr));
-        }
-        let dflt = dep.uses_default_features && ws.uses_default_features;
-        if !dflt {
-            tbl.insert("default-features", Value::Boolean(Formatted::new(false)));
-        }
+        fill_workspace_inherited_body(&mut tbl, dep, plan)?;
     } else if let Some(path_buf) = &dep.path {
-        tbl.insert(
-            "path",
-            Value::String(Formatted::new(path_buf.to_string_lossy().into_owned())),
-        );
-        if !dep.features.is_empty() {
-            let mut arr = Array::new();
-            for feat in &dep.features {
-                arr.push(Value::String(Formatted::new(feat.clone())));
-            }
-            tbl.insert("features", Value::Array(arr));
-        }
-        if !dep.uses_default_features {
-            tbl.insert("default-features", Value::Boolean(Formatted::new(false)));
-        }
+        fill_path_dep_body(&mut tbl, dep, path_buf);
     } else if dep.features.is_empty()
         && dep.uses_default_features
         && dep.rename.is_none()
         && !dep.optional
+        && registry.is_none()
     {
         return Ok(Item::Value(Value::String(Formatted::new(
             dep.version_req.clone(),
         ))));
     } else {
-        tbl.insert(
-            "version",
-            Value::String(Formatted::new(dep.version_req.clone())),
-        );
-        if !dep.features.is_empty() {
-            let mut arr = Array::new();
-            for feat in &dep.features {
-                arr.push(Value::String(Formatted::new(feat.clone())));
-            }
-            tbl.insert("features", Value::Array(arr));
-        }
-        if !dep.uses_default_features {
-            tbl.insert("default-features", Value::Boolean(Formatted::new(false)));
-        }
+        fill_version_dep_body(&mut tbl, dep);
     }
     if dep.rename.is_some() {
         tbl.insert("package", Value::String(Formatted::new(dep.name.clone())));
@@ -2690,7 +2677,135 @@ fn render_dev_dep(dep: &DevDepSpec, plan: &Plan) -> Result<Item> {
     if dep.optional {
         tbl.insert("optional", Value::Boolean(Formatted::new(true)));
     }
+    if let Some(name) = &registry {
+        tbl.insert("registry", Value::String(Formatted::new(name.clone())));
+    }
     Ok(Item::Value(Value::InlineTable(tbl)))
+}
+
+/// Resolve the effective `registry = "<name>"` for a dev-dep entry.
+///
+/// - Workspace-inherited: member-level `registry` overrides the
+///   workspace entry's (cargo's own merge rule for the same key).
+/// - Direct: the member's own `registry` is the only source.
+///
+/// Path-based and git-based locations conceptually can't carry a
+/// registry — cargo rejects `registry` alongside `path`/`git` — but
+/// we still preserve and emit the field when set so manifests that
+/// happen to carry it round-trip unchanged.
+fn resolve_dev_dep_registry(dep: &DevDepSpec, plan: &Plan) -> Option<String> {
+    if dep.workspace_inherited {
+        let ws_registry = plan
+            .workspace_deps
+            .get(&dep.name)
+            .and_then(|ws| ws.registry.clone());
+        dep.registry.clone().or(ws_registry)
+    } else {
+        dep.registry.clone()
+    }
+}
+
+/// Populate `tbl` with the inline-table body for a workspace-inherited
+/// dev-dep entry, expanding the `workspace = true` flag into the
+/// concrete location keys (`path`, `version`, or `git` + refs) the
+/// aggregator's own (empty) `[workspace]` stanza couldn't resolve.
+fn fill_workspace_inherited_body(
+    tbl: &mut InlineTable,
+    dep: &DevDepSpec,
+    plan: &Plan,
+) -> Result<()> {
+    let ws = plan.workspace_deps.get(&dep.name).ok_or_else(|| {
+        anyhow!(
+            "dev-dep `{}` says `workspace = true` but root Cargo.toml has no `[workspace.dependencies.{}]` entry",
+            dep.name,
+            dep.name
+        )
+    })?;
+    if let Some(path_buf) = &ws.path {
+        tbl.insert(
+            "path",
+            Value::String(Formatted::new(path_buf.to_string_lossy().into_owned())),
+        );
+    } else if let Some(version) = &ws.version_req {
+        tbl.insert("version", Value::String(Formatted::new(version.clone())));
+    } else if let Some(url) = &ws.git {
+        tbl.insert("git", Value::String(Formatted::new(url.clone())));
+        match &ws.git_ref {
+            Some(GitRef::Rev(rev)) => {
+                tbl.insert("rev", Value::String(Formatted::new(rev.clone())));
+            }
+            Some(GitRef::Branch(branch)) => {
+                tbl.insert("branch", Value::String(Formatted::new(branch.clone())));
+            }
+            Some(GitRef::Tag(tag)) => {
+                tbl.insert("tag", Value::String(Formatted::new(tag.clone())));
+            }
+            None => {}
+        }
+    } else {
+        bail!(
+            "workspace dep `{}` has neither `path`, `version`, nor `git` to inherit",
+            dep.name
+        );
+    }
+    let mut feats: Vec<String> = ws.features.clone();
+    feats.extend(dep.features.iter().cloned());
+    feats.sort();
+    feats.dedup();
+    if !feats.is_empty() {
+        let mut arr = Array::new();
+        for feat in feats {
+            arr.push(Value::String(Formatted::new(feat)));
+        }
+        tbl.insert("features", Value::Array(arr));
+    }
+    let dflt = dep.uses_default_features && ws.uses_default_features;
+    if !dflt {
+        tbl.insert("default-features", Value::Boolean(Formatted::new(false)));
+    }
+    Ok(())
+}
+
+/// Populate `tbl` with the inline-table body for a direct path-based
+/// dev-dep entry — the simplest shape: just `path = "..."` plus any
+/// non-default `features` / `default-features = false`.
+fn fill_path_dep_body(tbl: &mut InlineTable, dep: &DevDepSpec, path_buf: &Path) {
+    tbl.insert(
+        "path",
+        Value::String(Formatted::new(path_buf.to_string_lossy().into_owned())),
+    );
+    if !dep.features.is_empty() {
+        let mut arr = Array::new();
+        for feat in &dep.features {
+            arr.push(Value::String(Formatted::new(feat.clone())));
+        }
+        tbl.insert("features", Value::Array(arr));
+    }
+    if !dep.uses_default_features {
+        tbl.insert("default-features", Value::Boolean(Formatted::new(false)));
+    }
+}
+
+/// Populate `tbl` with the inline-table body for a direct version-based
+/// dev-dep entry — `version = "..."` plus any non-default `features` /
+/// `default-features = false`. Used when the entry is non-trivial
+/// enough (features / rename / optional / registry) that the bare
+/// version-string shape won't do.
+fn fill_version_dep_body(tbl: &mut InlineTable, dep: &DevDepSpec) {
+    tbl.insert(
+        "version",
+        Value::String(Formatted::new(dep.version_req.clone())),
+    );
+    if !dep.features.is_empty() {
+        let mut arr = Array::new();
+        for feat in &dep.features {
+            arr.push(Value::String(Formatted::new(feat.clone())));
+        }
+        tbl.insert("features", Value::Array(arr));
+    }
+    if !dep.uses_default_features {
+        tbl.insert("default-features", Value::Boolean(Formatted::new(false)));
+    }
 }
 
 /// Build the aggregator's `src/tests.rs` body — `#[path]`-included submodules per member's tests.
