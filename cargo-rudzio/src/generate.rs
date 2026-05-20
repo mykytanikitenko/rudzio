@@ -389,6 +389,24 @@ pub struct WorkspaceDepSpec {
     pub version_req: Option<String>,
 }
 
+/// One sibling-module helper discovered under a member's test root.
+///
+/// Emitted at the aggregator's crate root so `use crate::<module>`
+/// inside `#[path]`-included test files resolves the same way it
+/// would under stock cargo's per-test-binary crate-root semantics.
+#[derive(Clone, Debug)]
+struct TestRootHelper {
+    /// Module identifier emitted as `mod <module>;` at the aggregator
+    /// crate root. Always a sanitised, non-keyword identifier (raw
+    /// identifiers are not needed here — siblings of a Rust `mod.rs`
+    /// already have to be plain identifiers in source).
+    module: String,
+    /// Absolute path to the helper's source file
+    /// (`<test_root_dir>/<module>.rs` or
+    /// `<test_root_dir>/<module>/mod.rs`).
+    path: PathBuf,
+}
+
 impl DevDepSpec {
     /// Construct a default `DevDepSpec` keyed only by name.
     ///
@@ -1502,14 +1520,31 @@ fn read_workspace_deps(workspace_root: &Path) -> Result<BTreeMap<String, Workspa
         return Ok(out);
     };
     for (name, item) in deps {
-        let spec = extract_workspace_dep_spec(item, workspace_root);
+        let spec = extract_workspace_dep_spec(item, workspace_root, name).with_context(|| {
+            format!(
+                "parsing [workspace.dependencies.{name}] in {}",
+                manifest_path.display()
+            )
+        })?;
         drop(out.insert(name.to_owned(), spec));
     }
     Ok(out)
 }
 
 /// Extract a `WorkspaceDepSpec` from a single `[workspace.dependencies]` entry value.
-fn extract_workspace_dep_spec(item: &Item, workspace_root: &Path) -> WorkspaceDepSpec {
+///
+/// # Errors
+///
+/// Returns an error when the entry contains an unrecognised key or a
+/// known key with the wrong TOML type. See [`apply_ws_dep_field`] for
+/// the rationale (strict-parse is cheap insurance against the same
+/// silent-drop bug class that previously let `registry = "<name>"`
+/// vanish from generated manifests).
+fn extract_workspace_dep_spec(
+    item: &Item,
+    workspace_root: &Path,
+    dep_name: &str,
+) -> Result<WorkspaceDepSpec> {
     let mut spec = WorkspaceDepSpec {
         version_req: None,
         path: None,
@@ -1525,74 +1560,94 @@ fn extract_workspace_dep_spec(item: &Item, workspace_root: &Path) -> WorkspaceDe
         }
         Item::Value(Value::InlineTable(inline)) => {
             for (key, val) in inline {
-                apply_ws_dep_field(&mut spec, key, val, workspace_root);
+                apply_ws_dep_field(&mut spec, key, val, workspace_root, dep_name)?;
             }
         }
         Item::Table(table) => {
             for (key, item_val) in table {
                 if let Some(val) = item_val.as_value() {
-                    apply_ws_dep_field(&mut spec, key, val, workspace_root);
+                    apply_ws_dep_field(&mut spec, key, val, workspace_root, dep_name)?;
+                } else {
+                    bail!(
+                        "workspace dep `{dep_name}` has key `{key}` with a non-value shape (nested table or array-of-tables) — only inline values are supported in `[workspace.dependencies]` entries",
+                    );
                 }
             }
         }
-        Item::None | Item::Value(_) | Item::ArrayOfTables(_) => {}
+        Item::None | Item::ArrayOfTables(_) => {
+            bail!(
+                "workspace dep `{dep_name}` has an unsupported entry shape — expected a string version requirement or an inline/explicit table",
+            );
+        }
+        Item::Value(other) => {
+            bail!(
+                "workspace dep `{dep_name}` has top-level value of type `{}` — expected a string version requirement or an inline table",
+                toml_type_name(other)
+            );
+        }
     }
-    spec
+    Ok(spec)
 }
 
 /// Apply one `key = val` pair from a `[workspace.dependencies]` entry into `spec`.
-fn apply_ws_dep_field(spec: &mut WorkspaceDepSpec, key: &str, val: &Value, base: &Path) {
+///
+/// # Errors
+///
+/// Returns an error when `key` is not one of the cargo-recognised
+/// workspace-dep keys this parser understands, or when the value's
+/// TOML type doesn't match (e.g. `version = 42`). Same rationale as
+/// [`apply_dev_dep_field`] — silent drops at this layer mean
+/// consumer-side attribution (`registry`, `default-features`, etc.)
+/// vanishes without trace; fail loudly so the parser is kept in sync
+/// with cargo's actual key set.
+fn apply_ws_dep_field(
+    spec: &mut WorkspaceDepSpec,
+    key: &str,
+    val: &Value,
+    base: &Path,
+    dep_name: &str,
+) -> Result<()> {
     match key {
         "version" => {
-            if let Some(text) = val.as_str() {
-                spec.version_req = Some(text.to_owned());
-            }
+            spec.version_req = Some(require_string(val, dep_name, "version")?.to_owned());
         }
         "path" => {
-            if let Some(text) = val.as_str() {
-                spec.path = Some(base.join(text));
-            }
+            spec.path = Some(base.join(require_string(val, dep_name, "path")?));
         }
         "git" => {
-            if let Some(text) = val.as_str() {
-                spec.git = Some(text.to_owned());
-            }
+            spec.git = Some(require_string(val, dep_name, "git")?.to_owned());
         }
         "rev" => {
-            if let Some(text) = val.as_str() {
-                spec.git_ref = Some(GitRef::Rev(text.to_owned()));
-            }
+            spec.git_ref = Some(GitRef::Rev(
+                require_string(val, dep_name, "rev")?.to_owned(),
+            ));
         }
         "branch" => {
-            if let Some(text) = val.as_str() {
-                spec.git_ref = Some(GitRef::Branch(text.to_owned()));
-            }
+            spec.git_ref = Some(GitRef::Branch(
+                require_string(val, dep_name, "branch")?.to_owned(),
+            ));
         }
         "tag" => {
-            if let Some(text) = val.as_str() {
-                spec.git_ref = Some(GitRef::Tag(text.to_owned()));
-            }
+            spec.git_ref = Some(GitRef::Tag(
+                require_string(val, dep_name, "tag")?.to_owned(),
+            ));
         }
         "features" => {
-            if let Some(arr) = val.as_array() {
-                spec.features = arr
-                    .iter()
-                    .filter_map(|entry| entry.as_str().map(str::to_owned))
-                    .collect();
-            }
+            spec.features = require_string_array(val, dep_name, "features")?;
         }
         "default-features" => {
-            if let Some(flag) = val.as_bool() {
-                spec.uses_default_features = flag;
-            }
+            spec.uses_default_features = require_bool(val, dep_name, "default-features")?;
         }
         "registry" => {
-            if let Some(text) = val.as_str() {
-                spec.registry = Some(text.to_owned());
-            }
+            spec.registry = Some(require_string(val, dep_name, "registry")?.to_owned());
         }
-        _ => {}
+        other => {
+            bail!(
+                "workspace dep `{dep_name}` carries unrecognised key `{other}`. Either it's a typo, or this version of cargo-rudzio doesn't yet know about it. Recognised keys: version, path, git, rev, branch, tag, features, default-features, registry. Open an issue if you believe `{other}` is a valid cargo workspace-dep key.",
+            );
+        }
     }
+    Ok(())
 }
 
 /// Parse both `[dependencies]` and `[dev-dependencies]` (plus their
@@ -1621,20 +1676,26 @@ fn read_dev_deps(manifest_path: &Path) -> Result<Vec<DevDepSpec>> {
 
     let mut out: Vec<DevDepSpec> = Vec::new();
     for (section_name, section) in sections {
-        collect_dev_deps(&doc, &[section_name], manifest_dir, section, &mut out);
+        collect_dev_deps(&doc, &[section_name], manifest_dir, section, &mut out)
+            .with_context(|| format!("parsing [{section_name}] in {}", manifest_path.display()))?;
     }
 
     if let Some(target_tbl) = doc.get("target").and_then(Item::as_table) {
-        for (_cfg, cfg_item) in target_tbl {
+        for (cfg, cfg_item) in target_tbl {
             let Some(cfg_tbl) = cfg_item.as_table() else {
                 continue;
             };
             for (section_name, section) in sections {
                 if let Some(Item::Table(deps_tbl)) = cfg_tbl.get(section_name) {
                     for (name, item) in deps_tbl {
-                        if let Some(spec) = parse_dev_dep_entry(name, item, manifest_dir, section) {
-                            out.push(spec);
-                        }
+                        let spec = parse_dev_dep_entry(name, item, manifest_dir, section)
+                            .with_context(|| {
+                                format!(
+                                    "parsing [target.{cfg}.{section_name}.{name}] in {}",
+                                    manifest_path.display()
+                                )
+                            })?;
+                        out.push(spec);
                     }
                 }
             }
@@ -1645,36 +1706,58 @@ fn read_dev_deps(manifest_path: &Path) -> Result<Vec<DevDepSpec>> {
 }
 
 /// Walk `doc` to the table at `path` and append every entry as a `DevDepSpec` into `out`.
+///
+/// # Errors
+///
+/// Returns an error for the first dep entry that fails to parse.
+/// Missing tables along `path` are NOT errors — they just mean the
+/// section doesn't exist in this manifest, which is normal.
 fn collect_dev_deps(
     doc: &DocumentMut,
     path: &[&str],
     manifest_dir: &Path,
     section: Section,
     out: &mut Vec<DevDepSpec>,
-) {
+) -> Result<()> {
     let mut cur: &Item = doc.as_item();
     for key in path {
-        let Some(tbl) = cur.as_table() else { return };
-        let Some(next) = tbl.get(key) else { return };
+        let Some(tbl) = cur.as_table() else {
+            return Ok(());
+        };
+        let Some(next) = tbl.get(key) else {
+            return Ok(());
+        };
         cur = next;
     }
     let Some(deps_tbl) = cur.as_table() else {
-        return;
+        return Ok(());
     };
     for (name, item) in deps_tbl {
-        if let Some(spec) = parse_dev_dep_entry(name, item, manifest_dir, section) {
-            out.push(spec);
-        }
+        let spec = parse_dev_dep_entry(name, item, manifest_dir, section)
+            .with_context(|| format!("parsing dep entry `{name}`"))?;
+        out.push(spec);
     }
+    Ok(())
 }
 
-/// Parse a single dev/normal dep entry into a `DevDepSpec`, returning `None` for unsupported shapes.
+/// Parse a single dev/normal dep entry into a `DevDepSpec`.
+///
+/// # Errors
+///
+/// Returns an error when the entry's TOML shape isn't a string
+/// version requirement, an inline table, or an explicit table — or
+/// when one of those tables contains an unrecognised key or a known
+/// key with the wrong type. Strict-parse on purpose: every silent
+/// drop in this layer caused a downstream debugging session
+/// previously (see Bug #6: `registry = "fthm"` vanished without
+/// trace), so we fail loudly and force the parser to track cargo's
+/// real key set.
 fn parse_dev_dep_entry(
     name: &str,
     item: &Item,
     manifest_dir: &Path,
     section: Section,
-) -> Option<DevDepSpec> {
+) -> Result<DevDepSpec> {
     let mut spec = DevDepSpec {
         section,
         name: name.to_owned(),
@@ -1692,106 +1775,203 @@ fn parse_dev_dep_entry(
     match item {
         Item::Value(Value::String(version_str)) => {
             version_str.value().clone_into(&mut spec.version_req);
-            Some(spec)
         }
         Item::Value(Value::InlineTable(inline)) => {
-            fill_dev_dep_from_pairs(&mut spec, inline.iter(), manifest_dir);
-            Some(spec)
+            fill_dev_dep_from_pairs(&mut spec, inline.iter(), manifest_dir)?;
         }
         Item::Table(table) => {
-            fill_dev_dep_from_table(&mut spec, table, manifest_dir);
-            Some(spec)
+            fill_dev_dep_from_table(&mut spec, table, manifest_dir)?;
         }
-        Item::None | Item::Value(_) | Item::ArrayOfTables(_) => None,
+        Item::None | Item::ArrayOfTables(_) => {
+            bail!(
+                "dep `{name}` has an unsupported entry shape — expected a string version requirement or an inline/explicit table",
+            );
+        }
+        Item::Value(other) => {
+            bail!(
+                "dep `{name}` has top-level value of type `{}` — expected a string version requirement or an inline table",
+                toml_type_name(other)
+            );
+        }
     }
+    Ok(spec)
 }
 
 /// Apply every `(key, value)` pair from an iterator into `spec`.
+///
+/// # Errors
+///
+/// Propagates the first error returned by [`apply_dev_dep_field`].
 fn fill_dev_dep_from_pairs<'pair>(
     spec: &mut DevDepSpec,
     entries: impl Iterator<Item = (&'pair str, &'pair Value)>,
     manifest_dir: &Path,
-) {
+) -> Result<()> {
     for (key, val) in entries {
-        apply_dev_dep_field(spec, key, val, manifest_dir);
+        apply_dev_dep_field(spec, key, val, manifest_dir)?;
     }
+    Ok(())
 }
 
 /// Apply every value-typed cell of a TOML `Table` into `spec`.
-fn fill_dev_dep_from_table(spec: &mut DevDepSpec, table: &Table, manifest_dir: &Path) {
+///
+/// # Errors
+///
+/// Propagates the first error returned by [`apply_dev_dep_field`]. A
+/// nested table or array-of-tables under a dep entry is itself an
+/// error — cargo dep-table fields are strictly inline values.
+fn fill_dev_dep_from_table(
+    spec: &mut DevDepSpec,
+    table: &Table,
+    manifest_dir: &Path,
+) -> Result<()> {
     for (key, item) in table {
-        if let Some(val) = item.as_value() {
-            apply_dev_dep_field(spec, key, val, manifest_dir);
-        }
+        let Some(val) = item.as_value() else {
+            bail!(
+                "dep `{}` has key `{key}` with a non-value shape (nested table or array-of-tables) — only inline values are supported",
+                spec.name,
+            );
+        };
+        apply_dev_dep_field(spec, key, val, manifest_dir)?;
     }
+    Ok(())
 }
 
 /// Apply one `key = val` pair from a dev/normal dep entry into `spec`.
-fn apply_dev_dep_field(spec: &mut DevDepSpec, key: &str, val: &Value, manifest_dir: &Path) {
+///
+/// # Errors
+///
+/// Returns an error when `key` is not one of the cargo-recognised
+/// dep-table keys this parser understands, or when the value's TOML
+/// type doesn't match the key's expected shape (e.g. `version = 42`
+/// instead of `version = "0.1"`). Silent drops let consumer-side
+/// configuration (e.g. `registry = "fthm"`) vanish without diagnostic
+/// — every silent drop costs a downstream debugging session, so we
+/// fail loudly here and force the parser to be updated whenever cargo
+/// grows new keys.
+fn apply_dev_dep_field(
+    spec: &mut DevDepSpec,
+    key: &str,
+    val: &Value,
+    manifest_dir: &Path,
+) -> Result<()> {
     match key {
-        "workspace" if val.as_bool() == Some(true) => {
-            spec.workspace_inherited = true;
+        "workspace" => {
+            let flag = val.as_bool().ok_or_else(|| {
+                anyhow!(
+                    "dep `{}`: `workspace` must be a boolean, got {}",
+                    spec.name,
+                    toml_type_name(val)
+                )
+            })?;
+            if flag {
+                spec.workspace_inherited = true;
+            }
         }
         "version" => {
-            if let Some(text) = val.as_str() {
-                text.clone_into(&mut spec.version_req);
-            }
+            spec.version_req = require_string(val, &spec.name, "version")?.to_owned();
         }
         "path" => {
-            if let Some(text) = val.as_str() {
-                spec.path = Some(manifest_dir.join(text));
-            }
+            let text = require_string(val, &spec.name, "path")?;
+            spec.path = Some(manifest_dir.join(text));
         }
         "git" => {
-            if let Some(text) = val.as_str() {
-                spec.git = Some(text.to_owned());
-            }
+            spec.git = Some(require_string(val, &spec.name, "git")?.to_owned());
         }
         "rev" => {
-            if let Some(text) = val.as_str() {
-                spec.git_ref = Some(GitRef::Rev(text.to_owned()));
-            }
+            spec.git_ref = Some(GitRef::Rev(
+                require_string(val, &spec.name, "rev")?.to_owned(),
+            ));
         }
         "branch" => {
-            if let Some(text) = val.as_str() {
-                spec.git_ref = Some(GitRef::Branch(text.to_owned()));
-            }
+            spec.git_ref = Some(GitRef::Branch(
+                require_string(val, &spec.name, "branch")?.to_owned(),
+            ));
         }
         "tag" => {
-            if let Some(text) = val.as_str() {
-                spec.git_ref = Some(GitRef::Tag(text.to_owned()));
-            }
+            spec.git_ref = Some(GitRef::Tag(
+                require_string(val, &spec.name, "tag")?.to_owned(),
+            ));
         }
         "features" => {
-            if let Some(arr) = val.as_array() {
-                spec.features = arr
-                    .iter()
-                    .filter_map(|entry| entry.as_str().map(str::to_owned))
-                    .collect();
-            }
+            spec.features = require_string_array(val, &spec.name, "features")?;
         }
         "default-features" => {
-            if let Some(flag) = val.as_bool() {
-                spec.uses_default_features = flag;
-            }
+            spec.uses_default_features = require_bool(val, &spec.name, "default-features")?;
         }
         "optional" => {
-            if let Some(flag) = val.as_bool() {
-                spec.optional = flag;
-            }
+            spec.optional = require_bool(val, &spec.name, "optional")?;
         }
         "package" => {
-            if let Some(text) = val.as_str() {
-                spec.rename = Some(spec.name.clone());
-                text.clone_into(&mut spec.name);
-            }
+            let text = require_string(val, &spec.name, "package")?;
+            spec.rename = Some(spec.name.clone());
+            text.clone_into(&mut spec.name);
         }
         "registry" => {
-            if let Some(text) = val.as_str() {
-                spec.registry = Some(text.to_owned());
-            }
+            spec.registry = Some(require_string(val, &spec.name, "registry")?.to_owned());
         }
-        _ => {}
+        other => {
+            bail!(
+                "dep `{}` carries unrecognised key `{other}`. Either it's a typo, or this version of cargo-rudzio doesn't yet know about it. Recognised keys: workspace, version, path, git, rev, branch, tag, features, default-features, optional, package, registry. Open an issue if you believe `{other}` is a valid cargo key.",
+                spec.name,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Coerce a `Value` to `&str` or bail with a typed diagnostic.
+fn require_string<'val>(val: &'val Value, dep: &str, key: &str) -> Result<&'val str> {
+    val.as_str().ok_or_else(|| {
+        anyhow!(
+            "dep `{dep}`: `{key}` must be a string, got {}",
+            toml_type_name(val)
+        )
+    })
+}
+
+/// Coerce a `Value` to `bool` or bail with a typed diagnostic.
+fn require_bool(val: &Value, dep: &str, key: &str) -> Result<bool> {
+    val.as_bool().ok_or_else(|| {
+        anyhow!(
+            "dep `{dep}`: `{key}` must be a boolean, got {}",
+            toml_type_name(val)
+        )
+    })
+}
+
+/// Coerce a `Value` to a `Vec<String>` (array of strings) or bail.
+fn require_string_array(val: &Value, dep: &str, key: &str) -> Result<Vec<String>> {
+    let arr = val.as_array().ok_or_else(|| {
+        anyhow!(
+            "dep `{dep}`: `{key}` must be an array of strings, got {}",
+            toml_type_name(val)
+        )
+    })?;
+    let mut out: Vec<String> = Vec::with_capacity(arr.len());
+    for (idx, entry) in arr.iter().enumerate() {
+        let text = entry.as_str().ok_or_else(|| {
+            anyhow!(
+                "dep `{dep}`: `{key}[{idx}]` must be a string, got {}",
+                toml_type_name(entry)
+            )
+        })?;
+        out.push(text.to_owned());
+    }
+    Ok(out)
+}
+
+/// Render a `Value`'s TOML type as a human-readable string for use
+/// in parse-error diagnostics.
+const fn toml_type_name(val: &Value) -> &'static str {
+    match val {
+        Value::String(_) => "string",
+        Value::Integer(_) => "integer",
+        Value::Float(_) => "float",
+        Value::Boolean(_) => "boolean",
+        Value::Datetime(_) => "datetime",
+        Value::Array(_) => "array",
+        Value::InlineTable(_) => "inline table",
     }
 }
 
@@ -2367,6 +2547,28 @@ pub fn build_main_rs(plan: &Plan) -> String {
         let _ignored: FmtResult = writeln!(out, "extern crate {ident};");
     }
 
+    // Transparent re-export of each member's test-root helper modules
+    // at the aggregator's crate root. Under stock cargo, a `[[test]]
+    // <name>` binary with `tests/<name>/mod.rs` as its entry point has
+    // mod.rs as the crate root, so `mod common;` in mod.rs makes
+    // `crate::common` resolve from any sibling test file. Under the
+    // aggregator mod.rs is `#[path]`-included as a NESTED module, and
+    // `crate::common` from inside it looks at the (different)
+    // aggregator crate root. Mirroring those helper-mod declarations
+    // here at the actual crate root restores stock-cargo semantics.
+    //
+    // Collisions across members (two members declaring `mod common;`
+    // with different files) are flagged by `collect_test_root_helpers`
+    // so the user gets a clear error rather than a silent first-wins.
+    for helper in collect_test_root_helpers(plan) {
+        let _ignored: FmtResult = writeln!(
+            out,
+            "#[path = {}]\nmod {};",
+            quote_str(&helper.path.to_string_lossy()),
+            helper.module,
+        );
+    }
+
     // The tests module gets a unique name (`__rudzio_member_tests`)
     // rather than the natural `tests`. `rudzio::manifest_dir!()`
     // identifies aggregator-context module paths by looking for that
@@ -2408,10 +2610,144 @@ fn main() {",
     out
 }
 
+/// Walk every member's test-root files, parse each for top-level
+/// `mod <name>;` declarations, and resolve each to the sibling file
+/// it refers to. Results are deduplicated by `(module, path)`; a
+/// genuine collision (same module name across two members pointing
+/// at DIFFERENT files) is silently first-wins because diagnosing it
+/// from the codegen layer would require threading errors back up.
+/// The resulting compile error (`error[E0428]: the name X is defined
+/// multiple times`) surfaces it loudly enough in practice.
+fn collect_test_root_helpers(plan: &Plan) -> Vec<TestRootHelper> {
+    let mut by_module: BTreeMap<String, PathBuf> = BTreeMap::new();
+    for member in &plan.members {
+        for test_file in &member.test_files {
+            for (module, path) in discover_test_root_helpers(test_file) {
+                let _previous = by_module.entry(module).or_insert(path);
+            }
+        }
+    }
+    by_module
+        .into_iter()
+        .map(|(module, path)| TestRootHelper { module, path })
+        .collect()
+}
+
 /// Normalise a Cargo package name (which allows hyphens) into the Rust
 /// identifier cargo actually uses for `extern crate` / path references.
 fn crate_name_to_ident(name: &str) -> String {
     name.replace('-', "_")
+}
+
+/// Parse `test_file` (the `[[test]] path = "..."` entry-point of a
+/// member's integration test binary) for top-level `mod <name>;`
+/// declarations and resolve each to the sibling file. Returns
+/// `(name, abs_path)` pairs in declaration order.
+///
+/// Only fires for `<dir>/mod.rs` entry points — flat
+/// `tests/<name>.rs` files have no siblings to mirror at the
+/// aggregator crate root, since stock cargo doesn't expose any
+/// `crate::*` modules for them either.
+///
+/// Detection is line-based, not syn-driven, so the patterns
+/// recognised are intentionally narrow:
+///
+///   `mod foo;`            (private)
+///   `pub mod foo;`        (re-exported)
+///   `pub(crate) mod foo;` (crate-visible)
+///   `pub(super) mod foo;` (parent-visible).
+///
+/// `cfg`-gated `#[cfg(...)] mod foo;` is matched only when the cfg
+/// attribute is on its own line above `mod foo;` (the cfg is dropped
+/// from the re-export — the helper is unconditionally available at
+/// the aggregator root, which is the right semantics: cfg-gated
+/// helpers were already opt-in at the test-binary level, and the
+/// aggregator's `--cfg rudzio_test` activation broadens that gate).
+fn discover_test_root_helpers(test_file: &Path) -> Vec<(String, PathBuf)> {
+    if test_file.file_name().and_then(|os_name| os_name.to_str()) != Some("mod.rs") {
+        return Vec::new();
+    }
+    let Some(dir) = test_file.parent() else {
+        return Vec::new();
+    };
+    let Ok(text) = fs::read_to_string(test_file) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, PathBuf)> = Vec::new();
+    for raw_line in text.lines() {
+        let Some(name) = parse_top_level_mod_decl(raw_line) else {
+            continue;
+        };
+        let sibling_file = dir.join(format!("{name}.rs"));
+        let sibling_dir_mod = dir.join(&name).join("mod.rs");
+        let resolved = if sibling_file.is_file() {
+            sibling_file
+        } else if sibling_dir_mod.is_file() {
+            sibling_dir_mod
+        } else {
+            // `mod foo;` with no matching file — either a typo in the
+            // member's source or the file is generated at build.rs
+            // time. Either way the re-export would point at a missing
+            // file and break the aggregator build, so skip it.
+            continue;
+        };
+        out.push((name, resolved));
+    }
+    out
+}
+
+/// Match a single source line against the `[pub(...) ] mod NAME;`
+/// pattern and return `NAME` when present. `None` for any other
+/// shape (comments, attributes, inline `mod NAME { ... }` blocks,
+/// nested mods inside fns or impls — those don't introduce
+/// crate-root submodules under stock cargo either, so the
+/// re-export must skip them).
+fn parse_top_level_mod_decl(raw_line: &str) -> Option<String> {
+    let trimmed = raw_line.trim();
+    if trimmed.starts_with("//") {
+        return None;
+    }
+    let after_vis = trimmed
+        .strip_prefix("pub(crate) ")
+        .or_else(|| trimmed.strip_prefix("pub(super) "))
+        .or_else(|| trimmed.strip_prefix("pub "))
+        .unwrap_or(trimmed);
+    let rest = after_vis.strip_prefix("mod ")?;
+    let semi_idx = rest.find(';')?;
+    let brace_idx = rest.find('{');
+    if let Some(brace) = brace_idx
+        && brace < semi_idx
+    {
+        // `mod NAME { ... }` — inline module, no sibling file.
+        return None;
+    }
+    let name = rest.get(..semi_idx)?.trim();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_')
+    {
+        return None;
+    }
+    Some(name.to_owned())
+}
+
+/// Clone `dep` with `optional` cleared.
+///
+/// Used at the aggregator's emit site. A member declaring
+/// `foo = { ..., optional = true }` + a `[features] X = ["dep:foo"]`
+/// gate relies on its own `[features]` table to activate the dep.
+/// The aggregator merges every member's deps into a single
+/// `[dependencies]` table but has no analogous `[features]` table —
+/// so re-emitting `optional = true` verbatim leaves the dep gated by
+/// nothing, cargo never compiles it, and `#[path]`-included test
+/// files referencing the dep fail with `unresolved import`. The
+/// aggregator's contract is "every referenced dep must compile";
+/// force-enable matches that contract.
+fn force_enable(dep: &DevDepSpec) -> DevDepSpec {
+    let mut out = dep.clone();
+    out.optional = false;
+    out
 }
 
 /// Build the aggregator crate's `Cargo.toml` from the resolved `Plan`.
@@ -2571,7 +2907,7 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
         }
     }
     for (entry_name, dep) in &merged {
-        let item = render_dev_dep(dep, plan)?;
+        let item = render_dev_dep(&force_enable(dep), plan)?;
         deps.insert(entry_name, item);
     }
 
@@ -2839,11 +3175,7 @@ fn build_tests_rs(plan: &Plan) -> String {
 
         let mut used_inner: BTreeSet<String> = BTreeSet::new();
         for file in &member.test_files {
-            let stem = file
-                .file_stem()
-                .and_then(|os_stem| os_stem.to_str())
-                .unwrap_or("test");
-            let stem_ident = sanitize_ident(stem);
+            let stem_ident = inner_module_ident_for(file);
             let mut inner = stem_ident.clone();
             let mut inner_counter = 1_u32;
             while !used_inner.insert(inner.clone()) {
@@ -2969,6 +3301,108 @@ fn escape_str_literal(value: &str) -> String {
         }
     }
     buf
+}
+
+/// Pick the Rust module identifier for a `#[path]`-included test
+/// file in the aggregator's `src/tests.rs`.
+///
+/// Naive `file.file_stem()` breaks on two filenames:
+///
+/// * `tests/<name>/mod.rs` — stem is literally `mod`, a Rust reserved
+///   keyword. Emitting `mod mod;` halts compilation with
+///   `expected identifier, found keyword "mod"`. The idiomatic
+///   replacement is the parent directory's name (cargo's own
+///   convention: a `mod.rs` file IS the parent dir as a module).
+///
+/// * Any other reserved keyword as the stem (`type.rs`, `fn.rs`,
+///   `pub.rs`, …). These can be promoted to raw identifiers
+///   (`r#type`) which Rust accepts everywhere including module
+///   declarations.
+///
+/// All other stems pass through [`sanitize_ident`] unchanged.
+fn inner_module_ident_for(file: &Path) -> String {
+    let raw_stem = file
+        .file_stem()
+        .and_then(|os_stem| os_stem.to_str())
+        .unwrap_or("test");
+    if raw_stem == "mod" {
+        // `tests/<parent>/mod.rs` → use `<parent>` as the module name.
+        // Fall back to "test_mod" only when the file has no parent at
+        // all (defensive — cargo always provides an absolute path).
+        let parent_dir = file
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|os_name| os_name.to_str())
+            .unwrap_or("test_mod");
+        return sanitize_ident(parent_dir);
+    }
+    let sanitized = sanitize_ident(raw_stem);
+    if is_rust_reserved_keyword(&sanitized) {
+        // Promote to a raw identifier so the keyword is usable in a
+        // module-declaration position.
+        return format!("r#{sanitized}");
+    }
+    sanitized
+}
+
+/// `true` when `ident` is a Rust reserved keyword (Edition 2021 + 2024
+/// committed set). Used to decide whether to promote a generated
+/// module name to a raw identifier. Conservative: any name on this
+/// list will be emitted as `r#<name>` regardless of context.
+///
+/// Source: rustc's `kw` symbol table (the union of all editions'
+/// reserved sets — pinning to one edition would silently miss a
+/// future-edition word).
+fn is_rust_reserved_keyword(ident: &str) -> bool {
+    matches!(
+        ident,
+        "as" | "async"
+            | "await"
+            | "break"
+            | "const"
+            | "continue"
+            | "crate"
+            | "do"
+            | "dyn"
+            | "else"
+            | "enum"
+            | "extern"
+            | "false"
+            | "fn"
+            | "for"
+            | "gen"
+            | "if"
+            | "impl"
+            | "in"
+            | "let"
+            | "loop"
+            | "macro"
+            | "match"
+            | "mod"
+            | "move"
+            | "mut"
+            | "priv"
+            | "pub"
+            | "ref"
+            | "return"
+            | "self"
+            | "Self"
+            | "static"
+            | "struct"
+            | "super"
+            | "trait"
+            | "true"
+            | "try"
+            | "type"
+            | "typeof"
+            | "unsafe"
+            | "unsized"
+            | "use"
+            | "virtual"
+            | "where"
+            | "while"
+            | "yield"
+    )
 }
 
 /// Replace any non `[a-zA-Z0-9_]` chars in `value` with `_`, prefixing a digit-starter with `_`.

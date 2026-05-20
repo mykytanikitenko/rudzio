@@ -5,10 +5,14 @@
 
 mod build_dir_deadlock_spec;
 mod cli_spec;
+mod crate_path_under_aggregator_spec;
 mod cross_bridge_spec;
 mod generate_spec;
+mod mod_rs_codegen_spec;
+mod optional_dep_force_enable_spec;
 mod registry_preservation_spec;
 mod spawn_env_spec;
+mod strict_parse_spec;
 
 #[rudzio::main]
 fn main() {}
