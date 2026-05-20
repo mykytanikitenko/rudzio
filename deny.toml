@@ -22,6 +22,15 @@ ignore = [
     # when compio releases a paste-free version (or migrates to
     # `pastey`).
     "RUSTSEC-2024-0436",
+    # `async-std` discontinued. No safe upgrade — async-std is the
+    # whole point of the `runtime-async-std` adapter. Same disposition
+    # as the workspace `multiple_crate_versions` clippy allow: drop
+    # when the async-std adapter is retired.
+    "RUSTSEC-2025-0052",
+    # `fxhash` unmaintained — pulled in transitively by `monoio`.
+    # Upstream monoio would need to migrate to `rustc-hash`; out of
+    # scope for the v0.1.0 release.
+    "RUSTSEC-2025-0057",
 ]
 
 [licenses]
@@ -35,6 +44,10 @@ allow = [
     "MIT",
     "Unicode-3.0",
     "Unlicense",
+    # `nanorand` (transitive via monoio → flume) is Zlib. OSI-approved,
+    # FSF Free/Libre, permissive — consistent with the rest of the
+    # allowlist.
+    "Zlib",
 ]
 # Confidence threshold for matching detected license text against
 # SPDX templates. 0.93 is cargo-deny's recommended default.
@@ -50,6 +63,14 @@ wildcards = "deny"
 # `workspace = true` shorthand, which deny treats as "wildcard"
 # without this exemption.
 allow-wildcard-paths = true
+# Adapter crates that drag in their own ecosystems with version skew
+# we don't control. Mirrors the workspace-level
+# `clippy::multiple_crate_versions = allow` exemption. Drop entries
+# when the corresponding runtime adapter is retired.
+skip-tree = [
+    { name = "async-std" },
+    { name = "monoio" },
+]
 
 [sources]
 # Registry / git allowlist. crates.io is the only registry we publish

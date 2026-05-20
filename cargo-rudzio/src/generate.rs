@@ -42,7 +42,23 @@ fn expose_member_bins(pkg: &str, manifest_dir: &str, bins: &[&str]) -> Result<()
         .arg("--bins")
         .arg("--manifest-path")
         .arg(&manifest)
-        .env("CARGO_TARGET_DIR", &target_dir);
+        .env("CARGO_TARGET_DIR", &target_dir)
+        // Override `[build] build-dir = "..."` inherited from any
+        // outer `.cargo/config.toml`. Without this, the nested cargo
+        // contends with the outer cargo (or grandparent cargo) on a
+        // single shared `<build-dir>/.cargo-lock` flock and deadlocks
+        // forever (cargo file locks have no timeout). Point it at the
+        // same isolated per-OUT_DIR cache as CARGO_TARGET_DIR so the
+        // nested cargo's intermediate artefacts are scoped to this
+        // build.rs invocation alone.
+        .env("CARGO_BUILD_BUILD_DIR", &target_dir)
+        // rudzio's panic isolation depends on `catch_unwind`, which
+        // only works under `panic = "unwind"`. A user-global config
+        // may set `panic = "abort"`; these env vars (highest cargo
+        // precedence) force unwind for the consumer binaries we're
+        // about to build.
+        .env("CARGO_PROFILE_DEV_PANIC", "unwind")
+        .env("CARGO_PROFILE_RELEASE_PANIC", "unwind");
     if profile == "release" {
         cmd.arg("--release");
     }

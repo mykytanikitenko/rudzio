@@ -87,4 +87,30 @@ mod tests {
         );
         Ok(())
     }
+
+    #[rudzio::test]
+    fn spawn_env_sets_panic_unwind_for_dev_and_release() -> anyhow::Result<()> {
+        // rudzio's per-test panic isolation relies on `catch_unwind`.
+        // A user-global `.cargo/config.toml` can set `panic = "abort"`,
+        // which silently breaks the framework. `spawn_env` must force
+        // `panic = "unwind"` via env vars (highest cargo precedence).
+        let env = spawn_env();
+        let dev_panic = env
+            .iter()
+            .find(|(key, _)| *key == "CARGO_PROFILE_DEV_PANIC")
+            .map(|(_, value)| value.as_str());
+        let release_panic = env
+            .iter()
+            .find(|(key, _)| *key == "CARGO_PROFILE_RELEASE_PANIC")
+            .map(|(_, value)| value.as_str());
+        anyhow::ensure!(
+            dev_panic == Some("unwind"),
+            "spawn_env must set CARGO_PROFILE_DEV_PANIC=unwind, got {dev_panic:?}"
+        );
+        anyhow::ensure!(
+            release_panic == Some("unwind"),
+            "spawn_env must set CARGO_PROFILE_RELEASE_PANIC=unwind, got {release_panic:?}"
+        );
+        Ok(())
+    }
 }

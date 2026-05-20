@@ -165,7 +165,7 @@ signal-hook = "=0.4.4"
 embassy-executor = { version = "=0.10.0", features = ["platform-std"] }
 futures-executor = "=0.3.32"
 futures-intrusive = "=0.5.0"
-futures-timer = "=3.0.3"
+futures-timer = "=3.0.4"
 futures-util = "=0.3.32"
 ignore = "=0.4.25"
 prettyplease = "=0.2.37"
@@ -176,7 +176,7 @@ send_wrapper = "=0.6.0"
 smol = "=2.0.2"
 syn = "=2.0.117"
 toml_edit = "=0.25.11"
-tokio = { version = "=1.52.1", features = ["rt", "macros", "time"] }
+tokio = { version = "=1.52.3", features = ["rt", "macros", "time"] }
 tokio-util = { version = "=0.7.18", features = ["rt"] }
 trybuild = "=1.0.116"
 linkme = "=0.3.36"

@@ -30,8 +30,17 @@ pub const EXPOSE_BINS_SENTINEL_VALUE: &str = "1";
 #[inline]
 #[must_use]
 pub fn spawn_env() -> Vec<(&'static str, String)> {
-    vec![(
-        EXPOSE_BINS_SENTINEL_ENV,
-        EXPOSE_BINS_SENTINEL_VALUE.to_owned(),
-    )]
+    vec![
+        (
+            EXPOSE_BINS_SENTINEL_ENV,
+            EXPOSE_BINS_SENTINEL_VALUE.to_owned(),
+        ),
+        // rudzio's per-test panic isolation relies on `catch_unwind`.
+        // A user-global `.cargo/config.toml` can set `panic = "abort"`,
+        // which silently breaks the framework (panicking test aborts
+        // the whole process). Env vars are the highest-precedence
+        // profile mechanism in cargo, so these override everything.
+        ("CARGO_PROFILE_DEV_PANIC", "unwind".to_owned()),
+        ("CARGO_PROFILE_RELEASE_PANIC", "unwind".to_owned()),
+    ]
 }

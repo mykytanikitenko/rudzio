@@ -27,14 +27,14 @@ use rudzio::build::{
 };
 use rudzio::common::context::{Suite, Test};
 use rudzio::runtime::futures::ThreadPool;
-use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use rudzio::runtime::monoio;
+use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
 use rudzio::runtime::{async_std, compio, embassy, smol};
 use rudzio::suite::SummaryOutcomes;
 use rudzio::test_case::{BoxError, box_error};
 use rudzio::{
-    BenchMode, Config, EnsureTimes, EnsureTimeViolation, Format, RunIgnoredMode, SuiteSummary,
+    BenchMode, Config, EnsureTimeViolation, EnsureTimes, Format, RunIgnoredMode, SuiteSummary,
     TestSummary, normalize_module_path, qualified_test_name, token_passes_filters,
 };
 
@@ -78,7 +78,7 @@ mod config_parser {
     use rudzio::shuffle::permute_with_seed;
 
     use super::{
-        BenchMode, Config, Duration, EnsureTimes, EnsureTimeViolation, Format, NonZeroUsize,
+        BenchMode, Config, Duration, EnsureTimeViolation, EnsureTimes, Format, NonZeroUsize,
         PathBuf, SuiteSummary, SummaryOutcomes, Test, TestSummary, argv, env_with,
     };
 
@@ -276,7 +276,10 @@ mod config_parser {
     fn logfile_writer_disabled_when_no_path(_ctx: &Test) -> anyhow::Result<()> {
         let writer = LogfileWriter::open(None);
         writer.write_line("ok", "any::name");
-        anyhow::ensure!(!writer.is_enabled(), "writer should be a no-op when path is None");
+        anyhow::ensure!(
+            !writer.is_enabled(),
+            "writer should be a no-op when path is None"
+        );
         Ok(())
     }
 
@@ -291,7 +294,10 @@ mod config_parser {
                 .unwrap_or_default(),
         ));
         let writer = LogfileWriter::open(Some(&path));
-        anyhow::ensure!(writer.is_enabled(), "writer should be enabled when path opens");
+        anyhow::ensure!(
+            writer.is_enabled(),
+            "writer should be enabled when path opens"
+        );
         writer.write_line("ok", "foo::bar");
         writer.write_line("failed", "foo::baz");
         writer.write_line("ignored", "foo::qux");
@@ -319,11 +325,8 @@ mod config_parser {
 
     #[rudzio::test]
     fn shuffle_flag_alone_enables_shuffle_without_seed(_ctx: &Test) -> anyhow::Result<()> {
-        let cfg = Config::from_argv_and_env(
-            &argv(&["--shuffle"]),
-            env_with(None),
-            rudzio::cargo_meta!(),
-        );
+        let cfg =
+            Config::from_argv_and_env(&argv(&["--shuffle"]), env_with(None), rudzio::cargo_meta!());
         anyhow::ensure!(cfg.shuffle, "shuffle should be true");
         anyhow::ensure!(
             cfg.shuffle_seed.is_none(),
@@ -380,7 +383,10 @@ mod config_parser {
         let mut second: Vec<u32> = (0..50_u32).collect();
         permute_with_seed(&mut first, 1);
         permute_with_seed(&mut second, 2);
-        anyhow::ensure!(first != second, "different seeds should permute differently");
+        anyhow::ensure!(
+            first != second,
+            "different seeds should permute differently"
+        );
         Ok(())
     }
 
@@ -443,11 +449,8 @@ mod config_parser {
 
     #[rudzio::test]
     fn compat_consumed_empty_when_no_silent_compat_flags(_ctx: &Test) -> anyhow::Result<()> {
-        let cfg = Config::from_argv_and_env(
-            &argv(&["my_filter"]),
-            env_with(None),
-            rudzio::cargo_meta!(),
-        );
+        let cfg =
+            Config::from_argv_and_env(&argv(&["my_filter"]), env_with(None), rudzio::cargo_meta!());
         anyhow::ensure!(
             cfg.compat_consumed.is_empty(),
             "got {:?}",
@@ -464,8 +467,7 @@ mod config_parser {
             rudzio::cargo_meta!(),
         );
         anyhow::ensure!(
-            cfg.compat_consumed
-                == vec!["--report-time".to_owned(), "--report-time".to_owned()],
+            cfg.compat_consumed == vec!["--report-time".to_owned(), "--report-time".to_owned()],
             "got {:?}",
             cfg.compat_consumed,
         );
@@ -545,8 +547,10 @@ mod config_parser {
     #[rudzio::test]
     fn ensure_time_bare_honors_rust_test_time_integration_env(_ctx: &Test) -> anyhow::Result<()> {
         let mut env = env_with(None);
-        let _prev =
-            env.insert("RUST_TEST_TIME_INTEGRATION".to_owned(), "120,250".to_owned());
+        let _prev = env.insert(
+            "RUST_TEST_TIME_INTEGRATION".to_owned(),
+            "120,250".to_owned(),
+        );
         let cfg = Config::from_argv_and_env(
             &argv(&["--ensure-time", "my_filter"]),
             env,
@@ -572,8 +576,10 @@ mod config_parser {
     #[rudzio::test]
     fn ensure_time_explicit_value_overrides_env(_ctx: &Test) -> anyhow::Result<()> {
         let mut env = env_with(None);
-        let _prev =
-            env.insert("RUST_TEST_TIME_INTEGRATION".to_owned(), "999,9999".to_owned());
+        let _prev = env.insert(
+            "RUST_TEST_TIME_INTEGRATION".to_owned(),
+            "999,9999".to_owned(),
+        );
         let cfg = Config::from_argv_and_env(
             &argv(&["--ensure-time=42,84", "my_filter"]),
             env,
@@ -1976,9 +1982,7 @@ mod runtime_ctx_api {
     /// adapter-specific timer is needed. Asserted across all six adapters
     /// so the contract holds wherever the suite is dispatched.
     #[rudzio::test]
-    async fn ctx_sleep_completes_after_requested_duration(
-        ctx: &Test,
-    ) -> anyhow::Result<()> {
+    async fn ctx_sleep_completes_after_requested_duration(ctx: &Test) -> anyhow::Result<()> {
         let start = Instant::now();
         ctx.sleep(Duration::from_millis(15_u64)).await;
         let elapsed = start.elapsed();
@@ -1994,9 +1998,7 @@ mod runtime_ctx_api {
     /// Asserted across all six adapters: each must return a non-empty,
     /// stable identifier.
     #[rudzio::test]
-    async fn ctx_name_returns_nonempty_runtime_identifier(
-        ctx: &Test,
-    ) -> anyhow::Result<()> {
+    async fn ctx_name_returns_nonempty_runtime_identifier(ctx: &Test) -> anyhow::Result<()> {
         let name = ctx.name();
         anyhow::ensure!(
             !name.is_empty(),

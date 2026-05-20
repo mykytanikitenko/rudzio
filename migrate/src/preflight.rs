@@ -17,13 +17,10 @@ use std::process::Command;
 use rudzio::common::context::{Suite, Test};
 #[cfg(any(test, rudzio_test))]
 use rudzio::runtime::futures::ThreadPool;
+#[cfg(all(any(test, rudzio_test), any(target_os = "linux", target_os = "macos"),))]
+use rudzio::runtime::monoio;
 #[cfg(any(test, rudzio_test))]
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
-#[cfg(all(
-    any(test, rudzio_test),
-    any(target_os = "linux", target_os = "macos"),
-))]
-use rudzio::runtime::monoio;
 #[cfg(any(test, rudzio_test))]
 use rudzio::runtime::{async_std, compio, embassy, smol};
 

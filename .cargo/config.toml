@@ -1,0 +1,16 @@
+# rudzio's panic-isolation logic depends on `catch_unwind` succeeding,
+# which only works under `panic = "unwind"`. Under `panic = "abort"`
+# any test panic immediately aborts the process, defeating the entire
+# point of the framework (a panicking test should NOT halt subsequent
+# tests).
+#
+# This file lives at the workspace root so its `[profile]` section has
+# closer-to-source precedence than any user-global `~/.cargo/config.toml`
+# (per cargo's config-hierarchy rules). It therefore reliably overrides
+# a user-local `[profile.dev] panic = "abort"` that would otherwise break
+# the framework.
+[profile.dev]
+panic = "unwind"
+
+[profile.release]
+panic = "unwind"

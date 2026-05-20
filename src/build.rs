@@ -414,6 +414,14 @@ fn expose_bins_after_sentinel(bin_crate: &str, env: &BuildEnv) -> Result<()> {
         .arg("-p")
         .arg(bin_crate)
         .env("CARGO_TARGET_DIR", &nested_target)
+        // Override `[build] build-dir = "..."` inherited from any
+        // outer `.cargo/config.toml`. Without this, the nested cargo
+        // contends with the outer cargo (or grandparent cargo) on a
+        // single shared `<build-dir>/.cargo-lock` flock and deadlocks
+        // forever (cargo file locks have no timeout). Point it at the
+        // same per-OUT_DIR cache as CARGO_TARGET_DIR so intermediate
+        // artefacts are scoped to this build.rs invocation alone.
+        .env("CARGO_BUILD_BUILD_DIR", &nested_target)
         // Sentinel is what the early-return check at the top of
         // `expose_bins` trips on when cargo re-enters this build script
         // (or any other crate's build script that also calls

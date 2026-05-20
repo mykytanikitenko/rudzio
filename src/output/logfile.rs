@@ -40,10 +40,7 @@ impl Writer {
         let Some(mutex) = self.inner.as_ref() else {
             return;
         };
-        let _ignored = mutex
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .flush();
+        let _ignored = mutex.lock().unwrap_or_else(PoisonError::into_inner).flush();
     }
 
     /// `true` when an output file was opened and lines will be written.

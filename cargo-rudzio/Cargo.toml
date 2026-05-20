@@ -47,5 +47,16 @@ rudzio = { workspace = true, features = [
 ] }
 tempfile = "=3.27.0"
 
+# libc is Unix-only here: `build_dir_deadlock_spec` uses
+# `process_group(0)` + `killpg` to reap the entire grandchild cargo
+# tree on its 180s timeout. Without process-group cleanup, SIGKILL on
+# `cargo-rudzio` leaves the nested `cargo build --bins` grandchildren
+# alive (they are blocked on the same `flock` we are testing for), and
+# they accumulate across runs. Deadlock under `[build] build-dir` is a
+# Unix-cargo phenomenon; the test file itself is gated with
+# `#![cfg(unix)]`.
+[target.'cfg(unix)'.dev-dependencies]
+libc = { workspace = true }
+
 [lints]
 workspace = true

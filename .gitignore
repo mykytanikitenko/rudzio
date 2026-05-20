@@ -1,10 +1,15 @@
 target
-# Ignore everything in .cargo/ except audit.toml — that file carries
-# the cargo-audit advisory ignore list and must be tracked so
-# `just check-audit` behaves the same on every checkout. Cargo's own
-# generated dirs (registry, git, credentials.toml) stay ignored.
+# Ignore everything in .cargo/ except files that must be tracked:
+#   * audit.toml — cargo-audit advisory ignore list (`just check-audit`
+#     must behave the same on every checkout).
+#   * config.toml — workspace-pinned profile settings (forces
+#     `panic = "unwind"` so rudzio's `catch_unwind`-based panic
+#     isolation survives a user-global `[profile.dev] panic = "abort"`).
+# Cargo's own generated dirs (registry, git, credentials.toml) stay
+# ignored.
 .cargo/*
 !.cargo/audit.toml
+!.cargo/config.toml
 .idea
 *.iml
 .vscode

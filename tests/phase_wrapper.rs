@@ -44,9 +44,9 @@ use std::time::{Duration, Instant};
 use rudzio::common::context::{Suite, Test};
 use rudzio::futures_util::future::{AbortHandle, Aborted};
 use rudzio::runtime::futures::ThreadPool;
-use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use rudzio::runtime::monoio;
+use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
 use rudzio::runtime::{async_std, compio, embassy, smol};
 use rudzio::suite::{PhaseOutcome, drive_per_test_spawn, run_phase_with_timeout_and_cancel};
 use rudzio::tokio_util::sync::CancellationToken;
@@ -213,23 +213,16 @@ mod phase_wrapper_tests {
     /// timer, no grace, just plain await. Confirms the driver doesn't
     /// short-circuit when timeouts are unconfigured.
     #[rudzio::test]
-    async fn drive_per_test_spawn_no_budget_awaits_to_completion(
-        ctx: &Test,
-    ) -> anyhow::Result<()> {
+    async fn drive_per_test_spawn_no_budget_awaits_to_completion(ctx: &Test) -> anyhow::Result<()> {
         let (abort_handle, _abort_reg) = AbortHandle::new_pair();
         let join_fut = async {
             ctx.sleep(Duration::from_millis(50_u64)).await;
             Ok::<&'static str, Aborted>("done")
         };
         let token = CancellationToken::new();
-        let outcome = drive_per_test_spawn(
-            join_fut,
-            abort_handle,
-            None,
-            None,
-            token,
-            |dur| ctx.sleep(dur),
-        )
+        let outcome = drive_per_test_spawn(join_fut, abort_handle, None, None, token, |dur| {
+            ctx.sleep(dur)
+        })
         .await;
         anyhow::ensure!(
             matches!(outcome, PhaseOutcome::Completed("done")),
@@ -327,14 +320,11 @@ mod phase_wrapper_tests {
     #[rudzio::test]
     async fn no_timeout_with_completion_returns_completed(ctx: &Test) -> anyhow::Result<()> {
         let token = CancellationToken::new();
-        let outcome = run_phase_with_timeout_and_cancel(
-            async { "done" },
-            None,
-            None,
-            token,
-            |dur| ctx.sleep(dur),
-        )
-        .await;
+        let outcome =
+            run_phase_with_timeout_and_cancel(async { "done" }, None, None, token, |dur| {
+                ctx.sleep(dur)
+            })
+            .await;
         anyhow::ensure!(
             matches!(outcome, PhaseOutcome::Completed("done")),
             "expected Completed(\"done\"), got {outcome:?}"
@@ -376,9 +366,7 @@ mod phase_wrapper_tests {
     /// `TimedOut`. Distinguishing the two keeps the failure attribution
     /// honest: "you blew your budget" vs "the run was aborted".
     #[rudzio::test]
-    async fn parent_cancellation_returns_cancelled_not_timed_out(
-        ctx: &Test,
-    ) -> anyhow::Result<()> {
+    async fn parent_cancellation_returns_cancelled_not_timed_out(ctx: &Test) -> anyhow::Result<()> {
         let parent = CancellationToken::new();
         let child = parent.child_token();
         let parent_for_cancel = parent.clone();

@@ -54,14 +54,10 @@ check-udeps:
 # Run the full aggregated rudzio suite via the auto-generated runner.
 # Uses `cargo run -p cargo-rudzio -- test` so the recipe works on a fresh
 # clone without requiring `cargo install cargo-rudzio`.
+# `--threads-parallel-hardlimit=none` disables the process-wide parallel
+# gate so concurrent-heavy suites don't park on it during local/CI runs.
 test:
-    cargo run -p cargo-rudzio -- test
-
-# Per-crate stock path: `cargo test --workspace`. Useful when debugging a
-# single crate's integration tests or reproducing what a user who doesn't
-# have cargo-rudzio installed would see.
-test-stock:
-    cargo test --workspace
+    cargo run -p cargo-rudzio -- test -- --threads-parallel-hardlimit=none
 
 # --- Security & policy ---
 
