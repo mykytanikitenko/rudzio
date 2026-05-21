@@ -225,4 +225,234 @@ mod tests {
         );
         Ok(())
     }
+
+    /// Reserved Rust keyword as the test-binary's parent directory
+    /// name. Cargo accepts `path = "tests/impl/mod.rs"` (just a file
+    /// path), but Rust ident rules forbid `mod impl;` — the codegen
+    /// must emit the raw-identifier form `mod r#impl;`.
+    #[rudzio::test]
+    fn generated_tests_rs_escapes_reserved_keyword_parent_dir() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let rudzio_root = rudzio_source_root();
+        // Custom fixture: dir named `impl` (a Rust keyword).
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            format!(
+                "[workspace]\n\
+                 members = [\"consumer\"]\n\
+                 resolver = \"3\"\n\
+                 \n\
+                 [workspace.dependencies]\n\
+                 rudzio = {{ path = \"{rudzio}\", features = [\"common\", \"runtime-tokio-multi-thread\"] }}\n",
+                rudzio = rudzio_root.display(),
+            ),
+        )?;
+        let consumer = temp.path().join("consumer");
+        fs::create_dir_all(consumer.join("src"))?;
+        fs::create_dir_all(consumer.join("tests").join("impl"))?;
+        fs::write(
+            consumer.join("Cargo.toml"),
+            "[package]\n\
+             name = \"consumer\"\n\
+             version = \"0.0.0\"\n\
+             edition = \"2024\"\n\
+             publish = false\n\
+             autotests = false\n\
+             \n\
+             [lib]\n\
+             name = \"consumer\"\n\
+             path = \"src/lib.rs\"\n\
+             \n\
+             [[test]]\n\
+             name = \"impl_tests\"\n\
+             path = \"tests/impl/mod.rs\"\n\
+             harness = false\n\
+             \n\
+             [dev-dependencies]\n\
+             rudzio = { workspace = true }\n",
+        )?;
+        fs::write(
+            consumer.join("src").join("lib.rs"),
+            "// rudzio_test marker\n",
+        )?;
+        fs::write(
+            consumer.join("tests").join("impl").join("mod.rs"),
+            "// rudzio_test marker\n",
+        )?;
+        let manifest = temp.path().join("Cargo.toml");
+        let plan = with_cargo_offline(|| plan_from_manifest(&manifest))?;
+        let out_dir = temp.path().join("rudzio-auto-runner");
+        write_runner(&plan, &out_dir)?;
+        let body = fs::read_to_string(out_dir.join("src").join("tests.rs"))?;
+        // Must escape as `mod r#impl;` — the bare `mod impl;` form
+        // would fail to compile.
+        anyhow::ensure!(
+            body.contains("mod r#impl;"),
+            "reserved keyword `impl` as parent dir must be escaped via `mod r#impl;`:\n{body}",
+        );
+        anyhow::ensure!(
+            !body.contains("\nmod impl;") && !body.contains(" mod impl;"),
+            "bare `mod impl;` is invalid Rust; codegen must use r# prefix:\n{body}",
+        );
+        Ok(())
+    }
+
+    /// Deep nesting: `tests/<a>/<b>/<c>/mod.rs`. The codegen picks
+    /// the IMMEDIATE parent dir name (`c`), not a flattened
+    /// path-derived ident. Guards against a regression that would
+    /// emit `mod a_b_c;` or similar.
+    #[rudzio::test]
+    fn generated_tests_rs_uses_immediate_parent_for_deeply_nested_mod_rs() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let rudzio_root = rudzio_source_root();
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            format!(
+                "[workspace]\n\
+                 members = [\"consumer\"]\n\
+                 resolver = \"3\"\n\
+                 \n\
+                 [workspace.dependencies]\n\
+                 rudzio = {{ path = \"{rudzio}\", features = [\"common\", \"runtime-tokio-multi-thread\"] }}\n",
+                rudzio = rudzio_root.display(),
+            ),
+        )?;
+        let consumer = temp.path().join("consumer");
+        let deep = consumer.join("tests").join("a").join("b").join("c");
+        fs::create_dir_all(consumer.join("src"))?;
+        fs::create_dir_all(&deep)?;
+        fs::write(
+            consumer.join("Cargo.toml"),
+            "[package]\n\
+             name = \"consumer\"\n\
+             version = \"0.0.0\"\n\
+             edition = \"2024\"\n\
+             publish = false\n\
+             autotests = false\n\
+             \n\
+             [lib]\n\
+             name = \"consumer\"\n\
+             path = \"src/lib.rs\"\n\
+             \n\
+             [[test]]\n\
+             name = \"deeply_nested\"\n\
+             path = \"tests/a/b/c/mod.rs\"\n\
+             harness = false\n\
+             \n\
+             [dev-dependencies]\n\
+             rudzio = { workspace = true }\n",
+        )?;
+        fs::write(
+            consumer.join("src").join("lib.rs"),
+            "// rudzio_test marker\n",
+        )?;
+        fs::write(deep.join("mod.rs"), "// rudzio_test marker\n")?;
+        let manifest = temp.path().join("Cargo.toml");
+        let plan = with_cargo_offline(|| plan_from_manifest(&manifest))?;
+        let out_dir = temp.path().join("rudzio-auto-runner");
+        write_runner(&plan, &out_dir)?;
+        let body = fs::read_to_string(out_dir.join("src").join("tests.rs"))?;
+        anyhow::ensure!(
+            body.contains("mod c;"),
+            "deep `a/b/c/mod.rs` must use immediate-parent ident `c`:\n{body}",
+        );
+        anyhow::ensure!(
+            !body.contains("mod a_b_c;"),
+            "codegen must NOT flatten the path into a joined ident:\n{body}",
+        );
+        Ok(())
+    }
+
+    /// Hyphenated parent dir name. Cargo accepts hyphens in path
+    /// targets (`tests/my-test/mod.rs`); Rust idents do NOT permit
+    /// hyphens, so the codegen MUST either:
+    ///
+    /// 1. Sanitize the hyphen to underscore (`mod my_test;`), or
+    /// 2. Bail with a clear error.
+    ///
+    /// Silently emitting `mod my-test;` would produce invalid Rust
+    /// source. The test accepts either valid outcome but rejects the
+    /// silent-invalid form.
+    #[rudzio::test]
+    fn generated_tests_rs_handles_hyphenated_parent_dir() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let rudzio_root = rudzio_source_root();
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            format!(
+                "[workspace]\n\
+                 members = [\"consumer\"]\n\
+                 resolver = \"3\"\n\
+                 \n\
+                 [workspace.dependencies]\n\
+                 rudzio = {{ path = \"{rudzio}\", features = [\"common\", \"runtime-tokio-multi-thread\"] }}\n",
+                rudzio = rudzio_root.display(),
+            ),
+        )?;
+        let consumer = temp.path().join("consumer");
+        fs::create_dir_all(consumer.join("src"))?;
+        fs::create_dir_all(consumer.join("tests").join("my-test"))?;
+        fs::write(
+            consumer.join("Cargo.toml"),
+            "[package]\n\
+             name = \"consumer\"\n\
+             version = \"0.0.0\"\n\
+             edition = \"2024\"\n\
+             publish = false\n\
+             autotests = false\n\
+             \n\
+             [lib]\n\
+             name = \"consumer\"\n\
+             path = \"src/lib.rs\"\n\
+             \n\
+             [[test]]\n\
+             name = \"my_test\"\n\
+             path = \"tests/my-test/mod.rs\"\n\
+             harness = false\n\
+             \n\
+             [dev-dependencies]\n\
+             rudzio = { workspace = true }\n",
+        )?;
+        fs::write(
+            consumer.join("src").join("lib.rs"),
+            "// rudzio_test marker\n",
+        )?;
+        fs::write(
+            consumer.join("tests").join("my-test").join("mod.rs"),
+            "// rudzio_test marker\n",
+        )?;
+        let manifest = temp.path().join("Cargo.toml");
+        let plan = with_cargo_offline(|| plan_from_manifest(&manifest))?;
+        let out_dir = temp.path().join("rudzio-auto-runner");
+        // The pipeline must either bail with a clear error (option 2)
+        // OR succeed and emit a valid identifier (option 1). Silent
+        // emission of invalid Rust is the only outcome the test
+        // refuses.
+        match write_runner(&plan, &out_dir) {
+            Ok(()) => {
+                let body = fs::read_to_string(out_dir.join("src").join("tests.rs"))?;
+                anyhow::ensure!(
+                    !body.contains("mod my-test;"),
+                    "codegen emitted invalid `mod my-test;` (hyphen in Rust ident); \
+                     must sanitize or bail:\n{body}",
+                );
+                anyhow::ensure!(
+                    body.contains("mod my_test;") || body.contains("mod r#my_test;"),
+                    "codegen accepted hyphenated dir but didn't emit a sanitized ident; \
+                     expected `mod my_test;`:\n{body}",
+                );
+            }
+            Err(err) => {
+                let chain = format!("{err:?}");
+                anyhow::ensure!(
+                    chain.contains("my-test")
+                        || chain.contains("hyphen")
+                        || chain.contains("ident"),
+                    "if codegen bails on hyphenated dir, the diagnostic must name the cause; \
+                     got:\n{chain}",
+                );
+            }
+        }
+        Ok(())
+    }
 }

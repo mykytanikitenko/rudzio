@@ -4,7 +4,7 @@
     reason = "toml_edit's insert/push API routinely returns the previous value; CLI glue does not care about the dropped option"
 )]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::{Result as FmtResult, Write as _};
 use std::fs;
 use std::io::Result as IoResult;
@@ -13,6 +13,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, anyhow, bail};
 use cargo_metadata::camino::Utf8PathBuf;
 use cargo_metadata::{Metadata, MetadataCommand, Package, TargetKind};
+use syn::meta::ParseNestedMeta;
+use syn::spanned::Spanned as _;
+use syn::visit_mut::{self, VisitMut};
 use toml_edit::{Array, DocumentMut, Formatted, InlineTable, Item, Table, Value, value};
 
 /// Crate name of the aggregator package this module emits.
@@ -389,6 +392,78 @@ pub struct WorkspaceDepSpec {
     pub version_req: Option<String>,
 }
 
+/// `syn::visit_mut::VisitMut` walker for [`rewrite_crate_paths`].
+/// Mutates every `crate::<helper>::*` path to `crate::<synth>::*`
+/// where `helper` is a key of `helpers`. Non-matching paths pass
+/// through untouched.
+struct CratePathRewriter<'helpers> {
+    /// `helper_name -> synth_name` substitution table.
+    helpers: &'helpers BTreeMap<String, String>,
+}
+
+impl VisitMut for CratePathRewriter<'_> {
+    fn visit_path_mut(&mut self, i: &mut syn::Path) {
+        if i.leading_colon.is_none() {
+            let mut iter = i.segments.iter_mut();
+            if let Some(first) = iter.next()
+                && first.ident == "crate"
+                && let Some(second) = iter.next()
+            {
+                let second_ident = second.ident.to_string();
+                if let Some(synth) = self.helpers.get(&second_ident) {
+                    let span = second.ident.span();
+                    second.ident = syn::Ident::new(synth, span);
+                }
+            }
+        }
+        visit_mut::visit_path_mut(self, i);
+    }
+
+    fn visit_use_tree_mut(&mut self, i: &mut syn::UseTree) {
+        if let syn::UseTree::Path(use_path) = i
+            && use_path.ident == "crate"
+        {
+            // The `use crate::*` head — rewrite the first ident of
+            // the sub-tree (which is the helper name we care about)
+            // when it appears in our substitution table. Glob (`*`)
+            // and bare group (`{...}`) variants are handled by
+            // recursing into nested entries via the default walker.
+            rewrite_first_use_tree_ident(&mut use_path.tree, self.helpers);
+        }
+        visit_mut::visit_use_tree_mut(self, i);
+    }
+}
+
+/// Per-test-binary state for the source-rewrite pass. One per
+/// `[[test]]` entry across the workspace.
+#[derive(Clone, Debug)]
+struct TestBinaryProxy {
+    /// Stable id derived from `<member_pkg> + <test_root_dir_name>`,
+    /// used both as the proxy directory name under
+    /// `<out>/src/proxies/<id>/` and as the prefix segment in every
+    /// synthesised helper-mod name. Sanitised to a Rust identifier.
+    binary_id: String,
+    /// `(helper_name, synth_name)` lookup the syn rewriter uses to
+    /// detect-and-redirect `crate::<helper>` paths inside source
+    /// files belonging to this binary.
+    helper_synth_lookup: BTreeMap<String, String>,
+    /// Helper `(synthesised_crate_root_name, proxy_helper_path)`
+    /// pairs ready for emission by [`build_main_rs`]. The path is
+    /// inside this binary's proxy directory, not at the original
+    /// location, so all `crate::<helper>` rewrites in sibling files
+    /// see the same `mod` instance.
+    helpers_at_crate_root: Vec<TestRootHelper>,
+    /// Cargo-style aggregator mount path for the proxy mod.rs (the
+    /// value [`build_tests_rs`] writes after the `#[path = ...]`
+    /// attribute). Absolute path under `<out>/src/proxies/<id>/`.
+    proxy_test_root: PathBuf,
+    /// Original test-root entry point (`tests/<name>/mod.rs`).
+    test_root: PathBuf,
+    /// Test-root's parent directory — used as the strip-prefix when
+    /// computing relative paths for proxy emission.
+    test_root_dir: PathBuf,
+}
+
 /// One sibling-module helper discovered under a member's test root.
 ///
 /// Emitted at the aggregator's crate root so `use crate::<module>`
@@ -566,6 +641,44 @@ impl Plan {
         }
         Ok(())
     }
+
+    /// Restrict every member's `test_files` to those whose `[[test]]`
+    /// binary name appears in `wanted`. Members left with zero
+    /// surviving `test_files` are dropped from the plan.
+    ///
+    /// Matches a `test_file` against `wanted` by computing the
+    /// `[[test]] name` cargo would assign: the immediate parent
+    /// directory's name for `mod.rs` / `main.rs` / `lib.rs`
+    /// entries, otherwise the file stem. Same convention as
+    /// `inner_module_ident_for` uses for module-ident derivation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `wanted` is non-empty but no test
+    /// binary survives — typically a typo in the `--test <name>`
+    /// argument.
+    #[inline]
+    pub fn restrict_to_test_binaries(&mut self, wanted: &[String]) -> Result<()> {
+        if wanted.is_empty() {
+            return Ok(());
+        }
+        let wanted_set: BTreeSet<&str> = wanted.iter().map(String::as_str).collect();
+        for member in &mut self.members {
+            member.test_files.retain(|file| {
+                let name = test_binary_name_for(file);
+                wanted_set.contains(name.as_str())
+            });
+        }
+        self.members.retain(|member| !member.test_files.is_empty());
+        if self.members.is_empty() {
+            let shown = wanted.join(", ");
+            bail!(
+                "no rudzio `[[test]]` binaries match `--test {shown}` (check the name, or run \
+                 without `--test` to see what's available)"
+            );
+        }
+        Ok(())
+    }
 }
 
 impl RudzioSpec {
@@ -675,6 +788,16 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
         }
     }
 
+    // Bug #5: enumerate rudzio-using path-dep members reachable from
+    // workspace members, so `cargo rudzio test -p <name>` matches the
+    // FULL set of crates the aggregator actually pulls in — not just
+    // the direct `[workspace] members = [...]` entries. Transitive
+    // path-deps that live in a sibling workspace (e.g. an outer ws
+    // dev-depending on an inner ws's crate via `path = "../../inner/x"`)
+    // appear in the aggregator's runtime test set but were invisible
+    // to `-p` filtering before this pass.
+    extend_with_transitive_path_dep_members(&mut members, &mut runtime_features)?;
+
     members.sort_by(|left, right| left.package_name.cmp(&right.package_name));
 
     let initial_spec = collect_rudzio_spec(&members, &workspace_deps, workspace_root_std)
@@ -688,6 +811,106 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
         rudzio_spec,
         workspace_deps,
     })
+}
+
+/// Walk every member's `dev_deps` for path entries. For each
+/// path-dep whose manifest declares a rudzio dependency (or
+/// `force_bridge`), build a `MemberPlan` and append it to `members`.
+/// Recursive: a transitive path-dep's own path-deps get walked too.
+/// Cycle-safe via the canonical-path visited set seeded with the
+/// existing members' manifest dirs.
+///
+/// # Errors
+///
+/// Returns an error when running `cargo metadata --no-deps` on a
+/// transitive path-dep's manifest fails (malformed manifest,
+/// missing file). Read failures on the manifest path itself are
+/// non-fatal: a path-dep pointing at a missing dir is skipped so
+/// the outer plan still builds.
+fn extend_with_transitive_path_dep_members(
+    members: &mut Vec<MemberPlan>,
+    runtime_features: &mut BTreeSet<String>,
+) -> Result<()> {
+    let mut visited: BTreeSet<PathBuf> = members
+        .iter()
+        .map(|member| canonicalize_or_keep(member.manifest_dir.as_path()))
+        .collect();
+    let mut frontier: VecDeque<PathBuf> = members
+        .iter()
+        .flat_map(|member| member.dev_deps.iter())
+        .filter_map(|dep| {
+            dep.path
+                .as_ref()
+                .map(|raw_path| canonicalize_or_keep(raw_path))
+        })
+        .filter(|path| !visited.contains(path))
+        .collect();
+    while let Some(path_dep_dir) = frontier.pop_front() {
+        if !visited.insert(path_dep_dir.clone()) {
+            continue;
+        }
+        let manifest = path_dep_dir.join("Cargo.toml");
+        if !manifest.is_file() {
+            continue;
+        }
+        let Ok(sub_metadata) = MetadataCommand::new()
+            .manifest_path(&manifest)
+            .no_deps()
+            .exec()
+        else {
+            continue;
+        };
+        for pkg in &sub_metadata.packages {
+            let pkg_manifest = pkg.manifest_path.as_std_path().to_path_buf();
+            let Some(pkg_parent) = pkg_manifest.parent() else {
+                continue;
+            };
+            let canon_pkg_dir = canonicalize_or_keep(pkg_parent);
+            // Only process the specific package whose manifest_dir
+            // matches the path-dep target. The sub-metadata may
+            // include sibling members of an inner workspace; we
+            // don't want to silently inherit ALL of them — only
+            // the one the outer workspace explicitly path-deps.
+            if canon_pkg_dir != path_dep_dir {
+                continue;
+            }
+            let rudzio_deps: Vec<_> = pkg
+                .dependencies
+                .iter()
+                .filter(|dep| dep.name == RUDZIO_DEP)
+                .collect();
+            let force_bridge = load_rudzio_force_bridge(&pkg_manifest).with_context(|| {
+                format!(
+                    "loading `[package.metadata.rudzio].force_bridge` from {}",
+                    pkg_manifest.display()
+                )
+            })?;
+            if rudzio_deps.is_empty() && !force_bridge {
+                continue;
+            }
+            for rdep in &rudzio_deps {
+                for feat in &rdep.features {
+                    if feat.starts_with("runtime-") {
+                        let _newly_inserted: bool = runtime_features.insert(feat.clone());
+                    }
+                }
+            }
+            if let Some(plan) = build_member_plan(pkg)? {
+                // Push this transitive member's own path-deps onto
+                // the frontier so we walk the full reachable graph.
+                for dep in &plan.dev_deps {
+                    if let Some(raw_path) = &dep.path {
+                        let canon = canonicalize_or_keep(raw_path);
+                        if !visited.contains(&canon) {
+                            frontier.push_back(canon);
+                        }
+                    }
+                }
+                members.push(plan);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Construct a `MemberPlan` for one workspace package.
@@ -850,20 +1073,23 @@ pub fn detect_src_rudzio_suite(src_root: &Path) -> bool {
     false
 }
 
-/// Find `#[cfg(test)]`-gated modules in `member`'s src tree that are not broadened for rudzio.
+/// Find `#[cfg(test)]`-gated modules in `member`'s src tree that are not broadened for rudzio AND actually contain test functions.
 ///
-/// Scans `member`'s `src/**/*.rs` for `#[cfg(test)]`-gated modules that
-/// are NOT broadened to `any(test, rudzio_test)` and whose file does
-/// NOT mention `rudzio::suite` or `rudzio_test` anywhere. Each hit
-/// means a module that compiles under `cargo test` but silently
-/// vanishes under `cargo rudzio test`. Produce one warning per site.
+/// Walks `member`'s `src/**/*.rs`, parses each file with syn, and
+/// flags every `#[cfg(test)] mod X { ... }` whose body actually
+/// contains test functions (`#[test]`, `#[rudzio::test]`, or
+/// `#[bench]`). Modules without test functions — typical for
+/// `#[cfg(test)] mod` blocks that hold helper consts / type aliases /
+/// fixtures — stay quiet; warning on those was pure noise (Bug #4:
+/// `file-v3` emitted ~80 false-positive warnings per build,
+/// `postgres` + `fathom_containers` added more).
 ///
-/// Substring-based (like `detect_src_rudzio_suite`) — avoids a full
-/// syn parse. False positives (e.g. `#[cfg(test)]` on a non-module
-/// item like a fn) are acceptable: the warning wording is advisory
-/// ("might be invisible"), and users who know the block is
-/// intentionally test-only can silence by including `rudzio_test`
-/// anywhere in the file (comment suffices).
+/// Files that opt-in via `// rudzio_test` marker comment OR contain
+/// `rudzio::suite` / `rudzio_test` somewhere stay skipped entirely.
+///
+/// Syn parse errors fall through silently: unparseable source
+/// already breaks compilation diagnostics loud enough that a
+/// missing cfg-test warning is not the most useful signal.
 #[inline]
 #[must_use]
 pub fn scan_unbroadened_cfg_test_mods(member: &MemberPlan) -> Vec<String> {
@@ -913,44 +1139,142 @@ pub fn scan_unbroadened_cfg_test_mods(member: &MemberPlan) -> Vec<String> {
             // suppress warnings.
             continue;
         }
-        for (line_idx, line) in text.lines().enumerate() {
-            let trimmed = line.trim_start();
-            if !trimmed.starts_with("#[cfg(test)]") {
-                continue;
-            }
-            // Must be immediately followed (modulo other attrs) by a
-            // `mod ...` — otherwise this is #[cfg(test)] on a fn /
-            // impl / use, which is not our concern. Cheap heuristic:
-            // look ahead up to 6 non-attribute lines for a `mod`.
-            let next_line = line_idx.saturating_add(1);
-            let tail: Vec<&str> = text
-                .lines()
-                .skip(next_line)
-                .take(6)
-                .filter(|tail_line| !tail_line.trim_start().is_empty())
-                .collect();
-            let next_non_attr = tail
-                .iter()
-                .find(|tail_line| !tail_line.trim_start().starts_with("#["));
-            let gates_a_mod = next_non_attr.is_some_and(|next| {
-                next.trim_start().starts_with("mod ") || next.trim_start().starts_with("pub mod ")
-            });
-            if !gates_a_mod {
-                continue;
-            }
-            out.push(format!(
-                "{file}:{line}: `#[cfg(test)]` on a module without \
-                 rudzio_test gate — this module may be invisible under \
-                 `cargo rudzio test`. If it carries rudzio tests, \
-                 broaden to `#[cfg(any(test, rudzio_test))]`. \
-                 Otherwise add a `// rudzio_test` comment to silence \
-                 this warning.",
-                file = path.display(),
-                line = line_idx.saturating_add(1),
-            ));
-        }
+        let Ok(parsed) = syn::parse_file(&text) else {
+            continue;
+        };
+        scan_items_for_unbroadened_cfg_test_mods(&parsed.items, path, &mut out);
     }
     out
+}
+
+/// Recursive walker: visit every `Item::Mod` in `items`, emit one
+/// warning per `#[cfg(test)] mod` block whose body actually carries
+/// `#[test]` / `#[rudzio::test]` / `#[bench]` functions, and
+/// descend into nested mods so deeper layout (`mod outer { #[cfg(test)]
+/// mod inner { ... } }`) gets flagged the same way.
+fn scan_items_for_unbroadened_cfg_test_mods(
+    items: &[syn::Item],
+    path: &Path,
+    out: &mut Vec<String>,
+) {
+    for item in items {
+        let syn::Item::Mod(mod_item) = item else {
+            continue;
+        };
+        if let Some((_brace, children)) = mod_item.content.as_ref() {
+            if let Some(cfg_attr) = find_unbroadened_cfg_test_attr(&mod_item.attrs)
+                && mod_body_has_test_fn(children)
+            {
+                // Cite the cfg attribute's line, not the `mod` token's
+                // line — the attribute is where the user broadens the
+                // gate, so it's the actionable pointer.
+                let line = cfg_attr.span().start().line;
+                out.push(format!(
+                    "{file}:{line}: `#[cfg(test)] mod {name}` contains \
+                     test functions but isn't broadened for rudzio. \
+                     `cargo rudzio test` compiles under `--cfg rudzio_test`, \
+                     not `--cfg test`, so this module's tests stay invisible. \
+                     Broaden to `#[cfg(any(test, rudzio_test))]`, or add a \
+                     `// rudzio_test` marker comment to silence this warning \
+                     when the tests are intentionally cargo-only.",
+                    file = path.display(),
+                    name = mod_item.ident,
+                ));
+            }
+            scan_items_for_unbroadened_cfg_test_mods(children, path, out);
+        }
+    }
+}
+
+/// Return the first `#[cfg(test)]` attribute in `attrs` that is NOT
+/// broadened to `any(test, rudzio_test)`. Returns `None` if every
+/// cfg attribute is already broadened (or if there is no cfg attr at
+/// all). Distinguishes the bare-`test` form from the broadened form
+/// by walking the attribute meta-tree; any presence of the
+/// `rudzio_test` identifier disables the warning even when `test`
+/// is also there.
+///
+/// Returns the attribute (rather than a `bool`) so the caller can
+/// cite its source span when emitting the diagnostic — that's the
+/// line the user broadens to silence the warning.
+///
+/// **Polarity tracking:** `not(test)` is NOT a `test`-gated mod —
+/// the gate is true exactly when `test` is OFF, so the mod isn't
+/// hidden from rudzio's runner by lacking `--cfg test`. The walker
+/// flips polarity on entering `not(...)` so `test` inside `not()`
+/// doesn't trigger the warning. `any(test, ...)` and `all(test, ...)`
+/// preserve polarity.
+fn find_unbroadened_cfg_test_attr(attrs: &[syn::Attribute]) -> Option<&syn::Attribute> {
+    attrs.iter().find(|attr| {
+        if !attr.path().is_ident("cfg") {
+            return false;
+        }
+        let mut bare_test = false;
+        let mut has_rudzio_test = false;
+        let _walk_top: syn::Result<()> = attr.parse_nested_meta(|meta| {
+            walk_cfg_meta(&meta, false, &mut bare_test, &mut has_rudzio_test);
+            Ok(())
+        });
+        bare_test && !has_rudzio_test
+    })
+}
+
+/// Recursively walk a `cfg(...)` meta tree, setting `bare_test` /
+/// `has_rudzio_test` when those idents appear in a POSITIVE context
+/// (i.e. not inside a `not(...)`). `inside_not` flips on every
+/// `not(...)` recursion. `any(...)` and `all(...)` preserve the
+/// surrounding polarity.
+fn walk_cfg_meta(
+    meta: &ParseNestedMeta<'_>,
+    inside_not: bool,
+    bare_test: &mut bool,
+    has_rudzio_test: &mut bool,
+) {
+    if meta.path.is_ident("test") {
+        if !inside_not {
+            *bare_test = true;
+        }
+        return;
+    }
+    if meta.path.is_ident("rudzio_test") {
+        if !inside_not {
+            *has_rudzio_test = true;
+        }
+        return;
+    }
+    let entering_not = meta.path.is_ident("not");
+    let _walk_inner: syn::Result<()> = meta.parse_nested_meta(|inner| {
+        walk_cfg_meta(
+            &inner,
+            inside_not || entering_not,
+            bare_test,
+            has_rudzio_test,
+        );
+        Ok(())
+    });
+}
+
+/// `true` when any item in `body` is a function annotated with one
+/// of the cargo / rudzio test attributes. Drives the Bug #4 narrow:
+/// a mod that ONLY contains helper items (consts, type aliases,
+/// non-test fns) gets quietly skipped.
+fn mod_body_has_test_fn(body: &[syn::Item]) -> bool {
+    body.iter().any(|item| {
+        let syn::Item::Fn(fn_item) = item else {
+            return false;
+        };
+        fn_item.attrs.iter().any(|attr| {
+            let path = attr.path();
+            if path.is_ident("test") || path.is_ident("bench") {
+                return true;
+            }
+            // `#[rudzio::test]` — two-segment path.
+            let mut iter = path.segments.iter();
+            iter.next().is_some_and(|seg| seg.ident == "rudzio")
+                && iter.next().is_some_and(|seg| seg.ident == "test")
+                && iter.next().is_none()
+        })
+    })
 }
 
 /// Plan-level convenience: scan every member's src tree and return the
@@ -2021,14 +2345,29 @@ pub fn write_runner(plan: &Plan, out_dir: &Path) -> Result<()> {
         })?;
     }
 
+    // Bug #10 collision detection: two `[[test]]` binaries declaring
+    // `mod <name>;` against DIFFERENT source files must fail loudly
+    // here, not silently first-wins or transparently scope. The
+    // error chain names every offending binary so the user can
+    // rename or alias.
+    detect_helper_collisions(plan)?;
+
+    // Materialise the per-test-binary proxy tree under `src/proxies/`
+    // BEFORE writing main.rs / tests.rs — both reference the proxy
+    // file paths via `#[path = ...]` and cargo will fail at compile
+    // time if the files don't yet exist.
+    let proxies = collect_test_binary_proxies(plan, out_dir);
+    write_test_binary_proxies(out_dir, &proxies)
+        .with_context(|| format!("writing test-binary proxies under {}", out_dir.display()))?;
+
     let cargo_toml = build_cargo_toml(plan)?;
     fs::write(out_dir.join("Cargo.toml"), cargo_toml)
         .with_context(|| format!("writing Cargo.toml under {}", out_dir.display()))?;
 
-    fs::write(src_dir.join("main.rs"), build_main_rs(plan))
+    fs::write(src_dir.join("main.rs"), build_main_rs(plan, out_dir))
         .with_context(|| format!("writing src/main.rs under {}", out_dir.display()))?;
 
-    fs::write(src_dir.join("tests.rs"), build_tests_rs(plan))
+    fs::write(src_dir.join("tests.rs"), build_tests_rs(plan, out_dir))
         .with_context(|| format!("writing src/tests.rs under {}", out_dir.display()))?;
 
     fs::write(out_dir.join("build.rs"), build_build_rs(plan))
@@ -2516,9 +2855,10 @@ fn build_bridge_dependencies(plan: &Plan, member: &MemberPlan) -> Result<Table> 
 /// crate-name-to-ident rule.
 #[inline]
 #[must_use]
-pub fn build_main_rs(plan: &Plan) -> String {
+pub fn build_main_rs(plan: &Plan, out_dir: &Path) -> String {
     let mut out = String::from(
         "#![allow(
+    non_snake_case,
     unsafe_code,
     unreachable_pub,
     unused_crate_dependencies,
@@ -2560,7 +2900,7 @@ pub fn build_main_rs(plan: &Plan) -> String {
     // Collisions across members (two members declaring `mod common;`
     // with different files) are flagged by `collect_test_root_helpers`
     // so the user gets a clear error rather than a silent first-wins.
-    for helper in collect_test_root_helpers(plan) {
+    for helper in collect_test_root_helpers(plan, out_dir) {
         let _ignored: FmtResult = writeln!(
             out,
             "#[path = {}]\nmod {};",
@@ -2611,26 +2951,372 @@ fn main() {",
 }
 
 /// Walk every member's test-root files, parse each for top-level
-/// `mod <name>;` declarations, and resolve each to the sibling file
-/// it refers to. Results are deduplicated by `(module, path)`; a
-/// genuine collision (same module name across two members pointing
-/// at DIFFERENT files) is silently first-wins because diagnosing it
-/// from the codegen layer would require threading errors back up.
-/// The resulting compile error (`error[E0428]: the name X is defined
-/// multiple times`) surfaces it loudly enough in practice.
-fn collect_test_root_helpers(plan: &Plan) -> Vec<TestRootHelper> {
-    let mut by_module: BTreeMap<String, PathBuf> = BTreeMap::new();
+/// `mod <name>;` declarations, and emit one [`TestRootHelper`] per
+/// `(test_binary, helper)` pair. Each helper gets a synthesised
+/// crate-root module name that is unique across the workspace, so
+/// two `[[test]]` binaries declaring `mod common;` against different
+/// sibling files no longer collide (Bug #10 — the previous
+/// implementation `BTreeMap`-deduplicated by bare module name, which
+/// silently first-wins). Source files in each test binary go through
+/// a syn-based rewrite so `use crate::<helper>` inside those files
+/// resolves to the binary-scoped helper, not whichever helper the
+/// first-wins lottery favoured.
+fn collect_test_root_helpers(plan: &Plan, out_dir: &Path) -> Vec<TestRootHelper> {
+    collect_test_binary_proxies(plan, out_dir)
+        .into_iter()
+        .flat_map(|proxy| proxy.helpers_at_crate_root.into_iter())
+        .collect()
+}
+
+/// Bug #10 collision detection: when two `[[test]]` binaries declare
+/// `mod <name>;` decls that resolve to DIFFERENT source HELPER
+/// files, emit a single error chain naming every offender (helper
+/// name, each binary id, each source path). Same-helper-name
+/// pointing at the SAME canonical file is deduplicated (legitimate
+/// shared helper via `#[path]` — Bug #8B edge).
+///
+/// **Test files are exempt.** A `mod foo;` declaration that resolves
+/// to a file containing `#[rudzio::test]` / `#[rudzio::suite]` is a
+/// per-binary test file, NOT a helper — different binaries
+/// naturally have differently-named-but-same-stem test files
+/// (`a/foo.rs` vs `b/foo.rs`) without that being a user error. The
+/// per-binary synth-name scoping handles them automatically.
+/// Only helpers (files without test markers) are subject to the
+/// strict collision rule.
+///
+/// # Errors
+///
+/// Returns an error whose context chain lists each colliding helper
+/// name and every binary/file pair involved.
+fn detect_helper_collisions(plan: &Plan) -> Result<()> {
+    // helper_name → distinct canonical paths → list of binary_ids
+    // referencing that path. Two distinct canonical paths under the
+    // same helper_name == collision.
+    let mut by_helper: BTreeMap<String, BTreeMap<PathBuf, BTreeSet<String>>> = BTreeMap::new();
     for member in &plan.members {
         for test_file in &member.test_files {
-            for (module, path) in discover_test_root_helpers(test_file) {
-                let _previous = by_module.entry(module).or_insert(path);
+            let binary_id = compute_test_binary_id(member, test_file);
+            for (helper_name, source_path) in discover_test_root_helpers(test_file) {
+                if file_carries_test_markers(&source_path) {
+                    continue;
+                }
+                let canon = canonicalize_or_keep(&source_path);
+                let _newly_inserted: bool = by_helper
+                    .entry(helper_name)
+                    .or_default()
+                    .entry(canon)
+                    .or_default()
+                    .insert(binary_id.clone());
             }
         }
     }
-    by_module
-        .into_iter()
-        .map(|(module, path)| TestRootHelper { module, path })
-        .collect()
+    let mut collision_lines: Vec<String> = Vec::new();
+    for (helper_name, paths_to_bins) in &by_helper {
+        if paths_to_bins.len() < 2 {
+            continue;
+        }
+        // Build a "helper `common`:\n  bin a → path X\n  bin b → path Y" block.
+        let mut block = format!(
+            "helper `{helper_name}` resolves to {n} distinct files across binaries:",
+            n = paths_to_bins.len()
+        );
+        for (canon, bins) in paths_to_bins {
+            for bin_id in bins {
+                let _written: FmtResult = write!(
+                    block,
+                    "\n  binary `{bin_id}` → {path}",
+                    path = canon.display()
+                );
+            }
+        }
+        collision_lines.push(block);
+    }
+    if collision_lines.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "Bug #10 helper collisions detected. Rename one of the helper modules, \
+         or use `#[path = \"…\"]` on the `mod` decls to point them at the same \
+         file when sharing is intended.\n\n{}",
+        collision_lines.join("\n\n"),
+    );
+}
+
+/// `true` when the file at `path` carries `#[rudzio::test]` /
+/// `#[rudzio::suite]` markers (substring scan, tolerates absolute
+/// paths like `#[::rudzio::test]`). Used by collision detection to
+/// distinguish per-binary test files from cross-binary helpers.
+/// Read failures (missing file, permission denied) return `false`
+/// — defensive: an unreadable file can't be confirmed to be a test
+/// file, so the conservative answer is "treat as helper" and let
+/// the strict collision rule fire.
+fn file_carries_test_markers(path: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(path) else {
+        return false;
+    };
+    text.contains("rudzio::test") || text.contains("rudzio::suite")
+}
+
+/// Walk every member's `test_files`, build a [`TestBinaryProxy`] for
+/// each `[[test]]` entry, and discover the helpers it declares.
+/// Pure: no filesystem writes. The proxy paths returned are the
+/// paths the on-disk proxies WILL live at after
+/// [`write_test_binary_proxies`] runs; `build_main_rs` /
+/// `build_tests_rs` use those paths in `#[path = ...]` attributes
+/// regardless of whether they exist yet.
+fn collect_test_binary_proxies(plan: &Plan, out_dir: &Path) -> Vec<TestBinaryProxy> {
+    let proxies_root = out_dir.join("src").join("proxies");
+    // `<out_dir>/src/proxies/<id>` is the canonical proxy location.
+    // `write_test_binary_proxies` writes files there and main.rs /
+    // tests.rs reference them via `#[path]`. Both must agree on the
+    // path, so `out_dir` is threaded through every collector +
+    // builder rather than recomputed from `plan.workspace_root`
+    // (which would force the default-output-dir convention onto
+    // callers that pass a custom out_dir, e.g. tempdirs in tests).
+    let mut out: Vec<TestBinaryProxy> = Vec::new();
+    for member in &plan.members {
+        for test_file in &member.test_files {
+            let Some(test_root_dir) = test_file.parent() else {
+                continue;
+            };
+            let binary_id = compute_test_binary_id(member, test_file);
+            let proxy_dir = proxies_root.join(&binary_id);
+            let proxy_test_root = match test_file.file_name() {
+                Some(name) => proxy_dir.join(name),
+                None => continue,
+            };
+            let helpers_raw = discover_test_root_helpers(test_file);
+            let mut helper_synth_lookup: BTreeMap<String, String> = BTreeMap::new();
+            let mut helpers_at_crate_root: Vec<TestRootHelper> = Vec::new();
+            for (helper_name, source_path) in helpers_raw {
+                let synth = format!("__rudzio__{binary_id}__{helper_name}");
+                let proxy_path = match source_path.strip_prefix(test_root_dir) {
+                    Ok(rel) => proxy_dir.join(rel),
+                    Err(_) => continue,
+                };
+                helpers_at_crate_root.push(TestRootHelper {
+                    module: synth.clone(),
+                    path: proxy_path,
+                });
+                let _previous_synth = helper_synth_lookup.insert(helper_name, synth);
+            }
+            out.push(TestBinaryProxy {
+                binary_id,
+                helpers_at_crate_root,
+                helper_synth_lookup,
+                test_root: test_file.clone(),
+                test_root_dir: test_root_dir.to_path_buf(),
+                proxy_test_root,
+            });
+        }
+    }
+    out
+}
+
+/// Stable per-test-binary id: `<sanitize(member_pkg)>__<sanitize(parent_dir_name)>`.
+///
+/// Combines the member package name and the test-root's parent
+/// directory name so two binaries inside the same crate
+/// (`tests/integration/mod.rs` + `tests/e2e/mod.rs`) get distinct
+/// ids without conflict, and the same binary across two members
+/// (each named `tests/integration/mod.rs`) also stays distinct.
+/// Flat single-file test files (`tests/foo.rs`, no parent dir per se
+/// — parent is `tests/`) fall back to the file stem.
+fn compute_test_binary_id(member: &MemberPlan, test_file: &Path) -> String {
+    let member_part = sanitize_ident(&member.package_name);
+    let parent_part = if test_file.file_name().and_then(|name| name.to_str()) == Some("mod.rs") {
+        test_file
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str())
+            .unwrap_or("root")
+    } else {
+        test_file
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("test")
+    };
+    format!("{member_part}__{}", sanitize_ident(parent_part))
+}
+
+/// Write the per-test-binary proxy files under
+/// `<out_dir>/src/proxies/<binary_id>/`. Each proxy is a copy of the
+/// original source with two transformations:
+///
+/// * `mod <helper>;` declarations in the test-root mod.rs are
+///   stripped (the helper is hoisted to the aggregator's crate root
+///   under a synthesised name; leaving the declaration in mod.rs
+///   would compile the helper twice and produce duplicate-type errors
+///   when something passes one through API expecting the other).
+///
+/// * `crate::<helper>` paths in every file are rewritten to
+///   `crate::<synth_name>` via a syn `visit_mut::VisitMut` walker,
+///   then re-emitted with `prettyplease`. Correct under every Rust
+///   syntax (comments, raw strings, macros).
+///
+/// # Errors
+///
+/// Returns an error when any source file fails to parse, any proxy
+/// file fails to write, or any directory creation fails. Read-fail
+/// on an individual source file is fatal so missing helpers don't
+/// silently degrade to a "first source wins" cascade.
+fn write_test_binary_proxies(out_dir: &Path, proxies: &[TestBinaryProxy]) -> Result<()> {
+    let proxies_root = out_dir.join("src").join("proxies");
+    if proxies_root.exists() {
+        fs::remove_dir_all(&proxies_root)
+            .with_context(|| format!("removing {}", proxies_root.display()))?;
+    }
+    for proxy in proxies {
+        let proxy_dir = proxies_root.join(&proxy.binary_id);
+        fs::create_dir_all(&proxy_dir)
+            .with_context(|| format!("creating {}", proxy_dir.display()))?;
+        let source_files = walk_rs_files(&proxy.test_root_dir);
+        let helper_names: BTreeSet<String> = proxy.helper_synth_lookup.keys().cloned().collect();
+        for source_file in source_files {
+            let rel = source_file
+                .strip_prefix(&proxy.test_root_dir)
+                .with_context(|| {
+                    format!(
+                        "strip-prefix {} from {}",
+                        proxy.test_root_dir.display(),
+                        source_file.display()
+                    )
+                })?;
+            let dest = proxy_dir.join(rel);
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("creating {}", parent.display()))?;
+            }
+            let original = fs::read_to_string(&source_file)
+                .with_context(|| format!("reading {}", source_file.display()))?;
+            let rewritten = if source_file == proxy.test_root {
+                let stripped = strip_helper_mod_decls(&original, &helper_names)
+                    .with_context(|| format!("stripping mod decls in {}", source_file.display()))?;
+                rewrite_crate_paths(&stripped, &proxy.helper_synth_lookup).with_context(|| {
+                    format!("rewriting crate paths in {}", source_file.display())
+                })?
+            } else {
+                rewrite_crate_paths(&original, &proxy.helper_synth_lookup).with_context(|| {
+                    format!("rewriting crate paths in {}", source_file.display())
+                })?
+            };
+            fs::write(&dest, rewritten).with_context(|| format!("writing {}", dest.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Depth-first walk of `dir`, returning every `.rs` file inside it
+/// (recursive). Used to enumerate the full source set of a test
+/// binary so the proxy emit covers every file `mod.rs` reaches
+/// transitively. Errors during traversal are dropped: a unreadable
+/// subdir yields fewer files (which surfaces later as an unresolved
+/// mod), but doesn't abort the whole proxy emission.
+fn walk_rs_files(dir: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return out;
+    };
+    for entry_result in entries {
+        let Ok(entry) = entry_result else { continue };
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(walk_rs_files(&path));
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+            out.push(path);
+        } else {
+            // Non-Rust files (`*.toml`, `*.md`, build-script
+            // outputs, etc.) are ignored — they don't contribute
+            // test-binary sources and the proxy emit shouldn't copy
+            // them. Explicit branch silences the `else_if_without_else`
+            // lint without changing behaviour.
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Parse `source` with syn, rewrite every `crate::<helper>::...` path
+/// to `crate::<synth>::...` where the substitution is given by
+/// `helpers` (`helper_name -> synth_name`), and re-emit via
+/// `prettyplease`. AST-level (not regex) so raw strings, comments,
+/// and macros cannot trick the substitution.
+///
+/// # Errors
+///
+/// Returns an error when `source` is not valid Rust — the
+/// `prettyplease::unparse` step itself is infallible.
+fn rewrite_crate_paths(source: &str, helpers: &BTreeMap<String, String>) -> Result<String> {
+    if helpers.is_empty() {
+        return Ok(source.to_owned());
+    }
+    let mut file: syn::File = syn::parse_str(source).context("parsing test-binary source file")?;
+    let mut rewriter = CratePathRewriter { helpers };
+    rewriter.visit_file_mut(&mut file);
+    Ok(prettyplease::unparse(&file))
+}
+
+/// Parse `source` with syn, drop every top-level `mod <name>;`
+/// declaration whose `<name>` is in `helpers`, and re-emit via
+/// `prettyplease`. Used on the proxy test-root mod.rs so the helpers
+/// hoisted to the aggregator's crate root don't get redeclared
+/// nested (which would compile them twice as distinct types).
+///
+/// # Errors
+///
+/// Returns an error when `source` is not valid Rust.
+fn strip_helper_mod_decls(source: &str, helpers: &BTreeSet<String>) -> Result<String> {
+    if helpers.is_empty() {
+        return Ok(source.to_owned());
+    }
+    let mut file: syn::File = syn::parse_str(source).context("parsing test-root mod.rs")?;
+    file.items.retain(|item| {
+        if let syn::Item::Mod(mod_item) = item
+            && mod_item.content.is_none()
+            && helpers.contains(&mod_item.ident.to_string())
+        {
+            false
+        } else {
+            true
+        }
+    });
+    Ok(prettyplease::unparse(&file))
+}
+
+/// Rewrite the first identifier inside a `UseTree` when it matches a
+/// helper-name key. Called after detecting the `crate::` head; the
+/// first ident OF THE SUB-TREE is the helper name (e.g. for
+/// `use crate::common::X`, the sub-tree starts at `common`).
+///
+/// Handles every `UseTree` variant cargo accepts after the head
+/// segment: another `Path` (`crate::common::X`), a leaf `Name`
+/// (`crate::common`), a `Rename` (`crate::common as foo`), a `Group`
+/// (`crate::{common, other}`), or `Glob` (`crate::*` — no helper
+/// match possible).
+fn rewrite_first_use_tree_ident(tree: &mut syn::UseTree, helpers: &BTreeMap<String, String>) {
+    match tree {
+        syn::UseTree::Path(path) => {
+            if let Some(synth) = helpers.get(&path.ident.to_string()) {
+                path.ident = syn::Ident::new(synth, path.ident.span());
+            }
+        }
+        syn::UseTree::Name(name) => {
+            if let Some(synth) = helpers.get(&name.ident.to_string()) {
+                name.ident = syn::Ident::new(synth, name.ident.span());
+            }
+        }
+        syn::UseTree::Rename(rename) => {
+            if let Some(synth) = helpers.get(&rename.ident.to_string()) {
+                rename.ident = syn::Ident::new(synth, rename.ident.span());
+            }
+        }
+        syn::UseTree::Group(group) => {
+            for item in &mut group.items {
+                rewrite_first_use_tree_ident(item, helpers);
+            }
+        }
+        syn::UseTree::Glob(_) => {}
+    }
 }
 
 /// Normalise a Cargo package name (which allows hyphens) into the Rust
@@ -2664,7 +3350,12 @@ fn crate_name_to_ident(name: &str) -> String {
 /// helpers were already opt-in at the test-binary level, and the
 /// aggregator's `--cfg rudzio_test` activation broadens that gate).
 fn discover_test_root_helpers(test_file: &Path) -> Vec<(String, PathBuf)> {
-    if test_file.file_name().and_then(|os_name| os_name.to_str()) != Some("mod.rs") {
+    // Accept `mod.rs`, `main.rs`, and `lib.rs` as test-root entries.
+    // Pre-Bug-#7 only `mod.rs` was supported; real workspaces use
+    // `main.rs`-rooted (Bug #8C) and `lib.rs`-rooted shapes too,
+    // and helper-mod discovery must apply identically to all three.
+    let file_name = test_file.file_name().and_then(|os_name| os_name.to_str());
+    if !matches!(file_name, Some("mod.rs" | "main.rs" | "lib.rs")) {
         return Vec::new();
     }
     let Some(dir) = test_file.parent() else {
@@ -2918,7 +3609,52 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
     // going through `rudzio::build::expose_bins`, which can't reach
     // bin-only workspace members when the aggregator is its own workspace.
 
+    emit_features_table(&mut doc, plan);
+
     Ok(doc.to_string())
+}
+
+/// Emit the aggregator's `[features]` table as the union of every
+/// member's `[features]` table so `cargo rudzio test --features X`
+/// works the same as `cargo test --features X` would in the consumer
+/// (Bug #2). Two members declaring the same feature name produce one
+/// entry whose activation list is the union of both.
+///
+/// `dep:foo` activations are STRIPPED at the aggregator level:
+/// Bug #9's force-enable already pulls every optional dep in
+/// unconditionally, so the feature no longer needs to gate
+/// dep activation. Worse, keeping `dep:foo` would make the
+/// aggregator's Cargo.toml invalid because the dep is no
+/// longer optional in the aggregator's `[dependencies]` table
+/// ("feature includes `dep:foo`, but `foo` is not an optional
+/// dependency"). A feature with no surviving activations is
+/// emitted as `name = []` — still reachable via `--features X`,
+/// just doesn't activate anything (the deps are already on).
+fn emit_features_table(doc: &mut DocumentMut, plan: &Plan) {
+    let mut features_table: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for member in &plan.members {
+        for (name, activations) in &member.features {
+            let entry = features_table.entry(name.clone()).or_default();
+            for activation in activations {
+                if activation.starts_with("dep:") {
+                    continue;
+                }
+                let _newly_inserted: bool = entry.insert(activation.clone());
+            }
+        }
+    }
+    if features_table.is_empty() {
+        return;
+    }
+    let mut feats = Table::new();
+    for (name, activations) in features_table {
+        let mut arr = Array::new();
+        for activation in activations {
+            arr.push(activation);
+        }
+        feats.insert(&name, Item::Value(Value::Array(arr)));
+    }
+    doc.insert("features", Item::Table(feats));
 }
 
 /// Render `dep` as a sibling-bridge dependency entry when its package
@@ -3145,7 +3881,7 @@ fn fill_version_dep_body(tbl: &mut InlineTable, dep: &DevDepSpec) {
 }
 
 /// Build the aggregator's `src/tests.rs` body — `#[path]`-included submodules per member's tests.
-fn build_tests_rs(plan: &Plan) -> String {
+fn build_tests_rs(plan: &Plan, out_dir: &Path) -> String {
     // Per-crate submodule namespacing. Each member's tests/*.rs files
     // nest under `mod <crate_name> { ... }` so sibling helper modules
     // resolve via `use super::helper::*` from inside a test file —
@@ -3158,6 +3894,7 @@ fn build_tests_rs(plan: &Plan) -> String {
     // the aggregator root, which doesn't have helper under its short
     // name. Per-crate nesting also eliminates cross-crate name
     // collisions without needing a prefix at all.
+    let proxies = collect_test_binary_proxies(plan, out_dir);
     let mut per_crate_mod_names: BTreeSet<String> = BTreeSet::new();
     let mut out = String::new();
     for member in &plan.members {
@@ -3182,10 +3919,24 @@ fn build_tests_rs(plan: &Plan) -> String {
                 inner = format!("{stem_ident}_{inner_counter}");
                 inner_counter = inner_counter.saturating_add(1);
             }
+            // Reference the PROXY test-root, not the original source.
+            // The proxy has `mod <helper>;` declarations stripped (so
+            // helpers don't compile twice) and `crate::<helper>` paths
+            // rewritten to the synth names emitted at the aggregator's
+            // crate root. The proxy is materialised by
+            // `write_test_binary_proxies` before this string is
+            // written to disk.
+            let path_for_attr = proxies
+                .iter()
+                .find(|proxy| proxy.test_root == *file)
+                .map_or_else(
+                    || file.to_string_lossy().into_owned(),
+                    |proxy| proxy.proxy_test_root.to_string_lossy().into_owned(),
+                );
             let _path_line: FmtResult = writeln!(
                 out,
                 "    #[path = {}]\n    mod {inner};",
-                quote_str(&file.to_string_lossy())
+                quote_str(&path_for_attr)
             );
         }
         out.push_str("}\n");
@@ -3320,12 +4071,43 @@ fn escape_str_literal(value: &str) -> String {
 ///   declarations.
 ///
 /// All other stems pass through [`sanitize_ident`] unchanged.
+/// Return the `[[test]]` binary name cargo would assign to `file`.
+///
+/// Same convention as `inner_module_ident_for` for selecting the
+/// human-readable name but WITHOUT sanitisation / reserved-keyword
+/// escaping — cargo's `[[test]] name = "<...>"` accepts arbitrary
+/// strings, so the test-binary filter compares against the literal
+/// directory / stem name the user wrote.
+///
+/// Used by [`Plan::restrict_to_test_binaries`] to match `--test foo`
+/// against the workspace's `[[test]]` entries.
+fn test_binary_name_for(file: &Path) -> String {
+    let stem = file
+        .file_stem()
+        .and_then(|os_stem| os_stem.to_str())
+        .unwrap_or("test");
+    if matches!(stem, "mod" | "main" | "lib") {
+        file.parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|os_name| os_name.to_str())
+            .unwrap_or(stem)
+            .to_owned()
+    } else {
+        stem.to_owned()
+    }
+}
+
+/// Derive the inner Rust module identifier emitted into the
+/// aggregator's proxy `mod.rs` for `file`. Uses the immediate parent
+/// directory's name for `mod.rs` entries, the file stem otherwise.
+/// Sanitizes invalid identifier characters and promotes Rust reserved
+/// keywords to raw identifiers (`r#match`).
 fn inner_module_ident_for(file: &Path) -> String {
     let raw_stem = file
         .file_stem()
         .and_then(|os_stem| os_stem.to_str())
         .unwrap_or("test");
-    if raw_stem == "mod" {
+    let base = if raw_stem == "mod" {
         // `tests/<parent>/mod.rs` → use `<parent>` as the module name.
         // Fall back to "test_mod" only when the file has no parent at
         // all (defensive — cargo always provides an absolute path).
@@ -3334,15 +4116,19 @@ fn inner_module_ident_for(file: &Path) -> String {
             .and_then(|parent| parent.file_name())
             .and_then(|os_name| os_name.to_str())
             .unwrap_or("test_mod");
-        return sanitize_ident(parent_dir);
-    }
-    let sanitized = sanitize_ident(raw_stem);
-    if is_rust_reserved_keyword(&sanitized) {
+        sanitize_ident(parent_dir)
+    } else {
+        sanitize_ident(raw_stem)
+    };
+    if is_rust_reserved_keyword(&base) {
         // Promote to a raw identifier so the keyword is usable in a
-        // module-declaration position.
-        return format!("r#{sanitized}");
+        // module-declaration position. Applies uniformly whether the
+        // keyword came from a file stem (`tests/match.rs` →
+        // `r#match`) or a parent dir of a `mod.rs` (`tests/impl/mod.rs`
+        // → `r#impl`).
+        return format!("r#{base}");
     }
-    sanitized
+    base
 }
 
 /// `true` when `ident` is a Rust reserved keyword (Edition 2021 + 2024

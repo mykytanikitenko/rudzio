@@ -291,8 +291,11 @@ dependencies = [
  "anyhow",
  "cargo_metadata",
  "libc",
+ "prettyplease",
+ "proc-macro2",
  "rudzio",
  "rudzio-migrate",
+ "syn",
  "tempfile",
  "toml_edit",
 ]

@@ -246,4 +246,160 @@ mod tests {
         );
         Ok(())
     }
+
+    /// Optional dev-dep carrying a `features = [...]` list. Force-
+    /// enable must strip `optional = true` while preserving the
+    /// `features` array verbatim — otherwise the dep compiles
+    /// without the features that the test code expects.
+    #[rudzio::test]
+    fn force_enable_preserves_features_on_optional_dep() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let rudzio_root = rudzio_source_root();
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            format!(
+                "[workspace]\n\
+                 members = [\"consumer\"]\n\
+                 resolver = \"3\"\n\
+                 \n\
+                 [workspace.dependencies]\n\
+                 rudzio = {{ path = \"{rudzio}\", features = [\"common\", \"runtime-tokio-multi-thread\"] }}\n",
+                rudzio = rudzio_root.display(),
+            ),
+        )?;
+        let consumer = temp.path().join("consumer");
+        fs::create_dir_all(consumer.join("src"))?;
+        fs::create_dir_all(consumer.join("tests"))?;
+        fs::write(
+            consumer.join("Cargo.toml"),
+            "[package]\n\
+             name = \"consumer\"\n\
+             version = \"0.0.0\"\n\
+             edition = \"2024\"\n\
+             publish = false\n\
+             \n\
+             [lib]\n\
+             name = \"consumer\"\n\
+             path = \"src/lib.rs\"\n\
+             \n\
+             [features]\n\
+             default = [\"with_feat\"]\n\
+             with_feat = [\"dep:fake_feat_dep\"]\n\
+             \n\
+             [dependencies]\n\
+             fake_feat_dep = { version = \"=0.0.1\", optional = true, features = [\"alpha\", \"beta\"] }\n\
+             \n\
+             [dev-dependencies]\n\
+             rudzio = { workspace = true }\n",
+        )?;
+        fs::write(
+            consumer.join("src").join("lib.rs"),
+            "// rudzio_test marker\n",
+        )?;
+        fs::write(
+            consumer.join("tests").join("integration.rs"),
+            "// rudzio_test marker\n#[rudzio::main]\nfn main() {}\n",
+        )?;
+        let manifest = temp.path().join("Cargo.toml");
+        let plan = with_cargo_offline(|| plan_from_manifest(&manifest))?;
+        let out_dir = temp.path().join("rudzio-auto-runner");
+        write_runner(&plan, &out_dir)?;
+        let agg = fs::read_to_string(out_dir.join("Cargo.toml"))?;
+        anyhow::ensure!(
+            agg.contains("fake_feat_dep"),
+            "optional dep with features must appear in aggregator deps:\n{agg}",
+        );
+        anyhow::ensure!(
+            agg.contains("\"alpha\"") && agg.contains("\"beta\""),
+            "force-enable must preserve the `features` array verbatim:\n{agg}",
+        );
+        // Find the fake_feat_dep line + its inline table contents so
+        // we can assert `optional = true` doesn't appear on THAT
+        // specific dep (other parts of the aggregator manifest may
+        // legitimately contain "optional" as a feature name etc.).
+        let dep_line: String = agg
+            .lines()
+            .find(|line| line.contains("fake_feat_dep"))
+            .unwrap_or("")
+            .to_owned();
+        anyhow::ensure!(
+            !dep_line.contains("optional = true"),
+            "force-enable must strip `optional = true`; got:\n{dep_line}",
+        );
+        Ok(())
+    }
+
+    /// Three optional dev-deps under one member. Every one of them
+    /// must be force-enabled — guards against a regression that
+    /// only handles the first optional dep it encounters.
+    #[rudzio::test]
+    fn force_enable_applies_to_every_optional_dep_in_member() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let rudzio_root = rudzio_source_root();
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            format!(
+                "[workspace]\n\
+                 members = [\"consumer\"]\n\
+                 resolver = \"3\"\n\
+                 \n\
+                 [workspace.dependencies]\n\
+                 rudzio = {{ path = \"{rudzio}\", features = [\"common\", \"runtime-tokio-multi-thread\"] }}\n",
+                rudzio = rudzio_root.display(),
+            ),
+        )?;
+        let consumer = temp.path().join("consumer");
+        fs::create_dir_all(consumer.join("src"))?;
+        fs::create_dir_all(consumer.join("tests"))?;
+        fs::write(
+            consumer.join("Cargo.toml"),
+            "[package]\n\
+             name = \"consumer\"\n\
+             version = \"0.0.0\"\n\
+             edition = \"2024\"\n\
+             publish = false\n\
+             \n\
+             [lib]\n\
+             name = \"consumer\"\n\
+             path = \"src/lib.rs\"\n\
+             \n\
+             [features]\n\
+             default = []\n\
+             all_three = [\"dep:opt_a\", \"dep:opt_b\", \"dep:opt_c\"]\n\
+             \n\
+             [dependencies]\n\
+             opt_a = { version = \"=0.0.1\", optional = true }\n\
+             opt_b = { version = \"=0.0.2\", optional = true }\n\
+             opt_c = { version = \"=0.0.3\", optional = true }\n\
+             \n\
+             [dev-dependencies]\n\
+             rudzio = { workspace = true }\n",
+        )?;
+        fs::write(
+            consumer.join("src").join("lib.rs"),
+            "// rudzio_test marker\n",
+        )?;
+        fs::write(
+            consumer.join("tests").join("integration.rs"),
+            "// rudzio_test marker\n#[rudzio::main]\nfn main() {}\n",
+        )?;
+        let manifest = temp.path().join("Cargo.toml");
+        let plan = with_cargo_offline(|| plan_from_manifest(&manifest))?;
+        let out_dir = temp.path().join("rudzio-auto-runner");
+        write_runner(&plan, &out_dir)?;
+        let agg = fs::read_to_string(out_dir.join("Cargo.toml"))?;
+        for dep in ["opt_a", "opt_b", "opt_c"] {
+            anyhow::ensure!(agg.contains(dep), "aggregator must list `{dep}`:\n{agg}");
+            let dep_line: String = agg
+                .lines()
+                .find(|line| line.contains(dep))
+                .unwrap_or("")
+                .to_owned();
+            anyhow::ensure!(
+                !dep_line.contains("optional = true"),
+                "`{dep}` must be force-enabled (drop `optional = true`); got:\n{dep_line}",
+            );
+        }
+        Ok(())
+    }
 }

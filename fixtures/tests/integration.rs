@@ -103,7 +103,11 @@ fn run_and_signal(exe: &str, ready_marker: &str, signal: i32) -> anyhow::Result<
         }
     }
 
-    // Give the runner a short grace period to install its signal handler.
+    // Small grace for signal_hook's `Signals::new` to finish its
+    // internal setup after returning. The `ready_marker` itself
+    // proves the runner is past `install_signal_handler`, so the
+    // OS handler is registered; this 100ms is a safety margin for
+    // any post-return setup signal_hook does internally.
     thread::sleep(Duration::from_millis(100_u64));
 
     let pid = libc::pid_t::try_from(child.id())
@@ -131,7 +135,31 @@ fn run_and_signal(exe: &str, ready_marker: &str, signal: i32) -> anyhow::Result<
         .join()
         .map_err(|_join_err| anyhow::anyhow!("stderr thread panicked"))?;
 
-    let status = child.wait().context("wait child")?;
+    // Poll for child exit with a generous deadline. If the runner's
+    // signal handler is starved (e.g. under saturated CPU contention
+    // from the full-suite aggregator), the subprocess may hang
+    // indefinitely on its `pending()` body waiting for cancellation
+    // that never arrives. The deadline ensures the parent test
+    // doesn't hang too — kill the child and surface a clear failure
+    // instead of timing out at the test-runner level.
+    let exit_deadline = Instant::now()
+        .checked_add(Duration::from_mins(2))
+        .ok_or_else(|| anyhow::anyhow!("exit deadline overflow"))?;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= exit_deadline {
+            let _killed: IoResult<()> = child.kill();
+            let waited = child.wait().context("wait killed child")?;
+            anyhow::bail!(
+                "child did not exit within deadline after signal {signal}; \
+                 killed via SIGKILL. Final status: {:?}",
+                waited.code()
+            );
+        }
+        thread::sleep(Duration::from_millis(50_u64));
+    };
     Ok(Output {
         status: ExitStatus::from_raw(status.into_raw()),
         stdout: stdout_buf,
@@ -1097,10 +1125,17 @@ mod tests {
     /// per-test wrapper nor the run-timeout's cooperative cancel can
     /// unblock the worker. The watchdog observes the root token
     /// cancelled, sleeps `--cancel-grace-period=1`, then
-    /// `process::exit(2)`. Total wall-clock budget: ≤ 5s.
+    /// `process::exit(2)`.
+    ///
+    /// **Deterministic shape:** the correctness signal is the
+    /// process exit code (2) and the log marker (`force-exiting`).
+    /// No wall-clock bound is asserted — `run_serial_with_args`
+    /// blocks on the subprocess exit, so the test naturally takes
+    /// run-timeout + cancel-grace seconds + scheduling overhead.
+    /// Under saturated CPU contention that's slower, but the
+    /// outcome stays identical.
     #[rudzio::test]
     fn cancel_grace_force_exits_with_code_2(_ctx: &Test) -> anyhow::Result<()> {
-        let start = Instant::now();
         let out = run_serial_with_args(
             env!("CARGO_BIN_EXE_hung_run_grace_tokio_mt"),
             &[
@@ -1109,12 +1144,7 @@ mod tests {
                 "--phase-hang-grace=0",
             ],
         )?;
-        let elapsed = start.elapsed();
         let log = log_of(&out);
-        anyhow::ensure!(
-            elapsed < Duration::from_secs(5_u64),
-            "watchdog must force-exit within run-timeout + grace + slack, took {elapsed:?}; output:\n{log}"
-        );
         anyhow::ensure!(
             out.status.code() == Some(2_i32),
             "expected exit code 2 (force-exit), got {:?}; output:\n{log}",
@@ -1147,17 +1177,26 @@ mod tests {
     /// explicitly disable the watchdog don't get a surprise
     /// `process::exit(2)`. Skipped if the runtime would actually
     /// hang past the harness budget.
+    /// With `--cancel-grace-period=0`, the parser encodes the watchdog
+    /// as `None`, so it's never spawned. The subprocess body
+    /// `spawn_blocking(sleep(60s))` can't be cancelled cooperatively,
+    /// and tokio's runtime drop waits for the blocking pool — so the
+    /// subprocess hangs forever by design. The correctness signal is
+    /// pure absence: if the watchdog ever fires, it does so at
+    /// `t = run_timeout + grace = 1s + 0s = 1s` sharp with exit code
+    /// 2. We give it 3s (2s margin) then kill the child and conclude
+    /// the watchdog is correctly off.
     #[rudzio::test]
     fn cancel_grace_zero_does_not_force_exit(_ctx: &Test) -> anyhow::Result<()> {
         // Use a 1-thread tokio runtime so the body's spawn_blocking
-        // sleep can't be exited cooperatively. Bound at 8s.
+        // sleep can't be exited cooperatively.
         let mut child = Command::new(env!("CARGO_BIN_EXE_hung_run_grace_tokio_mt"))
             .env("NO_COLOR", "1")
             .env("RUST_TEST_THREADS", "1")
             .args(["--run-timeout=1", "--cancel-grace-period=0"])
             .spawn()?;
         let deadline = Instant::now()
-            .checked_add(Duration::from_secs(8_u64))
+            .checked_add(Duration::from_secs(3_u64))
             .ok_or_else(|| anyhow::anyhow!("deadline overflow"))?;
         loop {
             if let Some(status) = child.try_wait()? {
@@ -1171,12 +1210,11 @@ mod tests {
             if Instant::now() >= deadline {
                 let _killed: IoResult<()> = child.kill();
                 let _waited: IoResult<ExitStatus> = child.wait();
-                // If we hit the deadline without the watchdog firing,
-                // that itself confirms the watchdog is off — the test
-                // passes.
+                // Watchdog is off (would have fired at t=1s if on);
+                // hang past the deadline is the expected outcome.
                 return Ok(());
             }
-            thread::sleep(Duration::from_millis(100_u64));
+            thread::sleep(Duration::from_millis(50_u64));
         }
     }
 

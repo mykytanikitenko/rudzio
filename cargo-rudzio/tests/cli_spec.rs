@@ -802,19 +802,26 @@ mod tests {
     }
 
     #[rudzio::test]
-    async fn example_test_bench_value_forms_consumed() -> anyhow::Result<()> {
+    async fn example_bench_value_forms_consumed_test_left_for_separate_parser() -> anyhow::Result<()>
+    {
+        // `--test` is now honored as a Plan filter via
+        // `parse_test_binary_filter_flag` (Bug #3 fix), which runs
+        // earlier in `parse_test_args`. By the time
+        // `parse_target_selection_flags` runs, `--test` is already
+        // gone — so it only sees `--example`/`--bench` value forms.
+        // This test passes the raw input straight to
+        // `parse_target_selection_flags` (no earlier parser hop), so
+        // `--test=integration` falls through as a "remaining" arg.
         let input = argv(&["--example", "demo", "--test=integration", "--bench", "perf"]);
         let (consumed, remaining) = parse_target_selection_flags(&input)?;
         anyhow::ensure!(
-            consumed
-                == vec![
-                    "--example demo".to_owned(),
-                    "--test=integration".to_owned(),
-                    "--bench perf".to_owned(),
-                ],
+            consumed == vec!["--example demo".to_owned(), "--bench perf".to_owned()],
             "got {consumed:?}",
         );
-        anyhow::ensure!(remaining.is_empty(), "got {remaining:?}");
+        anyhow::ensure!(
+            remaining == vec!["--test=integration".to_owned()],
+            "got {remaining:?}",
+        );
         Ok(())
     }
 

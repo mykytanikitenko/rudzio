@@ -351,7 +351,10 @@ mod tests {
     #[rudzio::test]
     fn main_rs_emits_extern_crate_per_lib_member_for_rlib_linking() -> anyhow::Result<()> {
         let members = vec![member("alpha", Vec::new()), member("beta", Vec::new())];
-        let rendered = build_main_rs(&plan_with_members(members, "/nowhere"));
+        let rendered = build_main_rs(
+            &plan_with_members(members, "/nowhere"),
+            Path::new("/nowhere/out"),
+        );
 
         anyhow::ensure!(
             rendered.contains("extern crate alpha;"),
@@ -371,7 +374,10 @@ mod tests {
     #[rudzio::test]
     fn main_rs_normalises_hyphens_to_underscores_in_extern_crate() -> anyhow::Result<()> {
         let members = vec![member("foo-bar-baz", Vec::new())];
-        let rendered = build_main_rs(&plan_with_members(members, "/nowhere"));
+        let rendered = build_main_rs(
+            &plan_with_members(members, "/nowhere"),
+            Path::new("/nowhere/out"),
+        );
 
         anyhow::ensure!(
             rendered.contains("extern crate foo_bar_baz;"),
@@ -396,7 +402,10 @@ mod tests {
         let regular = member("regular", Vec::new());
 
         let members = vec![root_member, bin_only, regular];
-        let rendered = build_main_rs(&plan_with_members(members, "/ws-root"));
+        let rendered = build_main_rs(
+            &plan_with_members(members, "/ws-root"),
+            Path::new("/ws-root/out"),
+        );
 
         anyhow::ensure!(
             !rendered.contains("extern crate root_crate;"),
@@ -419,7 +428,10 @@ mod tests {
         // this in a real workspace, but the dedup keeps the emitted file
         // from containing a duplicate `extern crate foo_bar;`).
         let members = vec![member("foo-bar", Vec::new()), member("foo_bar", Vec::new())];
-        let rendered = build_main_rs(&plan_with_members(members, "/nowhere"));
+        let rendered = build_main_rs(
+            &plan_with_members(members, "/nowhere"),
+            Path::new("/nowhere/out"),
+        );
 
         let occurrences: Vec<&str> = rendered
             .match_indices("extern crate foo_bar;")
@@ -993,9 +1005,17 @@ mod tests {
             v1.contains("mod initial"),
             "v1 must reference initial.rs:\n{v1}"
         );
+        // The aggregator's `#[path]` may point either at the source
+        // file (`/abs/alpha/tests/initial.rs`) or at a proxy file
+        // routed through the aggregator's out_dir (e.g.
+        // `<out>/src/proxies/alpha__initial/initial.rs`). The
+        // regeneration contract is "tests.rs references the test
+        // file by stem" — either shape satisfies that. Asserting on
+        // the file name alone keeps the test tolerant of the
+        // proxying detail.
         anyhow::ensure!(
-            v1.contains("/abs/alpha/tests/initial.rs"),
-            "v1 must carry the #[path] for initial.rs:\n{v1}"
+            v1.contains("initial.rs"),
+            "v1 must carry a #[path] entry referencing initial.rs (source or proxy):\n{v1}"
         );
 
         // Simulate a renamed file plus a brand-new one.
@@ -1154,14 +1174,17 @@ mod tests {
 
     #[rudzio::test]
     fn multiple_violations_collected_per_file() -> anyhow::Result<()> {
-        // B.6: every violating site warns independently.
+        // B.6: every violating site warns independently. Each mod
+        // carries a `#[test]` fn so the Bug #4 narrowing fires (the
+        // scan suppresses empty `cfg(test)` mods).
         let tmp = tempdir()?;
         let entry = mk_member_with_src(
             tmp.path(),
             "alpha",
             &[(
                 "lib.rs",
-                "#[cfg(test)]\nmod a {}\n\n#[cfg(test)]\nmod b {}\n",
+                "#[cfg(test)]\nmod a { #[test] fn ta() {} }\n\n\
+                 #[cfg(test)]\nmod b { #[test] fn tb() {} }\n",
             )],
         )?;
         let warnings = scan_unbroadened_cfg_test_mods(&entry);
@@ -1177,12 +1200,13 @@ mod tests {
     #[rudzio::test]
     fn warning_message_includes_actionable_fix() -> anyhow::Result<()> {
         // B.7: the warning must literally contain the replacement
-        // snippet so a user can copy-paste.
+        // snippet so a user can copy-paste. Body carries a `#[test]`
+        // so the Bug #4 narrowing fires.
         let tmp = tempdir()?;
         let entry = mk_member_with_src(
             tmp.path(),
             "alpha",
-            &[("lib.rs", "#[cfg(test)]\nmod tests {}\n")],
+            &[("lib.rs", "#[cfg(test)]\nmod tests { #[test] fn t() {} }\n")],
         )?;
         let warnings = scan_unbroadened_cfg_test_mods(&entry);
         anyhow::ensure!(
@@ -1197,17 +1221,18 @@ mod tests {
     #[rudzio::test]
     fn warnings_aggregate_across_members() -> anyhow::Result<()> {
         // B.8: a plan-level scan returns the union across members in
-        // deterministic order.
+        // deterministic order. Each member's mod carries a `#[test]`
+        // so the Bug #4 narrowing fires.
         let tmp = tempdir()?;
         let alpha = mk_member_with_src(
             tmp.path(),
             "alpha",
-            &[("lib.rs", "#[cfg(test)]\nmod tests {}\n")],
+            &[("lib.rs", "#[cfg(test)]\nmod tests { #[test] fn t() {} }\n")],
         )?;
         let beta = mk_member_with_src(
             tmp.path(),
             "beta",
-            &[("lib.rs", "#[cfg(test)]\nmod tests {}\n")],
+            &[("lib.rs", "#[cfg(test)]\nmod tests { #[test] fn t() {} }\n")],
         )?;
         let plan = plan_with_members(vec![alpha, beta], tmp.path().to_string_lossy().as_ref());
         let all = scan_unbroadened_cfg_test_mods_in_plan(&plan);
@@ -1224,6 +1249,238 @@ mod tests {
         anyhow::ensure!(
             matches!((idx_alpha, idx_beta), (Some(pos_a), Some(pos_b)) if pos_a < pos_b),
             "alpha's warning must precede beta's: {all:?}"
+        );
+        Ok(())
+    }
+
+    // ── B-edge. Defensive edge cases for the Bug #4 narrowing ──────────
+
+    #[rudzio::test]
+    fn cfg_all_test_other_warns_when_body_has_test_fn() -> anyhow::Result<()> {
+        // `#[cfg(all(test, unix))]` is still a bare `test` gate from
+        // rudzio's perspective — `--cfg rudzio_test` won't activate
+        // it. Narrowing must look INSIDE `all(...)` for `rudzio_test`
+        // and not assume `cfg(...)` with extra args is broadened.
+        let tmp = tempdir()?;
+        let entry = mk_member_with_src(
+            tmp.path(),
+            "alpha",
+            &[(
+                "lib.rs",
+                "#[cfg(all(test, unix))]\nmod tests { #[test] fn t() {} }\n",
+            )],
+        )?;
+        let warnings = scan_unbroadened_cfg_test_mods(&entry);
+        anyhow::ensure!(
+            warnings.len() == 1,
+            "compound `cfg(all(test, unix))` with test fn body must warn; got {warnings:?}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn cfg_not_test_does_not_warn() -> anyhow::Result<()> {
+        // `#[cfg(not(test))]` — the module is gated AWAY from cargo's
+        // test build entirely, so rudzio_test broadening doesn't apply.
+        // No warning.
+        let tmp = tempdir()?;
+        let entry = mk_member_with_src(
+            tmp.path(),
+            "alpha",
+            &[(
+                "lib.rs",
+                "#[cfg(not(test))]\nmod tests { #[test] fn t() {} }\n",
+            )],
+        )?;
+        let warnings = scan_unbroadened_cfg_test_mods(&entry);
+        anyhow::ensure!(
+            warnings.is_empty(),
+            "`cfg(not(test))` is not a `test`-gated mod; must not warn: {warnings:?}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn cfg_any_test_rudzio_test_does_not_warn_when_body_has_test_fn() -> anyhow::Result<()> {
+        // Already-broadened gate with test body: no warning. The
+        // user has explicitly opted in to rudzio compilation, so the
+        // narrowing must not nag.
+        let tmp = tempdir()?;
+        let entry = mk_member_with_src(
+            tmp.path(),
+            "alpha",
+            &[(
+                "lib.rs",
+                "#[cfg(any(test, rudzio_test))]\nmod tests { #[test] fn t() {} }\n",
+            )],
+        )?;
+        let warnings = scan_unbroadened_cfg_test_mods(&entry);
+        anyhow::ensure!(
+            warnings.is_empty(),
+            "already-broadened gate must not warn even with test fn body: {warnings:?}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn nested_cfg_test_mod_warns_at_each_layer_with_test_fn() -> anyhow::Result<()> {
+        // Outer cfg(test) mod with body containing an inner cfg(test)
+        // mod. Both unbroadened. Only the inner mod has a #[test] fn.
+        // Behavior: warn at the OUTER level (it contains a sub-mod
+        // that itself contains tests — the outer cfg gate would
+        // suppress everything under it). Implementation choice
+        // documented here: the narrowing walks recursively and
+        // surfaces every layer that owns test-containing children.
+        let tmp = tempdir()?;
+        let entry = mk_member_with_src(
+            tmp.path(),
+            "alpha",
+            &[(
+                "lib.rs",
+                "#[cfg(test)]\nmod outer { #[cfg(test)] mod inner { #[test] fn t() {} } }\n",
+            )],
+        )?;
+        let warnings = scan_unbroadened_cfg_test_mods(&entry);
+        // Inner mod always warns (direct #[test] fn body). Outer
+        // mod's body contains the inner mod (which is an Item::Mod,
+        // not an Item::Fn) — the narrowing's `mod_body_has_test_fn`
+        // is fn-attr based, so outer does NOT warn. Document the
+        // current contract: warning count == 1 (inner only). When
+        // the implementation walks transitively, this becomes == 2;
+        // updating the assertion at that time is fine.
+        anyhow::ensure!(
+            !warnings.is_empty(),
+            "inner `cfg(test)` mod with `#[test]` body must warn: {warnings:?}"
+        );
+        anyhow::ensure!(
+            warnings.iter().any(|warning| warning.contains("inner")),
+            "warning chain must name the `inner` mod: {warnings:?}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn function_nested_cfg_test_mod_is_invisible_to_narrowing() -> anyhow::Result<()> {
+        // A `cfg(test)` mod declared inside a `fn` body is NOT an
+        // `Item::Mod` at the file's top level — syn parses fn bodies
+        // as `Block`, and the narrowing walks top-level items only.
+        // Result: no warning. Document the boundary so a future
+        // refactor that recurses into fn bodies doesn't accidentally
+        // flag these.
+        let tmp = tempdir()?;
+        let entry = mk_member_with_src(
+            tmp.path(),
+            "alpha",
+            &[(
+                "lib.rs",
+                "fn outer() { #[cfg(test)] mod tests { #[test] fn t() {} } }\n",
+            )],
+        )?;
+        let warnings = scan_unbroadened_cfg_test_mods(&entry);
+        anyhow::ensure!(
+            warnings.is_empty(),
+            "fn-body-nested cfg(test) mod is out of narrowing scope: {warnings:?}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn cfg_test_mod_with_helper_only_body_does_not_warn() -> anyhow::Result<()> {
+        // Body has fns + consts + uses but NO `#[test]` /
+        // `#[rudzio::test]` / `#[bench]` attribute. The narrowing
+        // suppresses the warning — the mod is helper-only, not
+        // test-containing, so the gate doesn't hide tests from
+        // rudzio.
+        let tmp = tempdir()?;
+        let entry = mk_member_with_src(
+            tmp.path(),
+            "alpha",
+            &[(
+                "lib.rs",
+                "#[cfg(test)]\nmod tests {\n    \
+                 use std::collections::HashMap;\n    \
+                 const FOO: u32 = 1;\n    \
+                 fn helper() -> u32 { 2 }\n\
+                 }\n",
+            )],
+        )?;
+        let warnings = scan_unbroadened_cfg_test_mods(&entry);
+        anyhow::ensure!(
+            warnings.is_empty(),
+            "helper-only `cfg(test)` mod must not warn under narrowing: {warnings:?}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn cfg_test_mod_with_bench_attr_warns() -> anyhow::Result<()> {
+        // `#[bench]` items count as test bodies under the narrowing
+        // — they're cargo's benchmark fns, gated by `--cfg test`,
+        // and equally invisible to `--cfg rudzio_test`.
+        let tmp = tempdir()?;
+        let entry = mk_member_with_src(
+            tmp.path(),
+            "alpha",
+            &[(
+                "lib.rs",
+                "#[cfg(test)]\nmod tests { #[bench] fn b(_: &mut ::test::Bencher) {} }\n",
+            )],
+        )?;
+        let warnings = scan_unbroadened_cfg_test_mods(&entry);
+        anyhow::ensure!(
+            warnings.len() == 1,
+            "`#[bench]` body must trigger narrowing-suppressed warning: {warnings:?}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn cfg_test_mod_with_rudzio_test_attr_warns() -> anyhow::Result<()> {
+        // `#[rudzio::test]` body itself triggers the warning — the
+        // user wrote a rudzio test inside a `cfg(test)` gate, which
+        // means the test only compiles under cargo's `--cfg test`
+        // and is invisible to rudzio's own runner unless broadened.
+        let tmp = tempdir()?;
+        let entry = mk_member_with_src(
+            tmp.path(),
+            "alpha",
+            &[(
+                "lib.rs",
+                "#[cfg(test)]\nmod tests { #[rudzio::test] fn t() {} }\n",
+            )],
+        )?;
+        let warnings = scan_unbroadened_cfg_test_mods(&entry);
+        anyhow::ensure!(
+            warnings.len() == 1,
+            "`#[rudzio::test]` body inside bare `cfg(test)` must warn: {warnings:?}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn unparseable_file_is_skipped_without_error() -> anyhow::Result<()> {
+        // A file with syntax errors must NOT abort the scan — other
+        // files in the same member can still be checked. The
+        // narrowing swallows syn errors per-file.
+        let tmp = tempdir()?;
+        let entry = mk_member_with_src(
+            tmp.path(),
+            "alpha",
+            &[
+                ("lib.rs", "this is not rust syntax {{{\n"),
+                ("good.rs", "#[cfg(test)]\nmod tests { #[test] fn t() {} }\n"),
+            ],
+        )?;
+        let warnings = scan_unbroadened_cfg_test_mods(&entry);
+        // The well-formed sibling's bare cfg(test) is detected; the
+        // broken file is silently skipped.
+        anyhow::ensure!(
+            warnings.iter().any(|warning| warning.contains("good.rs")),
+            "well-formed sibling must still produce a warning: {warnings:?}"
+        );
+        anyhow::ensure!(
+            !warnings.iter().any(|warning| warning.contains("lib.rs")),
+            "unparseable lib.rs must NOT yield a warning: {warnings:?}"
         );
         Ok(())
     }

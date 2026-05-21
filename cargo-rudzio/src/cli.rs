@@ -28,6 +28,13 @@ pub struct PlanFilters {
     /// Path roots; only members whose manifest dir sits under one of
     /// these survive (positional path arg that resolves to a directory).
     pub include_paths: Vec<PathBuf>,
+    /// `[[test]]` binary names to keep (`--test <NAME>`, repeatable).
+    /// Members whose `test_files` all fall outside this set get their
+    /// `test_files` filtered to empty, so the aggregator skips them.
+    /// Empty = no filter applied (every binary included). Honors
+    /// the cargo CLI surface that `parse_target_selection_flags`
+    /// previously consumed-and-warned. Bug #3 fix.
+    pub include_test_binaries: Vec<String>,
 }
 
 impl PlanFilters {
@@ -39,6 +46,7 @@ impl PlanFilters {
             exclude_packages: Vec::new(),
             include_packages: Vec::new(),
             include_paths: Vec::new(),
+            include_test_binaries: Vec::new(),
         }
     }
 }
@@ -447,6 +455,51 @@ pub fn parse_package_filters(args: &[String]) -> Result<(Vec<String>, Vec<String
     Ok((packages, remaining))
 }
 
+/// Pull `--test <NAME>` / `--test=<NAME>` flags out of `args`.
+///
+/// Each occurrence appends `NAME` to the returned vector. The
+/// `parse_target_selection_flags` parser runs AFTER this one, so
+/// `--test` is already gone by the time it runs (no double-
+/// consumption). Other cargo target flags (`--lib`, `--bin`,
+/// `--bench`, etc.) stay for the later parser to consume-and-warn.
+///
+/// # Errors
+///
+/// Returns an error when `--test` is the last arg with no following
+/// value, or when the equals form supplies an empty name.
+#[inline]
+pub fn parse_test_binary_filter_flag(args: &[String]) -> Result<(Vec<String>, Vec<String>)> {
+    let mut included = Vec::new();
+    let mut remaining = Vec::new();
+    let mut idx = 0_usize;
+    while let Some(arg) = args.get(idx) {
+        if arg == "--test" {
+            let next_idx = idx.saturating_add(1_usize);
+            let value = args
+                .get(next_idx)
+                .ok_or_else(|| anyhow::anyhow!("`--test` requires a target name"))?;
+            if value.is_empty() {
+                bail!("`--test` requires a non-empty target name");
+            }
+            included.push(value.clone());
+            idx = next_idx.saturating_add(1_usize);
+        } else if let Some(value_pos) = arg.find('=')
+            && arg.get(..value_pos) == Some("--test")
+        {
+            let value = arg.get(value_pos.saturating_add(1_usize)..).unwrap_or("");
+            if value.is_empty() {
+                bail!("`--test=` requires a non-empty target name");
+            }
+            included.push(value.to_owned());
+            idx = idx.saturating_add(1_usize);
+        } else {
+            remaining.push(arg.clone());
+            idx = idx.saturating_add(1_usize);
+        }
+    }
+    Ok((included, remaining))
+}
+
 /// Pull cargo's per-target selection flags out of `args`.
 ///
 /// Recognised: `--lib`, `--bins`, `--examples`, `--tests`, `--benches`,
@@ -479,7 +532,10 @@ pub fn parse_target_selection_flags(args: &[String]) -> Result<(Vec<String>, Vec
         ) {
             consumed.push(arg.clone());
             idx = idx.saturating_add(1_usize);
-        } else if matches!(arg.as_str(), "--bin" | "--example" | "--test" | "--bench") {
+        } else if matches!(arg.as_str(), "--bin" | "--example" | "--bench") {
+            // `--test` is parsed earlier by `parse_test_binary_filter_flag`
+            // and honored as a Plan filter (Bug #3); this branch only
+            // sees the other target-selection value flags.
             let next_idx = idx.saturating_add(1_usize);
             let value = args
                 .get(next_idx)
@@ -488,7 +544,7 @@ pub fn parse_target_selection_flags(args: &[String]) -> Result<(Vec<String>, Vec
             idx = next_idx.saturating_add(1_usize);
         } else if let Some(value_pos) = arg.find('=') {
             let head = arg.get(..value_pos).unwrap_or("");
-            if matches!(head, "--bin" | "--example" | "--test" | "--bench") {
+            if matches!(head, "--bin" | "--example" | "--bench") {
                 let value = arg.get(value_pos.saturating_add(1_usize)..).unwrap_or("");
                 if value.is_empty() {
                     bail!("`{head}=` requires a non-empty target name");
@@ -570,7 +626,10 @@ where
     compat_consumed.extend(workspace_consumed);
     compat_consumed.extend(no_fail_fast_consumed);
     compat_consumed.extend(capture_consumed);
-    let (ignored_target_flags, after_targets) = parse_target_selection_flags(&after_capture)?;
+    // Bug #3: pull `--test <name>` BEFORE the warn-only target-flag
+    // parser so the value reaches the plan as a real filter.
+    let (include_test_binaries, after_test_filter) = parse_test_binary_filter_flag(&after_capture)?;
+    let (ignored_target_flags, after_targets) = parse_target_selection_flags(&after_test_filter)?;
     let (forwarded_cargo_args, after_forwarders) = parse_build_forwarder_flags(&after_targets)?;
     let (include_paths, runner_args) = split_path_args(&after_forwarders, is_dir);
     Ok(ParsedTestArgs {
@@ -579,6 +638,7 @@ where
             exclude_packages,
             include_packages,
             include_paths,
+            include_test_binaries,
         },
         forwarded_cargo_args,
         ignored_target_flags,

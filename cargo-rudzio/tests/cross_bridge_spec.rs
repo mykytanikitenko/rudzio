@@ -620,7 +620,7 @@ rudzio = { workspace = true, features = [\"common\"] }
         alpha.test_files = vec![alpha.manifest_dir.join("tests").join("api.rs")];
         let plan = make_plan(vec![alpha], &root, BTreeMap::new());
 
-        let main_rs = build_main_rs(&plan);
+        let main_rs = build_main_rs(&plan, &root.join("rudzio-auto-runner"));
 
         anyhow::ensure!(
             main_rs.contains("RUDZIO_MEMBER_MANIFEST_DIR_alpha"),

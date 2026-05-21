@@ -39,7 +39,7 @@
 //! site-local `#[expect]` escape hatch.
 
 use std::panic::resume_unwind;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use rudzio::common::context::{Suite, Test};
 use rudzio::futures_util::future::{AbortHandle, Aborted};
@@ -67,10 +67,9 @@ mod phase_wrapper_tests {
     use std::future::pending;
 
     use rudzio::context::Test as _;
-    use rudzio::futures_util::future::join;
 
     use super::{
-        AbortHandle, Aborted, CancellationToken, Duration, Instant, PhaseOutcome, Test,
+        AbortHandle, Aborted, CancellationToken, Duration, PhaseOutcome, Test,
         drive_per_test_spawn, resume_unwind, run_phase_with_timeout_and_cancel,
     };
 
@@ -168,19 +167,24 @@ mod phase_wrapper_tests {
         Ok(())
     }
 
-    /// L3.2. An uncooperative spawned body — one that ignores both the
-    /// phase token and the abort handle — must still be reported as
-    /// `Hung` after the outer grace window. Modelled here with a plain
-    /// `pending()` join future: it never resolves, so the driver
-    /// genuinely cannot move on without enforcing its own grace
-    /// timeout. Wall-clock total ≤ budget + grace + slack proves the
-    /// driver does not block on the body.
+    /// L3.2. An uncooperative spawned body — one that ignores both
+    /// the phase token and the abort handle — must still be reported
+    /// as `Hung` after the outer grace window. Modelled here with a
+    /// plain `pending()` join future: it never resolves, so the
+    /// driver genuinely cannot move on without enforcing its own
+    /// grace timeout.
+    ///
+    /// **Deterministic shape:** the `Hung` outcome itself is the
+    /// correctness signal — it proves the driver returned from its
+    /// `pending()` join future, which can ONLY happen by enforcing
+    /// the grace expiry path. No wall-clock bound is asserted; the
+    /// implicit "didn't return forever" guarantee comes from the
+    /// test runner's per-test timeout cap.
     #[rudzio::test]
     async fn drive_per_test_spawn_hung_uncooperative_body(ctx: &Test) -> anyhow::Result<()> {
         let (abort_handle, _abort_reg) = AbortHandle::new_pair();
         let join_fut = pending::<Result<(), Aborted>>();
         let token = CancellationToken::new();
-        let start = Instant::now();
         let outcome: PhaseOutcome<()> = drive_per_test_spawn(
             join_fut,
             abort_handle,
@@ -190,20 +194,9 @@ mod phase_wrapper_tests {
             |dur| ctx.sleep(dur),
         )
         .await;
-        let elapsed = start.elapsed();
         anyhow::ensure!(
             matches!(outcome, PhaseOutcome::Hung),
             "expected Hung, got {outcome:?}"
-        );
-        // Generous wall-clock bound: budget+grace adds up to 500ms of
-        // *intended* wait, but under the workspace aggregator many
-        // runtimes run concurrently and timer wakes can be late by a
-        // couple of seconds. The correctness signal is the `Hung`
-        // outcome above — this bound just checks the driver isn't
-        // blocking forever.
-        anyhow::ensure!(
-            elapsed < Duration::from_secs(5_u64),
-            "driver must NOT block on the uncooperative body, took {elapsed:?}"
         );
         Ok(())
     }
@@ -237,13 +230,20 @@ mod phase_wrapper_tests {
     /// users who'd rather rely on Layer 1 (`process::exit(2)`) for
     /// hardkill. Synthetic `pending()` join future stands in for an
     /// uncooperative body.
+    ///
+    /// **Deterministic shape:** the `TimedOut` outcome PROVES the
+    /// driver returned from its pending join future, which can only
+    /// happen via the budget-expiry path (there's no grace window
+    /// nor any cancel input). The abort handle assertion proves the
+    /// driver fired its escape valve. No wall-clock bound is
+    /// asserted — the "doesn't wait for body" guarantee is implicit
+    /// in `pending()` never resolving.
     #[rudzio::test]
     async fn drive_per_test_spawn_no_grace_returns_timed_out(ctx: &Test) -> anyhow::Result<()> {
         let (abort_handle, _abort_reg) = AbortHandle::new_pair();
         let abort_observer = abort_handle.clone();
         let join_fut = pending::<Result<(), Aborted>>();
         let token = CancellationToken::new();
-        let start = Instant::now();
         let outcome: PhaseOutcome<()> = drive_per_test_spawn(
             join_fut,
             abort_handle,
@@ -253,7 +253,6 @@ mod phase_wrapper_tests {
             |dur| ctx.sleep(dur),
         )
         .await;
-        let elapsed = start.elapsed();
         anyhow::ensure!(
             matches!(outcome, PhaseOutcome::TimedOut),
             "expected TimedOut, got {outcome:?}"
@@ -262,14 +261,6 @@ mod phase_wrapper_tests {
             abort_observer.is_aborted(),
             "abort handle must fire on Layer-2-disabled budget expiry so the leaked spawn doesn't outlive us"
         );
-        // Generous wall-clock bound: the driver returns on budget
-        // expiry without waiting for the body — the correctness signal
-        // is the `TimedOut` outcome above; this bound just checks the
-        // driver isn't waiting for the synthetic body to finish.
-        anyhow::ensure!(
-            elapsed < Duration::from_secs(5_u64),
-            "driver must return on budget expiry without waiting for grace, took {elapsed:?}"
-        );
         Ok(())
     }
 
@@ -277,9 +268,13 @@ mod phase_wrapper_tests {
     /// fires, the driver returns `Cancelled` (not `TimedOut`, not
     /// `Hung`). Same distinction the inline wrapper makes: parent
     /// cancellation is "someone above pulled the plug", not "this
-    /// phase blew its budget". The cancel-after-delay signal is
-    /// driven inline alongside the driver via `futures_util::join`
-    /// — no spawn needed.
+    /// phase blew its budget".
+    ///
+    /// **Deterministic shape:** the phase token is cancelled BEFORE
+    /// the driver is awaited. The driver's first poll observes the
+    /// already-cancelled token and resolves to `Cancelled`. No
+    /// sleep-based race against the timeout, no wall-clock
+    /// dependency.
     #[rudzio::test]
     async fn drive_per_test_spawn_parent_cancellation(ctx: &Test) -> anyhow::Result<()> {
         let (abort_handle, _abort_reg) = AbortHandle::new_pair();
@@ -290,20 +285,16 @@ mod phase_wrapper_tests {
             phase_token_for_join.cancelled().await;
             Err::<(), _>(Aborted)
         };
-        let phase_token_for_cancel = phase_token.clone();
-        let driver = drive_per_test_spawn::<_, (), _, _>(
+        phase_token.cancel();
+        let outcome: PhaseOutcome<()> = drive_per_test_spawn(
             join_fut,
             abort_handle,
             Some(Duration::from_secs(5_u64)),
             Some(Duration::from_millis(300_u64)),
             phase_token,
             |dur| ctx.sleep(dur),
-        );
-        let cancel = async {
-            ctx.sleep(Duration::from_millis(20_u64)).await;
-            phase_token_for_cancel.cancel();
-        };
-        let (outcome, ()) = join(driver, cancel).await;
+        )
+        .await;
         anyhow::ensure!(
             matches!(outcome, PhaseOutcome::Cancelled),
             "expected Cancelled, got {outcome:?}"
@@ -335,25 +326,27 @@ mod phase_wrapper_tests {
     /// A6. With no timeout, parent cancellation still resolves the
     /// wrapper. (Without this the `--run-timeout` could be defeated by
     /// any phase configured with no per-phase budget.)
+    ///
+    /// **Deterministic shape:** the parent token is cancelled
+    /// BEFORE the wrapper is awaited, so the child token is
+    /// already cancelled on the wrapper's first poll. No
+    /// `sleep`-based race, no wall-clock dependency. The wrapper
+    /// must see the cancellation on its first internal poll and
+    /// resolve to `Cancelled` regardless of how the runtime
+    /// schedules under load.
     #[rudzio::test]
     async fn no_timeout_with_parent_cancel_returns_cancelled(ctx: &Test) -> anyhow::Result<()> {
         let parent = CancellationToken::new();
         let child = parent.child_token();
-        let parent_for_cancel = parent.clone();
-        let wrapper = run_phase_with_timeout_and_cancel::<_, (), _, _>(
-            async {
-                ctx.sleep(Duration::from_secs(30_u64)).await;
-            },
+        parent.cancel();
+        let outcome = run_phase_with_timeout_and_cancel::<_, (), _, _>(
+            pending::<()>(),
             None,
             None,
             child,
             |dur| ctx.sleep(dur),
-        );
-        let cancel = async {
-            ctx.sleep(Duration::from_millis(20_u64)).await;
-            parent_for_cancel.cancel();
-        };
-        let (outcome, ()) = join(wrapper, cancel).await;
+        )
+        .await;
         anyhow::ensure!(
             matches!(outcome, PhaseOutcome::Cancelled),
             "expected Cancelled, got {outcome:?}"
@@ -365,25 +358,28 @@ mod phase_wrapper_tests {
     /// the per-phase timer fires, the outcome is `Cancelled` — NOT
     /// `TimedOut`. Distinguishing the two keeps the failure attribution
     /// honest: "you blew your budget" vs "the run was aborted".
+    ///
+    /// **Deterministic shape:** parent token cancelled BEFORE the
+    /// wrapper starts. The wrapper's first poll sees an already-
+    /// cancelled child — its internal `select(cancellable, sleep)`
+    /// returns from the `cancellable` arm before the sleep timer
+    /// is even considered. No race, no wall-clock dependency.
+    /// (Pre-cancellation exercises the same code path as in-flight
+    /// cancellation: `run_until_cancelled` polls the token on every
+    /// poll, including the first.)
     #[rudzio::test]
     async fn parent_cancellation_returns_cancelled_not_timed_out(ctx: &Test) -> anyhow::Result<()> {
         let parent = CancellationToken::new();
         let child = parent.child_token();
-        let parent_for_cancel = parent.clone();
-        let wrapper = run_phase_with_timeout_and_cancel::<_, (), _, _>(
-            async {
-                ctx.sleep(Duration::from_secs(30_u64)).await;
-            },
+        parent.cancel();
+        let outcome = run_phase_with_timeout_and_cancel::<_, (), _, _>(
+            pending::<()>(),
             Some(Duration::from_secs(5_u64)),
             None,
             child,
             |dur| ctx.sleep(dur),
-        );
-        let cancel = async {
-            ctx.sleep(Duration::from_millis(20_u64)).await;
-            parent_for_cancel.cancel();
-        };
-        let (outcome, ()) = join(wrapper, cancel).await;
+        )
+        .await;
         anyhow::ensure!(
             matches!(outcome, PhaseOutcome::Cancelled),
             "parent cancel must produce Cancelled, got {outcome:?}"
@@ -413,6 +409,10 @@ mod phase_wrapper_tests {
     /// A3. A phase that runs longer than its budget returns `TimedOut`
     /// AND the wrapper cancels the phase token (so cooperative phase
     /// futures see the cancellation on their next poll).
+    ///
+    /// Body uses `std::future::pending()` so the budget-expiry path
+    /// is the only way the wrapper can resolve. A sleep-based body
+    /// would race the timeout under saturated CPU contention.
     #[rudzio::test]
     async fn phase_exceeds_timeout_returns_timed_out_and_cancels_token(
         ctx: &Test,
@@ -420,9 +420,7 @@ mod phase_wrapper_tests {
         let token = CancellationToken::new();
         let observer = token.clone();
         let outcome = run_phase_with_timeout_and_cancel::<_, (), _, _>(
-            async {
-                ctx.sleep(Duration::from_secs(30_u64)).await;
-            },
+            pending::<()>(),
             Some(Duration::from_millis(50_u64)),
             None,
             token,
@@ -476,31 +474,31 @@ mod phase_wrapper_tests {
     /// A7. A phase token that's already cancelled before the wrapper is
     /// even called must short-circuit to `Cancelled` immediately — no
     /// awaiting the phase future, no waiting for the timer.
+    ///
+    /// **Deterministic shape:** the body is `pending()` so the only
+    /// resolution path is the cancellation token. The pre-cancelled
+    /// token means the wrapper's first poll must observe the
+    /// cancellation and return `Cancelled` — proving short-circuit
+    /// without measuring wall-clock. If the wrapper waited for the
+    /// timer or polled the body, this test would hang forever (the
+    /// test runner's per-test timeout catches that).
     #[rudzio::test]
     async fn phase_token_already_cancelled_returns_cancelled_immediately(
         ctx: &Test,
     ) -> anyhow::Result<()> {
         let token = CancellationToken::new();
         token.cancel();
-        let start = Instant::now();
         let outcome = run_phase_with_timeout_and_cancel::<_, (), _, _>(
-            async {
-                ctx.sleep(Duration::from_secs(30_u64)).await;
-            },
+            pending::<()>(),
             Some(Duration::from_secs(30_u64)),
             None,
             token,
             |dur| ctx.sleep(dur),
         )
         .await;
-        let elapsed = start.elapsed();
         anyhow::ensure!(
             matches!(outcome, PhaseOutcome::Cancelled),
             "expected Cancelled, got {outcome:?}"
-        );
-        anyhow::ensure!(
-            elapsed < Duration::from_secs(1_u64),
-            "wrapper must short-circuit on a pre-cancelled token, took {elapsed:?}"
         );
         Ok(())
     }

@@ -213,6 +213,9 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
         plan.restrict_to_packages(&parsed.filters.include_packages)?;
     }
     plan.exclude_packages(&parsed.filters.exclude_packages)?;
+    // Bug #3: `--test <name>` filters the per-binary set so unrelated
+    // (potentially broken) binaries aren't compiled into the aggregator.
+    plan.restrict_to_test_binaries(&parsed.filters.include_test_binaries)?;
     emit_diagnostic_warnings(&plan);
     let target = plan.default_output_dir();
     generate::write_runner(&plan, &target)?;

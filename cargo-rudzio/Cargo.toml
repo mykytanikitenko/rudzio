@@ -28,7 +28,10 @@ harness = false
 [dependencies]
 anyhow = { workspace = true }
 cargo_metadata = { workspace = true }
+prettyplease = { workspace = true }
+proc-macro2 = { workspace = true }
 rudzio-migrate = { workspace = true }
+syn = { workspace = true, features = ["full", "extra-traits", "visit-mut"] }
 toml_edit = { workspace = true }
 
 [dev-dependencies]
