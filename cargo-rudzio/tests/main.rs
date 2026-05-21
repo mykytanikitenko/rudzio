@@ -5,6 +5,7 @@
 
 mod bug_10_helper_isolation_edge_cases_spec;
 mod bug_11_double_execution_edge_cases_spec;
+mod bug_12_bare_use_alias_spec;
 mod bug_8_helper_discovery_edge_cases_spec;
 mod build_dir_deadlock_spec;
 mod cfg_test_warning_narrowing_spec;

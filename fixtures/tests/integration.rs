@@ -2,8 +2,10 @@
 //! `harness = false`) and every child-process assertion lives inside a
 //! `#[rudzio::suite]` module driven by a tokio multi-thread runtime.
 
+use std::fs;
 use std::io::Read as _;
 use std::io::Result as IoResult;
+use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -16,6 +18,29 @@ use rudzio::runtime::futures::ThreadPool;
 use rudzio::runtime::monoio;
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
 use rudzio::runtime::{async_std, compio, embassy, smol};
+
+/// RAII cleanup of the temp log file the Bug #13 fixture writes to.
+/// Kept at module scope (not nested inside the test fn) per clippy's
+/// `items_after_statements`.
+#[cfg(unix)]
+struct LogPathGuard {
+    /// Path to the temp log file the fixture wrote.
+    path: PathBuf,
+}
+
+#[cfg(unix)]
+impl Drop for LogPathGuard {
+    fn drop(&mut self) {
+        let _unused = fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(not(unix))]
+#[expect(
+    dead_code,
+    reason = "non-Unix builds skip the Bug #13 capture-pipe regression test; the guard is Unix-only"
+)]
+struct LogPathGuard;
 
 /// Find `needle` in `hay` and return its byte index, or an error
 /// naming the missing needle. Used by `ordered` for stdio-attribution
@@ -1315,7 +1340,18 @@ mod tests {
     (runtime = monoio::Runtime::new, suite = Suite, test = Test),
 ])]
 mod unix_tests {
-    use super::{Test, log_of, ordered, run, run_and_signal};
+    use std::env::temp_dir;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::process::id as process_id;
+    use std::time::SystemTime;
+
+    use anyhow::Context as _;
+
+    use super::{
+        Command, Duration, ExitStatus, Instant, IoResult, LogPathGuard, Stdio, Test, log_of,
+        ordered, run, run_and_signal, thread,
+    };
 
     #[rudzio::test]
     fn sigint_cancels_run_gracefully(_ctx: &Test) -> anyhow::Result<()> {
@@ -1533,5 +1569,123 @@ mod unix_tests {
         );
         anyhow::ensure!(log.contains("1 cancelled"), "output:\n{log}");
         Ok(())
+    }
+
+    /// **Bug #13** regression: `CaptureGuard::drop` must NOT block
+    /// indefinitely when a child process inherited the pipe write
+    /// ends. The fixture initialises capture, spawns `sleep 600`
+    /// (which inherits FDs 1 and 2 — the pipe write ends after
+    /// `output::init` — by default `Stdio::inherit()`), then drops
+    /// the guard.
+    ///
+    /// Pre-fix: drop joins the reader threads. Readers only exit on
+    /// `read() == 0`, which the kernel reports only when every
+    /// write-end FD is closed; the child holds one, so the reader
+    /// blocks forever and the process never exits.
+    ///
+    /// Post-fix: drop completes within a small bound. The fixture
+    /// reaches its post-drop log write ("`rudzio_capture_drop_returned_in_ms=…`")
+    /// and exits 0; we read the log, assert the marker, and SIGKILL
+    /// the orphaned `sleep` child via its harvested pid. The
+    /// fixture's stdio is wired to `Stdio::null()` so the orphaned
+    /// `sleep` child can't drag this test process into a secondary
+    /// FD-inheritance hang.
+    #[rudzio::test]
+    fn capture_guard_drop_returns_even_when_child_holds_pipe_fds(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
+        use std::os::unix::process::ExitStatusExt as _;
+
+        // Manual temp path — fixtures crate doesn't pull in tempfile.
+        // Uses pid + nanos so concurrent test instances per runtime
+        // don't collide.
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0_u128, |dur| dur.as_nanos());
+        let log_path: PathBuf = temp_dir().join(format!(
+            "rudzio-bug13-{pid}-{nanos}.log",
+            pid = process_id(),
+        ));
+        let _log_guard = LogPathGuard {
+            path: log_path.clone(),
+        };
+
+        let mut child = Command::new(env!(
+            "CARGO_BIN_EXE_capture_guard_drop_with_child_holding_fds"
+        ))
+        .env("RUDZIO_CAPTURE_TEST_LOG", &log_path)
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("spawn capture_guard_drop_with_child_holding_fds")?;
+
+        // Poll for exit with a 5s deadline. Pre-fix the fixture hangs
+        // forever at drop; we kill it, kill the orphaned sleep child,
+        // and surface a clear failure.
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(5_u64))
+            .ok_or_else(|| anyhow::anyhow!("deadline overflow"))?;
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _killed: IoResult<()> = child.kill();
+                let waited = child.wait()?;
+                // Best-effort orphan cleanup from the log file even on
+                // the failure path.
+                if let Ok(log) = fs::read_to_string(&log_path) {
+                    kill_orphaned_child_by_pid_line(&log);
+                }
+                anyhow::bail!(
+                    "CaptureGuard::drop hung — fixture did not exit within 5s. \
+                     This is the Bug #13 root cause (child holds inherited \
+                     pipe FDs, reader.join() blocks forever). Final status: \
+                     {:?}",
+                    waited.code()
+                );
+            }
+            thread::sleep(Duration::from_millis(50_u64));
+        };
+
+        let log = fs::read_to_string(&log_path).context("read fixture log")?;
+        kill_orphaned_child_by_pid_line(&log);
+
+        let status_raw = ExitStatus::from_raw(status.into_raw());
+        anyhow::ensure!(
+            status_raw.code() == Some(0_i32),
+            "expected fixture to exit 0 after dropping CaptureGuard; got {:?}.\n--- log ---\n{log}",
+            status_raw.code()
+        );
+        anyhow::ensure!(
+            log.contains("rudzio_capture_drop_returned_in_ms="),
+            "fixture must write the post-drop marker to the log, content:\n{log}",
+        );
+        Ok(())
+    }
+
+    /// SIGKILL the orphaned `sleep` child the fixture left behind.
+    /// The fixture writes a `rudzio_capture_test_child_pid=<pid>`
+    /// line to its log; we harvest the pid and deliver SIGKILL.
+    /// Best-effort — silently no-ops when the line is absent or the
+    /// pid is already gone.
+    fn kill_orphaned_child_by_pid_line(log: &str) {
+        if let Some(line) = log
+            .lines()
+            .find(|line| line.starts_with("rudzio_capture_test_child_pid="))
+            && let Some(pid_str) = line.strip_prefix("rudzio_capture_test_child_pid=")
+            && let Ok(pid) = pid_str.trim().parse::<i32>()
+        {
+            #[expect(
+                unsafe_code,
+                reason = "test cleanup: send SIGKILL to the inherited child process the fixture spawned; pid is a one-shot value harvested from the fixture's own log, so there's no aliasing concern"
+            )]
+            // SAFETY: libc::kill with a real PID and SIGKILL is well-defined.
+            unsafe {
+                let _killed = libc::kill(pid, libc::SIGKILL);
+            }
+        }
     }
 }

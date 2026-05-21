@@ -3293,6 +3293,17 @@ fn strip_helper_mod_decls(source: &str, helpers: &BTreeSet<String>) -> Result<St
 /// (`crate::common`), a `Rename` (`crate::common as foo`), a `Group`
 /// (`crate::{common, other}`), or `Glob` (`crate::*` — no helper
 /// match possible).
+///
+/// **Bare leaf `Name`**: a `use crate::common;` import binds `common`
+/// in the surrounding scope. Naively replacing the ident with the
+/// synth name would change the binding to
+/// `__rudzio__<member>__<bin>__common`, breaking every body
+/// reference that spells the helper as `common`. The fix promotes the
+/// `Name` variant to a `Rename`, emitting
+/// `use crate::__rudzio__...__common as common;` so the local binding
+/// survives the rewrite (Bug #12). The same promotion runs for each
+/// `Group` item by recursion, so `use crate::{common, other};` aliases
+/// each matching leaf independently.
 fn rewrite_first_use_tree_ident(tree: &mut syn::UseTree, helpers: &BTreeMap<String, String>) {
     match tree {
         syn::UseTree::Path(path) => {
@@ -3302,7 +3313,14 @@ fn rewrite_first_use_tree_ident(tree: &mut syn::UseTree, helpers: &BTreeMap<Stri
         }
         syn::UseTree::Name(name) => {
             if let Some(synth) = helpers.get(&name.ident.to_string()) {
-                name.ident = syn::Ident::new(synth, name.ident.span());
+                let original = name.ident.clone();
+                let span = name.ident.span();
+                let synth_ident = syn::Ident::new(synth, span);
+                *tree = syn::UseTree::Rename(syn::UseRename {
+                    ident: synth_ident,
+                    as_token: syn::Token![as](span),
+                    rename: original,
+                });
             }
         }
         syn::UseTree::Rename(rename) => {

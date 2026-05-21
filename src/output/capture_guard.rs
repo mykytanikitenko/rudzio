@@ -110,16 +110,42 @@ impl Drop for CaptureGuard {
         // Step 2 — restore FDs. Idempotent with the panic hook's
         // restore path; whichever runs first wins.
         self.saved.restore();
-        // Step 3 — join reader threads. They exit on `read` returning
-        // 0, which happens when the pipe write ends close. The pipe
-        // write ends in FDs 1/2 were replaced by dup2(saved, 1|2) in
-        // the restore call above, so the original write end of each
-        // pipe has no more referents and the readers see EOF.
-        if let Some(handle) = self.reader_stdout.take() {
-            let _unused = handle.join();
-        }
-        if let Some(handle) = self.reader_stderr.take() {
-            let _unused = handle.join();
-        }
+        // Step 3 — abandon the reader threads, do NOT `.join()` them.
+        //
+        // The original intent was: after step 2 closes our copy of
+        // each pipe write end (via `dup2(saved, 1|2)`), the reader's
+        // `read()` sees EOF and the thread exits cleanly, so the
+        // join returns. That holds when nothing else copied FD 1 / 2.
+        //
+        // **Bug #13**: `dup2` clears `FD_CLOEXEC` on its destination,
+        // and `pipe(2)` likewise produces FDs without `O_CLOEXEC`,
+        // so any child process the user's `setup()` spawned with
+        // `Stdio::inherit()` (the default) inherited a live copy of
+        // the pipe write end. The kernel won't report EOF on the
+        // reader's `read()` until *every* write-end FD is closed —
+        // the child's copy survives until the child itself exits.
+        // Multi-binary monolith runs deadlocked here: the second
+        // group's suite was still alive when the first group's
+        // guard dropped, so its child held the pipes, so `join()`
+        // never returned, so the whole process hung.
+        //
+        // The fix is to detach the reader threads. By this point:
+        //   - The drawer's receiver was dropped in step 1, so any
+        //     subsequent `tx.send(chunk)` from the readers returns
+        //     `Err` and the reader breaks the loop on its own.
+        //   - FDs 1 and 2 already point at the original stdout/
+        //     stderr (step 2), so the runner's own writes after
+        //     this drop go straight to the terminal.
+        //   - The reader threads hold no shared mutable state the
+        //     rest of the process needs cleaned up. When the
+        //     process exits, the OS reaps them.
+        //
+        // For long-lived processes that call `runner::run` more
+        // than once, this leaks one pair of reader threads per run
+        // until process exit — an acceptable tradeoff vs hanging
+        // forever, and the runner is overwhelmingly invoked at
+        // most once per process anyway.
+        let _detached_stdout = self.reader_stdout.take();
+        let _detached_stderr = self.reader_stderr.take();
     }
 }

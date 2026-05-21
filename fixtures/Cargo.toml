@@ -64,6 +64,10 @@ name = "cancel_token_propagation_tokio_mt"
 test = false
 
 [[bin]]
+name = "capture_guard_drop_with_child_holding_fds"
+test = false
+
+[[bin]]
 name = "context_creation_failure_tokio_mt"
 test = false
 
