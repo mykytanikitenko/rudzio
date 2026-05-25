@@ -1,7 +1,7 @@
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::token::{Paren, Pub};
-use syn::{Attribute, Expr, Ident, Item, ItemFn, ItemMod, Path};
+use syn::{AttrStyle, Attribute, Expr, Ident, Item, ItemFn, ItemMod, Path};
 
 use crate::codegen::{TestAttrArgs, extract_ignore_reason, extract_test_attr_args};
 use crate::parse::{MainArgs, RuntimeConfig};
@@ -259,7 +259,19 @@ pub fn expand_suite(args: &MainArgs, input_mod: ItemMod) -> syn::Result<TokenStr
         }
     };
 
-    let mod_attrs = &input_mod.attrs;
+    // Partition the input mod's attributes by AttrStyle so the regenerated
+    // mod block places each at a syntactically valid position. Pre-fix,
+    // every attribute -- including inner attrs styled as `#![...]` --
+    // got splatted before the `mod` keyword, and rustc rejected the
+    // inner ones with `error: an inner attribute is not permitted in
+    // this context`. Outer attrs (`#[cfg(...)]`, etc.) belong on the
+    // mod item itself; inner attrs (`#![allow(...)]`, `//!` doc
+    // comments, etc.) belong INSIDE the regenerated mod body so they
+    // bind to the mod contents the user wrote them against.
+    let (mod_outer_attrs, mod_inner_attrs): (Vec<&Attribute>, Vec<&Attribute>) = input_mod
+        .attrs
+        .iter()
+        .partition(|attr| matches!(attr.style, AttrStyle::Outer));
     let mod_vis = &input_mod.vis;
     let mod_name = &input_mod.ident;
 
@@ -322,8 +334,9 @@ pub fn expand_suite(args: &MainArgs, input_mod: ItemMod) -> syn::Result<TokenStr
     }
 
     let expanded = quote! {
-        #(#mod_attrs)*
+        #(#mod_outer_attrs)*
         #mod_vis mod #mod_name {
+            #(#mod_inner_attrs)*
             #(#processed_items)*
         }
 

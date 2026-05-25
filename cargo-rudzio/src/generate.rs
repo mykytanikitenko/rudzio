@@ -534,11 +534,51 @@ impl MemberPlan {
 }
 
 impl Plan {
+    /// Per-consumer-workspace aggregator subdirectory name.
+    ///
+    /// Returns `<AGGREGATOR_NAME>-<hash>` where `<hash>` is a stable
+    /// 64-bit FNV-1a digest of the workspace root path. Two
+    /// invocations against the SAME consumer workspace get the same
+    /// suffix (so cache reuse works); invocations against DIFFERENT
+    /// consumer workspaces get different suffixes.
+    ///
+    /// This is the cornerstone of parallel-invocation safety: when N
+    /// concurrent `cargo rudzio test` invocations share one
+    /// `CARGO_TARGET_DIR` (e.g. CI matrix, monorepo dev shell with
+    /// `CARGO_TARGET_DIR=$HOME/.cache/cargo`), each invocation writes
+    /// to its own per-workspace subdir, so they never clobber each
+    /// other's `Cargo.toml` / `build.rs` / `members/` state.
+    ///
+    /// FNV-1a is chosen over `std::collections::hash_map::DefaultHasher`
+    /// for stability across rustc releases: cargo's incremental
+    /// caching relies on the subdir name being identical from one
+    /// invocation to the next, even after the toolchain updates.
+    /// FNV-1a is a fixed, specified algorithm; `DefaultHasher` is
+    /// explicitly documented as unstable across releases.
+    #[inline]
+    #[must_use]
+    pub fn aggregator_subdir_name(&self) -> String {
+        const FNV_OFFSET_64: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME_64: u64 = 0x0000_0100_0000_01b3;
+        let mut hash: u64 = FNV_OFFSET_64;
+        for byte in self.workspace_root.as_str().as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(FNV_PRIME_64);
+        }
+        format!("{AGGREGATOR_NAME}-{hash:016x}")
+    }
+
     /// Default output directory for the generated aggregator crate.
+    ///
+    /// Joins the resolved `target_directory` (the host's effective
+    /// `CARGO_TARGET_DIR`) with [`Self::aggregator_subdir_name`]. The
+    /// resulting per-consumer-workspace path keeps parallel
+    /// invocations against distinct workspaces isolated even when the
+    /// user has a single shared `CARGO_TARGET_DIR` set.
     #[inline]
     #[must_use]
     pub fn default_output_dir(&self) -> PathBuf {
-        PathBuf::from(self.target_directory.as_std_path()).join(AGGREGATOR_NAME)
+        PathBuf::from(self.target_directory.as_std_path()).join(self.aggregator_subdir_name())
     }
 
     /// Drop every member whose `package_name` matches one of `excluded`.
@@ -1174,9 +1214,15 @@ fn scan_items_for_unbroadened_cfg_test_mods(
                      test functions but isn't broadened for rudzio. \
                      `cargo rudzio test` compiles under `--cfg rudzio_test`, \
                      not `--cfg test`, so this module's tests stay invisible. \
-                     Broaden to `#[cfg(any(test, rudzio_test))]`, or add a \
-                     `// rudzio_test` marker comment to silence this warning \
-                     when the tests are intentionally cargo-only.",
+                     To migrate this module to rudzio, do ALL three of:\n\
+                     \x20\x20 1. broaden the cfg gate to `#[cfg(any(test, rudzio_test))]`\n\
+                     \x20\x20 2. wrap the mod in `#[rudzio::suite([(runtime = ..., suite = ..., test = ...)])]`\n\
+                     \x20\x20 3. replace each `#[test]` / `#[tokio::test]` with `#[rudzio::test]`\n\
+                     Step 1 alone is NOT sufficient -- it makes the mod visible to \
+                     `--cfg rudzio_test` compilation, but the `#[test]` fns inside still \
+                     vanish because rudzio's runner only collects `#[rudzio::test]` fns. \
+                     Alternatively, add a `// rudzio_test` marker comment to silence this \
+                     warning when the tests are intentionally cargo-only.",
                     file = path.display(),
                     name = mod_item.ident,
                 ));
@@ -2316,24 +2362,31 @@ pub fn write_runner(plan: &Plan, out_dir: &Path) -> Result<()> {
     // run would force a full recompile of the entire workspace every
     // time, and on macOS `remove_dir_all` additionally races with cargo
     // lock files still being written (ENOTEMPTY under concurrent IO).
+    //
+    // ENOENT tolerance: two `cargo rudzio test` invocations against
+    // the SAME workspace (same `aggregator_subdir_name`) can race on
+    // the cleanup phase below — invocation A removes a file in the
+    // ~5 ms window between B's `path.exists()` check (sees: yes) and
+    // B's `fs::remove_file` call (sees: ENOENT). The original code
+    // surfaced that race as a hard error
+    // (`cargo-rudzio: removing .../Cargo.toml: No such file or
+    // directory`); treating `NotFound` as success makes the cleanup
+    // idempotent without introducing a lock. Other IO errors still
+    // propagate.
     let src_dir = out_dir.join("src");
     for path in [
         out_dir.join("Cargo.toml"),
         out_dir.join("Cargo.lock"),
         out_dir.join("build.rs"),
     ] {
-        if path.exists() {
-            fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
-        }
+        remove_file_tolerating_missing(&path)
+            .with_context(|| format!("removing {}", path.display()))?;
     }
-    if src_dir.exists() {
-        fs::remove_dir_all(&src_dir).with_context(|| format!("removing {}", src_dir.display()))?;
-    }
+    remove_dir_all_tolerating_missing(&src_dir)
+        .with_context(|| format!("removing {}", src_dir.display()))?;
     let members_dir = out_dir.join("members");
-    if members_dir.exists() {
-        fs::remove_dir_all(&members_dir)
-            .with_context(|| format!("removing {}", members_dir.display()))?;
-    }
+    remove_dir_all_tolerating_missing(&members_dir)
+        .with_context(|| format!("removing {}", members_dir.display()))?;
     fs::create_dir_all(&src_dir).with_context(|| format!("creating {}", src_dir.display()))?;
 
     for member in &plan.members {
@@ -2479,10 +2532,32 @@ fn symlink_member_tree_into_bridge(member_dir: &Path, bridge_dir: &Path) -> Resu
 }
 
 /// Create a filesystem symlink from `source` to `target` (Unix variant).
+///
+/// `AlreadyExists` is treated as success when the existing symlink
+/// already points to `source`. This makes the bridge-symlinking step
+/// idempotent under concurrent same-workspace invocations: invocation
+/// A creates the symlink between invocation B's `Path::exists()` check
+/// (sees: no) and B's `symlink()` syscall (sees: EEXIST). The original
+/// behaviour surfaced that race as
+/// `symlinking bridge entry ... -> ...: File exists (os error 17)`;
+/// validating the existing target matches the requested source keeps
+/// the operation safe without introducing a lock.
+///
+/// A genuine conflict (existing symlink points to a DIFFERENT source)
+/// still errors with the original `AlreadyExists` so the user sees
+/// the inconsistent state rather than silent overwrite.
 #[cfg(unix)]
 fn create_symlink(source: &Path, target: &Path) -> IoResult<()> {
+    use std::io::ErrorKind;
     use std::os::unix::fs::symlink;
-    symlink(source, target)
+    match symlink(source, target) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::AlreadyExists => match fs::read_link(target) {
+            Ok(existing) if existing == source => Ok(()),
+            Ok(_) | Err(_) => Err(err),
+        },
+        Err(err) => Err(err),
+    }
 }
 
 /// Create a filesystem symlink from `source` to `target` (Windows stub).
@@ -2493,6 +2568,43 @@ fn create_symlink(_source: &Path, _target: &Path) -> IoResult<()> {
         ErrorKind::Unsupported,
         "cargo-rudzio bridge symlinking is not yet implemented on Windows",
     ))
+}
+
+/// `fs::remove_dir_all` that treats `NotFound` as success.
+///
+/// Same race-tolerance rationale as
+/// [`remove_file_tolerating_missing`]: under concurrent same-workspace
+/// invocations, one invocation may have already removed the directory
+/// between this invocation's `exists()` check and its remove call.
+/// Treating `NotFound` as a no-op keeps the cleanup phase idempotent
+/// without locking.
+fn remove_dir_all_tolerating_missing(path: &Path) -> IoResult<()> {
+    use std::io::ErrorKind;
+    match fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+/// `fs::remove_file` that treats `NotFound` as success.
+///
+/// Required for safety under concurrent `cargo rudzio test`
+/// invocations against the same workspace (and thus the same
+/// `aggregator_subdir_name`). Two invocations enter `write_runner`
+/// roughly simultaneously, both pass the `path.exists()` guard, then
+/// invocation A's `fs::remove_file` succeeds and invocation B's hits
+/// `ENOENT`. Without this helper the original code surfaced that race
+/// as `cargo-rudzio: removing .../Cargo.toml: No such file or
+/// directory` even though both invocations agree on what the post-
+/// cleanup state should be: the file is gone, both can proceed.
+fn remove_file_tolerating_missing(path: &Path) -> IoResult<()> {
+    use std::io::ErrorKind;
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
 }
 
 /// Synthesize the bridge's `build.rs`.

@@ -228,6 +228,45 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
     for (key, value) in &spawn_env() {
         cmd.env(key, value);
     }
+    // Pin the spawned cargo's `CARGO_TARGET_DIR` AND
+    // `CARGO_BUILD_BUILD_DIR` to per-aggregator subdirs under the
+    // resolved target dir. Three reasons:
+    //
+    // 1. Concurrent `cargo rudzio test` invocations against DIFFERENT
+    //    consumer workspaces that share one outer `CARGO_TARGET_DIR`
+    //    must not race on the aggregator binary path. Without this
+    //    override, every invocation's spawned cargo writes
+    //    `<user-target>/debug/rudzio-auto-runner` -- last-writer-wins
+    //    on the binary, and the early invocation's still-running
+    //    binary gets overwritten mid-execution. With the override,
+    //    each aggregator gets its own `target/` and its own binary.
+    //
+    // 2. The same isolation must extend to `build-dir`. Cargo
+    //    1.92+'s `[build] build-dir = "..."` shares compiled
+    //    build-scripts across all crates in `build-dir` keyed on
+    //    `(crate-name, crate-version, package-source-id)`. Two
+    //    aggregators called `rudzio-auto-runner v0.0.0` with
+    //    different paths can hash to the same package-source-id key
+    //    when their generated build.rs has byte-identical inputs the
+    //    fingerprinter happens to consider, causing one aggregator's
+    //    compiled build-script to be REUSED for the other
+    //    aggregator's invocation -- which then emits
+    //    `cargo:rustc-env=RUDZIO_MEMBER_MANIFEST_DIR_consumer=
+    //    <path-from-the-OTHER-aggregator>` and dies on
+    //    `manifest path .../consumer/Cargo.toml does not exist`.
+    //    Per-aggregator `CARGO_BUILD_BUILD_DIR` eliminates that
+    //    cross-talk by giving each aggregator its own compile cache.
+    //
+    // 3. Respects the user's `CARGO_TARGET_DIR` choice as the ROOT:
+    //    we don't `env_remove` it, we anchor under it. Whatever
+    //    storage strategy the user picked (external SSD, tmpfs cache,
+    //    CI mount) keeps applying to rudzio's artefacts.
+    //
+    // The aggregator subdir name itself encodes a consumer-workspace
+    // hash (see `Plan::aggregator_subdir_name`), so distinct
+    // consumers land in distinct top-level dirs.
+    cmd.env("CARGO_TARGET_DIR", target.join("target"));
+    cmd.env("CARGO_BUILD_BUILD_DIR", target.join("build-dir"));
     let status = cmd
         .args(&cargo_argv)
         .status()
