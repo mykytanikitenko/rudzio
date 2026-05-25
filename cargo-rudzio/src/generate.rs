@@ -464,6 +464,21 @@ struct TestBinaryProxy {
     test_root_dir: PathBuf,
 }
 
+/// State of a `#[cfg(...)]` attribute that mentions `test` positively.
+///
+/// Returned by [`find_test_cfg_attr_state`] when a mod's attribute
+/// list contains a `cfg` gate involving `test` outside any `not(...)`.
+/// The two-state distinction (`is_broadened` true/false) drives the
+/// cfg-test migration warning emitted by
+/// [`scan_items_for_unbroadened_cfg_test_mods`].
+struct TestCfgState<'attr> {
+    /// The originating attribute, so callers can cite its source span.
+    attr: &'attr syn::Attribute,
+    /// `true` when the cfg ALSO mentions `rudzio_test` positively
+    /// (i.e. the gate is broadened to include rudzio's build).
+    is_broadened: bool,
+}
+
 /// One sibling-module helper discovered under a member's test root.
 ///
 /// Emitted at the aggregator's crate root so `use crate::<module>`
@@ -1173,10 +1188,18 @@ pub fn scan_unbroadened_cfg_test_mods(member: &MemberPlan) -> Vec<String> {
         let Ok(text) = fs::read_to_string(path) else {
             continue;
         };
-        if text.contains("rudzio::suite") || text.contains("rudzio_test") {
-            // User has opted in to rudzio in this file (either via a
-            // suite attribute or via an explicit `rudzio_test` gate);
-            // suppress warnings.
+        if file_has_rudzio_opt_out_marker(&text) {
+            // User has placed an explicit opt-out marker comment
+            // (`// rudzio_test` or `// rudzio::suite ...`) in this
+            // file; suppress warnings entirely. Comment-only
+            // detection avoids the false negative of the prior naive
+            // substring check, which suppressed warnings whenever
+            // the file mentioned `rudzio_test` OR `rudzio::suite`
+            // ANYWHERE -- including legitimate uses inside `#[cfg(
+            // any(test, rudzio_test))]` attributes or `#[rudzio::
+            // suite(...)]` attributes that signal a PARTIAL
+            // migration (where the warning is exactly what the user
+            // needs).
             continue;
         }
         let Ok(parsed) = syn::parse_file(&text) else {
@@ -1187,11 +1210,56 @@ pub fn scan_unbroadened_cfg_test_mods(member: &MemberPlan) -> Vec<String> {
     out
 }
 
+/// True when `text` contains an explicit rudzio-related marker
+/// **inside a comment**, used to opt this file out of the cfg-test
+/// migration warning.
+///
+/// Recognised markers (anywhere within the `//`-to-EOL comment portion
+/// of any line):
+///   * `rudzio_test` -- the canonical "this mod is intentionally
+///     cargo-only" marker, also recognised by `detect_src_rudzio_suite`
+///     for bridge surface detection (comment OR code there;
+///     intentionally broader).
+///   * `rudzio::suite` -- legacy form preserved so files mentioning
+///     the literal in documentation comments don't suddenly start
+///     warning.
+///
+/// Crucially this does NOT match the same substrings appearing in
+/// actual code (attributes, macros, string literals). That avoids
+/// false negatives where a partially-migrated file
+/// (`#[cfg(any(test, rudzio_test))]` or `#[rudzio::suite(...)]` on a
+/// mod) silences its own warning before reaching the per-mod analysis
+/// that detects the partial migration.
+fn file_has_rudzio_opt_out_marker(text: &str) -> bool {
+    text.lines().any(|line| {
+        let Some(comment_idx) = line.find("//") else {
+            return false;
+        };
+        let Some(comment_body) = line.get(comment_idx..) else {
+            return false;
+        };
+        comment_body.contains("rudzio_test") || comment_body.contains("rudzio::suite")
+    })
+}
+
 /// Recursive walker: visit every `Item::Mod` in `items`, emit one
-/// warning per `#[cfg(test)] mod` block whose body actually carries
-/// `#[test]` / `#[rudzio::test]` / `#[bench]` functions, and
-/// descend into nested mods so deeper layout (`mod outer { #[cfg(test)]
-/// mod inner { ... } }`) gets flagged the same way.
+/// warning per `mod` whose tests would not run under rudzio's
+/// `--cfg rudzio_test` build, then descend into nested mods so deeper
+/// layout (`mod outer { #[cfg(test)] mod inner { ... } }`) gets
+/// flagged the same way.
+///
+/// Visibility rule a mod's tests must satisfy to run under rudzio:
+///   * cfg gate INCLUDES `rudzio_test` (or no cfg gate at all), AND
+///   * the mod is annotated with `#[rudzio::suite(...)]`, AND
+///   * every test-marker fn inside is `#[rudzio::test]` (not
+///     `#[test]`, `#[tokio::test]`, etc.).
+///
+/// Any mod with test-marker fns that breaks one or more of those
+/// conditions emits the migration warning.
+///
+/// Out-of-line mods (`mod foo;` without an inline body) are resolved
+/// to `parent_dir/foo.rs` or `parent_dir/foo/mod.rs`; their body is
+/// parsed and checked the same way.
 fn scan_items_for_unbroadened_cfg_test_mods(
     items: &[syn::Item],
     path: &Path,
@@ -1201,14 +1269,45 @@ fn scan_items_for_unbroadened_cfg_test_mods(
         let syn::Item::Mod(mod_item) = item else {
             continue;
         };
-        if let Some((_brace, children)) = mod_item.content.as_ref() {
-            if let Some(cfg_attr) = find_unbroadened_cfg_test_attr(&mod_item.attrs)
-                && mod_body_has_test_fn(children)
-            {
-                // Cite the cfg attribute's line, not the `mod` token's
-                // line — the attribute is where the user broadens the
-                // gate, so it's the actionable pointer.
-                let line = cfg_attr.span().start().line;
+        let inline_children: Option<&Vec<syn::Item>> =
+            mod_item.content.as_ref().map(|(_, body_items)| body_items);
+        let out_of_line_body: Option<Vec<syn::Item>> = if inline_children.is_some() {
+            None
+        } else {
+            load_out_of_line_mod_items(mod_item, path)
+        };
+        let effective_body: Option<&[syn::Item]> = inline_children
+            .map(Vec::as_slice)
+            .or(out_of_line_body.as_deref());
+
+        // Decide whether THIS mod is warn-worthy. Skip mods without a
+        // test-relevant cfg attr (no cfg, `cfg(not(test))`, etc.) AND
+        // without test markers in their body.
+        let test_cfg_state = find_test_cfg_attr_state(&mod_item.attrs);
+        if let Some(body) = effective_body
+            && (test_cfg_state.is_some() || mod_body_has_test_fn(body))
+            && mod_body_has_test_fn(body)
+        {
+            let narrow_cfg = test_cfg_state
+                .as_ref()
+                .is_some_and(|state| !state.is_broadened);
+            let has_suite = mod_has_rudzio_suite_attr(&mod_item.attrs);
+            let all_rudzio = mod_body_has_only_rudzio_test_fns(body);
+            // A test-cfg mod warns when ANY of the three migration
+            // conditions fails. A non-test-cfg mod (no `#[cfg(...)]`
+            // mentioning `test` positively) is only warn-worthy when
+            // it carries cargo-test markers under broadened cfg with
+            // partial migration -- which by definition requires a
+            // cfg attr, so we silently skip cfg-free mods here.
+            let warn = test_cfg_state.is_some() && (narrow_cfg || !has_suite || !all_rudzio);
+            if warn {
+                // Cite the cfg attribute's line where present, otherwise
+                // the `mod` keyword. The cfg attr is the actionable
+                // pointer when the user broadens / silences.
+                let line = test_cfg_state.as_ref().map_or_else(
+                    || mod_item.mod_token.span.start().line,
+                    |state| state.attr.span().start().line,
+                );
                 out.push(format!(
                     "{file}:{line}: `#[cfg(test)] mod {name}` contains \
                      test functions but isn't broadened for rudzio. \
@@ -1227,33 +1326,30 @@ fn scan_items_for_unbroadened_cfg_test_mods(
                     name = mod_item.ident,
                 ));
             }
+        }
+        // Recurse into inline children only. Out-of-line bodies live
+        // in their own files and are picked up by the outer file walk
+        // in `scan_unbroadened_cfg_test_mods`.
+        if let Some(children) = inline_children {
             scan_items_for_unbroadened_cfg_test_mods(children, path, out);
         }
     }
 }
 
-/// Return the first `#[cfg(test)]` attribute in `attrs` that is NOT
-/// broadened to `any(test, rudzio_test)`. Returns `None` if every
-/// cfg attribute is already broadened (or if there is no cfg attr at
-/// all). Distinguishes the bare-`test` form from the broadened form
-/// by walking the attribute meta-tree; any presence of the
-/// `rudzio_test` identifier disables the warning even when `test`
-/// is also there.
-///
-/// Returns the attribute (rather than a `bool`) so the caller can
-/// cite its source span when emitting the diagnostic — that's the
-/// line the user broadens to silence the warning.
-///
-/// **Polarity tracking:** `not(test)` is NOT a `test`-gated mod —
-/// the gate is true exactly when `test` is OFF, so the mod isn't
-/// hidden from rudzio's runner by lacking `--cfg test`. The walker
-/// flips polarity on entering `not(...)` so `test` inside `not()`
-/// doesn't trigger the warning. `any(test, ...)` and `all(test, ...)`
-/// preserve polarity.
-fn find_unbroadened_cfg_test_attr(attrs: &[syn::Attribute]) -> Option<&syn::Attribute> {
-    attrs.iter().find(|attr| {
+/// Return the first `#[cfg(...)]` attribute that mentions `test`
+/// positively (i.e. NOT inside `not(...)`), along with whether the
+/// same cfg also mentions `rudzio_test`. Used by the scanner to
+/// distinguish three states:
+///   * `None`: no test-relevant cfg gate (treat as "not a test mod").
+///   * `Some(state)` with `is_broadened == false`: narrow cfg, mod
+///     excluded from `--cfg rudzio_test` compilation -- warn.
+///   * `Some(state)` with `is_broadened == true`: broadened cfg, mod
+///     compiles under rudzio. Whether it warns depends on whether
+///     the suite wrap and `#[rudzio::test]` attrs are in place.
+fn find_test_cfg_attr_state(attrs: &[syn::Attribute]) -> Option<TestCfgState<'_>> {
+    attrs.iter().find_map(|attr| {
         if !attr.path().is_ident("cfg") {
-            return false;
+            return None;
         }
         let mut bare_test = false;
         let mut has_rudzio_test = false;
@@ -1261,8 +1357,91 @@ fn find_unbroadened_cfg_test_attr(attrs: &[syn::Attribute]) -> Option<&syn::Attr
             walk_cfg_meta(&meta, false, &mut bare_test, &mut has_rudzio_test);
             Ok(())
         });
-        bare_test && !has_rudzio_test
+        bare_test.then_some(TestCfgState {
+            attr,
+            is_broadened: has_rudzio_test,
+        })
     })
+}
+
+/// True when `attrs` contains a `#[rudzio::suite(...)]` attribute.
+///
+/// Used by the partial-migration detector: a mod with broadened cfg
+/// and `#[test]` (or async-runtime test) fns but no suite wrap is
+/// still invisible to rudzio's runner, since the runner only collects
+/// fns inside an explicit `#[rudzio::suite(...)]`-annotated mod.
+fn mod_has_rudzio_suite_attr(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        let mut iter = attr.path().segments.iter();
+        iter.next().is_some_and(|seg| seg.ident == "rudzio")
+            && iter.next().is_some_and(|seg| seg.ident == "suite")
+            && iter.next().is_none()
+    })
+}
+
+/// True when every test-marker fn in `body` carries the
+/// `#[rudzio::test]` attribute (rather than `#[test]`,
+/// `#[tokio::test]`, etc.).
+///
+/// A fn with NO test marker is ignored (it's a helper, not a test).
+/// A fn with the `#[rudzio::test]` marker AND another marker (e.g.
+/// `#[tokio::test]`) is treated as non-rudzio because the non-rudzio
+/// marker would also fire and confuse libtest.
+fn mod_body_has_only_rudzio_test_fns(body: &[syn::Item]) -> bool {
+    body.iter().all(|item| {
+        let syn::Item::Fn(fn_item) = item else {
+            return true;
+        };
+        let test_attrs: Vec<&syn::Attribute> = fn_item
+            .attrs
+            .iter()
+            .filter(|attr| is_test_marker_attr(attr))
+            .collect();
+        if test_attrs.is_empty() {
+            return true;
+        }
+        test_attrs.iter().all(|attr| {
+            let mut iter = attr.path().segments.iter();
+            iter.next().is_some_and(|seg| seg.ident == "rudzio")
+                && iter.next().is_some_and(|seg| seg.ident == "test")
+                && iter.next().is_none()
+        })
+    })
+}
+
+/// Resolve `mod foo;` (no inline body) to the file that holds the
+/// body, then parse it. Returns the parsed top-level items, or
+/// `None` when the file can't be located or parsed.
+///
+/// Looks at the two canonical layouts cargo / rustc recognise for an
+/// out-of-line submodule declared in `current_file`:
+///   * `<parent_dir>/<mod_name>.rs`
+///   * `<parent_dir>/<mod_name>/mod.rs`
+///
+/// `#[path = "..."]` attributes are NOT honoured here -- they're
+/// rare in user code and the migration-warning surface is
+/// best-effort guidance; missing one isn't a correctness issue.
+fn load_out_of_line_mod_items(
+    mod_item: &syn::ItemMod,
+    current_file: &Path,
+) -> Option<Vec<syn::Item>> {
+    if mod_item.content.is_some() {
+        return None;
+    }
+    let parent = current_file.parent()?;
+    let name = mod_item.ident.to_string();
+    let flat = parent.join(format!("{name}.rs"));
+    let nested = parent.join(&name).join("mod.rs");
+    let body_path = if flat.is_file() {
+        flat
+    } else if nested.is_file() {
+        nested
+    } else {
+        return None;
+    };
+    let text = fs::read_to_string(&body_path).ok()?;
+    let parsed = syn::parse_file(&text).ok()?;
+    Some(parsed.items)
 }
 
 /// Recursively walk a `cfg(...)` meta tree, setting `bare_test` /
@@ -1309,18 +1488,36 @@ fn mod_body_has_test_fn(body: &[syn::Item]) -> bool {
         let syn::Item::Fn(fn_item) = item else {
             return false;
         };
-        fn_item.attrs.iter().any(|attr| {
-            let path = attr.path();
-            if path.is_ident("test") || path.is_ident("bench") {
-                return true;
-            }
-            // `#[rudzio::test]` — two-segment path.
-            let mut iter = path.segments.iter();
-            iter.next().is_some_and(|seg| seg.ident == "rudzio")
-                && iter.next().is_some_and(|seg| seg.ident == "test")
-                && iter.next().is_none()
-        })
+        fn_item.attrs.iter().any(is_test_marker_attr)
     })
+}
+
+/// True when `attr` is a test-like marker that flags the function as
+/// a test runner entry point.
+///
+/// Recognises:
+///   * Single-segment `#[test]` / `#[bench]` (cargo's built-in markers).
+///   * Multi-segment paths whose LAST segment is `test`, covering
+///     async-runtime wrappers like `#[tokio::test]`, `#[async_std::test]`,
+///     `#[smol_potat::test]`, `#[test_log::test]`, `#[rstest]`-style
+///     wrappers, AND rudzio's own `#[rudzio::test]`. Limiting to the
+///     last segment keeps the check robust against renames /
+///     re-exports (`use foo::test as bar`) and avoids over-matching
+///     things like `#[doc(test)]` (path is `doc`, not `doc::test`).
+///
+/// This is the surface that drives the "this mod contains test fns"
+/// scan in `scan_items_for_unbroadened_cfg_test_mods`. Recognising
+/// the async-runtime wrappers is what lets the cfg-narrowing
+/// warning reach modules whose author migrated to `#[tokio::test]`
+/// without fully migrating the rest of the rudzio surface.
+fn is_test_marker_attr(attr: &syn::Attribute) -> bool {
+    let path = attr.path();
+    if path.is_ident("test") || path.is_ident("bench") {
+        return true;
+    }
+    // Multi-segment path: only the LAST segment matters. Catches
+    // `tokio::test`, `async_std::test`, `rudzio::test`, etc.
+    path.segments.last().is_some_and(|seg| seg.ident == "test")
 }
 
 /// Plan-level convenience: scan every member's src tree and return the

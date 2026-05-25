@@ -98,10 +98,7 @@ fn rudzio_source_root() -> PathBuf {
 /// Per-process-pid suffix keeps repeated test runs (and tests run in
 /// parallel under `cargo test`) from sharing state across processes.
 fn shared_target_dir() -> PathBuf {
-    env::temp_dir().join(format!(
-        "rudzio-parallel-contention-spec-{}",
-        process::id()
-    ))
+    env::temp_dir().join(format!("rudzio-parallel-contention-spec-{}", process::id()))
 }
 
 /// Materialise a minimal valid rudzio consumer workspace at `root`.
@@ -229,8 +226,8 @@ mod tests {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
 
-        let race_signature_present = stderr.contains("No such file or directory")
-            && stderr.contains("rudzio-auto-runner");
+        let race_signature_present =
+            stderr.contains("No such file or directory") && stderr.contains("rudzio-auto-runner");
         anyhow::ensure!(
             !race_signature_present,
             "parallel-invocation contention fired: stderr contains the \
