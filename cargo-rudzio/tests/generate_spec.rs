@@ -1301,10 +1301,24 @@ mod tests {
     }
 
     #[rudzio::test]
-    fn cfg_any_test_rudzio_test_does_not_warn_when_body_has_test_fn() -> anyhow::Result<()> {
-        // Already-broadened gate with test body: no warning. The
-        // user has explicitly opted in to rudzio compilation, so the
-        // narrowing must not nag.
+    fn cfg_any_test_rudzio_test_with_test_fn_body_warns_until_suite_and_rudzio_test_attrs_land()
+    -> anyhow::Result<()> {
+        // Already-broadened cfg gate, but the body still uses
+        // `#[test]` (not `#[rudzio::test]`) and there is no
+        // `#[rudzio::suite(...)]` wrap. Under `cargo rudzio test` the
+        // mod COMPILES (Step 1 of the three-step migration recipe is
+        // done) -- but the `#[test]` fns are invisible to rudzio's
+        // runner (Step 2 + Step 3 still pending), so they never run.
+        //
+        // Pre-fix policy was "broadening cfg = silent" (this test
+        // historically asserted `warnings.is_empty()`). That was
+        // wrong: the user had no way to learn their partial migration
+        // didn't actually work. The current policy matches the
+        // warning text emitted by the scanner -- explicit
+        // "Step 1 alone is NOT sufficient" -- and warns until the
+        // remaining two steps land. Silence comes from a
+        // `// rudzio_test` marker comment, not from cfg broadening
+        // alone (the marker-skip test still passes).
         let tmp = tempdir()?;
         let entry = mk_member_with_src(
             tmp.path(),
@@ -1316,8 +1330,10 @@ mod tests {
         )?;
         let warnings = scan_unbroadened_cfg_test_mods(&entry);
         anyhow::ensure!(
-            warnings.is_empty(),
-            "already-broadened gate must not warn even with test fn body: {warnings:?}"
+            warnings.iter().any(|warning| warning.contains("mod tests")),
+            "partial migration (cfg broadened, no `#[rudzio::suite]`, body still on \
+             `#[test]`) must warn -- the tests would still be invisible to rudzio's \
+             runner. got warnings:\n{warnings:?}",
         );
         Ok(())
     }
