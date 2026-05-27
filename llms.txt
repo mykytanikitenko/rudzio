@@ -15,9 +15,16 @@ without substituting `'static`. A suite context is created once per
 make a `Test` via `Suite::context`, runs the body, calls
 `Test::teardown`, returns the borrow. Groups with the same
 `(runtime, suite)` pair across multiple `#[rudzio::suite(...)]` blocks
-collapse onto the same OS thread and instance at runtime via an FNV1a
-hash key; this is how "same test bodies under N runtimes" works without
-source duplication.
+collapse onto the same OS thread and instance at runtime via a
+`RuntimeGroupKey` derived from `(TypeId<Runtime>, TypeId<Suite<'static,
+Runtime>>)` at static-init time. TypeIds erase lifetimes (so canonical
+`Suite<'_, R>` lifts cleanly to `<'static, R>` for keying) and
+distinguish concrete types regardless of path-string spelling — two
+crates each defining their OWN local `Suite` correctly get distinct
+keys, preventing cross-binary collisions of the kind that crashed early
+v2 aggregator binaries with a wrong-type `*const ()` cast in
+`RuntimeGroupOwner::run_group`. This is how "same test bodies under N
+runtimes" works without source duplication.
 
 Three execution regimes coexist on the same source tree:
 

@@ -58,7 +58,7 @@ pub use runtime::{JoinError, Runtime};
 pub use smol;
 pub use suite::{
     Id as SuiteId, Reporter as SuiteReporter, RunRequest as SuiteRunRequest, RuntimeGroupKey,
-    RuntimeGroupOwner, Summary as SuiteSummary, TestOutcome, TestRunFn, fnv1a64,
+    RuntimeGroupOwner, Summary as SuiteSummary, TestOutcome, TestRunFn, validate_dispatch_table,
 };
 pub use test_case::{BoxError, IntoRudzioResult, TestCase, TestFn, box_error};
 pub use token::{TEST_TOKENS, Token as TestToken};

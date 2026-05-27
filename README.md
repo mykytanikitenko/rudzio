@@ -361,10 +361,14 @@ On every invocation, cargo-rudzio:
 5. Propagates the aggregator's exit code.
 
 Every `#[rudzio::test]` across every member lands in one `linkme` slice;
-the runner groups tokens by `RuntimeGroupKey` (FNV of
-`runtime_path :: suite_path`), spawns one OS thread per group, constructs
-the `Suite` once, runs every test in that group against that `Suite`,
-tears down once — across crate boundaries, not per file.
+the runner groups tokens by `RuntimeGroupKey` — a `(TypeId<Runtime>,
+TypeId<Suite<'static, Runtime>>)` pair computed at static-init time, so
+two suite blocks declaring genuinely-same types share a group even
+across crate boundaries while two crates each defining their OWN local
+`Suite` get distinct groups (no spelling-based collision). The runner
+spawns one OS thread per group, constructs the `Suite` once, runs every
+test in that group against that `Suite`, tears down once — across crate
+boundaries, not per file.
 
 Also exposed:
 

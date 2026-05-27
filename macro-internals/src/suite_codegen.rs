@@ -18,8 +18,6 @@ struct GeneratePerTestArgs<'args> {
     cfg_attrs: &'args [Attribute],
     /// Index of the parent runtime-config block within the suite macro.
     cfg_idx: usize,
-    /// Stable string keying the runtime group; matches the owner's key.
-    group_key_source: &'args str,
     /// Identifier of the wrapping `mod tests` block.
     mod_name: &'args Ident,
     /// Identifier of the per-config `RuntimeGroupOwner` static instance.
@@ -69,8 +67,6 @@ struct RuntimeGroupOwnerImplArgs<'args> {
     /// entry; emitted on every item this helper produces so the entire
     /// per-entry expansion vanishes when the cfg doesn't hold.
     cfg_attrs: &'args [Attribute],
-    /// Stable string keying the runtime group; matches the per-test key.
-    group_key_source: &'args str,
     /// Identifier of the wrapping `mod tests` block.
     mod_name: &'args Ident,
     /// Identifier of the per-config `RuntimeGroupOwner` static instance.
@@ -366,10 +362,14 @@ fn generate_per_config(
     let runtime_type = cfg.runtime_type();
     let suite_base = &cfg.suite;
 
-    // Stable id derived from the (runtime_type, suite_base) path strings.
-    // Two suite blocks declaring the same (R, S) get the same key and share
-    // an OS thread / runtime / suite at runtime.
-    let group_key_source = format!("{}::{}", quote!(#runtime_type), quote!(#suite_base));
+    // Stable id derived from `TypeId::of::<R>()` and `TypeId::of::<S>()` —
+    // emitted as `RuntimeGroupKey::of::<R, S>()` at both the owner's
+    // `group_key()` site and every per-test token static. Two suite blocks
+    // declaring the same concrete `(R, S)` get the same key (and share one
+    // OS thread / runtime / suite at runtime) regardless of path-string
+    // spelling; two blocks declaring different types with byte-identical
+    // attribute spelling get distinct keys, preventing the cross-type
+    // owner-cast UB that string-based keys allowed.
 
     let mod_camel = to_upper_camel(&mod_name.to_string());
     let owner_struct = format_ident!("__RudzioOwner{}{}", mod_camel, cfg_idx);
@@ -381,7 +381,6 @@ fn generate_per_config(
 
     helper_items.push(runtime_group_owner_impl(&RuntimeGroupOwnerImplArgs {
         cfg_attrs,
-        group_key_source: &group_key_source,
         mod_name,
         owner_static: &owner_static,
         owner_struct: &owner_struct,
@@ -394,7 +393,6 @@ fn generate_per_config(
         let (helper, token_static) = generate_per_test(&GeneratePerTestArgs {
             cfg_attrs,
             cfg_idx,
-            group_key_source: &group_key_source,
             mod_name,
             owner_static: &owner_static,
             runtime_type: &runtime_type,
@@ -415,7 +413,6 @@ fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream
     let &GeneratePerTestArgs {
         cfg_attrs,
         cfg_idx,
-        group_key_source,
         mod_name,
         owner_static,
         runtime_type,
@@ -523,7 +520,10 @@ fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream
             ),
             ::rudzio::token::Dispatch::new(
                 #run_test_fn,
-                ::rudzio::suite::RuntimeGroupKey::new(::rudzio::suite::fnv1a64(#group_key_source)),
+                ::rudzio::suite::RuntimeGroupKey::of::<
+                    #runtime_type,
+                    #suite_base::<'static, #runtime_type>,
+                >(),
                 &#owner_static,
             ),
         );
@@ -1261,7 +1261,6 @@ fn run_test_timeouts_quote(
 fn runtime_group_owner_impl(args: &RuntimeGroupOwnerImplArgs<'_>) -> TokenStream {
     let &RuntimeGroupOwnerImplArgs {
         cfg_attrs,
-        group_key_source,
         mod_name,
         owner_static,
         owner_struct,
@@ -1286,9 +1285,10 @@ fn runtime_group_owner_impl(args: &RuntimeGroupOwnerImplArgs<'_>) -> TokenStream
         impl ::rudzio::suite::RuntimeGroupOwner for #owner_struct {
             #[inline]
             fn group_key(&self) -> ::rudzio::suite::RuntimeGroupKey {
-                ::rudzio::suite::RuntimeGroupKey::new(
-                    ::rudzio::suite::fnv1a64(#group_key_source),
-                )
+                ::rudzio::suite::RuntimeGroupKey::of::<
+                    #runtime_type,
+                    #suite_base::<'static, #runtime_type>,
+                >()
             }
 
             fn run_group(

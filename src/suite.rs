@@ -3,14 +3,18 @@
 //! Each `#[rudzio::suite]` block emits one zero-sized type that implements
 //! [`RuntimeGroupOwner`]. Multiple suite blocks declaring the same
 //! `(runtime, suite)` pair are assigned the same
-//! [`RuntimeGroupKey`] (a compile-time FNV-1a hash of the path strings) and
-//! coalesced at startup so they share **one** OS thread, **one** runtime
-//! instance, and **one** suite context. Within that single async loop,
-//! per-test dispatch is performed via an HRTB unsafe fn pointer stored on
-//! every [`TestToken`] — the owner provides its concrete runtime + suite
-//! pointers, and the test fn casts them back to the matching concrete types
-//! it was generated for. The `runtime_group_key` match makes this
-//! safe-by-construction at the macro level.
+//! [`RuntimeGroupKey`] — a tuple of `TypeId<Runtime>` and `TypeId<Suite>`
+//! computed at static-init time via [`TypeId::of`](std::any::TypeId::of) —
+//! and coalesced at startup so they share **one** OS thread, **one**
+//! runtime instance, and **one** suite context. Within that single async
+//! loop, per-test dispatch is performed via an HRTB unsafe fn pointer
+//! stored on every [`TestToken`] — the owner provides its concrete
+//! runtime + suite pointers, and the test fn casts them back to the
+//! matching concrete types it was generated for. The `runtime_group_key`
+//! is a function of TYPE IDENTITY (not path-string spelling), so two
+//! tokens sharing a key are guaranteed to share concrete types — the
+//! cross-type cast under [`RuntimeGroupOwner::run_group`] is
+//! safe-by-construction.
 //!
 //! No `'static` substitution anywhere: the runtime and the suite live on
 //! the owner's stack frame for the whole `run_group` call, and per-test
@@ -59,21 +63,46 @@ pub enum PhaseOutcome<T> {
     TimedOut,
 }
 
-/// Stable identifier for a `(runtime_type, suite_type)` pair.
+/// Stable identifier for a `(runtime_type, suite_type)` pair, derived
+/// from [`TypeId::of::<Runtime>`](TypeId::of) and
+/// [`TypeId::of::<Suite>`](TypeId::of).
 ///
-/// Two tokens with the same key share an OS thread, a runtime instance, and
-/// a suite context, even if they were emitted by different
-/// `#[rudzio::suite]` invocations.
+/// Two tokens with the same key share an OS thread, a runtime instance,
+/// and a suite context, even if they were emitted by different
+/// `#[rudzio::suite]` invocations — provided their `(Runtime, Suite)`
+/// concrete types match. Because the key is computed from `TypeId`s and
+/// not from path-string spellings, two tokens declaring the same types
+/// under different module paths or aliases (e.g.
+/// `use crate::common::Suite;` in one expansion vs.
+/// `crate::common::Suite` in another) correctly resolve to the same
+/// key, and two tokens whose `Suite` identifier happens to spell the
+/// same way but resolves to different concrete types in different
+/// scopes (the cross-binary collision shape) correctly resolve to
+/// distinct keys.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub struct RuntimeGroupKey(pub u64);
+pub struct RuntimeGroupKey {
+    /// `TypeId` of the runtime type bound in the parent `#[rudzio::suite]`.
+    pub runtime_type_id: TypeId,
+    /// `TypeId` of the suite type bound in the parent `#[rudzio::suite]`.
+    pub suite_type_id: TypeId,
+}
 
 impl RuntimeGroupKey {
-    /// Construct a `RuntimeGroupKey` from its raw hash value.
+    /// Compute a `RuntimeGroupKey` from `(Runtime, Suite)` concrete types.
+    ///
+    /// Both bounds are `'static`: `TypeId::of` requires it, and rudzio's
+    /// `RuntimeGroupOwner` static plus the runtime/suite values held on
+    /// the owner's stack frame are themselves outliving every test
+    /// dispatch — `'static` is the natural fit, never a concrete
+    /// substitution.
     #[inline]
     #[must_use]
-    pub const fn new(hash: u64) -> Self {
-        Self(hash)
+    pub const fn of<R: 'static, S: 'static>() -> Self {
+        Self {
+            runtime_type_id: TypeId::of::<R>(),
+            suite_type_id: TypeId::of::<S>(),
+        }
     }
 }
 
@@ -301,8 +330,11 @@ pub type TestRunFn = for<'suite> unsafe fn(
 /// [`Runtime::name`](crate::runtime::Runtime::name); the owner itself
 /// carries only the stable group id.
 pub trait RuntimeGroupOwner: Send + Sync + 'static {
-    /// Stable id derived from the `(runtime_path, suite_path)` token
-    /// strings at macro-time.
+    /// Stable id derived from `(TypeId::of::<R>(), TypeId::of::<S<'static, R>>())`
+    /// at macro-time. Must match every contained token's
+    /// [`TestToken::runtime_group_key`](crate::token::Token::runtime_group_key);
+    /// [`validate_dispatch_table`] asserts this on startup and panics on
+    /// disagreement.
     fn group_key(&self) -> RuntimeGroupKey;
 
     /// Drive the whole group: create runtime, set up suite, dispatch every
@@ -643,58 +675,6 @@ pub fn fill_elapsed(outcome: TestOutcome, elapsed: Duration) -> TestOutcome {
     }
 }
 
-/// Compile-time FNV-1a-64 hash of `s`.
-///
-/// Used by the suite macro to derive a stable [`RuntimeGroupKey`] from the
-/// concatenated `(runtime_path, suite_path)` token strings without needing
-/// any runtime registry.
-#[doc(hidden)]
-#[must_use]
-#[inline]
-pub const fn fnv1a64(text: &str) -> u64 {
-    let mut bytes = text.as_bytes();
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    // Iterate via slice-pattern split (`split_first` is the runtime
-    // analogue) — const-stable, no raw indexing, so `indexing_slicing`
-    // doesn't fire while the function remains a `const fn`.
-    while let [first, rest @ ..] = bytes {
-        // Widen byte→u64 bit-by-bit in const context. `From` isn't yet
-        // const-stable for `u8 → u64`, and `from_*_bytes` trips the
-        // restriction lints — so we test each bit and OR it into a
-        // u64 accumulator with u64-typed literals.
-        let byte = *first;
-        let mut widened: u64 = 0;
-        if byte & 0b0000_0001 != 0 {
-            widened |= 0x01;
-        }
-        if byte & 0b0000_0010 != 0 {
-            widened |= 0x02;
-        }
-        if byte & 0b0000_0100 != 0 {
-            widened |= 0x04;
-        }
-        if byte & 0b0000_1000 != 0 {
-            widened |= 0x08;
-        }
-        if byte & 0b0001_0000 != 0 {
-            widened |= 0x10;
-        }
-        if byte & 0b0010_0000 != 0 {
-            widened |= 0x20;
-        }
-        if byte & 0b0100_0000 != 0 {
-            widened |= 0x40;
-        }
-        if byte & 0b1000_0000 != 0 {
-            widened |= 0x80;
-        }
-        hash ^= widened;
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        bytes = rest;
-    }
-    hash
-}
-
 /// Extract a human-readable message from a `catch_unwind` payload.
 ///
 /// Rust's panic payload is `Box<dyn Any + Send>`; the common shapes
@@ -890,4 +870,53 @@ where
             elapsed: Duration::ZERO,
         },
     }
+}
+
+/// Defense-in-depth check on the macro-generated dispatch table.
+///
+/// For every token, asserts that
+/// `token.runtime_group_owner.group_key() == token.runtime_group_key`.
+/// With the macro's [`RuntimeGroupKey::of`] derivation both sides expand
+/// to the same const expression, so this is a tautology in normal
+/// builds — but a future macro regression that lets owner-side and
+/// token-side derivations drift apart (the shape of the historical
+/// cross-binary collision bug under string-based keys) would land the
+/// dispatcher in a cross-type pointer cast inside
+/// [`RuntimeGroupOwner::run_group`]. The runner calls this once at
+/// dispatch entry and aborts the run with a precise diagnostic instead
+/// of letting the process SEGV in a runtime allocator memcpy.
+///
+/// Also exposed publicly so integration tests can call it directly
+/// against [`TEST_TOKENS`](crate::token::TEST_TOKENS) and assert the
+/// macro's invariant at compile-time-then-startup.
+///
+/// # Errors
+///
+/// Returns `Err(message)` on the first token whose
+/// `runtime_group_owner.group_key()` disagrees with its
+/// `runtime_group_key` field. The message names the offending test, its
+/// source location, and both keys — designed for a stderr dump from the
+/// runner before it short-circuits the dispatch.
+#[inline]
+pub fn validate_dispatch_table(tokens: &[&'static TestToken]) -> Result<(), String> {
+    for token in tokens {
+        let owner_key = token.runtime_group_owner.group_key();
+        if owner_key != token.runtime_group_key {
+            return Err(format!(
+                "rudzio: dispatch-table invariant violated for test `{name}` at {file}:{line}: \
+                 token.runtime_group_key = {token_key:?}, but \
+                 token.runtime_group_owner.group_key() = {owner_key:?}. \
+                 The macro-generated owner and token disagree on the (Runtime, Suite) \
+                 identity — dispatching this token would cast pointers across mismatched \
+                 concrete types in `RuntimeGroupOwner::run_group`, which is undefined \
+                 behaviour. Report this bug against rudzio's suite macro.",
+                name = token.name,
+                file = token.file,
+                line = token.line,
+                token_key = token.runtime_group_key,
+                owner_key = owner_key,
+            ));
+        }
+    }
+    Ok(())
 }

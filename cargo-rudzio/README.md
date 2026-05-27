@@ -60,7 +60,11 @@ cargo rudzio test --format json         # machine-readable output
 
 Every `#[rudzio::test]` token across the workspace lands in one `linkme`
 slice in the aggregator. The runner groups them by
-`RuntimeGroupKey(runtime_path, suite_path)`, spawns one OS thread per
+`RuntimeGroupKey(TypeId<Runtime>, TypeId<Suite<'static, Runtime>>)` —
+`TypeId`-based identity, so two crates declaring the same `(Runtime,
+Suite)` types share a group cleanly while two crates each defining
+their OWN local `Suite` correctly get distinct groups (no spelling
+collision, no cross-binary wrong-type cast). Spawns one OS thread per
 group, constructs the `Suite` once, runs every test in the group
 against that `Suite`, tears down once. No test binary fragmentation.
 

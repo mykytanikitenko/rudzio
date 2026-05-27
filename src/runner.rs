@@ -26,7 +26,7 @@ use crate::output::{write_stderr, write_stdout};
 use crate::shuffle::permute_with_seed;
 use crate::suite::{
     Reporter as SuiteReporter, RunRequest as SuiteRunRequest, RuntimeGroupKey, RuntimeGroupOwner,
-    Summary as SuiteSummary, TeardownResult, TestOutcome,
+    Summary as SuiteSummary, TeardownResult, TestOutcome, validate_dispatch_table,
 };
 use crate::token::{TEST_TOKENS, Token as TestToken};
 
@@ -1208,6 +1208,26 @@ fn dispatch_test_groups(
     root_token: &CancellationToken,
     reporter: &ModeReporter,
 ) -> TestSummary {
+    // Defense-in-depth: confirm macro-generated owner and token agree on
+    // the (Runtime, Suite) identity before any cross-type pointer cast
+    // can happen inside `RuntimeGroupOwner::run_group`. With the
+    // TypeId-based `RuntimeGroupKey::of::<R, S<'static, R>>()` emission
+    // this is a tautology under correct macro expansion — but a
+    // historical macro bug (string-based hashing where two different
+    // concrete `Suite` types under the same identifier produced
+    // colliding keys) led to a wild SEGV in downstream test binaries.
+    // Short-circuiting here with a precise stderr diagnostic and a
+    // sentinel `panicked` summary (so the non-zero exit code surfaces
+    // through the runner's normal "tests failed" path) is strictly
+    // better than SEGVing in a runtime allocator's memcpy.
+    if let Err(msg) = validate_dispatch_table(tokens) {
+        write_stderr(&format!("{msg}\n"));
+        return TestSummary {
+            panicked: 1,
+            total: 1,
+            ..TestSummary::zero()
+        };
+    }
     let mut groups: HashMap<RuntimeGroupKey, Vec<&'static TestToken>> = HashMap::new();
     for token in tokens {
         groups
