@@ -37,9 +37,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cargo_rudzio::generate::{plan_from_manifest, write_runner};
-use rudzio::common::context::Suite;
+use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
 use rudzio::runtime::tokio::Multithread as TokioMultithread;
 use rudzio::{normalize_module_path, qualified_test_name};
+use tempfile::TempDir;
 
 /// Common prefix every internal aggregator-wrapper name carries.
 ///
@@ -307,13 +308,14 @@ fn collect_string_literals(text: &str) -> Vec<String> {
 }
 
 #[rudzio::suite([
-    (runtime = TokioMultithread::new, suite = Suite, test = Test),
+    (runtime = TokioMultithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
 ])]
 mod tests {
     use super::{
-        Command, Path, SYNTH_MARKER, collect_string_literals, env, fs, is_cargo_build_line,
-        is_rust_backtrace_line, normalize_module_path, plan_from_manifest, qualified_test_name,
-        read_emitted_sources, rudzio_source_root, with_cargo_offline, write_fixture, write_runner,
+        Command, IsolatedCargoTest, Path, SYNTH_MARKER, TempDir, collect_string_literals, env, fs,
+        is_cargo_build_line, is_rust_backtrace_line, normalize_module_path, plan_from_manifest,
+        qualified_test_name, read_emitted_sources, rudzio_source_root, with_cargo_offline,
+        write_fixture, write_runner,
     };
 
     /// Layer 1 — static: synth names must NEVER appear in string
@@ -323,11 +325,17 @@ mod tests {
     /// strings), but a synth name inside a `"…"` literal would
     /// surface verbatim at runtime.
     #[rudzio::test]
-    fn no_synth_marker_in_emitted_string_literals() -> anyhow::Result<()> {
-        let temp = tempfile::tempdir()?;
+    fn no_synth_marker_in_emitted_string_literals(ctx: &IsolatedCargoTest) -> anyhow::Result<()> {
+        let temp = TempDir::new_in(ctx.suite_tempdir())?;
         let rudzio_root = rudzio_source_root();
         write_fixture(temp.path(), &rudzio_root)?;
         let manifest = temp.path().join("Cargo.toml");
+        // `plan_from_manifest` runs `cargo metadata --no-deps`
+        // in-process; `--no-deps` skips registry reads, so the
+        // inherited (system) `CARGO_HOME` is fine here. The
+        // `with_cargo_offline` guard is belt-and-suspenders for
+        // environments where cargo might still try to refresh the
+        // index.
         let plan = with_cargo_offline(|| plan_from_manifest(&manifest))?;
         let out_dir = plan.default_output_dir();
         write_runner(&plan, &out_dir)?;
@@ -371,12 +379,18 @@ mod tests {
     /// cargo_rudzio::...` lines from rudzio's `[OK]`/`[FAIL]`
     /// status emit).
     #[rudzio::test]
-    fn no_synth_marker_in_aggregator_stdout_or_stderr() -> anyhow::Result<()> {
-        let temp = tempfile::tempdir()?;
+    fn no_synth_marker_in_aggregator_stdout_or_stderr(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let temp = TempDir::new_in(ctx.suite_tempdir())?;
         let rudzio_root = rudzio_source_root();
         write_fixture(temp.path(), &rudzio_root)?;
         let manifest = temp.path().join("Cargo.toml");
         let cargo_rudzio = env!("CARGO_BIN_EXE_cargo-rudzio");
+        // Per-test cargo state (hardlinked from suite pre-warm) +
+        // offline mode = no flock contention, no host-target
+        // accumulation. Aggregator subtree lives in
+        // `ctx.cargo_target_dir()` and vanishes at test drop.
         let output = Command::new(cargo_rudzio)
             .arg("test")
             .arg("--manifest-path")
@@ -385,6 +399,9 @@ mod tests {
                 "CARGO",
                 env::var_os("CARGO").unwrap_or_else(|| "cargo".into()),
             )
+            .env("CARGO_HOME", ctx.cargo_home())
+            .env("CARGO_TARGET_DIR", ctx.cargo_target_dir())
+            .env("CARGO_NET_OFFLINE", "true")
             .output()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -556,8 +573,10 @@ mod tests {
     /// Catches setup regressions early instead of letting them
     /// manifest as opaque cargo errors from layer 2.
     #[rudzio::test]
-    fn fixture_writes_consumer_with_one_binary_and_helper() -> anyhow::Result<()> {
-        let temp = tempfile::tempdir()?;
+    fn fixture_writes_consumer_with_one_binary_and_helper(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let temp = TempDir::new_in(ctx.suite_tempdir())?;
         let rudzio_root = rudzio_source_root();
         write_fixture(temp.path(), &rudzio_root)?;
         let workspace_toml = fs::read_to_string(temp.path().join("Cargo.toml"))?;

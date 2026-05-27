@@ -216,26 +216,42 @@ mod tests {
         Ok((temp, out_dir))
     }
 
-    /// Locate the proxy `foo.rs` emitted under
-    /// `<out>/src/proxies/<id>/`. The `<id>` is synth-derived per
+    /// Locate the proxy `foo.rs` emitted under any bridge's
+    /// `src/proxies/<id>/` directory. The `<id>` is synth-derived per
     /// binary; we scan rather than guess so a future change in the
     /// id-derivation scheme doesn't false-fail this test.
+    ///
+    /// Under v2 proxies live inside each bridged member's directory
+    /// (`<out>/members/<bridge_dir>/src/proxies/<id>/`), not directly
+    /// under the aggregator's `src/proxies/` — the scan walks every
+    /// bridge directory so the test stays agnostic to which member
+    /// owns the test binary.
     fn find_proxy_foo(out_dir: &Path) -> anyhow::Result<PathBuf> {
-        let proxies = out_dir.join("src").join("proxies");
+        let members_dir = out_dir.join("members");
         let mut hits: Vec<PathBuf> = Vec::new();
-        for entry in fs::read_dir(&proxies)? {
-            let path = entry?.path();
-            if path.is_dir() {
-                let candidate = path.join("foo.rs");
-                if candidate.exists() {
-                    hits.push(candidate);
+        for bridge_entry in fs::read_dir(&members_dir)? {
+            let bridge_path = bridge_entry?.path();
+            if !bridge_path.is_dir() {
+                continue;
+            }
+            let proxies = bridge_path.join("src").join("proxies");
+            let Ok(proxies_iter) = fs::read_dir(&proxies) else {
+                continue;
+            };
+            for entry in proxies_iter {
+                let path = entry?.path();
+                if path.is_dir() {
+                    let candidate = path.join("foo.rs");
+                    if candidate.exists() {
+                        hits.push(candidate);
+                    }
                 }
             }
         }
         anyhow::ensure!(
             hits.len() == 1,
-            "expected exactly one proxy foo.rs under {}, found {hits:?}",
-            proxies.display()
+            "expected exactly one proxy foo.rs under any bridge's src/proxies/, found {hits:?} under {}",
+            members_dir.display()
         );
         hits.into_iter()
             .next()

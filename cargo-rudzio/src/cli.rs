@@ -111,43 +111,45 @@ impl ParsedTestArgs {
 
 /// Build the argv we hand to `cargo` for the aggregator invocation.
 ///
-/// Default (`no_run = false`):
-/// `cargo run --manifest-path X <forwarded_cargo_args> -- <runner args>`.
-/// `--no-run`:
-/// `cargo build --manifest-path X <forwarded_cargo_args> [--message-format=json-render-diagnostics]`,
-/// dropping the `--` separator and any runner args (the aggregator
-/// won't be spawned, so forwarding them is dead weight). The
-/// `json-render-diagnostics` format keeps human-friendly diagnostics
-/// on stderr while emitting machine-readable artifact records on
-/// stdout, so downstream tooling (or AI agents) can extract the
-/// built binary path with `jq -r 'select(.executable != null) | .executable'`.
-/// Auto-injection of `--message-format` is skipped when the user
-/// already supplied one (last-wins would also work, but skipping
-/// keeps the spawned argv clean).
+/// Under v2 (Option B-json, per PLAN.md Decisions Log [C1]), there is
+/// EXACTLY ONE cargo subprocess per `cargo rudzio test` invocation:
+///
+/// `cargo build --workspace --bins --manifest-path X <forwarded_cargo_args> --message-format=json-render-diagnostics`.
+///
+/// `--workspace --bins` is mandatory: bridge `[[bin]]` entries sit in
+/// sibling workspace packages that are NOT in the aggregator runner's
+/// dep graph. Without `--workspace --bins`, bridge bins are never
+/// built and `env!("CARGO_BIN_EXE_<n>")` paths (emitted by bridge
+/// build.rs) point at files cargo never produces. With it, every
+/// workspace bin is compiled once by ONE cargo invocation — no
+/// nested cargo, no cascade.
+///
+/// `--message-format=json-render-diagnostics` keeps human-friendly
+/// diagnostics on stderr while emitting machine-readable artifact
+/// records on stdout. Cargo-rudzio parses the stream to extract the
+/// `rudzio-auto-runner` artifact path, then directly execs the runner
+/// (no second cargo subprocess). Auto-injection of `--message-format`
+/// is skipped when the user already supplied one (last-wins would
+/// also work, but skipping keeps the spawned argv clean).
+///
+/// Runner args (the part after `--`) and `--no-run` are NOT encoded
+/// in this argv; they're consumed by `main.rs::run_test` after the
+/// build completes (it parses the JSON stream, then either execs the
+/// runner with `parsed.runner_args` or prints the path for
+/// `--no-run`).
 #[inline]
 #[must_use]
 pub fn aggregator_cargo_args(parsed: &ParsedTestArgs, manifest: &str) -> Vec<String> {
-    let capacity = parsed
-        .runner_args
-        .len()
-        .saturating_add(parsed.forwarded_cargo_args.len())
-        .saturating_add(8_usize);
+    let capacity = parsed.forwarded_cargo_args.len().saturating_add(8_usize);
     let mut argv = Vec::with_capacity(capacity);
-    if parsed.no_run {
-        argv.push("build".to_owned());
-        argv.push("--manifest-path".to_owned());
-        argv.push(manifest.to_owned());
-        argv.extend(parsed.forwarded_cargo_args.iter().cloned());
-        if !user_supplied_message_format(&parsed.forwarded_cargo_args) {
-            argv.push("--message-format=json-render-diagnostics".to_owned());
-        }
-    } else {
-        argv.push("run".to_owned());
-        argv.push("--manifest-path".to_owned());
-        argv.push(manifest.to_owned());
-        argv.extend(parsed.forwarded_cargo_args.iter().cloned());
-        argv.push("--".to_owned());
-        argv.extend(parsed.runner_args.iter().cloned());
+    argv.push("build".to_owned());
+    argv.push("--workspace".to_owned());
+    argv.push("--bins".to_owned());
+    argv.push("--manifest-path".to_owned());
+    argv.push(manifest.to_owned());
+    argv.extend(parsed.forwarded_cargo_args.iter().cloned());
+    if !user_supplied_message_format(&parsed.forwarded_cargo_args) {
+        argv.push("--message-format=json-render-diagnostics".to_owned());
     }
     argv
 }

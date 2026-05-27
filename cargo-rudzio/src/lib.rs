@@ -4,6 +4,3 @@
 
 pub mod cli;
 pub mod generate;
-pub mod sentinel;
-
-pub use sentinel::{EXPOSE_BINS_SENTINEL_ENV, EXPOSE_BINS_SENTINEL_VALUE, spawn_env};

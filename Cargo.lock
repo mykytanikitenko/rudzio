@@ -289,6 +289,7 @@ name = "cargo-rudzio"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "cargo-rudzio-test-helpers",
  "cargo_metadata",
  "libc",
  "prettyplease",
@@ -298,6 +299,15 @@ dependencies = [
  "syn",
  "tempfile",
  "toml_edit",
+]
+
+[[package]]
+name = "cargo-rudzio-test-helpers"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "rudzio",
+ "tempfile",
 ]
 
 [[package]]
@@ -1289,7 +1299,6 @@ version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-std",
- "cargo_metadata",
  "compio-driver",
  "compio-runtime",
  "crossbeam-channel",

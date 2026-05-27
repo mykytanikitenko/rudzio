@@ -22,6 +22,7 @@
 //!   collapse them.
 
 use std::env;
+use std::fmt::{Result as FmtResult, Write as _};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -182,18 +183,40 @@ where
     body()
 }
 
-/// Run the aggregator emit pipeline and return `(main.rs, tests.rs)`
-/// as a concatenated string for substring counting.
+/// Run the aggregator emit pipeline and return aggregator main.rs +
+/// every bridge's `src/lib.rs` as a single concatenated string for
+/// substring counting.
+///
+/// Under v2 test/helper proxy mounts (`#[path = "proxies/<id>/foo.rs"]
+/// mod __rudzio_test_<id>;` etc.) live in each bridged member's
+/// generated `src/lib.rs` rather than in a single aggregator
+/// `tests.rs`. The mount-uniqueness assertions therefore need to scan
+/// every bridge's lib.rs.
 fn emit_combined(temp: &Path) -> anyhow::Result<String> {
     let manifest = temp.join("Cargo.toml");
     let plan = with_cargo_offline(|| plan_from_manifest(&manifest))?;
     let out_dir = plan.default_output_dir();
     write_runner(&plan, &out_dir)?;
     let main_rs = fs::read_to_string(out_dir.join("src").join("main.rs"))?;
-    let tests_rs = fs::read_to_string(out_dir.join("src").join("tests.rs"))?;
-    Ok(format!(
-        "--- main.rs ---\n{main_rs}\n--- tests.rs ---\n{tests_rs}"
-    ))
+    let mut combined = format!("--- main.rs ---\n{main_rs}");
+    let members_dir = out_dir.join("members");
+    if let Ok(entries) = fs::read_dir(&members_dir) {
+        for entry in entries.flatten() {
+            let bridge_dir = entry.path();
+            let lib_rs = bridge_dir.join("src").join("lib.rs");
+            if let Ok(content) = fs::read_to_string(&lib_rs) {
+                let bridge_name = bridge_dir
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("?");
+                let _written: FmtResult = writeln!(
+                    combined,
+                    "\n--- members/{bridge_name}/src/lib.rs ---\n{content}"
+                );
+            }
+        }
+    }
+    Ok(combined)
 }
 
 #[rudzio::suite([

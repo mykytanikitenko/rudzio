@@ -71,8 +71,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use rudzio::common::context::{Suite, Test};
 use rudzio::runtime::futures::ThreadPool;
+
+use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use rudzio::runtime::monoio;
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
@@ -1043,16 +1044,16 @@ fn current_pgid() -> libc::pid_t {
 // surfaces both the primary Bug #14 (SIGKILL/hang at ~80 tests) AND
 // the secondary parallel-invocation contention.
 #[rudzio::suite([
-    (runtime = Multithread::new, suite = Suite, test = Test),
-    (runtime = CurrentThread::new, suite = Suite, test = Test),
-    (runtime = Local::new, suite = Suite, test = Test),
-    (runtime = compio::Runtime::new, suite = Suite, test = Test),
-    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
-    (runtime = ThreadPool::new, suite = Suite, test = Test),
-    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
-    (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    (runtime = Multithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
+    (runtime = CurrentThread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
+    (runtime = Local::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
+    (runtime = compio::Runtime::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
+    (runtime = embassy::Runtime::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
+    (runtime = ThreadPool::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
+    (runtime = async_std::Runtime::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
+    (runtime = smol::Runtime::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
+    (runtime = monoio::Runtime::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
 ])]
 mod tests {
     use std::fs;
@@ -1067,8 +1068,8 @@ mod tests {
 
     use super::{
         BinaryOpts, Child, ChildWriteMode, Command, Duration, FixtureOpts, HostRuntime, Instant,
-        Path, PipeMode, SetupKind, Stdio, SuiteKind, TempDir, Test, current_pgid, kill_pgroup,
-        rudzio_source_root, write_fixture, write_fixture_with_opts,
+        IsolatedCargoTest, Path, PipeMode, SetupKind, Stdio, SuiteKind, TempDir, current_pgid,
+        kill_pgroup, rudzio_source_root, write_fixture, write_fixture_with_opts,
     };
 
     /// Spawn cargo-rudzio against `$root`, then await the wait-thread's
@@ -1088,7 +1089,29 @@ mod tests {
         ($ctx:expr, $root:expr, $extra_args:expr) => {{
             let __root_path: &Path = $root;
             let __extra_args: &[&str] = $extra_args;
-            let (output_rx, pgid) = spawn_cargo_rudzio_with_wait_thread(__root_path, __extra_args)?;
+            // Hand the cargo-rudzio subprocess the PER-TEST
+            // `CARGO_HOME` (hardlinked from the suite's pre-warmed
+            // shared one by [`IsolatedCargoSuite::context`]) and a
+            // PER-TEST `CARGO_TARGET_DIR` (a fresh empty dir inside
+            // the same per-test tempdir). This isolates the test
+            // from sibling fixtures on two axes at once:
+            //   1. `.package-cache` flock — each test holds its own
+            //      flock inside its own `CARGO_HOME`, so the matrix
+            //      no longer serialises on a shared lock.
+            //   2. aggregator-dir trash — cargo-rudzio writes its
+            //      generated aggregator workspace under
+            //      `<CARGO_TARGET_DIR>/rudzio-auto-runner-<hash>/`;
+            //      directing that to the per-test tempdir means the
+            //      whole tree disappears when the test drops, with
+            //      no accumulation in the host's target cache.
+            let __cargo_home: &Path = $ctx.cargo_home();
+            let __cargo_target_dir: &Path = $ctx.cargo_target_dir();
+            let (output_rx, pgid) = spawn_cargo_rudzio_with_wait_thread(
+                __root_path,
+                __cargo_home,
+                __cargo_target_dir,
+                __extra_args,
+            )?;
             let started = Instant::now();
             let (recv_result, output_rx) = $ctx
                 .spawn_blocking(move || (output_rx.recv_timeout(SAFETY_BOUND), output_rx))
@@ -1185,9 +1208,27 @@ mod tests {
     /// runtime can poll without a polling loop.
     fn spawn_cargo_rudzio_with_wait_thread(
         root: &Path,
+        cargo_home: &Path,
+        cargo_target_dir: &Path,
         extra_args: &[&str],
     ) -> io::Result<(mpsc::Receiver<io::Result<Output>>, libc::pid_t)> {
         let cargo_rudzio_bin: &str = env!("CARGO_BIN_EXE_cargo-rudzio");
+        // `cargo_home` is per-test (hardlinked from the suite's
+        // pre-warmed shared registry by
+        // [`IsolatedCargoSuite::context`]) and `cargo_target_dir` is
+        // a per-test fresh empty dir. Both live inside the same
+        // per-test tempdir, so they're cleaned atomically by test
+        // teardown.
+        //
+        // `CARGO_NET_OFFLINE=1` is the third leg of the isolation
+        // story: the pre-warm runs `cargo check` against the
+        // registry deps the fixtures need, leaving `registry/index/`,
+        // `registry/cache/` and `registry/src/` fully populated.
+        // With `--offline` (env-equivalent
+        // `CARGO_NET_OFFLINE=1`), cargo never attempts to refresh
+        // the index — every fixture resolves from local state
+        // without hitting the network or contending for an index
+        // update lock.
         let mut command = Command::new(cargo_rudzio_bin);
         let _configured = command
             .arg("test")
@@ -1196,6 +1237,9 @@ mod tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .env("NO_COLOR", "1")
+            .env("CARGO_HOME", cargo_home)
+            .env("CARGO_TARGET_DIR", cargo_target_dir)
+            .env("CARGO_NET_OFFLINE", "true")
             .process_group(0_i32);
         let child: Child = command.spawn()?;
         let pgid: libc::pid_t = libc::pid_t::try_from(child.id())
@@ -1258,9 +1302,9 @@ mod tests {
     /// line.
     #[rudzio::test]
     async fn cargo_rudzio_test_does_not_sigkill_with_two_child_spawning_test_binaries(
-        ctx: &Test,
+        ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         write_fixture(workspace.path(), &rudzio_source_root())?;
         let run = run_cargo_rudzio_against!(ctx, workspace.path(), &[]);
         assert_run_reached_summary_and_not_sigkilled(&run, "primary 2-binary repro")
@@ -1276,8 +1320,10 @@ mod tests {
     /// child spawn + pipe + drain, 100 tests). The bug requires
     /// TWO+ binaries — this control MUST pass cleanly.
     #[rudzio::test]
-    async fn single_binary_with_child_spawn_does_not_sigkill(ctx: &Test) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+    async fn single_binary_with_child_spawn_does_not_sigkill(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         let opts = FixtureOpts {
             binaries: vec![BinaryOpts::primary("alpha")],
             child_writes: ChildWriteMode::Verbose,
@@ -1293,8 +1339,10 @@ mod tests {
     /// child process. The bug requires distinct Suite types — this
     /// control MUST pass cleanly.
     #[rudzio::test]
-    async fn two_binaries_sharing_suite_type_does_not_sigkill(ctx: &Test) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+    async fn two_binaries_sharing_suite_type_does_not_sigkill(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         let opts = FixtureOpts {
             binaries: vec![
                 BinaryOpts {
@@ -1318,9 +1366,9 @@ mod tests {
     /// presence is part of the trigger.
     #[rudzio::test]
     async fn two_binaries_distinct_suites_no_child_spawn_does_not_sigkill(
-        ctx: &Test,
+        ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         let opts = FixtureOpts {
             binaries: vec![
                 BinaryOpts {
@@ -1344,9 +1392,9 @@ mod tests {
     /// at all. Tests whether the pipe surface is part of the trigger.
     #[rudzio::test]
     async fn two_binaries_distinct_suites_unpiped_child_does_not_sigkill(
-        ctx: &Test,
+        ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         let opts = FixtureOpts {
             binaries: vec![
                 BinaryOpts {
@@ -1377,9 +1425,9 @@ mod tests {
     /// keep-alive from holding pipe handles).
     #[rudzio::test]
     async fn two_binaries_distinct_suites_piped_no_drain_does_not_sigkill(
-        ctx: &Test,
+        ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         let opts = FixtureOpts {
             binaries: vec![
                 BinaryOpts {
@@ -1409,9 +1457,9 @@ mod tests {
     /// of the trigger (vs the mere presence of piped FDs).
     #[rudzio::test]
     async fn two_binaries_distinct_suites_quiet_child_does_not_sigkill(
-        ctx: &Test,
+        ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         let opts = FixtureOpts {
             binaries: vec![BinaryOpts::primary("alpha"), BinaryOpts::primary("beta")],
             child_writes: ChildWriteMode::Quiet,
@@ -1432,8 +1480,10 @@ mod tests {
     /// below the trigger threshold, the test passes (expected
     /// post-fix); if not, it fails (the bug fires earlier than ~80).
     #[rudzio::test]
-    async fn two_binaries_50_tests_each_does_not_sigkill(ctx: &Test) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+    async fn two_binaries_50_tests_each_does_not_sigkill(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         let opts = FixtureOpts {
             binaries: vec![
                 BinaryOpts {
@@ -1456,8 +1506,10 @@ mod tests {
     /// user's threshold — should reproduce the bug more reliably
     /// pre-fix, and stress-test the post-fix behavior.
     #[rudzio::test]
-    async fn two_binaries_200_tests_each_does_not_sigkill(ctx: &Test) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+    async fn two_binaries_200_tests_each_does_not_sigkill(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         let opts = FixtureOpts {
             binaries: vec![
                 BinaryOpts {
@@ -1481,8 +1533,10 @@ mod tests {
     /// Increases pressure along the runtime-group dimension rather
     /// than the test-count dimension.
     #[rudzio::test]
-    async fn three_binaries_distinct_suites_does_not_sigkill(ctx: &Test) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+    async fn three_binaries_distinct_suites_does_not_sigkill(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         let opts = FixtureOpts {
             binaries: vec![
                 BinaryOpts {
@@ -1515,8 +1569,10 @@ mod tests {
     /// surviving teardown is the bug's downstream effect that the
     /// user explicitly called out (reparented to systemd).
     #[rudzio::test]
-    async fn successful_run_leaves_no_orphan_child_processes(ctx: &Test) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+    async fn successful_run_leaves_no_orphan_child_processes(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         write_fixture(workspace.path(), &rudzio_source_root())?;
         let run = run_cargo_rudzio_against!(ctx, workspace.path(), &[]);
         assert_run_reached_summary_and_not_sigkilled(&run, "orphan-check primary run")?;
@@ -1547,8 +1603,8 @@ mod tests {
     /// 200 tests pass). Pre-fix: never reaches summary (137 or wedge);
     /// post-fix: 0 because all tests are trivial `Ok(())`.
     #[rudzio::test]
-    async fn successful_run_exit_code_is_zero(ctx: &Test) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+    async fn successful_run_exit_code_is_zero(ctx: &IsolatedCargoTest) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         write_fixture(workspace.path(), &rudzio_source_root())?;
         let run = run_cargo_rudzio_against!(ctx, workspace.path(), &[]);
         assert_run_reached_summary_and_not_sigkilled(&run, "exit-code primary run")?;
@@ -1566,8 +1622,10 @@ mod tests {
     /// P1 invariant: summary line shows the correct total count for
     /// 200 trivial tests (100 alpha + 100 beta).
     #[rudzio::test]
-    async fn successful_run_summary_line_reports_correct_total(ctx: &Test) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+    async fn successful_run_summary_line_reports_correct_total(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         write_fixture(workspace.path(), &rudzio_source_root())?;
         let run = run_cargo_rudzio_against!(ctx, workspace.path(), &[]);
         assert_run_reached_summary_and_not_sigkilled(&run, "summary-count primary run")?;
@@ -1593,8 +1651,8 @@ mod tests {
     /// output. Confirms both runtime groups ran their setup phase
     /// (which is where the long-lived child gets spawned).
     #[rudzio::test]
-    async fn successful_run_emits_both_setup_lines(ctx: &Test) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+    async fn successful_run_emits_both_setup_lines(ctx: &IsolatedCargoTest) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         write_fixture(workspace.path(), &rudzio_source_root())?;
         let run = run_cargo_rudzio_against!(ctx, workspace.path(), &[]);
         assert_run_reached_summary_and_not_sigkilled(&run, "setup-lines primary run")?;
@@ -1620,8 +1678,10 @@ mod tests {
     /// suite-level teardown ran for each runtime group (which is
     /// where the spawned child gets killed).
     #[rudzio::test]
-    async fn successful_run_emits_both_teardown_lines(ctx: &Test) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+    async fn successful_run_emits_both_teardown_lines(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         write_fixture(workspace.path(), &rudzio_source_root())?;
         let run = run_cargo_rudzio_against!(ctx, workspace.path(), &[]);
         assert_run_reached_summary_and_not_sigkilled(&run, "teardown-lines primary run")?;
@@ -1648,8 +1708,10 @@ mod tests {
     /// tasks consume them. Pre-fix the runner may merge child stderr
     /// into its own output stream.
     #[rudzio::test]
-    async fn child_diag_lines_do_not_pollute_runner_output(ctx: &Test) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+    async fn child_diag_lines_do_not_pollute_runner_output(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         write_fixture(workspace.path(), &rudzio_source_root())?;
         let run = run_cargo_rudzio_against!(ctx, workspace.path(), &[]);
         assert_run_reached_summary_and_not_sigkilled(&run, "stderr-separation primary run")?;
@@ -1687,8 +1749,10 @@ mod tests {
     /// against the primary fixture passes alone. The user reports
     /// this works in their environment; we lock it in here.
     #[rudzio::test]
-    async fn single_binary_filter_test_alpha_passes_alone(ctx: &Test) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+    async fn single_binary_filter_test_alpha_passes_alone(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         write_fixture(workspace.path(), &rudzio_source_root())?;
         let run = run_cargo_rudzio_against!(ctx, workspace.path(), &["--test", "alpha"]);
         assert_run_reached_summary_and_not_sigkilled(&run, "--test alpha filter")?;
@@ -1707,8 +1771,10 @@ mod tests {
     /// P2: `cargo-rudzio test --test beta` (single-binary filter)
     /// passes alone.
     #[rudzio::test]
-    async fn single_binary_filter_test_beta_passes_alone(ctx: &Test) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+    async fn single_binary_filter_test_beta_passes_alone(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         write_fixture(workspace.path(), &rudzio_source_root())?;
         let run = run_cargo_rudzio_against!(ctx, workspace.path(), &["--test", "beta"]);
         assert_run_reached_summary_and_not_sigkilled(&run, "--test beta filter")?;
@@ -1735,9 +1801,9 @@ mod tests {
     /// distinct-Suite-on-same-runtime doesn't reach.
     #[rudzio::test]
     async fn cross_runtime_alpha_multithread_beta_currentthread_does_not_sigkill(
-        ctx: &Test,
+        ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         let opts = FixtureOpts {
             binaries: vec![
                 BinaryOpts {
@@ -1771,8 +1837,8 @@ mod tests {
     /// same way as the primary repro; post-fix it succeeds with a
     /// bounded FD count.
     #[rudzio::test]
-    async fn runner_fd_count_stays_bounded(ctx: &Test) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+    async fn runner_fd_count_stays_bounded(ctx: &IsolatedCargoTest) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         write_fixture(workspace.path(), &rudzio_source_root())?;
         let run = run_cargo_rudzio_against!(ctx, workspace.path(), &[]);
         assert_run_reached_summary_and_not_sigkilled(&run, "fd-count primary run")?;
@@ -1800,8 +1866,10 @@ mod tests {
     /// throughout. Spike + persistence indicates orphan accumulation.
     /// Sampled after the run completes.
     #[rudzio::test]
-    async fn child_process_count_in_pgroup_stays_bounded(ctx: &Test) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+    async fn child_process_count_in_pgroup_stays_bounded(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         write_fixture(workspace.path(), &rudzio_source_root())?;
         let run = run_cargo_rudzio_against!(ctx, workspace.path(), &[]);
         assert_run_reached_summary_and_not_sigkilled(&run, "pgroup-count primary run")?;

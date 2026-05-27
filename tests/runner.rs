@@ -13,7 +13,6 @@
 
 use std::collections::BTreeMap;
 use std::env::current_exe;
-use std::ffi::OsStr;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -22,9 +21,6 @@ use std::time::Duration;
 use rudzio::bench::Report;
 use rudzio::bench::strategy::{Concurrent, Sequential};
 use rudzio::bin::__resolve_at_runtime;
-use rudzio::build::{
-    NESTED_SENTINEL_ENV, SentinelAction, decide_sentinel_action, sentinel_indicates_nested_call,
-};
 use rudzio::common::context::{Suite, Test};
 use rudzio::runtime::futures::ThreadPool;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1494,91 +1490,6 @@ mod bench_strategies {
     // teardown still run around the strategy invocation.
     #[rudzio::test(benchmark = Sequential::new(2))]
     async fn sample_bench_without_ctx() -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
-#[rudzio::suite([
-    (runtime = Multithread::new, suite = Suite, test = Test),
-    (runtime = CurrentThread::new, suite = Suite, test = Test),
-    (runtime = Local::new, suite = Suite, test = Test),
-    (runtime = compio::Runtime::new, suite = Suite, test = Test),
-    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
-    (runtime = ThreadPool::new, suite = Suite, test = Test),
-    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
-    (runtime = smol::Runtime::new, suite = Suite, test = Test),
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
-])]
-mod build_sentinel {
-    use super::{
-        NESTED_SENTINEL_ENV, OsStr, SentinelAction, decide_sentinel_action,
-        sentinel_indicates_nested_call,
-    };
-
-    #[rudzio::test]
-    fn no_sentinel_means_proceed() -> anyhow::Result<()> {
-        anyhow::ensure!(
-            decide_sentinel_action(None, "anything", "this-crate") == SentinelAction::Proceed
-        );
-        anyhow::ensure!(
-            decide_sentinel_action(None, "this-crate", "this-crate") == SentinelAction::Proceed
-        );
-        Ok(())
-    }
-
-    #[rudzio::test]
-    fn empty_sentinel_means_proceed() -> anyhow::Result<()> {
-        anyhow::ensure!(
-            decide_sentinel_action(Some(OsStr::new("")), "x", "x") == SentinelAction::Proceed
-        );
-        Ok(())
-    }
-
-    #[rudzio::test]
-    fn sentinel_set_same_crate_silent_ok() -> anyhow::Result<()> {
-        anyhow::ensure!(
-            decide_sentinel_action(Some(OsStr::new("1")), "file-v3", "file-v3")
-                == SentinelAction::SilentOk
-        );
-        Ok(())
-    }
-
-    #[rudzio::test]
-    fn sentinel_set_different_crate_warn_and_ok() -> anyhow::Result<()> {
-        anyhow::ensure!(
-            decide_sentinel_action(Some(OsStr::new("1")), "A", "B") == SentinelAction::WarnAndOk
-        );
-        Ok(())
-    }
-
-    #[rudzio::test]
-    fn sentinel_detector_recognises_any_non_empty_value() -> anyhow::Result<()> {
-        anyhow::ensure!(sentinel_indicates_nested_call(Some(OsStr::new("1"))));
-        anyhow::ensure!(sentinel_indicates_nested_call(Some(OsStr::new("yes"))));
-        anyhow::ensure!(sentinel_indicates_nested_call(Some(OsStr::new("0"))));
-        Ok(())
-    }
-
-    #[rudzio::test]
-    fn sentinel_detector_ignores_absent_or_empty() -> anyhow::Result<()> {
-        anyhow::ensure!(!sentinel_indicates_nested_call(None));
-        anyhow::ensure!(!sentinel_indicates_nested_call(Some(OsStr::new(""))));
-        Ok(())
-    }
-
-    #[rudzio::test]
-    fn sentinel_env_name_is_pinned() -> anyhow::Result<()> {
-        // Contract: cargo-rudzio sets this env var before spawning cargo
-        // so bridge-forwarded build.rs calls to expose_self_bins detect
-        // re-entry and early-return. The literal is duplicated in
-        // cargo-rudzio/src/lib.rs::EXPOSE_BINS_SENTINEL_ENV — if one
-        // side drifts, the other must follow or bridges regress to
-        // "no [[bin]] targets" errors under cargo rudzio test.
-        anyhow::ensure!(
-            NESTED_SENTINEL_ENV == "__RUDZIO_EXPOSE_BINS_ACTIVE",
-            "sentinel env-var name drift: {NESTED_SENTINEL_ENV}"
-        );
         Ok(())
     }
 }

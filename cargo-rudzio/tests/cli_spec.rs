@@ -484,31 +484,16 @@ mod tests {
     }
 
     #[rudzio::test]
-    async fn aggregator_cargo_args_default_uses_run_subcommand() -> anyhow::Result<()> {
+    async fn aggregator_cargo_args_emits_build_workspace_bins_with_manifest_path()
+    -> anyhow::Result<()> {
         let parsed = parse_test_args(&argv(&["my_filter"]), no_dirs)?;
         let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
         anyhow::ensure!(
             invocation
                 == vec![
-                    "run".to_owned(),
-                    "--manifest-path".to_owned(),
-                    "/tmp/Cargo.toml".to_owned(),
-                    "--".to_owned(),
-                    "my_filter".to_owned(),
-                ],
-            "got {invocation:?}",
-        );
-        Ok(())
-    }
-
-    #[rudzio::test]
-    async fn aggregator_cargo_args_no_run_swaps_to_build_subcommand() -> anyhow::Result<()> {
-        let parsed = parse_test_args(&argv(&["--no-run"]), no_dirs)?;
-        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
-        anyhow::ensure!(
-            invocation
-                == vec![
                     "build".to_owned(),
+                    "--workspace".to_owned(),
+                    "--bins".to_owned(),
                     "--manifest-path".to_owned(),
                     "/tmp/Cargo.toml".to_owned(),
                     "--message-format=json-render-diagnostics".to_owned(),
@@ -519,16 +504,41 @@ mod tests {
     }
 
     #[rudzio::test]
-    async fn aggregator_cargo_args_no_run_drops_runner_args() -> anyhow::Result<()> {
-        let parsed = parse_test_args(&argv(&["--no-run", "would_be_filter"]), no_dirs)?;
+    async fn aggregator_cargo_args_no_run_emits_identical_build_argv() -> anyhow::Result<()> {
+        let parsed = parse_test_args(&argv(&["--no-run"]), no_dirs)?;
+        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
+        anyhow::ensure!(
+            invocation
+                == vec![
+                    "build".to_owned(),
+                    "--workspace".to_owned(),
+                    "--bins".to_owned(),
+                    "--manifest-path".to_owned(),
+                    "/tmp/Cargo.toml".to_owned(),
+                    "--message-format=json-render-diagnostics".to_owned(),
+                ],
+            "argv shape is identical for --no-run and default (no_run is handled post-build by \
+             main.rs::run_test, not by the argv builder); got {invocation:?}",
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn aggregator_cargo_args_never_emits_separator_or_runner_args() -> anyhow::Result<()> {
+        let parsed = parse_test_args(&argv(&["my_filter", "--skip", "slow_"]), no_dirs)?;
         let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
         anyhow::ensure!(
             !invocation.contains(&"--".to_owned()),
-            "build path must not include `--` separator, got {invocation:?}",
+            "argv must never contain `--` separator (runner args go to direct exec, not cargo), \
+             got {invocation:?}",
         );
         anyhow::ensure!(
-            !invocation.contains(&"would_be_filter".to_owned()),
-            "build path must not forward runner args, got {invocation:?}",
+            !invocation.contains(&"my_filter".to_owned()),
+            "argv must not forward runner args to cargo, got {invocation:?}",
+        );
+        anyhow::ensure!(
+            !invocation.contains(&"--skip".to_owned()),
+            "argv must not forward runner args to cargo, got {invocation:?}",
         );
         Ok(())
     }
@@ -1295,46 +1305,32 @@ mod tests {
     }
 
     #[rudzio::test]
-    async fn aggregator_cargo_args_default_inserts_forwarded_before_separator() -> anyhow::Result<()>
-    {
+    async fn aggregator_cargo_args_inserts_forwarded_build_flags() -> anyhow::Result<()> {
         let parsed = parse_test_args(
             &argv(&["--release", "--features", "ci", "my_filter"]),
             no_dirs,
         )?;
         let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
-        let separator_index = invocation
-            .iter()
-            .position(|arg| arg == "--")
-            .ok_or_else(|| anyhow::anyhow!("expected `--` separator"))?;
-        let before: &[String] = invocation.get(..separator_index).unwrap_or(&[]);
         anyhow::ensure!(
-            before.contains(&"--release".to_owned()),
-            "expected --release before separator, got {before:?}",
+            invocation.contains(&"--release".to_owned()),
+            "expected --release forwarded into build argv, got {invocation:?}",
         );
         anyhow::ensure!(
-            before.iter().any(|arg| arg == "--features"),
-            "expected --features before separator, got {before:?}",
+            invocation.iter().any(|arg| arg == "--features"),
+            "expected --features forwarded into build argv, got {invocation:?}",
         );
-        let after: &[String] = invocation
-            .get(separator_index.saturating_add(1_usize)..)
-            .unwrap_or(&[]);
-        anyhow::ensure!(after == ["my_filter".to_owned()], "got {after:?}");
+        anyhow::ensure!(
+            invocation.iter().any(|arg| arg == "ci"),
+            "expected --features value `ci` forwarded into build argv, got {invocation:?}",
+        );
         Ok(())
     }
 
     #[rudzio::test]
-    async fn aggregator_cargo_args_no_run_inserts_forwarded_with_auto_message_format()
+    async fn aggregator_cargo_args_auto_injects_message_format_when_user_did_not()
     -> anyhow::Result<()> {
-        let parsed = parse_test_args(&argv(&["--no-run", "--release"]), no_dirs)?;
+        let parsed = parse_test_args(&argv(&["--release"]), no_dirs)?;
         let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
-        anyhow::ensure!(
-            invocation.contains(&"build".to_owned()),
-            "expected build subcommand, got {invocation:?}",
-        );
-        anyhow::ensure!(
-            invocation.contains(&"--release".to_owned()),
-            "expected --release forwarded, got {invocation:?}",
-        );
         anyhow::ensure!(
             invocation.contains(&"--message-format=json-render-diagnostics".to_owned()),
             "expected auto --message-format injection, got {invocation:?}",
@@ -1343,13 +1339,14 @@ mod tests {
     }
 
     #[rudzio::test]
-    async fn aggregator_cargo_args_no_run_skips_auto_message_format_when_user_supplied()
+    async fn aggregator_cargo_args_skips_auto_message_format_when_user_supplied_equals_form()
     -> anyhow::Result<()> {
-        let parsed = parse_test_args(&argv(&["--no-run", "--message-format=human"]), no_dirs)?;
+        let parsed = parse_test_args(&argv(&["--message-format=human"]), no_dirs)?;
         let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
         anyhow::ensure!(
             !invocation.contains(&"--message-format=json-render-diagnostics".to_owned()),
-            "auto-injection should be skipped when user supplied --message-format, got {invocation:?}",
+            "auto-injection should be skipped when user supplied --message-format, got \
+             {invocation:?}",
         );
         anyhow::ensure!(
             invocation.contains(&"--message-format=human".to_owned()),
@@ -1359,13 +1356,14 @@ mod tests {
     }
 
     #[rudzio::test]
-    async fn aggregator_cargo_args_no_run_skips_auto_when_user_supplied_space_form()
+    async fn aggregator_cargo_args_skips_auto_message_format_when_user_supplied_space_form()
     -> anyhow::Result<()> {
-        let parsed = parse_test_args(&argv(&["--no-run", "--message-format", "human"]), no_dirs)?;
+        let parsed = parse_test_args(&argv(&["--message-format", "human"]), no_dirs)?;
         let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
         anyhow::ensure!(
             !invocation.contains(&"--message-format=json-render-diagnostics".to_owned()),
-            "auto-injection should be skipped when user supplied --message-format, got {invocation:?}",
+            "auto-injection should be skipped when user supplied --message-format, got \
+             {invocation:?}",
         );
         Ok(())
     }
@@ -1464,29 +1462,41 @@ mod tests {
     }
 
     #[rudzio::test]
-    async fn aggregator_cargo_args_default_forwards_runner_args_after_separator()
+    async fn aggregator_cargo_args_does_not_forward_filter_or_runner_options_to_cargo()
     -> anyhow::Result<()> {
         let parsed = parse_test_args(
             &argv(&["my_filter", "--skip", "slow_", "--output=plain"]),
             no_dirs,
         )?;
         let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
-        let separator_index = invocation
-            .iter()
-            .position(|arg| arg == "--")
-            .ok_or_else(|| anyhow::anyhow!("expected `--` separator in {invocation:?}"))?;
-        let after_separator: &[String] = invocation
-            .get(separator_index.saturating_add(1_usize)..)
-            .unwrap_or(&[]);
         anyhow::ensure!(
-            after_separator
-                == [
+            !invocation.contains(&"--".to_owned()),
+            "argv must not contain a `--` separator under Option B-json, got {invocation:?}",
+        );
+        anyhow::ensure!(
+            !invocation.contains(&"my_filter".to_owned()),
+            "filter positional must not be forwarded to cargo, got {invocation:?}",
+        );
+        anyhow::ensure!(
+            !invocation.contains(&"--skip".to_owned()),
+            "runner option --skip must not be forwarded to cargo, got {invocation:?}",
+        );
+        anyhow::ensure!(
+            !invocation.contains(&"--output=plain".to_owned()),
+            "runner option --output must not be forwarded to cargo, got {invocation:?}",
+        );
+        // The runner args are still preserved in parsed.runner_args for
+        // post-build direct exec.
+        anyhow::ensure!(
+            parsed.runner_args
+                == vec![
                     "my_filter".to_owned(),
                     "--skip".to_owned(),
                     "slow_".to_owned(),
                     "--output=plain".to_owned(),
                 ],
-            "got {after_separator:?}",
+            "parsed.runner_args mismatch, got {:?}",
+            parsed.runner_args,
         );
         Ok(())
     }

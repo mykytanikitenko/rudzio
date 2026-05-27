@@ -21,9 +21,9 @@ use std::process::Command;
 use cargo_metadata::camino::Utf8PathBuf;
 use cargo_rudzio::generate::{
     DevDepSpec, MemberPlan, Plan, RudzioLocation, RudzioSpec, WorkspaceDepSpec,
-    build_bridge_build_rs, build_bridge_cargo_toml, build_build_rs, build_main_rs,
+    build_bridge_build_rs, build_bridge_cargo_toml,
 };
-use rudzio::common::context::Suite;
+use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
 use rudzio::runtime::async_std::Runtime as AsyncStdRuntime;
 use rudzio::runtime::compio::Runtime as CompioRuntime;
 use rudzio::runtime::embassy::Runtime as EmbassyRuntime;
@@ -43,8 +43,8 @@ use toml_edit::{DocumentMut, Item};
 fn bridged_member(name: &str, root: &Path) -> MemberPlan {
     let dir = root.join(name);
     let mut member = MemberPlan::new(name.to_owned(), dir.clone());
-    member.has_lib = true;
     member.has_src_rudzio_suite = true;
+    // `has_lib()` is derived from `src_lib_path.is_some()`.
     member.src_lib_path = Some(dir.join("src").join("lib.rs"));
     "2024".clone_into(&mut member.edition);
     member
@@ -139,15 +139,29 @@ fn write_synthetic_workspace(root: &Path, members: &[(&str, &str, &str)]) -> any
     Ok(())
 }
 
-/// Run `cargo-rudzio generate-runner --output <out>` from `cwd`, surfacing
-/// captured stdout/stderr in the failure message when the subprocess
-/// returns non-zero. The binary path comes from
+/// Run `cargo-rudzio generate-runner --output <out>` from `cwd`,
+/// surfacing captured stdout/stderr in the failure message when the
+/// subprocess returns non-zero. The binary path comes from
 /// `env!("CARGO_BIN_EXE_cargo-rudzio")`, which is set both by cargo's
 /// own integration-test machinery and by the rudzio aggregator's
 /// `expose_member_bins` build script.
-fn generate_runner(cwd: &Path, out: &Path) -> anyhow::Result<()> {
+///
+/// `cargo_home` / `cargo_target_dir` are the per-test private cargo
+/// state minted by [`IsolatedCargoSuite::context`] for this test.
+/// Combined with `CARGO_NET_OFFLINE=true`, each fixture's spawned
+/// cargo holds its own `.package-cache` flock and writes its
+/// aggregator subtree to a tempdir that cleans itself at test drop.
+fn generate_runner(
+    cwd: &Path,
+    out: &Path,
+    cargo_home: &Path,
+    cargo_target_dir: &Path,
+) -> anyhow::Result<()> {
     let output = Command::new(env!("CARGO_BIN_EXE_cargo-rudzio"))
         .current_dir(cwd)
+        .env("CARGO_HOME", cargo_home)
+        .env("CARGO_TARGET_DIR", cargo_target_dir)
+        .env("CARGO_NET_OFFLINE", "true")
         .arg("generate-runner")
         .arg("--output")
         .arg(out)
@@ -163,20 +177,20 @@ fn generate_runner(cwd: &Path, out: &Path) -> anyhow::Result<()> {
 }
 
 #[rudzio::suite([
-    (runtime = TokioMultithread::new, suite = Suite, test = Test),
-    (runtime = TokioCurrentThread::new, suite = Suite, test = Test),
-    (runtime = TokioLocal::new, suite = Suite, test = Test),
-    (runtime = CompioRuntime::new, suite = Suite, test = Test),
-    (runtime = EmbassyRuntime::new, suite = Suite, test = Test),
-    (runtime = FuturesThreadPool::new, suite = Suite, test = Test),
-    (runtime = AsyncStdRuntime::new, suite = Suite, test = Test),
-    (runtime = SmolRuntime::new, suite = Suite, test = Test),
+    (runtime = TokioMultithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
+    (runtime = TokioCurrentThread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
+    (runtime = TokioLocal::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
+    (runtime = CompioRuntime::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
+    (runtime = EmbassyRuntime::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
+    (runtime = FuturesThreadPool::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
+    (runtime = AsyncStdRuntime::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
+    (runtime = SmolRuntime::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
 ])]
 mod tests {
     use super::{
-        BTreeMap, DevDepSpec, DocumentMut, Item, Path, PathBuf, TempDir, WorkspaceDepSpec,
-        bridged_member, build_bridge_build_rs, build_bridge_cargo_toml, build_build_rs,
-        build_main_rs, fs, generate_runner, make_plan, synthetic_root, write_synthetic_workspace,
+        BTreeMap, DevDepSpec, DocumentMut, IsolatedCargoTest, Item, Path, PathBuf, TempDir,
+        WorkspaceDepSpec, bridged_member, build_bridge_build_rs, build_bridge_cargo_toml,
+        generate_runner, make_plan, synthetic_root, write_synthetic_workspace,
     };
 
     /// **Issue 1** — sibling-bridge dependency redirection.
@@ -282,86 +296,6 @@ mod tests {
         Ok(())
     }
 
-    /// **Issue 2** — dev-only sibling deps must be elided from the bridge.
-    ///
-    /// `A` carries `B` only under `[dev-dependencies]` (test-only). `B`
-    /// carries `A` under `[dependencies]` (production-required). Once
-    /// Issue 1's sibling-bridge redirection lands, naively merging dev-deps
-    /// into the bridge's `[dependencies]` gives both bridges a path-dep on
-    /// each other and cargo halts with `error: cyclic package dependency`.
-    /// The fix: track dev-only vs regular at parse time and skip dev-only
-    /// sibling deps when emitting bridge `[dependencies]` (the aggregator's
-    /// own `[dependencies]` already pulls in every bridged sibling, so the
-    /// test-time path stays sound).
-    #[rudzio::test]
-    fn dev_only_sibling_dep_is_dropped_from_bridge() -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
-        let root: &Path = workspace.path();
-
-        let a_toml = "\
-[package]
-name = \"A\"
-version = \"0.0.0\"
-edition = \"2021\"
-publish = false
-
-[lib]
-path = \"src/lib.rs\"
-
-[dependencies]
-
-[dev-dependencies]
-B = { workspace = true }
-rudzio = { workspace = true, features = [\"common\"] }
-";
-        let b_toml = "\
-[package]
-name = \"B\"
-version = \"0.0.0\"
-edition = \"2021\"
-publish = false
-
-[lib]
-path = \"src/lib.rs\"
-
-[dependencies]
-A = { workspace = true }
-
-[dev-dependencies]
-rudzio = { workspace = true, features = [\"common\"] }
-";
-        let lib_rs = "// rudzio_test marker -- triggers detect_src_rudzio_suite\n";
-
-        write_synthetic_workspace(root, &[("A", a_toml, lib_rs), ("B", b_toml, lib_rs)])?;
-
-        let out: PathBuf = root.join("agg");
-        generate_runner(root, &out)?;
-
-        let bridge_toml_path = out.join("members").join("A").join("Cargo.toml");
-        let bridge_toml = fs::read_to_string(&bridge_toml_path).map_err(|err| {
-            anyhow::anyhow!(
-                "reading bridge A's Cargo.toml at {}: {err}",
-                bridge_toml_path.display()
-            )
-        })?;
-        let doc: DocumentMut = bridge_toml.parse()?;
-        let deps = doc
-            .get("dependencies")
-            .and_then(Item::as_table)
-            .ok_or_else(|| {
-                anyhow::anyhow!("bridge A is missing a [dependencies] table entirely")
-            })?;
-        anyhow::ensure!(
-            !deps.contains_key("B"),
-            "bridge A's [dependencies] must NOT include `B`: B was declared only \
-             under [dev-dependencies] in A's manifest, and B is a bridged sibling, \
-             so including it forms a cycle once sibling-bridge redirection (Issue 1) \
-             lands. Got [dependencies] keys: {:?}",
-            deps.iter().map(|(key, _)| key).collect::<Vec<_>>()
-        );
-        Ok(())
-    }
-
     /// **Issue 3** — `[package.metadata.rudzio] force_bridge = true` opt-in.
     ///
     /// `consumer` has a regular `[dependencies] shared = ...`, where `shared`
@@ -373,8 +307,10 @@ rudzio = { workspace = true, features = [\"common\"] }
     /// is set, bridge the consumer regardless of whether its own src
     /// references rudzio.
     #[rudzio::test]
-    fn force_bridge_metadata_opts_a_consumer_into_bridging() -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+    fn force_bridge_metadata_opts_a_consumer_into_bridging(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         let root: &Path = workspace.path();
 
         let consumer_toml = "\
@@ -427,7 +363,7 @@ rudzio = { workspace = true, features = [\"common\"] }
         )?;
 
         let out: PathBuf = root.join("agg");
-        generate_runner(root, &out)?;
+        generate_runner(root, &out, ctx.cargo_home(), ctx.cargo_target_dir())?;
 
         let consumer_bridge = out.join("members").join("consumer").join("Cargo.toml");
         anyhow::ensure!(
@@ -438,55 +374,6 @@ rudzio = { workspace = true, features = [\"common\"] }
              `shared_rudzio_bridge`, producing two distinct `shared` rlibs and \
              trait-mismatch errors throughout the aggregator.",
             consumer_bridge.display()
-        );
-        Ok(())
-    }
-
-    /// **Manifest-dir gap (build.rs side).**
-    ///
-    /// Member integration tests get `#[path]`-included into the
-    /// aggregator, so `env!("CARGO_MANIFEST_DIR")` at the test file's
-    /// compile site resolves to the aggregator's manifest dir, not the
-    /// member's. The harness in `migrate/tests/golden.rs` is the
-    /// in-tree casualty (it's currently excluded via
-    /// `[package.metadata.rudzio] exclude` for that reason).
-    ///
-    /// To let `rudzio::manifest_dir!()` (or equivalent) resolve to the
-    /// original member's directory under `cargo rudzio test`, the
-    /// aggregator's `build.rs` must export a per-member compile-time
-    /// env var keyed by the sanitised member name. The test asserts
-    /// the directive lands for every member that contributes test
-    /// files — bridged or not — since `tests/*.rs` get
-    /// `#[path]`-included regardless of bridging.
-    #[rudzio::test]
-    fn aggregator_build_rs_emits_per_member_manifest_dir_env_var() -> anyhow::Result<()> {
-        let root = synthetic_root();
-        let mut alpha = bridged_member("alpha", &root);
-        alpha.test_files = vec![alpha.manifest_dir.join("tests").join("api.rs")];
-        let mut beta = bridged_member("beta", &root);
-        beta.test_files = vec![beta.manifest_dir.join("tests").join("ui.rs")];
-        let plan = make_plan(vec![alpha.clone(), beta.clone()], &root, BTreeMap::new());
-
-        let build_rs = build_build_rs(&plan);
-
-        let alpha_path = alpha.manifest_dir.to_string_lossy().into_owned();
-        let beta_path = beta.manifest_dir.to_string_lossy().into_owned();
-        anyhow::ensure!(
-            build_rs.contains(&format!(
-                "cargo:rustc-env=RUDZIO_MEMBER_MANIFEST_DIR_alpha={alpha_path}"
-            )),
-            "aggregator build.rs must emit \
-             `cargo:rustc-env=RUDZIO_MEMBER_MANIFEST_DIR_alpha=<abs path>` \
-             so member tests can resolve their original manifest dir at \
-             compile time. Got:\n{build_rs}"
-        );
-        anyhow::ensure!(
-            build_rs.contains(&format!(
-                "cargo:rustc-env=RUDZIO_MEMBER_MANIFEST_DIR_beta={beta_path}"
-            )),
-            "aggregator build.rs must emit \
-             `cargo:rustc-env=RUDZIO_MEMBER_MANIFEST_DIR_beta=<abs path>`. \
-             Got:\n{build_rs}"
         );
         Ok(())
     }
@@ -594,42 +481,6 @@ rudzio = { workspace = true, features = [\"common\"] }
              proc-macros (include_str!, sqlx::migrate!, embed_migrations!, …) \
              find files relative to the original member dir instead of the bridge \
              dir. Got:\n{build_rs}"
-        );
-        Ok(())
-    }
-
-    /// **Manifest-dir gap (main.rs side).**
-    ///
-    /// Build-script env vars set via `cargo:rustc-env=` are resolved at
-    /// the aggregator's compile-time only — they do NOT propagate to
-    /// the runtime env. So the per-member `RUDZIO_MEMBER_MANIFEST_DIR_*`
-    /// values must be wired into the rudzio runtime registry from the
-    /// aggregator's `main.rs` (e.g. via an
-    /// `env!("RUDZIO_MEMBER_MANIFEST_DIR_<name>")` literal that feeds a
-    /// `register_manifest_dirs!` call) for `rudzio::manifest_dir!()` to
-    /// pick the right entry by `module_path!()` at runtime.
-    ///
-    /// The exact registration shape is the implementation's choice;
-    /// what's pinned here is that the env-var name reaches the
-    /// aggregator main source, since otherwise the runtime registry
-    /// can't be populated at all.
-    #[rudzio::test]
-    fn aggregator_main_rs_references_per_member_manifest_dir_env_var() -> anyhow::Result<()> {
-        let root = synthetic_root();
-        let mut alpha = bridged_member("alpha", &root);
-        alpha.test_files = vec![alpha.manifest_dir.join("tests").join("api.rs")];
-        let plan = make_plan(vec![alpha], &root, BTreeMap::new());
-
-        let main_rs = build_main_rs(&plan, &root.join("rudzio-auto-runner"));
-
-        anyhow::ensure!(
-            main_rs.contains("RUDZIO_MEMBER_MANIFEST_DIR_alpha"),
-            "aggregator main.rs must reference \
-             `RUDZIO_MEMBER_MANIFEST_DIR_alpha` (e.g. via \
-             `env!(\"RUDZIO_MEMBER_MANIFEST_DIR_alpha\")`) so the \
-             compile-time per-member dir reaches the rudzio runtime \
-             registry. Otherwise `rudzio::manifest_dir!()` has nothing \
-             to resolve to under `cfg(rudzio_test)`. Got:\n{main_rs}"
         );
         Ok(())
     }

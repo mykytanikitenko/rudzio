@@ -791,7 +791,12 @@ fn owner_suite_setup_quote(suite_base: &Path, runtime_type: &Path) -> TokenStrea
                 s
             }
             ::rudzio::suite::PhaseOutcome::Completed(::std::result::Result::Err(e)) => {
-                let __rudzio_err_msg = ::std::format!("{}", e);
+                // Alternate Display (`{:#}`) prints the anyhow error chain
+                // rather than just the top-level context, so users see
+                // the actual cause of setup failures (e.g. the cargo
+                // stderr from a fixture's pre-warm step) instead of a
+                // bare `.context()` annotation.
+                let __rudzio_err_msg = ::std::format!("{:#}", e);
                 reporter.report_suite_setup_finished(
                     runtime_name, suite_label, __rudzio_setup_elapsed,
                     ::core::option::Option::Some(&__rudzio_err_msg),
@@ -875,7 +880,10 @@ fn owner_suite_teardown_quote(runtime_type: &Path) -> TokenStream {
             }
             ::rudzio::suite::PhaseOutcome::Completed(::std::result::Result::Err(e)) => {
                 summary.teardown_failures += 1;
-                ::rudzio::suite::TeardownResult::Err(::std::format!("{}", e))
+                // Alternate Display preserves the full error chain so
+                // `.context()` annotations from the teardown body surface
+                // alongside the root cause.
+                ::rudzio::suite::TeardownResult::Err(::std::format!("{:#}", e))
             }
             ::rudzio::suite::PhaseOutcome::Panicked(msg) => {
                 summary.teardown_failures += 1;

@@ -8,6 +8,13 @@ repository = "https://github.com/mykytanikitenko/rudzio"
 readme = "../README.md"
 keywords = ["cargo-subcommand", "testing", "async", "tokio", "compio"]
 categories = ["development-tools::cargo-plugins", "development-tools::testing"]
+# Every `tests/*.rs` file is a sub-module of `tests/main.rs` (the
+# rudzio-aggregated integration test binary). Disable cargo's
+# auto-discovery so it doesn't also try to compile each sub-module as
+# its own standalone integration test bin — `crate::support` is not
+# visible from those auto-discovered targets and `tests/main.rs` is
+# the only intended entry point.
+autotests = false
 
 [lib]
 name = "cargo_rudzio"
@@ -36,6 +43,12 @@ toml_edit = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
+# `cargo-rudzio-test-helpers` carries the shared rudzio Suite/Test
+# scaffolding the integration tests use to provision a per-suite
+# tempdir + pre-warmed CARGO_HOME. It lives in a sibling crate so the
+# bridge (which mirrors dev-deps) can resolve it under v2 — no
+# cfg-gating tricks, no public-API leakage from cargo-rudzio itself.
+cargo-rudzio-test-helpers = { path = "../cargo-rudzio-test-helpers" }
 rudzio = { workspace = true, features = [
   "common",
   "runtime-tokio-multi-thread",

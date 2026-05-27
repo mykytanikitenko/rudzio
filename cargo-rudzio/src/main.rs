@@ -11,13 +11,14 @@
 )]
 
 use std::env;
-use std::io::{Result as IoResult, Write as _, stderr, stdout};
+use std::io::{BufReader, Result as IoResult, Write as _, stderr, stdout};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, Stdio};
 
 use anyhow::{Context as _, Result, bail};
+use cargo_metadata::{Message, TargetKind};
 use cargo_rudzio::cli::{aggregator_cargo_args, format_target_flag_warning, parse_test_args};
-use cargo_rudzio::{generate, spawn_env};
+use cargo_rudzio::generate;
 use rudzio_migrate::run::entry_with_args as rudzio_migrate_entry;
 
 /// Top-level usage string printed for `--help` / unknown subcommands.
@@ -83,9 +84,9 @@ COMMANDS:
                                          has no rudzio analog.
 
                                      CARGO BUILD-GRAPH FLAGS forwarded to
-                                     the spawned `cargo run`/`cargo build`
-                                     before `--` (so they shape the build,
-                                     not the runner):
+                                     the spawned `cargo run` before `--`
+                                     (so they shape the build, not the
+                                     runner):
                                        --release, -r (short for --release),
                                        --profile <NAME>,
                                        --features <FEATURES>,
@@ -196,7 +197,19 @@ fn run_generate(rest: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Handler for `cargo rudzio test`: generate the aggregator crate then `cargo run` it with the user's runner args.
+/// Handler for `cargo rudzio test`: generate the aggregator crate,
+/// run ONE `cargo build --workspace --bins
+/// --message-format=json-render-diagnostics`, parse the JSON stream
+/// to find the rudzio-auto-runner artifact path, then direct-exec
+/// that binary with the user's runner args (or print the path under
+/// `--no-run`).
+///
+/// This is the Option B-json orchestration per PLAN.md Decisions Log
+/// [C1]: exactly ONE cargo subprocess per invocation. No nested cargo
+/// from build.rs. No `cargo run` wrapper (which would not build
+/// sibling workspace bins). The runner path comes from cargo's
+/// authoritative `compiler-artifact` JSON message — robust against
+/// any future change in cargo's output layout convention.
 fn run_test(rest: &[String]) -> Result<ExitCode> {
     let parsed = parse_test_args(rest, Path::is_dir)?;
     if let Some(warning) = format_target_flag_warning(&parsed.ignored_target_flags) {
@@ -223,11 +236,8 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
     let manifest_str = manifest.to_str().ok_or_else(|| {
         anyhow::anyhow!("manifest path is not valid UTF-8: {}", manifest.display())
     })?;
-    let cargo_argv = aggregator_cargo_args(&parsed, manifest_str);
+    let argv = aggregator_cargo_args(&parsed, manifest_str);
     let mut cmd = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
-    for (key, value) in &spawn_env() {
-        cmd.env(key, value);
-    }
     // Pin the spawned cargo's `CARGO_TARGET_DIR` AND
     // `CARGO_BUILD_BUILD_DIR` to per-aggregator subdirs under the
     // resolved target dir. Three reasons:
@@ -267,11 +277,80 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
     // consumers land in distinct top-level dirs.
     cmd.env("CARGO_TARGET_DIR", target.join("target"));
     cmd.env("CARGO_BUILD_BUILD_DIR", target.join("build-dir"));
-    let status = cmd
-        .args(&cargo_argv)
-        .status()
-        .with_context(|| format!("failed to spawn cargo with args {cargo_argv:?}"))?;
-    Ok(status.code().map_or_else(
+    cmd.args(&argv);
+    // Capture stdout so we can parse the cargo JSON message stream.
+    // stderr stays inherited so cargo's rendered human-friendly
+    // diagnostics (from `--message-format=json-render-diagnostics`)
+    // still reach the user's terminal directly.
+    cmd.stdout(Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("failed to spawn cargo with args {argv:?}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("cargo build subprocess stdout was not captured"))?;
+    let reader = BufReader::new(stdout);
+    // Stream the JSON message lines as cargo emits them. We're
+    // looking for the `compiler-artifact` message describing the
+    // rudzio-auto-runner bin executable. Cargo emits multiple
+    // artifact messages per build (one per crate, possibly several
+    // per crate for split DWARF / dep-info). The runner shows up as
+    // an artifact with `target.name == "rudzio-auto-runner"` AND
+    // `target.kind` containing `Bin`. Its `executable` field holds
+    // the absolute path of the binary on disk.
+    //
+    // Iterating to exhaustion (rather than breaking on first match)
+    // keeps the pipe drained so cargo never blocks on a full stdout
+    // buffer — critical for large workspaces with many artifacts.
+    let mut found_runner_path: Option<PathBuf> = None;
+    for parsed_msg in Message::parse_stream(reader) {
+        let cargo_msg = parsed_msg.with_context(|| "failed to parse cargo JSON message stream")?;
+        if let Message::CompilerArtifact(artifact) = cargo_msg
+            && artifact.target.name == "rudzio-auto-runner"
+            && artifact
+                .target
+                .kind
+                .iter()
+                .any(|kind| matches!(kind, TargetKind::Bin))
+            && let Some(exe) = artifact.executable
+        {
+            found_runner_path = Some(exe.into_std_path_buf());
+        }
+    }
+    let status = child
+        .wait()
+        .with_context(|| "failed to wait on cargo build subprocess")?;
+    if !status.success() {
+        return Ok(status.code().map_or_else(
+            || ExitCode::from(1),
+            |code| ExitCode::from(u8::try_from(code & 0xFF_i32).unwrap_or(1)),
+        ));
+    }
+    let runner_path = found_runner_path.ok_or_else(|| {
+        anyhow::anyhow!(
+            "cargo build succeeded but emitted no `compiler-artifact` JSON message for the \
+             rudzio-auto-runner bin; cannot determine the runner path for direct exec"
+        )
+    })?;
+    if parsed.no_run {
+        // --no-run: same single cargo build, skip the exec step,
+        // print the runner path so downstream tooling can pick it up.
+        // Decisions Log [I9] USER-RATIFIED.
+        write_stdout(&format!("{}\n", runner_path.display()));
+        return Ok(ExitCode::SUCCESS);
+    }
+    // Direct exec: the runner is already built. Zero second cargo
+    // subprocess. Decisions Log [C1] USER-RATIFIED.
+    let mut runner_cmd = Command::new(&runner_path);
+    runner_cmd.args(&parsed.runner_args);
+    let runner_status = runner_cmd.status().with_context(|| {
+        format!(
+            "failed to exec runner at {runner_path}",
+            runner_path = runner_path.display(),
+        )
+    })?;
+    Ok(runner_status.code().map_or_else(
         || ExitCode::from(1),
         |code| ExitCode::from(u8::try_from(code & 0xFF_i32).unwrap_or(1)),
     ))
@@ -283,6 +362,12 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
 /// warnings for the rare false-positive case.
 fn emit_diagnostic_warnings(plan: &generate::Plan) {
     for warning in generate::scan_unbroadened_cfg_test_mods_in_plan(plan) {
+        write_stderr(&format!("warning: {warning}\n"));
+    }
+    // Decisions Log [E7]: proc-macro members are skipped during
+    // bridge generation; surface a per-member warning so users know
+    // their proc-macro test surface is not aggregated.
+    for warning in generate::scan_proc_macro_members_in_plan(plan) {
         write_stderr(&format!("warning: {warning}\n"));
     }
 }

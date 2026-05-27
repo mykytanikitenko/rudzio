@@ -16,84 +16,35 @@ use cargo_metadata::{Metadata, MetadataCommand, Package, TargetKind};
 use syn::meta::ParseNestedMeta;
 use syn::spanned::Spanned as _;
 use syn::visit_mut::{self, VisitMut};
-use toml_edit::{Array, DocumentMut, Formatted, InlineTable, Item, Table, Value, value};
+use toml_edit::{
+    Array, ArrayOfTables, DocumentMut, Formatted, InlineTable, Item, Table, Value, value,
+};
 
 /// Crate name of the aggregator package this module emits.
 const AGGREGATOR_NAME: &str = "rudzio-auto-runner";
 /// Verbatim helper code embedded into generated `build.rs` files for bin-bearing members.
 ///
-/// The aggregator and bridge crates inline this string into their
-/// emitted `build.rs` so they can shell out to `cargo build --bins`
-/// against the real member's manifest and re-export the resulting
-/// binary paths via `CARGO_BIN_EXE_<bin>` env vars.
-const BUILD_RS_HELPERS: &str = r#"use std::path::PathBuf;
-use std::process::Command;
-
-fn env_var(name: &str) -> Result<String, String> {
-    std::env::var(name).map_err(|_| format!("env var `{name}` not set by cargo"))
-}
-
-fn expose_member_bins(pkg: &str, manifest_dir: &str, bins: &[&str]) -> Result<(), String> {
-    let out_dir = PathBuf::from(env_var("OUT_DIR")?);
-    let profile = env_var("PROFILE")?;
-    let cargo = std::env::var_os("CARGO").ok_or_else(|| "CARGO env var not set".to_owned())?;
-    let target_dir = out_dir.join("rudzio-auto-bin-cache").join(pkg);
-
-    let manifest = PathBuf::from(manifest_dir).join("Cargo.toml");
-    let mut cmd = Command::new(&cargo);
-    cmd.arg("build")
-        .arg("--bins")
-        .arg("--manifest-path")
-        .arg(&manifest)
-        .env("CARGO_TARGET_DIR", &target_dir)
-        // Override `[build] build-dir = "..."` inherited from any
-        // outer `.cargo/config.toml`. Without this, the nested cargo
-        // contends with the outer cargo (or grandparent cargo) on a
-        // single shared `<build-dir>/.cargo-lock` flock and deadlocks
-        // forever (cargo file locks have no timeout). Point it at the
-        // same isolated per-OUT_DIR cache as CARGO_TARGET_DIR so the
-        // nested cargo's intermediate artefacts are scoped to this
-        // build.rs invocation alone.
-        .env("CARGO_BUILD_BUILD_DIR", &target_dir)
-        // rudzio's panic isolation depends on `catch_unwind`, which
-        // only works under `panic = "unwind"`. A user-global config
-        // may set `panic = "abort"`; these env vars (highest cargo
-        // precedence) force unwind for the consumer binaries we're
-        // about to build.
-        .env("CARGO_PROFILE_DEV_PANIC", "unwind")
-        .env("CARGO_PROFILE_RELEASE_PANIC", "unwind");
-    if profile == "release" {
-        cmd.arg("--release");
-    }
-    let status = cmd
-        .status()
-        .map_err(|e| format!("spawning `cargo build --bins` for `{pkg}`: {e}"))?;
-    if !status.success() {
-        return Err(format!("`cargo build --bins` for `{pkg}` exited with {status}"));
-    }
-
-    let subdir = if profile == "release" { "release" } else { "debug" };
-    for bin in bins {
-        let bin_path = target_dir.join(subdir).join(bin);
-        if !bin_path.exists() {
-            return Err(format!(
-                "expected `{}` after `cargo build --bins -p {pkg}`, not found",
-                bin_path.display()
-            ));
-        }
-        println!("cargo:rustc-env=CARGO_BIN_EXE_{bin}={}", bin_path.display());
-    }
-    println!("cargo:rerun-if-changed={manifest_dir}");
-    Ok(())
-}
-"#;
 /// Top-level member entries that must NOT be symlinked into the bridge dir.
 ///
 /// They either collide with bridge-synthesised files (`Cargo.toml`,
 /// `build.rs`), are noise cargo regenerates anyway (`Cargo.lock`), or
 /// would be actively harmful (`target/` creates parallel-build recursion,
 /// `.git/` confuses tooling that walks up).
-const BRIDGE_SKIPLIST: &[&str] = &["Cargo.toml", "Cargo.lock", "build.rs", "target", ".git"];
+/// `src` is excluded because the bridge populates `<bridge>/src/` as a
+/// real directory containing a generated `lib.rs` (the member's lib
+/// content textually concatenated with cfg(rudzio_test)-gated test +
+/// helper mod declarations) plus per-entry symlinks for every other
+/// child of `<member>/src/`. A blanket symlink of `<bridge>/src` →
+/// `<member>/src` would make `<bridge>/src/lib.rs` read-only and
+/// prevent the appended test inclusion.
+const BRIDGE_SKIPLIST: &[&str] = &[
+    "Cargo.toml",
+    "Cargo.lock",
+    "build.rs",
+    "src",
+    "target",
+    ".git",
+];
 /// Crate name used for the `rudzio` dependency lookup in member manifests.
 const RUDZIO_DEP: &str = "rudzio";
 
@@ -241,12 +192,56 @@ pub struct DevDepSpec {
     pub workspace_inherited: bool,
 }
 
+/// A single `[[bin]]` target declared by a workspace member.
+///
+/// Captures both the bin's name (for `cargo:rustc-env=CARGO_BIN_EXE_<n>=...`
+/// emissions) and the absolute path to its source file (so v2 bridges
+/// can declare `[[bin]] path = "<abs>"` entries that compile the bin
+/// inside the bridge crate instead of shelling out to a nested cargo).
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct MemberBin {
+    /// Cargo `[[bin]] name` for this target.
+    pub name: String,
+    /// Absolute path to the bin's source file.
+    ///
+    /// Typically `<manifest_dir>/src/bin/<name>.rs` or
+    /// `<manifest_dir>/src/main.rs` for the default bin. Resolved from
+    /// `cargo metadata`'s `target.src_path` so explicit
+    /// `[[bin]] path = "..."` declarations are honoured.
+    pub src_path: PathBuf,
+}
+
+impl MemberBin {
+    /// Construct a `MemberBin` with the given name and absolute source path.
+    #[inline]
+    #[must_use]
+    pub const fn new(name: String, src_path: PathBuf) -> Self {
+        Self { name, src_path }
+    }
+}
+
 /// Generator-side description of one workspace member.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct MemberPlan {
-    /// Names of the member's `[[bin]]` targets.
-    pub bin_names: Vec<String>,
+    /// Member's `[package].authors` joined with `:` per cargo's `CARGO_PKG_AUTHORS` convention.
+    ///
+    /// Empty string when the member declares no authors. Cargo treats
+    /// absent values as empty strings (per the
+    /// `environment-variables.html#environment-variables-cargo-sets-for-crates`
+    /// docs), so the bridge's `cargo:rustc-env=` mirror does the same.
+    pub authors: String,
+    /// `[[bin]]` targets declared by the member.
+    ///
+    /// Populated from `cargo metadata` (`target.kind == Bin`). Each entry
+    /// carries the bin name and absolute source path so the v2 bridge
+    /// can declare `[[bin]]` entries that compile the bin in-tree
+    /// (replacing the legacy `expose_member_bins` shim that shelled out
+    /// to a nested `cargo build --bins`).
+    pub bin_targets: Vec<MemberBin>,
+    /// Member's `[package].description` (empty if absent).
+    pub description: String,
     /// Dev-dep entries the aggregator must re-emit so the pulled-in test sources compile.
     pub dev_deps: Vec<DevDepSpec>,
     /// Rust edition declared in the member's `[package] edition`.
@@ -272,12 +267,6 @@ pub struct MemberPlan {
     /// "must depend on rudzio" filter in `build_plan`, so the consumer
     /// no longer has to add a synthetic `rudzio = { ... }` dev-dep.
     pub force_bridge: bool,
-    /// `true` iff the member declares a `[lib]` target.
-    ///
-    /// (Or has the implicit `src/lib.rs`.) Bin-only crates can't be
-    /// listed as regular `[dependencies]` entries — they go into
-    /// `[workspace.members]` instead.
-    pub has_lib: bool,
     /// `true` iff the member has at least one `src/**` file with a rudzio suite or `rudzio_test` gate.
     ///
     /// Drives bridge-crate generation: the bridge exists specifically to
@@ -285,10 +274,35 @@ pub struct MemberPlan {
     /// `--cfg rudzio_test`, so members whose src has no rudzio surface
     /// don't need one.
     pub has_src_rudzio_suite: bool,
+    /// Member's `[package].homepage` URL (empty if absent).
+    pub homepage: String,
+    /// `true` iff the member declares a proc-macro library (`[lib].proc-macro = true`).
+    ///
+    /// Per Decisions Log [E7], proc-macro members are NOT bridged in
+    /// v2: cargo restricts proc-macro crates to depending only on
+    /// other proc-macro / build-dep crates, so the bridge's sibling-
+    /// bridge dep rule would conflict. Out of scope for v2.
+    pub is_proc_macro: bool,
+    /// Member's `[package].license` (empty if absent).
+    pub license: String,
+    /// Member's `[package].license-file` path (empty if absent).
+    ///
+    /// Forwarded verbatim from cargo metadata — relative to the member's
+    /// manifest dir per cargo's convention.
+    pub license_file: String,
+    /// Member's `[package].links` native lib name (empty if absent).
+    ///
+    /// Emitted as `CARGO_MANIFEST_LINKS` for env! parity with cargo's
+    /// behavior in build-script consumers.
+    pub links: String,
     /// Absolute path to the member's manifest directory.
     pub manifest_dir: PathBuf,
     /// Cargo package name.
     pub package_name: String,
+    /// Member's `[package].readme` path (empty if absent).
+    pub readme: String,
+    /// Member's `[package].repository` URL (empty if absent).
+    pub repository: String,
     /// Features listed in `[package.metadata.rudzio] features = [...]`.
     ///
     /// The member's explicit opt-in for features that should be active
@@ -296,6 +310,8 @@ pub struct MemberPlan {
     /// unioned with the member's `default` to form the bridge's own
     /// `default` feature list.
     pub rudzio_activated_features: Vec<String>,
+    /// Member's `[package].rust-version` MSRV (empty if absent).
+    pub rust_version: String,
     /// Absolute path to the member's `src/lib.rs` (when `has_lib`).
     ///
     /// The bridge crate's `[lib] path` points here so cargo compiles the
@@ -305,6 +321,16 @@ pub struct MemberPlan {
     ///
     /// Excludes its `tests/main.rs` shim.
     pub test_files: Vec<PathBuf>,
+    /// Member's `[package].version` as a full semver string (e.g. `1.2.3-alpha.1+build`).
+    pub version: String,
+    /// Major version component of `version` as a u64 stringified for `CARGO_PKG_VERSION_MAJOR`.
+    pub version_major: String,
+    /// Minor version component of `version` as a u64 stringified for `CARGO_PKG_VERSION_MINOR`.
+    pub version_minor: String,
+    /// Patch version component of `version` as a u64 stringified for `CARGO_PKG_VERSION_PATCH`.
+    pub version_patch: String,
+    /// Pre-release suffix of `version` for `CARGO_PKG_VERSION_PRE` (empty when there is none).
+    pub version_pre: String,
 }
 
 /// Everything the generator needs to emit the aggregator.
@@ -393,27 +419,65 @@ pub struct WorkspaceDepSpec {
 }
 
 /// `syn::visit_mut::VisitMut` walker for [`rewrite_crate_paths`].
-/// Mutates every `crate::<helper>::*` path to `crate::<synth>::*`
-/// where `helper` is a key of `helpers`. Non-matching paths pass
-/// through untouched.
+///
+/// Performs two rewrites:
+///
+/// 1. **`crate::<helper>::*` → `crate::<synth>::*`** — helpers get
+///    synthetic crate-root names so multiple test binaries can
+///    declare `mod common;` against distinct files without
+///    collision.
+/// 2. **`super::<member>::*` → `<member>::*`** — pre-v2 test source
+///    referenced the member crate via `super::<member>::...` because
+///    cargo integration-test binaries add `extern crate <member>;`
+///    as an explicit crate-root item, so the qualified path
+///    resolves. Under v2 the bridge instead has
+///    `extern crate self as <member>;` which is a PRELUDE entry, not
+///    an item; `super::<member>::X` then fails because `<member>` is
+///    not an explicit item one level up from `mod tests`. Stripping
+///    the redundant `super::` leaves `<member>::X` which resolves
+///    via the bridge's prelude entry. Equivalent for stock cargo
+///    too: at the integration-test binary's crate root,
+///    `<member>::X` works directly via cargo's implicit extern
+///    crate, so dropping `super::` is semantically neutral.
 struct CratePathRewriter<'helpers> {
     /// `helper_name -> synth_name` substitution table.
     helpers: &'helpers BTreeMap<String, String>,
+    /// The member's lib identifier (= `crate_name_to_ident(member.package_name)`).
+    ///
+    /// Used to detect the `super::<member>::*` pattern and strip the
+    /// `super::` prefix so the path resolves via the bridge's
+    /// `extern crate self as <member>` prelude entry.
+    member_lib_ident: &'helpers str,
 }
 
 impl VisitMut for CratePathRewriter<'_> {
     fn visit_path_mut(&mut self, i: &mut syn::Path) {
+        use syn::punctuated::Punctuated;
         if i.leading_colon.is_none() {
-            let mut iter = i.segments.iter_mut();
-            if let Some(first) = iter.next()
-                && first.ident == "crate"
-                && let Some(second) = iter.next()
+            // Helper-name rewrite: `crate::<helper>::*` → `crate::<synth>::*`.
+            // Match the first two segments via `get(...)` so the indexing
+            // is clippy-clean even without `.len()` guards.
+            if let (Some(head), Some(second)) = (i.segments.first(), i.segments.get(1))
+                && head.ident == "crate"
             {
                 let second_ident = second.ident.to_string();
                 if let Some(synth) = self.helpers.get(&second_ident) {
                     let span = second.ident.span();
-                    second.ident = syn::Ident::new(synth, span);
+                    if let Some(second_mut) = i.segments.get_mut(1) {
+                        second_mut.ident = syn::Ident::new(synth, span);
+                    }
                 }
+            }
+            // Member-prelude rewrite: `super::<member>::*` → `<member>::*`.
+            // Detection requires at least 2 segments (`super`, `<member>`);
+            // any tail (`::shared::SharedTest`) is preserved verbatim.
+            if let (Some(head), Some(second)) = (i.segments.first(), i.segments.get(1))
+                && head.ident == "super"
+                && second.ident == self.member_lib_ident
+            {
+                let tail: Punctuated<syn::PathSegment, syn::Token![::]> =
+                    i.segments.iter().skip(1).cloned().collect();
+                i.segments = tail;
             }
         }
         visit_mut::visit_path_mut(self, i);
@@ -434,6 +498,49 @@ impl VisitMut for CratePathRewriter<'_> {
     }
 }
 
+/// Container for the standard `CARGO_PKG_*` / `CARGO_MANIFEST_LINKS` strings
+/// read off a `cargo_metadata::Package`. Lets [`build_member_plan`] hand
+/// the package's metadata facets to its sub-helpers without exploding
+/// argument counts (`build_member_plan` would otherwise pass nine
+/// separate strings to every sub-helper).
+struct PackageMetadataFields {
+    /// `CARGO_PKG_AUTHORS` value (`pkg.authors` joined with `:`).
+    authors: String,
+    /// `CARGO_PKG_DESCRIPTION` value (empty when absent).
+    description: String,
+    /// `CARGO_PKG_HOMEPAGE` value (empty when absent).
+    homepage: String,
+    /// `CARGO_PKG_LICENSE` value (empty when absent).
+    license: String,
+    /// `CARGO_PKG_LICENSE_FILE` value (empty when absent).
+    license_file: String,
+    /// `CARGO_MANIFEST_LINKS` value (empty when absent).
+    links: String,
+    /// `CARGO_PKG_README` value (empty when absent).
+    readme: String,
+    /// `CARGO_PKG_REPOSITORY` value (empty when absent).
+    repository: String,
+    /// `CARGO_PKG_RUST_VERSION` value (empty when absent).
+    rust_version: String,
+}
+
+/// Container for the `CARGO_PKG_VERSION*` family read off a
+/// `cargo_metadata::Package`. Bundled the same way as
+/// [`PackageMetadataFields`] so the bridge build.rs emitter receives a
+/// single struct instead of five sibling strings.
+struct PackageVersionFields {
+    /// `CARGO_PKG_VERSION` value (full semver string).
+    version: String,
+    /// `CARGO_PKG_VERSION_MAJOR` value.
+    version_major: String,
+    /// `CARGO_PKG_VERSION_MINOR` value.
+    version_minor: String,
+    /// `CARGO_PKG_VERSION_PATCH` value.
+    version_patch: String,
+    /// `CARGO_PKG_VERSION_PRE` value (empty when there is no pre-release).
+    version_pre: String,
+}
+
 /// Per-test-binary state for the source-rewrite pass. One per
 /// `[[test]]` entry across the workspace.
 #[derive(Clone, Debug)]
@@ -443,19 +550,26 @@ struct TestBinaryProxy {
     /// `<out>/src/proxies/<id>/` and as the prefix segment in every
     /// synthesised helper-mod name. Sanitised to a Rust identifier.
     binary_id: String,
+    /// Per-helper proxy entries the bridge's `src/lib.rs` mounts as
+    /// `#[path = "<proxy_path>"] mod <synth_name>;` under
+    /// `cfg(rudzio_test)`. Each tuple is
+    /// `(synth_name, absolute_proxy_path_under_bridge_src)`.
+    helper_mods: Vec<(String, PathBuf)>,
     /// `(helper_name, synth_name)` lookup the syn rewriter uses to
     /// detect-and-redirect `crate::<helper>` paths inside source
     /// files belonging to this binary.
     helper_synth_lookup: BTreeMap<String, String>,
-    /// Helper `(synthesised_crate_root_name, proxy_helper_path)`
-    /// pairs ready for emission by [`build_main_rs`]. The path is
-    /// inside this binary's proxy directory, not at the original
-    /// location, so all `crate::<helper>` rewrites in sibling files
-    /// see the same `mod` instance.
-    helpers_at_crate_root: Vec<TestRootHelper>,
-    /// Cargo-style aggregator mount path for the proxy mod.rs (the
-    /// value [`build_tests_rs`] writes after the `#[path = ...]`
-    /// attribute). Absolute path under `<out>/src/proxies/<id>/`.
+    /// Member's lib identifier (= `crate_name_to_ident(member.package_name)`).
+    ///
+    /// Used by the syn rewriter to strip `super::<member>::` prefixes
+    /// off paths in the original test source. See
+    /// `CratePathRewriter`'s docs for the rationale.
+    member_lib_ident: String,
+    /// Absolute path the proxy of the test root mod.rs ends up at
+    /// (`<bridge>/src/proxies/<binary_id>/<test_file>`). The bridge
+    /// `src/lib.rs` mounts it as
+    /// `#[path = "<proxy_test_root>"] mod __rudzio_test_<binary_id>;`
+    /// under `cfg(rudzio_test)`.
     proxy_test_root: PathBuf,
     /// Original test-root entry point (`tests/<name>/mod.rs`).
     test_root: PathBuf,
@@ -477,24 +591,6 @@ struct TestCfgState<'attr> {
     /// `true` when the cfg ALSO mentions `rudzio_test` positively
     /// (i.e. the gate is broadened to include rudzio's build).
     is_broadened: bool,
-}
-
-/// One sibling-module helper discovered under a member's test root.
-///
-/// Emitted at the aggregator's crate root so `use crate::<module>`
-/// inside `#[path]`-included test files resolves the same way it
-/// would under stock cargo's per-test-binary crate-root semantics.
-#[derive(Clone, Debug)]
-struct TestRootHelper {
-    /// Module identifier emitted as `mod <module>;` at the aggregator
-    /// crate root. Always a sanitised, non-keyword identifier (raw
-    /// identifiers are not needed here — siblings of a Rust `mod.rs`
-    /// already have to be plain identifiers in source).
-    module: String,
-    /// Absolute path to the helper's source file
-    /// (`<test_root_dir>/<module>.rs` or
-    /// `<test_root_dir>/<module>/mod.rs`).
-    path: PathBuf,
 }
 
 impl DevDepSpec {
@@ -524,6 +620,20 @@ impl DevDepSpec {
 }
 
 impl MemberPlan {
+    /// `true` iff the member declares a `[lib]` (or implicit `src/lib.rs`)
+    /// target.
+    ///
+    /// Derived from `src_lib_path`: a populated `src_lib_path` is the
+    /// single source of truth for "lib present" in `MemberPlan`.
+    /// Eliminating the legacy `has_lib` bool kept `MemberPlan` under
+    /// clippy's `struct_excessive_bools` threshold without losing any
+    /// per-member information.
+    #[inline]
+    #[must_use]
+    pub const fn has_lib(&self) -> bool {
+        self.src_lib_path.is_some()
+    }
+
     /// Construct a `MemberPlan` with empty / default fields except for the package name and manifest dir.
     ///
     /// The remaining fields are populated via direct assignment by the
@@ -532,18 +642,32 @@ impl MemberPlan {
     #[must_use]
     pub const fn new(package_name: String, manifest_dir: PathBuf) -> Self {
         Self {
-            bin_names: Vec::new(),
+            authors: String::new(),
+            bin_targets: Vec::new(),
+            description: String::new(),
             dev_deps: Vec::new(),
             edition: String::new(),
             features: BTreeMap::new(),
             force_bridge: false,
-            has_lib: false,
             has_src_rudzio_suite: false,
+            homepage: String::new(),
+            is_proc_macro: false,
+            license: String::new(),
+            license_file: String::new(),
+            links: String::new(),
             manifest_dir,
             package_name,
+            readme: String::new(),
+            repository: String::new(),
             rudzio_activated_features: Vec::new(),
+            rust_version: String::new(),
             src_lib_path: None,
             test_files: Vec::new(),
+            version: String::new(),
+            version_major: String::new(),
+            version_minor: String::new(),
+            version_patch: String::new(),
+            version_pre: String::new(),
         }
     }
 }
@@ -968,6 +1092,101 @@ fn extend_with_transitive_path_dep_members(
     Ok(())
 }
 
+/// Collect every `[[bin]]` target in `pkg` into the `MemberBin` shape
+/// the bridge codegen consumes (name + absolute src path).
+fn collect_bin_targets(pkg: &Package) -> Vec<MemberBin> {
+    pkg.targets
+        .iter()
+        .filter(|target| {
+            target
+                .kind
+                .iter()
+                .any(|kind| matches!(kind, TargetKind::Bin))
+        })
+        .map(|target| {
+            MemberBin::new(
+                target.name.clone(),
+                target.src_path.as_std_path().to_path_buf(),
+            )
+        })
+        .collect()
+}
+
+/// `true` when `pkg` declares a proc-macro library. Mirrored verbatim
+/// from `bridge_applies_to`'s gating rule (Decisions Log [E7]).
+fn detect_proc_macro_lib(pkg: &Package) -> bool {
+    pkg.targets.iter().any(|target| {
+        target
+            .kind
+            .iter()
+            .any(|kind| matches!(kind, TargetKind::ProcMacro))
+    })
+}
+
+/// Absolute path to `pkg`'s `[lib]` source file, if it has one. `None`
+/// for bin-only / proc-macro-only members.
+fn locate_src_lib_path(pkg: &Package) -> Option<PathBuf> {
+    pkg.targets
+        .iter()
+        .find(|target| {
+            target
+                .kind
+                .iter()
+                .any(|kind| matches!(kind, TargetKind::Lib))
+        })
+        .map(|target| target.src_path.as_std_path().to_path_buf())
+}
+
+/// Project `pkg.features` into the owned `BTreeMap` shape the bridge
+/// `[features]` mirror expects.
+fn collect_features_map(pkg: &Package) -> BTreeMap<String, Vec<String>> {
+    pkg.features
+        .iter()
+        .map(|(name, deps)| (name.clone(), deps.clone()))
+        .collect()
+}
+
+/// Project a `cargo_metadata::Package` into the metadata-string bundle.
+fn collect_package_metadata_fields(pkg: &Package) -> PackageMetadataFields {
+    PackageMetadataFields {
+        // Cargo's documented `CARGO_PKG_AUTHORS` convention joins authors
+        // with `:` (colon).
+        authors: pkg.authors.join(":"),
+        description: pkg.description.clone().unwrap_or_default(),
+        homepage: pkg.homepage.clone().unwrap_or_default(),
+        license: pkg.license.clone().unwrap_or_default(),
+        license_file: pkg
+            .license_file
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default(),
+        links: pkg.links.clone().unwrap_or_default(),
+        readme: pkg
+            .readme
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default(),
+        repository: pkg.repository.clone().unwrap_or_default(),
+        rust_version: pkg
+            .rust_version
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default(),
+    }
+}
+
+/// Project a `cargo_metadata::Package`'s semver fields into the
+/// version-string bundle.
+fn collect_package_version_fields(pkg: &Package) -> PackageVersionFields {
+    PackageVersionFields {
+        version: pkg.version.to_string(),
+        version_major: pkg.version.major.to_string(),
+        version_minor: pkg.version.minor.to_string(),
+        version_patch: pkg.version.patch.to_string(),
+        version_pre: pkg.version.pre.to_string(),
+    }
+}
+
 /// Construct a `MemberPlan` for one workspace package.
 ///
 /// Reads the member's manifest for excluded test files, dev-deps, and
@@ -994,36 +1213,9 @@ fn build_member_plan(pkg: &Package) -> Result<Option<MemberPlan>> {
     let test_files = discover_test_files(pkg, &manifest_dir_std, &exclude_list)
         .with_context(|| format!("discovering test files for `{}`", pkg.name))?;
 
-    let bin_names: Vec<String> = pkg
-        .targets
-        .iter()
-        .filter(|target| {
-            target
-                .kind
-                .iter()
-                .any(|kind| matches!(kind, TargetKind::Bin))
-        })
-        .map(|target| target.name.clone())
-        .collect();
-
-    let has_lib = pkg.targets.iter().any(|target| {
-        target
-            .kind
-            .iter()
-            .any(|kind| matches!(kind, TargetKind::Lib))
-    });
-
-    let src_lib_path = pkg
-        .targets
-        .iter()
-        .find(|target| {
-            target
-                .kind
-                .iter()
-                .any(|kind| matches!(kind, TargetKind::Lib))
-        })
-        .map(|target| target.src_path.as_std_path().to_path_buf());
-
+    let bin_targets = collect_bin_targets(pkg);
+    let is_proc_macro = detect_proc_macro_lib(pkg);
+    let src_lib_path = locate_src_lib_path(pkg);
     let edition = pkg.edition.to_string();
 
     let dev_deps = read_dev_deps(pkg.manifest_path.as_std_path()).with_context(|| {
@@ -1033,17 +1225,11 @@ fn build_member_plan(pkg: &Package) -> Result<Option<MemberPlan>> {
         )
     })?;
 
-    let has_src_rudzio_suite = has_lib
-        && src_lib_path
-            .as_deref()
-            .and_then(|lib| lib.parent())
-            .is_some_and(detect_src_rudzio_suite);
-
-    let features: BTreeMap<String, Vec<String>> = pkg
-        .features
-        .iter()
-        .map(|(name, deps)| (name.clone(), deps.clone()))
-        .collect();
+    let has_src_rudzio_suite = src_lib_path
+        .as_deref()
+        .and_then(|lib| lib.parent())
+        .is_some_and(detect_src_rudzio_suite);
+    let features = collect_features_map(pkg);
 
     let rudzio_activated_features = load_rudzio_activated_features(pkg.manifest_path.as_std_path())
         .with_context(|| {
@@ -1061,19 +1247,60 @@ fn build_member_plan(pkg: &Package) -> Result<Option<MemberPlan>> {
             )
         })?;
 
+    // Per `PLAN.md` Decisions Log [I5]/[I6]/[I7]/[E10]: bridges emit
+    // `cargo:rustc-env=` overrides for the standard CARGO_* env vars
+    // so member test code's `env!()` calls resolve against the
+    // MEMBER's manifest, not the bridge's synthetic shell. Cargo's
+    // own convention treats absent manifest fields as empty strings;
+    // both helpers mirror that.
+    let metadata_fields = collect_package_metadata_fields(pkg);
+    let version_fields = collect_package_version_fields(pkg);
+    let PackageMetadataFields {
+        authors,
+        description,
+        homepage,
+        license,
+        license_file,
+        links,
+        readme,
+        repository,
+        rust_version,
+    } = metadata_fields;
+    let PackageVersionFields {
+        version,
+        version_major,
+        version_minor,
+        version_patch,
+        version_pre,
+    } = version_fields;
+
     Ok(Some(MemberPlan {
-        package_name: pkg.name.to_string(),
-        manifest_dir: manifest_dir_std,
-        test_files,
-        bin_names,
-        has_lib,
+        authors,
+        bin_targets,
+        description,
         dev_deps,
         edition,
-        src_lib_path,
-        has_src_rudzio_suite,
-        force_bridge,
         features,
+        force_bridge,
+        has_src_rudzio_suite,
+        homepage,
+        is_proc_macro,
+        license,
+        license_file,
+        links,
+        manifest_dir: manifest_dir_std,
+        package_name: pkg.name.to_string(),
+        readme,
+        repository,
         rudzio_activated_features,
+        rust_version,
+        src_lib_path,
+        test_files,
+        version,
+        version_major,
+        version_minor,
+        version_patch,
+        version_pre,
     }))
 }
 
@@ -1533,20 +1760,55 @@ pub fn scan_unbroadened_cfg_test_mods_in_plan(plan: &Plan) -> Vec<String> {
     out
 }
 
-/// Add the features the aggregator unconditionally needs (`common`,
-/// `build`) plus any `runtime-*` feature requested by at least one
-/// member's metadata-resolved rudzio dep — `runtime-*` features come
-/// from `cargo metadata`'s dependency view (which already factors in
-/// renames / cfg-target gating), so members may activate runtimes that
-/// don't appear in the raw dev-dep features list we collected from the
-/// member's Cargo.toml.
+/// Per-plan scan that surfaces proc-macro members which v2 declines
+/// to bridge (Decisions Log [E7]).
+///
+/// Proc-macro crates can only depend on proc-macro / build-dep
+/// crates per cargo's resolution rules, so the v2 bridge's
+/// sibling-bridge dep mirror would generate an invalid bridge. The
+/// scanner emits one warning per proc-macro member that has rudzio
+/// surface or bins, so the user knows their proc-macro test surface
+/// is not aggregated.
+#[inline]
+#[must_use]
+pub fn scan_proc_macro_members_in_plan(plan: &Plan) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for member in &plan.members {
+        if !member.is_proc_macro {
+            continue;
+        }
+        // Only warn when the member would otherwise have surface to
+        // aggregate (rudzio suite OR bins OR force_bridge). Members
+        // with no surface are silently not-bridged regardless of
+        // proc-macro status.
+        if !member.has_src_rudzio_suite && member.bin_targets.is_empty() && !member.force_bridge {
+            continue;
+        }
+        out.push(format!(
+            "skipping proc-macro member `{name}` from rudzio aggregation: v2 bridges \
+             cannot wrap proc-macro crates (cargo restricts proc-macro deps to \
+             proc-macro/build-dep crates, conflicting with sibling-bridge dep mirror). \
+             Out of scope for v2 per Decisions Log [E7]. Run `cargo test -p {name}` \
+             standalone to exercise its tests.",
+            name = member.package_name
+        ));
+    }
+    out
+}
+
+/// Add the features the aggregator unconditionally needs (`common`)
+/// plus any `runtime-*` feature requested by at least one member's
+/// metadata-resolved rudzio dep — `runtime-*` features come from
+/// `cargo metadata`'s dependency view (which already factors in
+/// renames / cfg-target gating), so members may activate runtimes
+/// that don't appear in the raw dev-dep features list we collected
+/// from the member's Cargo.toml.
 fn inject_required_features(
     mut spec: RudzioSpec,
     runtime_features: &BTreeSet<String>,
 ) -> RudzioSpec {
     let mut feats: BTreeSet<String> = spec.features.into_iter().collect();
     let _common_inserted: bool = feats.insert("common".to_owned());
-    let _build_inserted: bool = feats.insert("build".to_owned());
     for feat in runtime_features {
         let _runtime_inserted: bool = feats.insert(feat.clone());
     }
@@ -2602,13 +2864,46 @@ pub fn write_runner(plan: &Plan, out_dir: &Path) -> Result<()> {
     // rename or alias.
     detect_helper_collisions(plan)?;
 
-    // Materialise the per-test-binary proxy tree under `src/proxies/`
-    // BEFORE writing main.rs / tests.rs — both reference the proxy
-    // file paths via `#[path = ...]` and cargo will fail at compile
-    // time if the files don't yet exist.
+    // Materialise the per-test-binary proxy tree under each bridge's
+    // `<bridge>/src/proxies/` BEFORE writing bridge `src/lib.rs` —
+    // the lib.rs references proxy file paths via `#[path = ...]` and
+    // cargo will fail at compile time if the files don't yet exist.
     let proxies = collect_test_binary_proxies(plan, out_dir);
-    write_test_binary_proxies(out_dir, &proxies)
+    write_test_binary_proxies(&proxies)
         .with_context(|| format!("writing test-binary proxies under {}", out_dir.display()))?;
+
+    // Generate each bridged member's `src/lib.rs`. Lib-bearing members
+    // get the member's lib content + appended cfg(rudzio_test) test
+    // and helper inclusions; bin-only members get a one-line stub lib
+    // body (Decisions Log [C2]) so the aggregator's uniform
+    // `extern crate <bridge>;` (Decisions Log [C3]) resolves
+    // regardless of whether the wrapped member is lib- or bin-only.
+    for member in &plan.members {
+        if !bridge_applies_to(member) {
+            continue;
+        }
+        let bridge_dir = members_dir.join(bridge_dir_name(member));
+        let bridge_proxies: Vec<&TestBinaryProxy> = proxies
+            .iter()
+            .filter(|proxy| {
+                proxy
+                    .proxy_test_root
+                    .starts_with(bridge_dir.join("src").join("proxies"))
+            })
+            .collect();
+        let lib_rs = build_bridge_lib_rs(member, &bridge_proxies).with_context(|| {
+            format!(
+                "generating bridge lib.rs for member `{}`",
+                member.package_name
+            )
+        })?;
+        fs::write(bridge_dir.join("src").join("lib.rs"), lib_rs).with_context(|| {
+            format!(
+                "writing bridge lib.rs at {}",
+                bridge_dir.join("src").join("lib.rs").display()
+            )
+        })?;
+    }
 
     let cargo_toml = build_cargo_toml(plan)?;
     fs::write(out_dir.join("Cargo.toml"), cargo_toml)
@@ -2616,9 +2911,6 @@ pub fn write_runner(plan: &Plan, out_dir: &Path) -> Result<()> {
 
     fs::write(src_dir.join("main.rs"), build_main_rs(plan, out_dir))
         .with_context(|| format!("writing src/main.rs under {}", out_dir.display()))?;
-
-    fs::write(src_dir.join("tests.rs"), build_tests_rs(plan, out_dir))
-        .with_context(|| format!("writing src/tests.rs under {}", out_dir.display()))?;
 
     fs::write(out_dir.join("build.rs"), build_build_rs(plan))
         .with_context(|| format!("writing build.rs under {}", out_dir.display()))?;
@@ -2628,17 +2920,44 @@ pub fn write_runner(plan: &Plan, out_dir: &Path) -> Result<()> {
 
 /// Gates a member must pass to get a bridge crate generated.
 ///
-/// It has to be a lib (bridges re-point `[lib] path`, nothing to
-/// re-point for a bin-only crate) AND either have rudzio surface in
-/// `src/**` (the usual case — gives the bridge a concrete reason to
-/// exist) OR opt in via `[package.metadata.rudzio] force_bridge = true`
-/// (the consumer-of-a-bridged-sibling escape hatch).
+/// Bridges apply under either of two conditions:
+///
+/// 1. The member has a `[lib]` target AND (rudzio surface in `src/**`
+///    OR `[package.metadata.rudzio] force_bridge = true`). This is the
+///    classic rudzio-suite case: the bridge re-points `[lib] path` at
+///    the member's real src and makes `[dev-dependencies]` visible
+///    under `--cfg rudzio_test`.
+/// 2. The member declares at least one `[[bin]]` target. Under v2 the
+///    bridge OWNS the bin compile (declares `[[bin]]` entries in its
+///    own `Cargo.toml`, with the bridge's `build.rs` emitting
+///    `cargo:rustc-env=CARGO_BIN_EXE_<n>=<path>`). This replaces the
+///    legacy `expose_member_bins` cascade that spawned a nested
+///    `cargo build --bins` from the aggregator's build script.
 #[inline]
 #[must_use]
 pub const fn bridge_applies_to(member: &MemberPlan) -> bool {
-    member.has_lib
-        && member.src_lib_path.is_some()
-        && (member.has_src_rudzio_suite || member.force_bridge)
+    // Decisions Log [E7]: proc-macro members are not bridged in v2.
+    // Cargo restricts proc-macro crate deps to proc-macro/build-dep
+    // crates, which conflicts with the bridge's sibling-bridge dep
+    // rule. A diagnostic warning is surfaced separately at plan time
+    // (see `scan_proc_macro_members_in_plan`).
+    if member.is_proc_macro {
+        return false;
+    }
+    let lib_eligible =
+        member.src_lib_path.is_some() && (member.has_src_rudzio_suite || member.force_bridge);
+    let bin_eligible = !member.bin_targets.is_empty();
+    // Under v2 every test source file is mounted into the wrapping
+    // bridge's lib.rs as a `#[cfg(rudzio_test)] #[path] mod __rudzio_test_<id>;`
+    // (replacing pre-v2's `#[path]` inclusion into the aggregator's own
+    // src/main.rs). A member that contributes integration test files
+    // — but has no rudzio surface in src/** AND no bins — therefore
+    // also needs a bridge so its `#[rudzio::test]` registrations get
+    // linked into the aggregator binary via `extern crate <bridge>;`.
+    // Without this, the linkme `TEST_TOKENS` distributed-slice section
+    // is left empty and `from_raw_parts(NULL, 0)` aborts at startup.
+    let test_eligible = !member.test_files.is_empty();
+    lib_eligible || bin_eligible || test_eligible
 }
 
 /// Emit `<out>/<normalized>/Cargo.toml` for a member's bridge crate.
@@ -2663,9 +2982,12 @@ pub const fn bridge_applies_to(member: &MemberPlan) -> bool {
 ///   also its own workspace, and cargo rejects nested workspaces that
 ///   share `[workspace]` tables).
 ///
-/// The bridge dir itself does NOT get a `src/lib.rs` placeholder —
-/// explicit `[lib] path = ...` tells cargo to look only at that path,
-/// so an empty dir with just a `Cargo.toml` is enough.
+/// Bridges with a `[lib]` target also get a generated `src/lib.rs`
+/// whose body is the member's lib content followed by appended
+/// cfg(rudzio_test)-gated `#[path]`-mod declarations for the test
+/// proxies and helpers belonging to this member. Members without a
+/// lib (bin-only) get no `src/lib.rs`; their `[[bin]]` entries
+/// reference the bin source paths directly.
 ///
 /// # Errors
 ///
@@ -2689,6 +3011,62 @@ pub fn write_bridge_crate(plan: &Plan, member: &MemberPlan, out: &Path) -> Resul
     fs::write(bridge_dir.join("build.rs"), build_bridge_build_rs(member))
         .with_context(|| format!("writing bridge build.rs at {}", bridge_dir.display()))?;
     symlink_member_tree_into_bridge(&member.manifest_dir, &bridge_dir)?;
+    // Decisions Log [C2]: bin-only bridges still need `<bridge>/src/`
+    // to exist so the bridge-generated stub `src/lib.rs` (written by
+    // the caller via `build_bridge_lib_rs`) can land there. The
+    // materialize step is a no-op when the member has no `src/`
+    // directory at all (e.g. synthetic test fixtures), and idempotent
+    // otherwise.
+    materialize_bridge_src_dir(&member.manifest_dir, &bridge_dir)?;
+    Ok(())
+}
+
+/// Create `<bridge>/src/` as a real directory (not a symlink) so the
+/// bridge generator can place a generated `lib.rs` at
+/// `<bridge>/src/lib.rs` while the rest of `<member>/src/`'s children
+/// remain reachable via per-entry symlinks.
+///
+/// Skips `lib.rs` because the bridge writes its own (member's lib.rs
+/// content + appended test inclusions). Every other top-level child of
+/// `<member>/src/` — submodule files (`foo.rs`), submodule directories
+/// (`foo/`), `bin/`, resource dirs, etc. — gets a symlink inside
+/// `<bridge>/src/`. The `mod foo;` declaration emitted by the bridge's
+/// `src/lib.rs` (copied verbatim from the member) then resolves
+/// against `<bridge>/src/foo.rs` (symlink), producing the same compile
+/// unit as if the member's lib had compiled under stock cargo.
+///
+/// Idempotent: if the bridge dir was previously partially-populated
+/// the function tolerates existing entries (per-entry
+/// `create_symlink` is itself EEXIST-tolerant for matching targets).
+fn materialize_bridge_src_dir(member_dir: &Path, bridge_dir: &Path) -> Result<()> {
+    let bridge_src = bridge_dir.join("src");
+    fs::create_dir_all(&bridge_src)
+        .with_context(|| format!("creating bridge src dir {}", bridge_src.display()))?;
+    let member_src = member_dir.join("src");
+    let Ok(entries) = fs::read_dir(&member_src) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
+        // The bridge generates its own `lib.rs` (member content +
+        // appended test inclusions); skip the symlink so the generated
+        // file can land at `<bridge>/src/lib.rs` without conflict.
+        if name_str == "lib.rs" {
+            continue;
+        }
+        let source = entry.path();
+        let target = bridge_src.join(&name);
+        create_symlink(&source, &target).with_context(|| {
+            format!(
+                "symlinking bridge src entry {} -> {}",
+                target.display(),
+                source.display()
+            )
+        })?;
+    }
     Ok(())
 }
 
@@ -2804,6 +3182,63 @@ fn remove_file_tolerating_missing(path: &Path) -> IoResult<()> {
     }
 }
 
+/// Append `cargo:rustc-env=<var>=<escaped-value>` directives to
+/// `out` for every standard `CARGO_*` env var that a v2 bridge
+/// overrides on behalf of the wrapped member (per Decisions Log
+/// [I5]/[I6]/[I7]/[E10]). Also emits
+/// `cargo:rerun-if-changed=<member's manifest dir>` (Decisions Log
+/// [E16]) so cargo reruns the bridge build script when the MEMBER's
+/// real source tree changes (not just the bridge's symlinks +
+/// generated files).
+///
+/// Cargo treats absent manifest fields as empty strings (see
+/// `environment-variables.html#environment-variables-cargo-sets-for-crates`),
+/// so emitting `<var>=` with no value is the correct mirror for an
+/// unset field — preserves `env!()` parity with the member's own
+/// build.
+fn emit_member_env_overrides(out: &mut String, member: &MemberPlan) {
+    let manifest_dir_str = member.manifest_dir.to_string_lossy();
+    let crate_name = crate_name_to_ident(&member.package_name);
+    // Decisions Log [E16]: explicit `rerun-if-changed` targets the
+    // REAL member directory so changes to source files reachable via
+    // bridge symlinks invalidate the bridge cache reliably. Without
+    // this, cargo's default file-watching scans the bridge dir, where
+    // symlinks-vs-target tracking is subtle.
+    let escaped_member_dir = escape_str_literal(manifest_dir_str.as_ref());
+    let _rerun_emit: FmtResult = writeln!(
+        out,
+        "    println!(\"cargo:rerun-if-changed={escaped_member_dir}\");"
+    );
+    // Order is intentional: identity vars first (NAME / CRATE_NAME),
+    // then path/manifest vars, then version family, then descriptive
+    // metadata, then links. Keeps the generated build.rs readable
+    // when a human inspects it.
+    let pairs: [(&str, &str); 17] = [
+        ("CARGO_MANIFEST_DIR", manifest_dir_str.as_ref()),
+        ("CARGO_PKG_NAME", &member.package_name),
+        ("CARGO_CRATE_NAME", &crate_name),
+        ("CARGO_PKG_VERSION", &member.version),
+        ("CARGO_PKG_VERSION_MAJOR", &member.version_major),
+        ("CARGO_PKG_VERSION_MINOR", &member.version_minor),
+        ("CARGO_PKG_VERSION_PATCH", &member.version_patch),
+        ("CARGO_PKG_VERSION_PRE", &member.version_pre),
+        ("CARGO_PKG_AUTHORS", &member.authors),
+        ("CARGO_PKG_DESCRIPTION", &member.description),
+        ("CARGO_PKG_LICENSE", &member.license),
+        ("CARGO_PKG_LICENSE_FILE", &member.license_file),
+        ("CARGO_PKG_HOMEPAGE", &member.homepage),
+        ("CARGO_PKG_REPOSITORY", &member.repository),
+        ("CARGO_PKG_README", &member.readme),
+        ("CARGO_PKG_RUST_VERSION", &member.rust_version),
+        ("CARGO_MANIFEST_LINKS", &member.links),
+    ];
+    for (var, val) in pairs {
+        let escaped = escape_str_literal(val);
+        let _env_emit: FmtResult =
+            writeln!(out, "    println!(\"cargo:rustc-env={var}={escaped}\");");
+    }
+}
+
 /// Synthesize the bridge's `build.rs`.
 ///
 /// Every bridge gets one — it is the per-compile-unit emission site for
@@ -2813,60 +3248,106 @@ fn remove_file_tolerating_missing(path: &Path) -> IoResult<()> {
 /// caused thousands of unresolved-crate errors in downstream bin
 /// crates).
 ///
-/// For bin-bearing members the build.rs additionally invokes
-/// `expose_member_bins` so `cargo:rustc-env=CARGO_BIN_EXE_<bin>=<abs>`
-/// reaches the bridge's compile unit, where `rudzio::bin!(...)`
-/// ultimately expands. The member's own `build.rs` is never forwarded:
-/// its emissions would scope to the member's standalone compile unit,
-/// but the cfg needs to land on the bridge.
+/// The build.rs also emits per-member `cargo:rustc-env` overrides for
+/// the cargo environment variables that would otherwise carry the
+/// bridge's synthetic values (`<member>_rudzio_bridge`, version
+/// `0.0.0`, the bridge dir as manifest dir) instead of the member's
+/// real ones — `CARGO_MANIFEST_DIR`, the full `CARGO_PKG_*` family,
+/// `CARGO_CRATE_NAME`, `CARGO_MANIFEST_LINKS`, and one
+/// `CARGO_BIN_EXE_<n>` per `[[bin]]` target declared in the bridge's
+/// own `Cargo.toml`. The full env! parity set is emitted via
+/// `emit_member_env_overrides`.
+///
+/// `CARGO_BIN_EXE_<n>` is computed from cargo's documented build-script
+/// env vars (`OUT_DIR`, `CARGO_CFG_TARGET_OS`) — no nested `cargo build`,
+/// no `.package-cache` flock cascade. `rudzio::bin!()`'s runtime
+/// `current_exe()` fallback catches any drift from cargo's documented
+/// output convention.
 #[inline]
 #[must_use]
 pub fn build_bridge_build_rs(member: &MemberPlan) -> String {
-    // The bridge's own manifest dir lives under
-    // `target/<...>/members/<member>/`, but path-resolving proc-macros
-    // (`include_str!`, `sqlx::migrate!`, `refinery::embed_migrations!`,
-    // askama templates, …) read `CARGO_MANIFEST_DIR` and look for
-    // files relative to it. Without this override, anything outside
-    // the symlink-mirrored top-level (e.g. `..`-relative paths to a
-    // sibling crate's shared resources) fails to resolve. Emitting
-    // `cargo:rustc-env=CARGO_MANIFEST_DIR=<original member dir>` makes
-    // the bridge's rustc see the same manifest dir cargo would set
-    // under stock per-crate builds, so member src compiles identically
-    // inside and outside the aggregator.
-    let manifest_dir = escape_str_literal(&member.manifest_dir.to_string_lossy());
     let mut out = String::new();
-    if member.bin_names.is_empty() {
+
+    if member.bin_targets.is_empty() {
+        // Bin-less bridge — no path arithmetic needed.
         out.push_str("fn main() {\n");
         out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
         out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
-        let _ignored: FmtResult = writeln!(
-            out,
-            "    println!(\"cargo:rustc-env=CARGO_MANIFEST_DIR={manifest_dir}\");"
-        );
+        emit_member_env_overrides(&mut out, member);
         out.push_str("}\n");
         return out;
     }
-    out.push_str(BUILD_RS_HELPERS);
-    out.push_str("\nfn main() -> Result<(), String> {\n");
+
+    // Bin-bearing bridge: emit `cargo:rustc-env=CARGO_BIN_EXE_<n>=<path>`
+    // per `[[bin]]` declared in the bridge's Cargo.toml. The path is
+    // computed inside the build.rs at compile time from:
+    //
+    //   * `CARGO_TARGET_DIR` (or its default `<workspace>/target`) —
+    //     cargo always sets `CARGO_TARGET_DIR` for build scripts when
+    //     the user (or our cargo-rudzio CLI) sets it; under v2 the
+    //     CLI sets it unconditionally to `<aggregator>/target` so the
+    //     bin output dir is well-defined.
+    //   * `PROFILE` — `debug` or `release`.
+    //   * `TARGET` vs `HOST` — when cross-compiling, cargo nests the
+    //     final binary at `<target_dir>/<TARGET>/<profile>/<bin>`
+    //     instead of `<target_dir>/<profile>/<bin>`. Detect via
+    //     `TARGET != HOST`.
+    //   * `CARGO_CFG_TARGET_OS` — for the `.exe` suffix on Windows.
+    //
+    // Path arithmetic uses `CARGO_TARGET_DIR` (not `OUT_DIR`) because
+    // cargo 1.92+ supports separate `CARGO_BUILD_BUILD_DIR` for
+    // intermediate artefacts vs `CARGO_TARGET_DIR` for final outputs.
+    // OUT_DIR lives under `build-dir`; final bin lives under
+    // `target`. Walking from OUT_DIR lands in the wrong tree when the
+    // two are split.
+    out.push_str("use std::env;\n");
+    out.push_str("use std::path::PathBuf;\n\n");
+    out.push_str("fn main() {\n");
     out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
     out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
-    let _manifest_emit: FmtResult = writeln!(
-        out,
-        "    println!(\"cargo:rustc-env=CARGO_MANIFEST_DIR={manifest_dir}\");"
-    );
-    let _expose_emit: FmtResult = write!(
-        out,
-        "    expose_member_bins({}, {}, &[",
-        quote_str(&member.package_name),
-        quote_str(&member.manifest_dir.to_string_lossy()),
-    );
-    for (idx, bin) in member.bin_names.iter().enumerate() {
-        if idx > 0 {
-            out.push_str(", ");
-        }
-        out.push_str(&quote_str(bin));
+    emit_member_env_overrides(&mut out, member);
+    out.push('\n');
+    out.push_str("    let target_dir: PathBuf = env::var_os(\"CARGO_TARGET_DIR\")\n");
+    out.push_str("        .map(PathBuf::from)\n");
+    out.push_str("        .or_else(|| {\n");
+    out.push_str("            // Fallback when CARGO_TARGET_DIR is unset: walk up from\n");
+    out.push_str("            // OUT_DIR (`<build_dir>/<profile>/build/<pkg-hash>/out`)\n");
+    out.push_str("            // 4 ancestors to land at `<build_dir>`, then assume the\n");
+    out.push_str("            // build-dir == target-dir convention cargo uses when\n");
+    out.push_str("            // CARGO_BUILD_BUILD_DIR isn't separately set.\n");
+    out.push_str("            env::var_os(\"OUT_DIR\").map(|out_dir| {\n");
+    out.push_str("                PathBuf::from(out_dir)\n");
+    out.push_str("                    .ancestors()\n");
+    out.push_str("                    .nth(4)\n");
+    out.push_str("                    .expect(\"OUT_DIR walked above the filesystem root\")\n");
+    out.push_str("                    .to_path_buf()\n");
+    out.push_str("            })\n");
+    out.push_str("        })\n");
+    out.push_str("        .expect(\"neither CARGO_TARGET_DIR nor OUT_DIR is set\");\n");
+    out.push_str("    let profile = env::var(\"PROFILE\").expect(\"PROFILE must be set inside a cargo build script\");\n");
+    out.push_str("    let target_triple = env::var(\"TARGET\").unwrap_or_default();\n");
+    out.push_str("    let host_triple = env::var(\"HOST\").unwrap_or_default();\n");
+    out.push_str("    let mut profile_dir = target_dir;\n");
+    out.push_str("    if !target_triple.is_empty() && target_triple != host_triple {\n");
+    out.push_str("        profile_dir.push(&target_triple);\n");
+    out.push_str("    }\n");
+    out.push_str("    profile_dir.push(&profile);\n");
+    out.push_str("    let target_os = env::var(\"CARGO_CFG_TARGET_OS\").unwrap_or_default();\n");
+    out.push_str("    let exe_ext = if target_os == \"windows\" { \".exe\" } else { \"\" };\n");
+    for bin in &member.bin_targets {
+        out.push('\n');
+        let _bin_emit: FmtResult = writeln!(
+            out,
+            "    let bin_path = profile_dir.join(format!(\"{name}{{exe_ext}}\", exe_ext = exe_ext));",
+            name = bin.name
+        );
+        let _print_emit: FmtResult = writeln!(
+            out,
+            "    println!(\"cargo:rustc-env=CARGO_BIN_EXE_{name}={{path}}\", path = bin_path.display());",
+            name = bin.name
+        );
     }
-    out.push_str("])?;\n    Ok(())\n}\n");
+    out.push_str("}\n");
     out
 }
 
@@ -2899,12 +3380,12 @@ pub fn bridge_dir_name(member: &MemberPlan) -> String {
 /// rendering any dependency entry into TOML fails.
 #[inline]
 pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<String> {
-    let lib_path = member.src_lib_path.as_ref().ok_or_else(|| {
-        anyhow!(
-            "bridge requested for `{}` but the member has no [lib] target",
+    if member.src_lib_path.is_none() && member.bin_targets.is_empty() {
+        bail!(
+            "bridge requested for `{}` but the member has neither a [lib] target nor any [[bin]] targets",
             member.package_name
-        )
-    })?;
+        );
+    }
 
     let mut doc = DocumentMut::new();
 
@@ -2914,11 +3395,11 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
     pkg.insert("edition", value(member.edition.as_str()));
     pkg.insert("publish", value(false));
     // Every bridge gets its own synthesised build.rs that emits
-    // `cargo:rustc-cfg=rudzio_test` (and, for bin members, exposes the
-    // member's bins via `expose_member_bins`). The member's own
-    // build.rs is never forwarded — its emissions would scope to the
-    // member's standalone compile unit, but the cfg needs to land on
-    // the bridge's compile unit instead.
+    // `cargo:rustc-cfg=rudzio_test` and the per-member
+    // `CARGO_PKG_NAME` / `CARGO_MANIFEST_DIR` / `CARGO_BIN_EXE_<n>`
+    // overrides. The member's own build.rs is never forwarded — its
+    // emissions would scope to the member's standalone compile unit,
+    // but the cfg needs to land on the bridge's compile unit instead.
     pkg.insert("build", value("build.rs"));
     doc.insert("package", Item::Table(pkg));
 
@@ -2928,20 +3409,40 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
     // produce nested workspaces, which cargo rejects ("multiple
     // workspace roots found").
 
+    // Every bridge declares `[lib]` (Decisions Log [C2]). For
+    // lib-bearing members the bridge's generated `src/lib.rs` wraps
+    // the real lib content + cfg(rudzio_test) proxy mounts; for
+    // bin-only members it carries a stub body. Either way the
+    // aggregator's uniform `extern crate <bridge>;` ([C3]) resolves.
     let mut lib = Table::new();
     lib.insert("name", value(crate_name_to_ident(&member.package_name)));
-    // Relative path; the bridge dir symlinks the member's top-level
-    // entries, so resolving `<rel>/lib.rs` inside the bridge dir lands
-    // on the member's real source. Path-based macros like
-    // `include_str!` / `sqlx::migrate!` resolve against
-    // `CARGO_MANIFEST_DIR` (= the bridge dir) and likewise reach the
-    // member tree through the symlinks.
-    let rel_lib = lib_path
-        .strip_prefix(&member.manifest_dir)
-        .map_or_else(|_| PathBuf::from("src").join("lib.rs"), Path::to_path_buf);
-    let rel_lib_str = rel_lib.to_string_lossy().replace('\\', "/");
-    lib.insert("path", value(rel_lib_str));
+    // Path is bridge-local `src/lib.rs`. `materialize_bridge_src_dir`
+    // creates `<bridge>/src/` as a real dir and writes the generated
+    // lib.rs into it (or symlinks the member's source for lib-bearing
+    // members — handled by `build_bridge_lib_rs` + the writer).
+    lib.insert("path", value("src/lib.rs"));
     doc.insert("lib", Item::Table(lib));
+
+    // `[[bin]]` entries per member bin: the bridge owns the compile
+    // for each member binary, replacing the legacy
+    // `expose_member_bins` cascade (nested `cargo build --bins`).
+    // `path` is the absolute path to the member's bin source; cargo
+    // compiles it as part of the bridge package, and the bridge's
+    // build.rs emits `cargo:rustc-env=CARGO_BIN_EXE_<n>=<path>` so
+    // `env!()` / `rudzio::bin!()` callsites resolve to the compiled
+    // artefact (which lands in the aggregator's target dir under the
+    // bridge's normal cargo output convention).
+    if !member.bin_targets.is_empty() {
+        let mut bins = ArrayOfTables::new();
+        for bin in &member.bin_targets {
+            let mut bin_table = Table::new();
+            bin_table.insert("name", value(bin.name.as_str()));
+            let path_str = bin.src_path.to_string_lossy().replace('\\', "/");
+            bin_table.insert("path", value(path_str));
+            bins.push(bin_table);
+        }
+        doc.insert("bin", Item::ArrayOfTables(bins));
+    }
 
     let deps_tbl = build_bridge_dependencies(plan, member)?;
     doc.insert("dependencies", Item::Table(deps_tbl));
@@ -3074,6 +3575,114 @@ fn collect_sibling_feature_requests(plan: &Plan, member: &MemberPlan) -> BTreeSe
     features
 }
 
+/// Generate the bridge's `src/lib.rs` content.
+///
+/// The result is the member's own `src/lib.rs` content (read from
+/// disk verbatim) with cfg(rudzio_test)-gated `#[path]`-mod
+/// declarations appended for every test proxy + helper this member
+/// owns. Member's content is preserved byte-for-byte so `crate::`
+/// path resolution inside member lib code works natively — the
+/// bridge's crate root IS member's lib root.
+///
+/// Each helper mod becomes a top-level mod at the bridge's crate root
+/// (synthesised name `__rudzio__<binary_id>__<helper>`), matching the
+/// crate-path rewrite performed by `rewrite_crate_paths` on the proxy
+/// source files. Each test root becomes a top-level mod named
+/// `__rudzio_test_<binary_id>` so linkme's `TEST_TOKENS` distributed
+/// slice picks up the test registrations when cargo compiles the
+/// bridge under `--cfg rudzio_test`.
+///
+/// # Errors
+///
+/// Returns an error when the member has a `src_lib_path` that cannot
+/// be read. Bin-only members (no `src_lib_path`) get a one-line stub
+/// lib instead — under Decisions Log [C2], every bridge has a `[lib]`
+/// so the aggregator's uniform `extern crate <bridge>;` link-in
+/// (Decisions Log [C3]) resolves regardless of whether the wrapped
+/// member is lib- or bin-only.
+fn build_bridge_lib_rs(member: &MemberPlan, proxies: &[&TestBinaryProxy]) -> Result<String> {
+    let Some(lib_path) = member.src_lib_path.as_ref() else {
+        // Bin-only member: emit a stub `[lib]` body. The bridge's
+        // `[[bin]]` entries carry the actual member-bin compile;
+        // this stub exists so the aggregator's `extern crate <bridge>;`
+        // has a lib crate to resolve to (linkme cross-crate
+        // aggregation harmlessly registers nothing from the stub).
+        return Ok(format!(
+            "//! Stub bridge lib for bin-only member `{name}`.\n\
+             //! Generated by cargo-rudzio under Decisions Log [C2].\n\
+             //! The actual member binaries are declared as `[[bin]]`\n\
+             //! entries in the bridge's `Cargo.toml`; this stub lib\n\
+             //! exists only so the aggregator's `extern crate <bridge>;`\n\
+             //! link-in (Decisions Log [C3]) has a crate root to\n\
+             //! resolve to. Linkme cross-crate aggregation contributes\n\
+             //! nothing from this stub (no `#[distributed_slice]`\n\
+             //! statics) — correct, because bin-only members have no\n\
+             //! `#[rudzio::test]` surface to register.\n",
+            name = member.package_name
+        ));
+    };
+
+    let original = fs::read_to_string(lib_path)
+        .with_context(|| format!("reading member lib.rs at {}", lib_path.display()))?;
+
+    let mut out = String::with_capacity(original.len().saturating_add(512));
+    out.push_str(&original);
+
+    if proxies.is_empty() {
+        return Ok(out);
+    }
+
+    let lib_ident = crate_name_to_ident(&member.package_name);
+    out.push_str(
+        "\n\n// \u{2500}\u{2500} rudzio v2: auto-generated test + helper inclusions \u{2500}\u{2500}\n\
+         // Bridge's `[lib] path = \"src/lib.rs\"` points at this file.\n\
+         // Member's lib.rs content above is preserved byte-for-byte so\n\
+         // `crate::` paths inside member lib code resolve natively. The\n\
+         // appended `#[cfg(rudzio_test)]` mod declarations mount the\n\
+         // per-binary test proxies + helper modules so their\n\
+         // `#[linkme::distributed_slice(TEST_TOKENS)]` statics get\n\
+         // aggregated into the bridge's compile unit, which the\n\
+         // aggregator links via `extern crate <bridge>;`.\n\n",
+    );
+    // Make the member's lib reachable under its own crate name from
+    // within the bridge crate (the bridge's `[lib].name` is the
+    // member's name, but a crate doesn't see itself by name in
+    // edition 2018+ without an explicit `extern crate self as <name>;`).
+    // The proxy test sources retain their original
+    // `use <member_lib_name>::Foo;` statements; this self-alias is
+    // what makes those resolve when the proxies compile inside the
+    // bridge's compile unit instead of as standalone integration-test
+    // binaries.
+    let _alias_emit: FmtResult = writeln!(
+        out,
+        "#[cfg(rudzio_test)]\nextern crate self as {lib_ident};\n"
+    );
+
+    for proxy in proxies {
+        for (synth_name, proxy_path) in &proxy.helper_mods {
+            let path_lit = escape_rust_string_literal(&proxy_path.to_string_lossy());
+            let _helper_emit: FmtResult = writeln!(
+                out,
+                "#[cfg(rudzio_test)]\n\
+                 #[path = {path_lit}]\n\
+                 #[allow(unused, dead_code, non_snake_case)]\n\
+                 mod {synth_name};",
+            );
+        }
+        let test_mod_name = format!("__rudzio_test_{binary_id}", binary_id = proxy.binary_id);
+        let path_lit = escape_rust_string_literal(&proxy.proxy_test_root.to_string_lossy());
+        let _test_emit: FmtResult = writeln!(
+            out,
+            "#[cfg(rudzio_test)]\n\
+             #[path = {path_lit}]\n\
+             #[allow(unused, dead_code, non_snake_case)]\n\
+             mod {test_mod_name};",
+        );
+    }
+
+    Ok(out)
+}
+
 /// Merge the member's `[dependencies]` + `[dev-dependencies]` + both
 /// target-cfg variants into one flat `[dependencies]` table for the
 /// bridge, plus inject `rudzio` if the member didn't already declare
@@ -3111,20 +3720,16 @@ fn build_bridge_dependencies(plan: &Plan, member: &MemberPlan) -> Result<Table> 
     }
 
     for (entry_name, dep) in &merged {
-        // Skip dev-only deps that name another bridged sibling: re-emitting
-        // them in the bridge's [dependencies] would form a cycle once
-        // sibling-bridge redirection rewrites them to the sibling's bridge
-        // package, and cargo halts with `error: cyclic package dependency`.
-        // The aggregator's own [dependencies] already pulls every bridged
-        // sibling in, so test-time uses of the dep still resolve.
-        if dep.section.is_dev_only()
-            && plan
-                .members
-                .iter()
-                .any(|sibling| sibling.package_name == dep.name && bridge_applies_to(sibling))
-        {
-            continue;
-        }
+        // Under v2 every bridge that has tests needs each sibling-bridge
+        // dep present in its own `[dependencies]` (tests live in the
+        // bridge compile unit and need `use <sibling>::Foo;` to
+        // resolve). The pre-v2 dev-only skip relied on the aggregator
+        // pulling siblings in for test-time use — that path is gone
+        // because the aggregator no longer compiles test source. If two
+        // members declare mutual sibling-bridge dev-deps the resulting
+        // cycle surfaces as `error: cyclic package dependency` at
+        // cargo-build time, which is a user-fixable situation (rename
+        // one side or move the dep) rather than a silent omission.
         let item = render_dev_dep(dep, plan)?;
         deps.insert(entry_name, item);
     }
@@ -3152,19 +3757,23 @@ fn build_bridge_dependencies(plan: &Plan, member: &MemberPlan) -> Result<Table> 
 
 /// Build the aggregator's `src/main.rs`.
 ///
-/// Emits `extern crate <crate>;` for every member we also list as a
-/// path dep in the aggregator's `[dependencies]`, which forces rustc
-/// to actually link each member's rlib into the final binary. Without
-/// this, rustc drops unreferenced rlibs during link-time DCE and
-/// linkme's `#[link_section]` statics in those crates (even annotated
-/// `#[used]`, which only blocks in-object DCE) never reach the
-/// binary — meaning `#[rudzio::test]` fns under a member's `src/**`
-/// wouldn't be discovered at run time. The member package name is
-/// normalised hyphens→underscores to match cargo's own
-/// crate-name-to-ident rule.
+/// Under v2 the aggregator is thin linker glue: one
+/// `extern crate <bridge>;` per bridged member that has a `[lib]`,
+/// plus an empty `#[rudzio::main] fn main() {}`. Tests live in their
+/// bridges' compile units under `cfg(rudzio_test)`; linkme's
+/// `distributed_slice(TEST_TOKENS)` aggregates them across all linked
+/// rlibs into the aggregator's final binary at link time.
+///
+/// `extern crate` forces rustc to actually pull the bridge rlib into
+/// the final binary — without it, link-time DCE drops unreferenced
+/// rlibs and linkme's `#[link_section]` statics in those bridges
+/// (even with `#[used]`, which only blocks in-object DCE) never reach
+/// the binary. Bin-only members (no `[lib]`) are not extern-crated
+/// because there's nothing to link from them; their bins compile as
+/// standalone binaries inside the bridge crate.
 #[inline]
 #[must_use]
-pub fn build_main_rs(plan: &Plan, out_dir: &Path) -> String {
+pub fn build_main_rs(plan: &Plan, _out_dir: &Path) -> String {
     let mut out = String::from(
         "#![allow(
     non_snake_case,
@@ -3186,7 +3795,13 @@ pub fn build_main_rs(plan: &Plan, out_dir: &Path) -> String {
         if paths_equal(&member.manifest_dir, workspace_root_abs) {
             continue;
         }
-        if !member.has_lib {
+        // Decisions Log [C3]: aggregator extern-crates EVERY bridge
+        // uniformly (lib-bearing AND bin-only-with-stub-lib). Linkme
+        // cross-crate aggregation harmlessly registers nothing from
+        // stub libs (no `#[distributed_slice]` content), so the cost
+        // is one trivial `extern crate` per bin-only bridge — well
+        // worth the simpler invariant.
+        if !bridge_applies_to(member) {
             continue;
         }
         let ident = crate_name_to_ident(&member.package_name);
@@ -3196,85 +3811,8 @@ pub fn build_main_rs(plan: &Plan, out_dir: &Path) -> String {
         let _ignored: FmtResult = writeln!(out, "extern crate {ident};");
     }
 
-    // Transparent re-export of each member's test-root helper modules
-    // at the aggregator's crate root. Under stock cargo, a `[[test]]
-    // <name>` binary with `tests/<name>/mod.rs` as its entry point has
-    // mod.rs as the crate root, so `mod common;` in mod.rs makes
-    // `crate::common` resolve from any sibling test file. Under the
-    // aggregator mod.rs is `#[path]`-included as a NESTED module, and
-    // `crate::common` from inside it looks at the (different)
-    // aggregator crate root. Mirroring those helper-mod declarations
-    // here at the actual crate root restores stock-cargo semantics.
-    //
-    // Collisions across members (two members declaring `mod common;`
-    // with different files) are flagged by `collect_test_root_helpers`
-    // so the user gets a clear error rather than a silent first-wins.
-    for helper in collect_test_root_helpers(plan, out_dir) {
-        let _ignored: FmtResult = writeln!(
-            out,
-            "#[path = {}]\nmod {};",
-            quote_str(&helper.path.to_string_lossy()),
-            helper.module,
-        );
-    }
-
-    // The tests module gets a unique name (`__rudzio_member_tests`)
-    // rather than the natural `tests`. `rudzio::manifest_dir!()`
-    // identifies aggregator-context module paths by looking for that
-    // marker segment — the natural `tests` would collide with member
-    // src test mods (`mod tests` inside a bridged member's src), and
-    // the resolver couldn't distinguish them.
-    out.push_str(
-        "
-#[path = \"tests.rs\"]
-mod __rudzio_member_tests;
-
-#[rudzio::main]
-fn main() {",
-    );
-
-    // Wire the per-member `RUDZIO_MEMBER_MANIFEST_DIR_<n>=<abs>` env
-    // vars build.rs emitted into the rudzio runtime registry so
-    // `rudzio::manifest_dir!()` can resolve them at the test's call
-    // site. `#[rudzio::main]` inlines this body before the runner.
-    let test_members: Vec<&MemberPlan> = plan
-        .members
-        .iter()
-        .filter(|member| !member.test_files.is_empty())
-        .collect();
-    if test_members.is_empty() {
-        out.push_str("}\n");
-        return out;
-    }
-    out.push_str("\n    ::rudzio::member_meta::register_member_manifest_dirs(&[\n");
-    for member in test_members {
-        let ident = sanitize_ident(&member.package_name);
-        let _ignored: FmtResult = writeln!(
-            out,
-            "        ({}, env!(\"RUDZIO_MEMBER_MANIFEST_DIR_{ident}\")),",
-            quote_str(&ident)
-        );
-    }
-    out.push_str("    ]);\n}\n");
+    out.push_str("\n#[rudzio::main]\nfn main() {}\n");
     out
-}
-
-/// Walk every member's test-root files, parse each for top-level
-/// `mod <name>;` declarations, and emit one [`TestRootHelper`] per
-/// `(test_binary, helper)` pair. Each helper gets a synthesised
-/// crate-root module name that is unique across the workspace, so
-/// two `[[test]]` binaries declaring `mod common;` against different
-/// sibling files no longer collide (Bug #10 — the previous
-/// implementation `BTreeMap`-deduplicated by bare module name, which
-/// silently first-wins). Source files in each test binary go through
-/// a syn-based rewrite so `use crate::<helper>` inside those files
-/// resolves to the binary-scoped helper, not whichever helper the
-/// first-wins lottery favoured.
-fn collect_test_root_helpers(plan: &Plan, out_dir: &Path) -> Vec<TestRootHelper> {
-    collect_test_binary_proxies(plan, out_dir)
-        .into_iter()
-        .flat_map(|proxy| proxy.helpers_at_crate_root.into_iter())
-        .collect()
 }
 
 /// Bug #10 collision detection: when two `[[test]]` binaries declare
@@ -3370,20 +3908,30 @@ fn file_carries_test_markers(path: &Path) -> bool {
 /// each `[[test]]` entry, and discover the helpers it declares.
 /// Pure: no filesystem writes. The proxy paths returned are the
 /// paths the on-disk proxies WILL live at after
-/// [`write_test_binary_proxies`] runs; `build_main_rs` /
-/// `build_tests_rs` use those paths in `#[path = ...]` attributes
-/// regardless of whether they exist yet.
+/// [`write_test_binary_proxies`] runs; `build_bridge_lib_rs` uses
+/// those paths in `#[path = ...]` attributes regardless of whether
+/// they exist yet.
+///
+/// Under v2 each member's proxies live inside that member's bridge
+/// directory at `<out_dir>/members/<bridge_dir>/src/proxies/<id>/`.
+/// The proxy tree is therefore compiled as part of the bridge's lib
+/// (gated by `cfg(rudzio_test)`), and linkme's `distributed_slice`
+/// aggregates `TEST_TOKENS` across all bridges linked into the
+/// aggregator via `extern crate <bridge>;`.
+///
+/// Members without a bridge (i.e. without rudzio surface, without
+/// `force_bridge`, without any bins, without any tests) are skipped:
+/// they contribute nothing to the aggregator and have no place to
+/// host proxy files.
 fn collect_test_binary_proxies(plan: &Plan, out_dir: &Path) -> Vec<TestBinaryProxy> {
-    let proxies_root = out_dir.join("src").join("proxies");
-    // `<out_dir>/src/proxies/<id>` is the canonical proxy location.
-    // `write_test_binary_proxies` writes files there and main.rs /
-    // tests.rs reference them via `#[path]`. Both must agree on the
-    // path, so `out_dir` is threaded through every collector +
-    // builder rather than recomputed from `plan.workspace_root`
-    // (which would force the default-output-dir convention onto
-    // callers that pass a custom out_dir, e.g. tempdirs in tests).
+    let members_dir = out_dir.join("members");
     let mut out: Vec<TestBinaryProxy> = Vec::new();
     for member in &plan.members {
+        if member.test_files.is_empty() {
+            continue;
+        }
+        let bridge_root = members_dir.join(bridge_dir_name(member));
+        let proxies_root = bridge_root.join("src").join("proxies");
         for test_file in &member.test_files {
             let Some(test_root_dir) = test_file.parent() else {
                 continue;
@@ -3396,23 +3944,21 @@ fn collect_test_binary_proxies(plan: &Plan, out_dir: &Path) -> Vec<TestBinaryPro
             };
             let helpers_raw = discover_test_root_helpers(test_file);
             let mut helper_synth_lookup: BTreeMap<String, String> = BTreeMap::new();
-            let mut helpers_at_crate_root: Vec<TestRootHelper> = Vec::new();
+            let mut helper_mods: Vec<(String, PathBuf)> = Vec::new();
             for (helper_name, source_path) in helpers_raw {
                 let synth = format!("__rudzio__{binary_id}__{helper_name}");
                 let proxy_path = match source_path.strip_prefix(test_root_dir) {
                     Ok(rel) => proxy_dir.join(rel),
                     Err(_) => continue,
                 };
-                helpers_at_crate_root.push(TestRootHelper {
-                    module: synth.clone(),
-                    path: proxy_path,
-                });
+                helper_mods.push((synth.clone(), proxy_path));
                 let _previous_synth = helper_synth_lookup.insert(helper_name, synth);
             }
             out.push(TestBinaryProxy {
                 binary_id,
-                helpers_at_crate_root,
                 helper_synth_lookup,
+                helper_mods,
+                member_lib_ident: crate_name_to_ident(&member.package_name),
                 test_root: test_file.clone(),
                 test_root_dir: test_root_dir.to_path_buf(),
                 proxy_test_root,
@@ -3469,15 +4015,16 @@ fn compute_test_binary_id(member: &MemberPlan, test_file: &Path) -> String {
 /// file fails to write, or any directory creation fails. Read-fail
 /// on an individual source file is fatal so missing helpers don't
 /// silently degrade to a "first source wins" cascade.
-fn write_test_binary_proxies(out_dir: &Path, proxies: &[TestBinaryProxy]) -> Result<()> {
-    let proxies_root = out_dir.join("src").join("proxies");
-    if proxies_root.exists() {
-        fs::remove_dir_all(&proxies_root)
-            .with_context(|| format!("removing {}", proxies_root.display()))?;
-    }
+fn write_test_binary_proxies(proxies: &[TestBinaryProxy]) -> Result<()> {
+    // Each proxy's `proxy_test_root` already encodes its bridge-dir
+    // location (`<bridge>/src/proxies/<binary_id>/<test_file>.rs`)
+    // computed inside `collect_test_binary_proxies`. We trust those
+    // paths and write files relative to each proxy's own directory.
     for proxy in proxies {
-        let proxy_dir = proxies_root.join(&proxy.binary_id);
-        fs::create_dir_all(&proxy_dir)
+        let Some(proxy_dir) = proxy.proxy_test_root.parent() else {
+            continue;
+        };
+        fs::create_dir_all(proxy_dir)
             .with_context(|| format!("creating {}", proxy_dir.display()))?;
         let source_files = walk_rs_files(&proxy.test_root_dir);
         let helper_names: BTreeSet<String> = proxy.helper_synth_lookup.keys().cloned().collect();
@@ -3501,13 +4048,19 @@ fn write_test_binary_proxies(out_dir: &Path, proxies: &[TestBinaryProxy]) -> Res
             let rewritten = if source_file == proxy.test_root {
                 let stripped = strip_helper_mod_decls(&original, &helper_names)
                     .with_context(|| format!("stripping mod decls in {}", source_file.display()))?;
-                rewrite_crate_paths(&stripped, &proxy.helper_synth_lookup).with_context(|| {
-                    format!("rewriting crate paths in {}", source_file.display())
-                })?
+                rewrite_crate_paths(
+                    &stripped,
+                    &proxy.helper_synth_lookup,
+                    &proxy.member_lib_ident,
+                )
+                .with_context(|| format!("rewriting crate paths in {}", source_file.display()))?
             } else {
-                rewrite_crate_paths(&original, &proxy.helper_synth_lookup).with_context(|| {
-                    format!("rewriting crate paths in {}", source_file.display())
-                })?
+                rewrite_crate_paths(
+                    &original,
+                    &proxy.helper_synth_lookup,
+                    &proxy.member_lib_ident,
+                )
+                .with_context(|| format!("rewriting crate paths in {}", source_file.display()))?
             };
             fs::write(&dest, rewritten).with_context(|| format!("writing {}", dest.display()))?;
         }
@@ -3555,12 +4108,19 @@ fn walk_rs_files(dir: &Path) -> Vec<PathBuf> {
 ///
 /// Returns an error when `source` is not valid Rust — the
 /// `prettyplease::unparse` step itself is infallible.
-fn rewrite_crate_paths(source: &str, helpers: &BTreeMap<String, String>) -> Result<String> {
-    if helpers.is_empty() {
+fn rewrite_crate_paths(
+    source: &str,
+    helpers: &BTreeMap<String, String>,
+    member_lib_ident: &str,
+) -> Result<String> {
+    if helpers.is_empty() && member_lib_ident.is_empty() {
         return Ok(source.to_owned());
     }
     let mut file: syn::File = syn::parse_str(source).context("parsing test-binary source file")?;
-    let mut rewriter = CratePathRewriter { helpers };
+    let mut rewriter = CratePathRewriter {
+        helpers,
+        member_lib_ident,
+    };
     rewriter.visit_file_mut(&mut file);
     Ok(prettyplease::unparse(&file))
 }
@@ -3768,31 +4328,22 @@ fn force_enable(dep: &DevDepSpec) -> DevDepSpec {
     out
 }
 
-/// Build the aggregator crate's `Cargo.toml` from the resolved `Plan`.
-fn build_cargo_toml(plan: &Plan) -> Result<String> {
-    let mut doc = DocumentMut::new();
-
+/// Build the aggregator crate's `[package]` section.
+fn aggregator_package_table() -> Table {
     let mut pkg = Table::new();
     pkg.insert("name", value(AGGREGATOR_NAME));
     pkg.insert("version", value("0.0.0"));
     pkg.insert("edition", value("2024"));
     pkg.insert("publish", value(false));
-    doc.insert("package", Item::Table(pkg));
+    pkg
+}
 
-    // `[workspace]` makes the aggregator its own workspace root so
-    // cargo doesn't complain that its manifest is missing from the
-    // enclosing rudzio workspace's `members` list (the aggregator lives
-    // at `<target-dir>/rudzio-auto-runner`, outside that list). It also
-    // insulates feature unification from the parent graph. The bin-only
-    // workspace-member problem that cuts off `rudzio::build::expose_bins`
-    // here is handled in `build.rs` — see `build_build_rs`.
-    //
-    // Bridge crates live at `members/<name>/Cargo.toml`. Cargo would
-    // otherwise reject those as "non-member manifests nested inside a
-    // workspace root". Listing them as explicit workspace members makes
-    // cargo treat them as part of this workspace. If no member
-    // qualifies for bridging, the `members` key is omitted entirely so
-    // the aggregator stays a single-crate virtual workspace.
+/// Build the aggregator crate's `[workspace]` section.
+///
+/// Lists every bridged member as `members/<bridge-dir>`. If no member
+/// qualifies for bridging, the `members` key is omitted so the
+/// aggregator stays a single-crate virtual workspace.
+fn aggregator_workspace_table(plan: &Plan) -> Table {
     let mut ws_tbl = Table::new();
     let mut members_arr = Array::new();
     for member in &plan.members {
@@ -3807,15 +4358,35 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
     if !members_arr.is_empty() {
         ws_tbl.insert("members", Item::Value(Value::Array(members_arr)));
     }
-    doc.insert("workspace", Item::Table(ws_tbl));
+    ws_tbl
+}
 
+/// Build the aggregator's `[[bin]]` array (always exactly one entry —
+/// the rudzio-auto-runner binary).
+fn aggregator_bin_array() -> ArrayOfTables {
     let mut bin = Table::new();
     bin.insert("name", value(AGGREGATOR_NAME));
     bin.insert("path", value("src/main.rs"));
     bin.insert("test", value(false));
-    let mut bins = toml_edit::ArrayOfTables::new();
+    let mut bins = ArrayOfTables::new();
     bins.push(bin);
-    doc.insert("bin", Item::ArrayOfTables(bins));
+    bins
+}
+
+/// Build the aggregator crate's `Cargo.toml` from the resolved `Plan`.
+fn build_cargo_toml(plan: &Plan) -> Result<String> {
+    let mut doc = DocumentMut::new();
+    doc.insert("package", Item::Table(aggregator_package_table()));
+    // `[workspace]` makes the aggregator its own workspace root so
+    // cargo doesn't complain that its manifest is missing from the
+    // enclosing rudzio workspace's `members` list (the aggregator
+    // lives at `<target-dir>/rudzio-auto-runner`, outside that
+    // list). It also insulates feature unification from the parent
+    // graph. Bridge crates live at `members/<name>/Cargo.toml`;
+    // listing them as explicit workspace members makes cargo treat
+    // them as part of this workspace.
+    doc.insert("workspace", Item::Table(aggregator_workspace_table(plan)));
+    doc.insert("bin", Item::ArrayOfTables(aggregator_bin_array()));
 
     let mut deps = Table::new();
 
@@ -3864,11 +4435,20 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
         if paths_equal(&member.manifest_dir, workspace_root_abs) {
             continue;
         }
-        if !member.has_lib {
+        // Decisions Log [C3]: aggregator depends on every bridged
+        // member (lib-bearing AND bin-only-with-stub-lib) via the
+        // bridge's package name. Non-bridged members are deps via
+        // their real path so cargo can still resolve direct deps
+        // (e.g. when the aggregator references a workspace member
+        // that doesn't trigger bridge generation).
+        let bridged = bridge_applies_to(member);
+        if !bridged && !member.has_lib() {
+            // Non-bridged bin-only member: nothing to link in (no lib,
+            // no test surface, no bridge). Skip the dep entry.
             continue;
         }
         let mut tbl = InlineTable::new();
-        if bridge_applies_to(member) {
+        if bridged {
             tbl.insert(
                 "path",
                 Value::String(Formatted::new(format!(
@@ -4207,154 +4787,43 @@ fn fill_version_dep_body(tbl: &mut InlineTable, dep: &DevDepSpec) {
     }
 }
 
-/// Build the aggregator's `src/tests.rs` body — `#[path]`-included submodules per member's tests.
-fn build_tests_rs(plan: &Plan, out_dir: &Path) -> String {
-    // Per-crate submodule namespacing. Each member's tests/*.rs files
-    // nest under `mod <crate_name> { ... }` so sibling helper modules
-    // resolve via `use super::helper::*` from inside a test file —
-    // that path works BOTH in per-crate `cargo test -p X` (where the
-    // test binary's crate root has `mod helper;` and `mod test_file;`
-    // as peers, so super from inside test_file = crate root = has
-    // helper) AND in the aggregator (super from tests::X::test_file =
-    // tests::X = has mod helper). Flat prefix-mangling (the previous
-    // layout) broke the former because `crate::helper` resolved to
-    // the aggregator root, which doesn't have helper under its short
-    // name. Per-crate nesting also eliminates cross-crate name
-    // collisions without needing a prefix at all.
-    let proxies = collect_test_binary_proxies(plan, out_dir);
-    let mut per_crate_mod_names: BTreeSet<String> = BTreeSet::new();
-    let mut out = String::new();
-    for member in &plan.members {
-        if member.test_files.is_empty() {
-            continue;
-        }
-        let base_ident = sanitize_ident(&member.package_name);
-        let mut crate_mod = base_ident.clone();
-        let mut dedup_counter = 1_u32;
-        while !per_crate_mod_names.insert(crate_mod.clone()) {
-            crate_mod = format!("{base_ident}_{dedup_counter}");
-            dedup_counter = dedup_counter.saturating_add(1);
-        }
-        let _crate_header: FmtResult = writeln!(out, "mod {crate_mod} {{");
-
-        let mut used_inner: BTreeSet<String> = BTreeSet::new();
-        for file in &member.test_files {
-            let stem_ident = inner_module_ident_for(file);
-            let mut inner = stem_ident.clone();
-            let mut inner_counter = 1_u32;
-            while !used_inner.insert(inner.clone()) {
-                inner = format!("{stem_ident}_{inner_counter}");
-                inner_counter = inner_counter.saturating_add(1);
-            }
-            // Reference the PROXY test-root, not the original source.
-            // The proxy has `mod <helper>;` declarations stripped (so
-            // helpers don't compile twice) and `crate::<helper>` paths
-            // rewritten to the synth names emitted at the aggregator's
-            // crate root. The proxy is materialised by
-            // `write_test_binary_proxies` before this string is
-            // written to disk.
-            let path_for_attr = proxies
-                .iter()
-                .find(|proxy| proxy.test_root == *file)
-                .map_or_else(
-                    || file.to_string_lossy().into_owned(),
-                    |proxy| proxy.proxy_test_root.to_string_lossy().into_owned(),
-                );
-            let _path_line: FmtResult = writeln!(
-                out,
-                "    #[path = {}]\n    mod {inner};",
-                quote_str(&path_for_attr)
-            );
-        }
-        out.push_str("}\n");
-    }
-    out
-}
-
-/// Build the aggregator's `build.rs` content — emits `cargo:rustc-cfg=rudzio_test`,
-/// per-member manifest-dir env vars, and bin-export shims.
+/// Build the aggregator's `build.rs` content.
+///
+/// Under v2 the aggregator's build script does the bare minimum: emit
+/// `cargo:rustc-cfg=rudzio_test` so the aggregator's own compile unit
+/// sees the cfg, plus a matching `cargo::rustc-check-cfg` to silence
+/// the `unexpected_cfgs` lint. Everything else — per-member
+/// `CARGO_MANIFEST_DIR` overrides, `CARGO_BIN_EXE_<n>` resolution for
+/// member bins, `CARGO_PKG_NAME` overrides — happens inside each
+/// bridge's own build.rs, where the emission is correctly scoped to
+/// the member's bridge compile unit.
+///
+/// The aggregator does not spawn `cargo` here. The legacy
+/// `expose_member_bins` shim (which executed
+/// `cargo build --bins -p <member>` from this build script and was the
+/// proximate cause of the `.package-cache` flock cascade) is gone.
 #[inline]
 #[must_use]
-pub fn build_build_rs(plan: &Plan) -> String {
-    let bin_members: Vec<&MemberPlan> = plan
-        .members
-        .iter()
-        .filter(|member| !member.bin_names.is_empty())
-        .collect();
-    let test_members: Vec<&MemberPlan> = plan
-        .members
-        .iter()
-        .filter(|member| !member.test_files.is_empty())
-        .collect();
-    // The aggregator always emits `cargo:rustc-cfg=rudzio_test`: this is
-    // where the cfg enters the aggregator's own compile unit. Cargo
-    // scopes `cargo:rustc-cfg=` per-crate, so the emission here does NOT
-    // leak into nested `cargo build --bins` invocations that
-    // `expose_member_bins` may trigger below — each of those gets its
-    // own untouched rustc.
-    //
-    // For each member that contributes integration-test sources (and
-    // therefore appears under a `mod <member>` block in the
-    // aggregator's `tests.rs`), emit
-    // `cargo:rustc-env=RUDZIO_MEMBER_MANIFEST_DIR_<sanitised>=<abs>` so
-    // the aggregator's `main.rs` can read these via `env!(...)` and
-    // wire them into `rudzio::member_meta::register_member_manifest_dirs`.
-    // `rudzio::manifest_dir!()` then resolves `module_path!()` at the
-    // test's call site to the original member's manifest dir instead
-    // of the aggregator's.
-    //
-    // For bin members, shell out to `cargo build --bins --manifest-path
-    // <Cargo.toml>` into a sandboxed OUT_DIR target, then emit
-    // `cargo:rustc-env=CARGO_BIN_EXE_<bin>=<abs>` for each so that
-    // `env!(CARGO_BIN_EXE_<name>)` in `#[path]`-included integration
-    // sources resolves at compile time. (The aggregator has its own
-    // `[workspace]` stanza, so `rudzio::build::expose_bins`'s
-    // metadata-based approach isn't applicable here.)
+pub fn build_build_rs(_plan: &Plan) -> String {
     let mut out = String::new();
-    if bin_members.is_empty() {
-        out.push_str("fn main() {\n");
-        out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
-        out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
-        emit_member_manifest_dir_env_vars(&mut out, &test_members);
-        out.push_str("}\n");
-        return out;
-    }
-    out.push_str(BUILD_RS_HELPERS);
-    out.push_str("\nfn main() -> Result<(), String> {\n");
+    out.push_str("fn main() {\n");
     out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
     out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
-    emit_member_manifest_dir_env_vars(&mut out, &test_members);
-    for member in bin_members {
-        let _ignored: FmtResult = write!(
-            out,
-            "    expose_member_bins({}, {}, &[",
-            quote_str(&member.package_name),
-            quote_str(&member.manifest_dir.to_string_lossy()),
-        );
-        for (idx, bin) in member.bin_names.iter().enumerate() {
-            if idx > 0 {
-                out.push_str(", ");
-            }
-            out.push_str(&quote_str(bin));
-        }
-        out.push_str("])?;\n");
-    }
-    out.push_str("    Ok(())\n}\n");
+    out.push_str("}\n");
     out
 }
 
-/// Emit a `println!(...)` line per member that exports the member's
-/// manifest dir as a `cargo:rustc-env=RUDZIO_MEMBER_MANIFEST_DIR_<n>=<abs>`
-/// directive.
-fn emit_member_manifest_dir_env_vars(out: &mut String, members: &[&MemberPlan]) {
-    for member in members {
-        let ident = sanitize_ident(&member.package_name);
-        let _ignored: FmtResult = writeln!(
-            out,
-            "    println!(\"cargo:rustc-env=RUDZIO_MEMBER_MANIFEST_DIR_{ident}={}\");",
-            escape_str_literal(&member.manifest_dir.to_string_lossy())
-        );
-    }
+/// Render `value` as a complete Rust `&str` literal (`"…"` form),
+/// escaping `\`, `"`, control characters, and DEL the same way `{value:?}`
+/// would but without tripping the workspace-wide `clippy::use_debug`
+/// forbid. Used by the bridge-lib codegen path that splices member-side
+/// proxy paths into `#[path = …]` attributes.
+fn escape_rust_string_literal(value: &str) -> String {
+    let mut buf = String::with_capacity(value.len().saturating_add(2));
+    buf.push('"');
+    buf.push_str(&escape_str_literal(value));
+    buf.push('"');
+    buf
 }
 
 /// Escape `value` for safe inclusion inside a Rust `&str` literal whose
@@ -4424,100 +4893,6 @@ fn test_binary_name_for(file: &Path) -> String {
     }
 }
 
-/// Derive the inner Rust module identifier emitted into the
-/// aggregator's proxy `mod.rs` for `file`. Uses the immediate parent
-/// directory's name for `mod.rs` entries, the file stem otherwise.
-/// Sanitizes invalid identifier characters and promotes Rust reserved
-/// keywords to raw identifiers (`r#match`).
-fn inner_module_ident_for(file: &Path) -> String {
-    let raw_stem = file
-        .file_stem()
-        .and_then(|os_stem| os_stem.to_str())
-        .unwrap_or("test");
-    let base = if raw_stem == "mod" {
-        // `tests/<parent>/mod.rs` → use `<parent>` as the module name.
-        // Fall back to "test_mod" only when the file has no parent at
-        // all (defensive — cargo always provides an absolute path).
-        let parent_dir = file
-            .parent()
-            .and_then(|parent| parent.file_name())
-            .and_then(|os_name| os_name.to_str())
-            .unwrap_or("test_mod");
-        sanitize_ident(parent_dir)
-    } else {
-        sanitize_ident(raw_stem)
-    };
-    if is_rust_reserved_keyword(&base) {
-        // Promote to a raw identifier so the keyword is usable in a
-        // module-declaration position. Applies uniformly whether the
-        // keyword came from a file stem (`tests/match.rs` →
-        // `r#match`) or a parent dir of a `mod.rs` (`tests/impl/mod.rs`
-        // → `r#impl`).
-        return format!("r#{base}");
-    }
-    base
-}
-
-/// `true` when `ident` is a Rust reserved keyword (Edition 2021 + 2024
-/// committed set). Used to decide whether to promote a generated
-/// module name to a raw identifier. Conservative: any name on this
-/// list will be emitted as `r#<name>` regardless of context.
-///
-/// Source: rustc's `kw` symbol table (the union of all editions'
-/// reserved sets — pinning to one edition would silently miss a
-/// future-edition word).
-fn is_rust_reserved_keyword(ident: &str) -> bool {
-    matches!(
-        ident,
-        "as" | "async"
-            | "await"
-            | "break"
-            | "const"
-            | "continue"
-            | "crate"
-            | "do"
-            | "dyn"
-            | "else"
-            | "enum"
-            | "extern"
-            | "false"
-            | "fn"
-            | "for"
-            | "gen"
-            | "if"
-            | "impl"
-            | "in"
-            | "let"
-            | "loop"
-            | "macro"
-            | "match"
-            | "mod"
-            | "move"
-            | "mut"
-            | "priv"
-            | "pub"
-            | "ref"
-            | "return"
-            | "self"
-            | "Self"
-            | "static"
-            | "struct"
-            | "super"
-            | "trait"
-            | "true"
-            | "try"
-            | "type"
-            | "typeof"
-            | "unsafe"
-            | "unsized"
-            | "use"
-            | "virtual"
-            | "where"
-            | "while"
-            | "yield"
-    )
-}
-
 /// Replace any non `[a-zA-Z0-9_]` chars in `value` with `_`, prefixing a digit-starter with `_`.
 fn sanitize_ident(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
@@ -4536,31 +4911,6 @@ fn sanitize_ident(value: &str) -> String {
         out.insert(0, '_');
     }
     out
-}
-
-/// Render `value` as a Rust-source `&str` literal (with surrounding double-quotes and escapes).
-///
-/// Used by emitters of generated Rust source to embed dynamic strings
-/// safely into the output.
-fn quote_str(value: &str) -> String {
-    let mut buf = String::with_capacity(value.len().saturating_add(2));
-    buf.push('"');
-    for character in value.chars() {
-        match character {
-            '\\' => buf.push_str("\\\\"),
-            '"' => buf.push_str("\\\""),
-            '\n' => buf.push_str("\\n"),
-            '\r' => buf.push_str("\\r"),
-            '\t' => buf.push_str("\\t"),
-            '\0' => buf.push_str("\\0"),
-            other if u32::from(other) < 0x20 || other == '\u{7f}' => {
-                let _ignored: FmtResult = write!(buf, "\\u{{{:x}}}", u32::from(other));
-            }
-            other => buf.push(other),
-        }
-    }
-    buf.push('"');
-    buf
 }
 
 /// Two paths refer to the same canonicalized location.

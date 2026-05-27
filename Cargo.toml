@@ -53,10 +53,6 @@ smol = { workspace = true, optional = true }
 # module + suite-entry level (linux + macos only).
 monoio = { workspace = true, optional = true }
 send_wrapper = { workspace = true, features = ["futures"], optional = true }
-# Only compiled when the `build` feature is on (the `rudzio::build`
-# module). Kept optional so rudzio used purely as a runtime dep doesn't
-# pull cargo_metadata's dep tree.
-cargo_metadata = { workspace = true, optional = true }
 
 # Signal handling is unconditional on Unix so the runner always cancels
 # gracefully on both SIGINT and SIGTERM without any feature opt-in.
@@ -75,7 +71,6 @@ libc = { workspace = true }
 [dev-dependencies]
 # Dogfood under every runtime rudzio ships.
 rudzio = { version = "0.1.1", path = ".", features = [
-  "build",
   "common",
   "runtime-tokio-multi-thread",
   "runtime-tokio-current-thread",
@@ -102,10 +97,6 @@ harness = false
 test = false
 
 [features]
-# Build-script helper. Enable in `[build-dependencies]` to access
-# `rudzio::build::expose_bins(...)` for cross-crate aggregator test
-# runners.
-build = ["dep:cargo_metadata"]
 # Opt-in: the ready-made `Suite` / `Test` pair in `rudzio::common::context`.
 # Off by default so consumers that implement their own context types don't
 # pay for code they don't use.
@@ -141,7 +132,14 @@ workspace = true
 
 [workspace]
 resolver = "3"
-members = ["cargo-rudzio", "fixtures", "macro", "macro-internals", "migrate"]
+members = [
+  "cargo-rudzio",
+  "cargo-rudzio-test-helpers",
+  "fixtures",
+  "macro",
+  "macro-internals",
+  "migrate",
+]
 
 [workspace.package]
 edition = "2024"

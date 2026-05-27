@@ -1,0 +1,15 @@
+[package]
+name = "cargo-rudzio-test-helpers"
+version = "0.0.0"
+edition = { workspace = true }
+publish = false
+description = "Internal test-helper crate for `cargo-rudzio`'s integration tests. Provides `IsolatedCargoSuite` / `IsolatedCargoTest` — a rudzio Suite/Test pair that provisions a per-suite tempdir + pre-warmed `CARGO_HOME` so tests spawning cargo subprocesses don't contend on the parent test session's `.package-cache` flock. Not part of cargo-rudzio's public API; the only consumer is `cargo-rudzio`'s own integration test binary."
+
+[lib]
+name = "cargo_rudzio_test_helpers"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+rudzio = { workspace = true, features = ["common"] }
+tempfile = "=3.27.0"

@@ -74,7 +74,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::process::{Command, Stdio};
 
-use rudzio::common::context::{Suite, Test};
+use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
 use rudzio::runtime::futures::ThreadPool;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use rudzio::runtime::monoio;
@@ -168,22 +168,22 @@ fn write_minimal_consumer(root: &Path, rudzio_root: &Path) -> io::Result<()> {
 }
 
 #[rudzio::suite([
-    (runtime = Multithread::new, suite = Suite, test = Test),
-    (runtime = CurrentThread::new, suite = Suite, test = Test),
-    (runtime = Local::new, suite = Suite, test = Test),
-    (runtime = compio::Runtime::new, suite = Suite, test = Test),
-    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
-    (runtime = ThreadPool::new, suite = Suite, test = Test),
-    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
-    (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    (runtime = Multithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
+    (runtime = CurrentThread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
+    (runtime = Local::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
+    (runtime = compio::Runtime::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
+    (runtime = embassy::Runtime::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
+    (runtime = ThreadPool::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
+    (runtime = async_std::Runtime::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
+    (runtime = smol::Runtime::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
+    (runtime = monoio::Runtime::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
 ])]
 mod tests {
     use std::process::Output;
 
     use super::{
-        Command, Path, PathBuf, Stdio, TempDir, Test, fs, io, rudzio_source_root,
+        Command, IsolatedCargoTest, Path, PathBuf, Stdio, TempDir, fs, io, rudzio_source_root,
         shared_target_dir, write_minimal_consumer,
     };
 
@@ -191,12 +191,27 @@ mod tests {
     /// shared` set explicitly. Returns the spawned process's
     /// captured `Output`. Pipes both streams so the assertion site
     /// can grep stderr for the race signature.
-    fn run_cargo_rudzio_with_shared_target(root: &Path, shared: &Path) -> io::Result<Output> {
+    ///
+    /// `cargo_home` is the per-test private cargo home minted by
+    /// [`IsolatedCargoSuite::context`] — concurrent invocations under
+    /// the runtime matrix do not contend on the parent test session's
+    /// `.package-cache` flock. The `CARGO_TARGET_DIR` this test
+    /// deliberately shares across all 9 parallel invocations is
+    /// orthogonal: it's the regression class the test guards
+    /// against. With `CARGO_NET_OFFLINE=true`, the spawned cargo
+    /// resolves entirely from the per-test hardlinked registry.
+    fn run_cargo_rudzio_with_shared_target(
+        root: &Path,
+        shared: &Path,
+        cargo_home: &Path,
+    ) -> io::Result<Output> {
         let cargo_rudzio_bin: &str = env!("CARGO_BIN_EXE_cargo-rudzio");
         Command::new(cargo_rudzio_bin)
             .arg("test")
             .current_dir(root)
             .env("CARGO_TARGET_DIR", shared)
+            .env("CARGO_HOME", cargo_home)
+            .env("CARGO_NET_OFFLINE", "true")
             .env("NO_COLOR", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -213,16 +228,16 @@ mod tests {
     /// writes to a distinct per-consumer aggregator subdir, no race.
     #[rudzio::test]
     async fn parallel_invocations_against_distinct_workspaces_sharing_target_dir_all_succeed(
-        _ctx: &Test,
+        ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new()?;
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         let root = workspace.path();
         let rudzio_root: PathBuf = rudzio_source_root();
         let shared: PathBuf = shared_target_dir();
         fs::create_dir_all(&shared)?;
         write_minimal_consumer(root, &rudzio_root)?;
 
-        let output = run_cargo_rudzio_with_shared_target(root, &shared)?;
+        let output = run_cargo_rudzio_with_shared_target(root, &shared, ctx.cargo_home())?;
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
 
