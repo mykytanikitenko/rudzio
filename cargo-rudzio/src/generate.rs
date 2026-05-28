@@ -3007,14 +3007,16 @@ fn walk_dir_for_test_markers_and_main(dir: &Path) -> (Vec<PathBuf>, bool) {
 fn enumerate_unmounted_markers(member: &MemberPlan) -> Vec<MarkerLocation> {
     let mut out: Vec<MarkerLocation> = Vec::new();
 
-    // `[[bin]]` targets are handled structurally by `build_bridge_lib_rs`
-    // (see `collect_unmounted_bin_entries`): each bin whose source
-    // contains rudzio test markers but no `rudzio::main` gets its
-    // entry file mounted into the bridge lib via `#[cfg(rudzio_test)]
-    // #[path] mod __rudzio_bin_<name>;`, so the markers reach
-    // `TEST_TOKENS` via the aggregator's link path. Standalone bins
-    // (with `rudzio::main` in the source tree) are skipped — they
-    // self-aggregate. Either way, no `[[bin]]` finding lands here.
+    // `[[bin]]` targets are handled structurally by per-bin bridge
+    // crates (see `collect_bridged_bin_targets` and
+    // `write_bin_bridge_crate`, Bug #19 fix): each bin whose source
+    // contains rudzio test markers but no `rudzio::main` gets its own
+    // sibling bridge crate whose `[lib] path` points at the bin's
+    // `main.rs`, so the markers reach `TEST_TOKENS` via the
+    // aggregator's link path against the per-bin bridge's rlib.
+    // Standalone bins (with `rudzio::main` in the source tree) are
+    // skipped — they self-aggregate. Either way, no `[[bin]]` finding
+    // lands here.
 
     // `[[example]]` and `[[bench]]` have no structural support yet.
     // Walk each top-level dir. If ANY file in the tree has
@@ -3183,6 +3185,23 @@ pub fn write_runner(plan: &Plan, out_dir: &Path) -> Result<()> {
         })?;
     }
 
+    // Bug #19 fix: emit a per-bin bridge crate for every member-bin
+    // that needs one. Each per-bin bridge's `[lib] path` points
+    // directly at the bin's `main.rs` so `crate::*` inside bin code
+    // resolves at the bin root (the prior `#[path]`-mount approach
+    // made `crate::api` resolve at the member bridge's root, which
+    // broke every bin-internal `crate::` import).
+    for member in &plan.members {
+        for bin in collect_bridged_bin_targets(member) {
+            write_bin_bridge_crate(plan, member, bin, &members_dir).with_context(|| {
+                format!(
+                    "writing per-bin bridge crate for `{}::{}`",
+                    member.package_name, bin.name
+                )
+            })?;
+        }
+    }
+
     // Bug #10 collision detection: two `[[test]]` binaries declaring
     // `mod <name>;` against DIFFERENT source files must fail loudly
     // here, not silently first-wins or transparently scope. The
@@ -3344,6 +3363,54 @@ pub fn write_bridge_crate(plan: &Plan, member: &MemberPlan, out: &Path) -> Resul
     // directory at all (e.g. synthetic test fixtures), and idempotent
     // otherwise.
     materialize_bridge_src_dir(&member.manifest_dir, &bridge_dir)?;
+    Ok(())
+}
+
+/// Emit a per-bin bridge crate for `bin` under `out/<bin_bridge_dir_name>/`.
+///
+/// Bug #19 fix: bin source trees can no longer be `#[path]`-mounted
+/// into their member's bridge (the mount made `crate::*` inside bin
+/// code resolve at the member-bridge root, not the bin's, breaking
+/// every bin-internal `crate::api::...` import). Each non-standalone
+/// bin with rudzio test surface (filter logic in
+/// `collect_bridged_bin_targets`) instead gets a sibling per-bin
+/// bridge crate whose `[lib] path` points directly at the bin's
+/// `main.rs`, so the bin source IS the lib's crate root and
+/// `crate::*` resolves natively.
+///
+/// The per-bin bridge:
+/// - has no `[[bin]]` of its own (the member bridge keeps its
+///   `[[bin]]` entries unchanged; the per-bin bridge is lib-only);
+/// - has no `[workspace]` (attaches to the aggregator's workspace,
+///   same as the member bridge);
+/// - depends on every dep the member bridge depends on PLUS the
+///   member bridge itself (so bin source's `use <member_pkg>::*`
+///   resolves through the member bridge's compile unit).
+///
+/// # Errors
+///
+/// Returns an error when the bin bridge directory cannot be wiped /
+/// recreated, or when the bin bridge `Cargo.toml` / `build.rs`
+/// cannot be emitted.
+fn write_bin_bridge_crate(
+    plan: &Plan,
+    member: &MemberPlan,
+    bin: &MemberBin,
+    out: &Path,
+) -> Result<()> {
+    let bridge_dir = out.join(bin_bridge_dir_name(member, bin));
+    if bridge_dir.exists() {
+        fs::remove_dir_all(&bridge_dir)
+            .with_context(|| format!("wiping stale bin bridge dir {}", bridge_dir.display()))?;
+    }
+    fs::create_dir_all(&bridge_dir)
+        .with_context(|| format!("creating bin bridge dir {}", bridge_dir.display()))?;
+    let manifest = build_bin_bridge_cargo_toml(plan, member, bin)
+        .with_context(|| format!("rendering bin bridge Cargo.toml at {}", bridge_dir.display()))?;
+    fs::write(bridge_dir.join("Cargo.toml"), manifest)
+        .with_context(|| format!("writing bin bridge Cargo.toml at {}", bridge_dir.display()))?;
+    fs::write(bridge_dir.join("build.rs"), build_bin_bridge_build_rs(member))
+        .with_context(|| format!("writing bin bridge build.rs at {}", bridge_dir.display()))?;
     Ok(())
 }
 
@@ -3677,6 +3744,28 @@ pub fn build_bridge_build_rs(member: &MemberPlan) -> String {
     out
 }
 
+/// Synthesize a per-bin bridge's `build.rs`.
+///
+/// Per-bin bridges have no `[[bin]]` entries (the member bridge owns
+/// `[[bin]]` compilation), so the bin-path arithmetic of
+/// `build_bridge_build_rs` is unneeded. Just emits
+/// `cargo:rustc-cfg=rudzio_test` + the matching
+/// `rustc-check-cfg=cfg(rudzio_test)` registration + the per-member
+/// env-var overrides via `emit_member_env_overrides` so `env!()` /
+/// `CARGO_PKG_*` callsites inside bin source resolve to the wrapped
+/// member's real metadata, not the per-bin bridge's synthetic
+/// `<bin>_rudzio_bridge_lib` / `0.0.0` placeholders.
+#[must_use]
+fn build_bin_bridge_build_rs(member: &MemberPlan) -> String {
+    let mut out = String::new();
+    out.push_str("fn main() {\n");
+    out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
+    out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
+    emit_member_env_overrides(&mut out, member);
+    out.push_str("}\n");
+    out
+}
+
 /// Cargo `[package] name` to use for `member`'s bridge crate.
 #[inline]
 #[must_use]
@@ -3692,6 +3781,35 @@ pub fn bridge_package_name(member: &MemberPlan) -> String {
 #[must_use]
 pub fn bridge_dir_name(member: &MemberPlan) -> String {
     crate_name_to_ident(&member.package_name)
+}
+
+/// Subdirectory name (under the aggregator's `members/` dir) that holds the per-bin bridge for `bin` of `member`.
+#[must_use]
+fn bin_bridge_dir_name(member: &MemberPlan, bin: &MemberBin) -> String {
+    format!(
+        "{member_ident}__bin__{bin_ident}",
+        member_ident = crate_name_to_ident(&member.package_name),
+        bin_ident = crate_name_to_ident(&bin.name),
+    )
+}
+
+/// Cargo `[lib] name` (and aggregator `extern crate` identifier) for the per-bin bridge of `bin`.
+#[must_use]
+fn bin_bridge_lib_ident(_member: &MemberPlan, bin: &MemberBin) -> String {
+    format!(
+        "{bin_ident}_rudzio_bridge_lib",
+        bin_ident = crate_name_to_ident(&bin.name),
+    )
+}
+
+/// Cargo `[package] name` to use for `bin`'s per-bin bridge crate of `member`.
+#[must_use]
+fn bin_bridge_package_name(member: &MemberPlan, bin: &MemberBin) -> String {
+    format!(
+        "{member_ident}__bin__{bin_ident}_rudzio_bridge",
+        member_ident = crate_name_to_ident(&member.package_name),
+        bin_ident = crate_name_to_ident(&bin.name),
+    )
 }
 
 /// Render the bridge crate's `Cargo.toml` for `member` as a TOML document string.
@@ -3792,6 +3910,99 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
     // the member's original Cargo.toml before the bridge build script
     // runs. Belt-and-suspenders: declare the cfg directly in the
     // bridge manifest where rustc can't miss it.
+    let mut lints_rust = Table::new();
+    let mut unexpected_cfgs = InlineTable::new();
+    unexpected_cfgs.insert("level", Value::String(Formatted::new("warn".to_owned())));
+    let mut check_cfg = Array::new();
+    check_cfg.push(Value::String(Formatted::new("cfg(rudzio_test)".to_owned())));
+    unexpected_cfgs.insert("check-cfg", Value::Array(check_cfg));
+    lints_rust.insert(
+        "unexpected_cfgs",
+        Item::Value(Value::InlineTable(unexpected_cfgs)),
+    );
+    let mut lints_tbl = Table::new();
+    lints_tbl.insert("rust", Item::Table(lints_rust));
+    doc.insert("lints", Item::Table(lints_tbl));
+
+    Ok(doc.to_string())
+}
+
+/// Render the per-bin bridge crate's `Cargo.toml` for `bin` of `member` as a TOML document string.
+///
+/// Mirrors `build_bridge_cargo_toml` but:
+/// - `[lib] path` is the absolute path of the bin's `main.rs` so
+///   `crate::*` inside bin source resolves at the bin's root
+///   (Bug #19 fix — the prior `#[path]` mount made `crate::api`
+///   resolve at the member bridge's root).
+/// - no `[[bin]]` (member bridge owns `[[bin]]` compilation).
+/// - no `[workspace]` (attaches to the aggregator's workspace).
+/// - appends an explicit dep on the wrapped member (via the member
+///   bridge's sibling path / package rename) so bin source's
+///   `use <member_pkg>::*` resolves through the member bridge's
+///   compile unit (one rlib of the member, shared between aggregator
+///   and per-bin bridges).
+///
+/// # Errors
+///
+/// Returns an error when rendering any dependency entry into TOML
+/// fails (propagated from `build_bridge_dependencies`).
+fn build_bin_bridge_cargo_toml(
+    plan: &Plan,
+    member: &MemberPlan,
+    bin: &MemberBin,
+) -> Result<String> {
+    let mut doc = DocumentMut::new();
+
+    let mut pkg = Table::new();
+    pkg.insert("name", value(bin_bridge_package_name(member, bin)));
+    pkg.insert("version", value("0.0.0"));
+    pkg.insert("edition", value(member.edition.as_str()));
+    pkg.insert("publish", value(false));
+    pkg.insert("build", value("build.rs"));
+    doc.insert("package", Item::Table(pkg));
+
+    // No `[workspace]` stanza: the per-bin bridge attaches to the
+    // enclosing aggregator's workspace (which lists the per-bin
+    // bridge under `[workspace] members`), same rationale as the
+    // member bridge.
+
+    let mut lib = Table::new();
+    lib.insert("name", value(bin_bridge_lib_ident(member, bin)));
+    // Absolute path to the bin's entry file. Cargo accepts absolute
+    // `[lib] path` values; using the bin's real `main.rs` makes the
+    // bin source itself the per-bin bridge's crate root so `crate::*`
+    // inside bin code resolves at the bin's root.
+    let path_str = bin.src_path.to_string_lossy().replace('\\', "/");
+    lib.insert("path", value(path_str));
+    doc.insert("lib", Item::Table(lib));
+
+    let mut deps_tbl = build_bridge_dependencies(plan, member)
+        .with_context(|| format!("building bin bridge deps for `{}`", bin.name))?;
+    // Explicit member-as-dep so bin source's `use <member_pkg>::*`
+    // resolves through the MEMBER bridge (sibling-bridge path), not
+    // through a second compile unit of the member. Mirrors the
+    // aggregator's own member-bridge dep entry shape.
+    let member_dep_key = crate_name_to_ident(&member.package_name);
+    let mut member_dep = InlineTable::new();
+    member_dep.insert(
+        "path",
+        Value::String(Formatted::new(format!("../{}", bridge_dir_name(member)))),
+    );
+    member_dep.insert(
+        "package",
+        Value::String(Formatted::new(bridge_package_name(member))),
+    );
+    deps_tbl.insert(&member_dep_key, Item::Value(Value::InlineTable(member_dep)));
+    doc.insert("dependencies", Item::Table(deps_tbl));
+
+    if let Some(features_tbl) = build_bridge_features(plan, member) {
+        doc.insert("features", Item::Table(features_tbl));
+    }
+
+    // [lints.rust] block registers `cfg(rudzio_test)` so member src
+    // that uses `cfg_attr(any(test, rudzio_test), ...)` doesn't draw
+    // `unexpected cfg condition name: rudzio_test` warnings. Mirrors
+    // the member bridge's belt-and-suspenders declaration.
     let mut lints_rust = Table::new();
     let mut unexpected_cfgs = InlineTable::new();
     unexpected_cfgs.insert("level", Value::String(Formatted::new("warn".to_owned())));
@@ -3954,24 +4165,16 @@ fn build_bridge_lib_rs(member: &MemberPlan, proxies: &[&TestBinaryProxy]) -> Res
     let mut out = String::with_capacity(original.len().saturating_add(512));
     out.push_str(&original);
 
-    // Bug #16 structural fix: enumerate `[[bin]]` source mounts for
-    // any bin in this member whose source tree contains rudzio test
-    // surface but no `rudzio::main`. Each such bin's entry file is
-    // mounted into the bridge lib via `#[cfg(rudzio_test)] #[path]
-    // mod __rudzio_bin_<sanitized_name>;` so cargo's mod resolution
-    // pulls in the bin's submodules (e.g. `mod ops;` from main.rs
-    // loads ops.rs from the same dir), and `linkme::distributed_slice`
-    // statics generated by `#[rudzio::test]` expansion in that compile
-    // unit reach the aggregator's `TEST_TOKENS` aggregation via the
-    // bridge lib's link path.
-    //
-    // Standalone bins (any source file in the tree contains
-    // `rudzio::main`) are skipped — they self-aggregate as their own
-    // test runners (the existing `fixtures/src/bin/*.rs` pattern in
-    // this repo) and mounting them would double-register their tests.
-    let bin_mounts: Vec<(String, PathBuf)> = collect_unmounted_bin_entries(member);
+    // Bug #19 fix: bin source trees are no longer `#[path]`-mounted
+    // here. Each non-standalone bin with rudzio test surface gets its
+    // own per-bin bridge crate at
+    // `<aggregator>/members/<member_ident>__bin__<bin_ident>/` whose
+    // `[lib] path` points directly at the bin's entry file so
+    // `crate::*` inside bin source resolves at the bin's root rather
+    // than the member bridge's root. See `collect_bridged_bin_targets`
+    // and `write_bin_bridge_crate`.
 
-    if proxies.is_empty() && bin_mounts.is_empty() {
+    if proxies.is_empty() {
         return Ok(out);
     }
 
@@ -4023,35 +4226,29 @@ fn build_bridge_lib_rs(member: &MemberPlan, proxies: &[&TestBinaryProxy]) -> Res
         );
     }
 
-    for (synth_name, entry_path) in &bin_mounts {
-        let path_lit = escape_rust_string_literal(&entry_path.to_string_lossy());
-        let _bin_emit: FmtResult = writeln!(
-            out,
-            "#[cfg(rudzio_test)]\n\
-             #[path = {path_lit}]\n\
-             #[allow(unused, dead_code, non_snake_case)]\n\
-             mod {synth_name};",
-        );
-    }
-
     Ok(out)
 }
 
-/// Collect bin entry-file mounts for the Bug #16 structural fix.
+/// Collect bin targets that need their own per-bin bridge crate (Bug #19 fix).
 ///
-/// Returns `(synth_mod_name, absolute_entry_path)` pairs for every
-/// `[[bin]]` in `member` whose source tree contains rudzio test
-/// surface but no `rudzio::main`. Standalone bins (self-aggregating
-/// test runners — the `fixtures/src/bin/*.rs` pattern) are skipped
-/// to avoid double-registering their tests.
+/// Returns references to every `[[bin]]` in `member` whose source tree
+/// contains rudzio test surface but no `rudzio::main`. Standalone bins
+/// (self-aggregating test runners — the `fixtures/src/bin/*.rs`
+/// pattern) are skipped to avoid double-registering their tests.
 ///
-/// The synthesised mod name is `__rudzio_bin_<sanitized_bin_name>`
-/// using `crate_name_to_ident` to convert hyphens to underscores.
-/// Cargo resolves submodules declared inside the entry file
-/// (`mod ops;` etc.) relative to the entry file's parent directory,
-/// so this single mount covers the whole bin source tree.
-fn collect_unmounted_bin_entries(member: &MemberPlan) -> Vec<(String, PathBuf)> {
-    let mut out: Vec<(String, PathBuf)> = Vec::new();
+/// Each returned bin gets a sibling per-bin bridge crate under
+/// `<aggregator>/members/<member_ident>__bin__<bin_ident>/` whose
+/// `[lib] path` points directly at the bin's entry file so `crate::*`
+/// path resolution inside bin source code resolves at the bin root
+/// (Bug #19 was: the prior `#[path]` synth-mod mount inside the member
+/// bridge made `crate::api::foo` resolve at the member bridge's root,
+/// not the bin's, breaking every bin-internal `crate::` import).
+///
+/// Filtering logic preserved verbatim from the pre-Bug-#19 mounting
+/// helper: directory-style detection (Bug #17 fix) and the
+/// standalone-bin skip.
+fn collect_bridged_bin_targets<'member>(member: &'member MemberPlan) -> Vec<&'member MemberBin> {
+    let mut out: Vec<&'member MemberBin> = Vec::new();
     // Cargo's directory-style bin convention requires BOTH:
     //   1. entry file basename == "main.rs"
     //   2. entry file's parent dir is non-shared (not the same as
@@ -4090,15 +4287,10 @@ fn collect_unmounted_bin_entries(member: &MemberPlan) -> Vec<(String, PathBuf)> 
             rs_file_contains_rudzio_test_marker(&bin.src_path)
         };
         if !has_test_surface {
-            // Nothing to mount — skip the bin entirely so we don't
-            // emit a no-op `#[path]` for a clean main.
+            // Nothing to bridge — skip the bin entirely.
             continue;
         }
-        let synth = format!(
-            "__rudzio_bin_{ident}",
-            ident = crate_name_to_ident(&bin.name),
-        );
-        out.push((synth, bin.src_path.clone()));
+        out.push(bin);
     }
     out
 }
@@ -4229,6 +4421,23 @@ pub fn build_main_rs(plan: &Plan, _out_dir: &Path) -> String {
             continue;
         }
         let _ignored: FmtResult = writeln!(out, "extern crate {ident};");
+    }
+
+    // Bug #19 fix: each per-bin bridge contributes its own rlib
+    // carrying the bin's `#[rudzio::test]` registrations. Force link-in
+    // via `extern crate <bin_bridge_lib_ident>;` so link-time DCE
+    // doesn't drop the rlib and lose its `TEST_TOKENS` entries.
+    for member in &plan.members {
+        if paths_equal(&member.manifest_dir, workspace_root_abs) {
+            continue;
+        }
+        for bin in collect_bridged_bin_targets(member) {
+            let ident = bin_bridge_lib_ident(member, bin);
+            if !seen.insert(ident.clone()) {
+                continue;
+            }
+            let _ignored: FmtResult = writeln!(out, "extern crate {ident};");
+        }
     }
 
     out.push_str("\n#[rudzio::main]\nfn main() {}\n");
@@ -4724,7 +4933,7 @@ fn parse_top_level_mod_decl(raw_line: &str) -> Option<String> {
     let trimmed = raw_line.trim();
     if trimmed.starts_with("//") {
         return None;
-    }
+        }
     let after_vis = trimmed
         .strip_prefix("pub(crate) ")
         .or_else(|| trimmed.strip_prefix("pub(super) "))
@@ -4795,6 +5004,16 @@ fn aggregator_workspace_table(plan: &Plan) -> Table {
             bridge_dir_name(member)
         ))));
     }
+    // Bug #19 fix: per-bin bridges are also workspace members so cargo
+    // picks them up alongside the member bridges.
+    for member in &plan.members {
+        for bin in collect_bridged_bin_targets(member) {
+            members_arr.push(Value::String(Formatted::new(format!(
+                "members/{}",
+                bin_bridge_dir_name(member, bin)
+            ))));
+        }
+    }
     if !members_arr.is_empty() {
         ws_tbl.insert("members", Item::Value(Value::Array(members_arr)));
     }
@@ -4811,6 +5030,49 @@ fn aggregator_bin_array() -> ArrayOfTables {
     let mut bins = ArrayOfTables::new();
     bins.push(bin);
     bins
+}
+
+/// Append a `[dependencies]` entry for every per-bin bridge crate.
+///
+/// Bug #19 fix: aggregator depends on every per-bin bridge so its
+/// `[lib]` (rooted at the bin's `main.rs`) gets compiled and linked
+/// into the aggregator binary. Without this dep, the
+/// `extern crate <bin_bridge_lib_ident>;` in main.rs would fail to
+/// resolve and the bin's `#[rudzio::test]` `TEST_TOKENS` entries
+/// would never reach the dispatcher.
+///
+/// Duplicate `dep_key`s are silently coalesced (`BTreeSet` guard):
+/// two bins with the same name across different members would render
+/// to the same lib ident; the first wins and subsequent ones are
+/// skipped. The bin name collision itself is still surfaced upstream
+/// via `bin_bridge_dir_name`'s member-prefixed dir, so this dedupe
+/// only guards the `extern crate` ident namespace.
+fn add_bin_bridge_deps(deps: &mut Table, plan: &Plan, workspace_root_abs: &Path) {
+    let mut bin_bridge_seen: BTreeSet<String> = BTreeSet::new();
+    for member in &plan.members {
+        if paths_equal(&member.manifest_dir, workspace_root_abs) {
+            continue;
+        }
+        for bin in collect_bridged_bin_targets(member) {
+            let dep_key = bin_bridge_lib_ident(member, bin);
+            if !bin_bridge_seen.insert(dep_key.clone()) {
+                continue;
+            }
+            let mut tbl = InlineTable::new();
+            tbl.insert(
+                "path",
+                Value::String(Formatted::new(format!(
+                    "./members/{}",
+                    bin_bridge_dir_name(member, bin)
+                ))),
+            );
+            tbl.insert(
+                "package",
+                Value::String(Formatted::new(bin_bridge_package_name(member, bin))),
+            );
+            deps.insert(&dep_key, Item::Value(Value::InlineTable(tbl)));
+        }
+    }
 }
 
 /// Build the aggregator crate's `Cargo.toml` from the resolved `Plan`.
@@ -4910,6 +5172,8 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
         }
         deps.insert(&member.package_name, Item::Value(Value::InlineTable(tbl)));
     }
+
+    add_bin_bridge_deps(&mut deps, plan, workspace_root_abs);
 
     // Union of deps (normal + dev) across all members. First spec
     // encountered wins on path/version/rename; features accumulate

@@ -9,6 +9,7 @@ mod bug_12_bare_use_alias_spec;
 mod bug_14_monolith_sigkill_spec;
 mod bug_16_bin_source_tests_invisible_spec;
 mod bug_18_aggregator_cache_invalidation_spec;
+mod bug_19_bin_crate_root_resolution_spec;
 mod bug_8_helper_discovery_edge_cases_spec;
 mod cfg_test_warning_narrowing_spec;
 mod cli_spec;
