@@ -2,8 +2,8 @@
 
 **Created:** 2026-05-28 (revised after 5-agent gap audit)
 **Branch:** `main`
-**Most recent commit:** `1ebe772` ("fix(#19): per-bin bridge crate preserves `crate::*` root in mounted bin sources")
-**Status:** Phase 0 complete (0a + 0b + 0c batched in `820d257`; late-discovered Bug #19 fixed in `1ebe772`). P-0 (`#[expect]`/`#[allow]` per-site review) is next. See Campaign tracking matrix below for live row-level state. Future-PP updates the matrix as work lands; commit hashes filled before push.
+**Most recent commit:** `92151ff` ("feat(test-helpers): Phase B framework — Suite-owned warmup snapshot + per-test full-recursive copy")
+**Status:** Phase 0 complete (`820d257`+`1ebe772`). Phase B framework landed (`92151ff`) — `IsolatedCargoSuite`/`IsolatedCargoTest` now own per-test isolation via warmup snapshot + full-recursive copy; `bug_18` migrated as proof. Row 11 (migrate remaining specs) + row 12 (aggregator pre-compile in snapshot, `--remap-path-prefix`) PENDING. P-0 (`#[expect]`/`#[allow]` per-site review) is the natural next item after row 11 migration. See Campaign tracking matrix below for live row-level state. Future-PP updates the matrix as work lands; commit hashes filled before push.
 
 ## Revision history
 
@@ -39,7 +39,7 @@ Live progress log. Status values: `DONE` (with commit hash) | `IN PROGRESS` | `P
 | 7 | Phase 0c: `expect-allow-ban` linter crate + Justfile `check-lints` isolation + CI workflow parallel `lints` job | DONE | `820d257` |
 | 8 | Phase 0 single batched commit (covers 0a + 0b + 0c) + push to `origin/main` | DONE | `820d257` |
 | 9 | Bug #19 fix: per-bin bridge crate preserves `crate::*` root in mounted bin sources + `bug_19_bin_crate_root_resolution_spec` (6 proactive tests) | DONE | `1ebe772` |
-| 10 | Phase B framework: `IsolatedCargoSuite` warmup snapshot (template consumer workspace) + `IsolatedCargoTest` per-test full-recursive-copy + RAII cleanup; one spec migrated as proof-of-concept (`bug_18`). Aggregator pre-compile in snapshot DEFERRED (cargo's incremental cache uses absolute paths; cross-path reuse needs `--remap-path-prefix` work). | DONE | TBD |
+| 10 | Phase B framework: `IsolatedCargoSuite` warmup snapshot (template consumer workspace) + `IsolatedCargoTest` per-test full-recursive-copy + RAII cleanup; one spec migrated as proof-of-concept (`bug_18`). Aggregator pre-compile in snapshot DEFERRED (cargo's incremental cache uses absolute paths; cross-path reuse needs `--remap-path-prefix` work). | DONE | `92151ff` |
 | 11 | Phase B migration: remaining specs (`bug_16`, `bug_19`, `surface_visibility`, `silent_member_drop`, parallel/cross-bridge specs) migrated to warmup-snapshot pattern | PENDING | TBD |
 | 12 | Phase B aggregator-pre-compile-in-snapshot follow-up (`--remap-path-prefix` strategy for cargo cache survival across per-test paths) | PENDING | TBD |
 | 13 | P-0 cleanup: per-site review of `#[expect]`/`#[allow]` (Phase 0c linter surfaces these) | PENDING | TBD |
