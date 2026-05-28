@@ -34,10 +34,10 @@ Live progress log. Status values: `DONE` (with commit hash) | `IN PROGRESS` | `P
 | 2 | Step 2.5: integrity check `validate_no_unmounted_markers` + `silent_member_drop_invariant_spec` | DONE | `f20b143` |
 | 3 | Step 3: Bug #16 structural fix — mount bin sources via `collect_unmounted_bin_entries` | DONE | `261fa8a` |
 | 4 | Step B: `discover_test_root_helpers` lifts entry-file gate; flat `tests/<name>.rs` resolves submods under `tests/<stem>/` | DONE | `d08826d` |
-| 5 | Phase 0a: Bug #17 fix (`is_directory_style_bin` heuristic) + Tests 2/3/4 in `bug_16_bin_source_tests_invisible_spec` | IN PROGRESS | TBD |
-| 6 | Phase 0b: Bug #18 fix (`build.rs` + `BUILD_STAMP` + `aggregator_subdir_name`) + `bug_18_aggregator_cache_invalidation_spec` | IN PROGRESS | TBD |
-| 7 | Phase 0c: `expect-allow-ban` linter crate + Justfile `check-lints` isolation + CI workflow parallel `lints` job | IN PROGRESS | TBD |
-| 8 | Phase 0 single batched commit (covers 0a + 0b + 0c) + push to `origin/main` | PENDING | TBD |
+| 5 | Phase 0a: Bug #17 fix (`is_directory_style_bin` heuristic) + Tests 2/3/4 in `bug_16_bin_source_tests_invisible_spec` | DONE | `820d257` |
+| 6 | Phase 0b: Bug #18 fix (`build.rs` + `BUILD_STAMP` + `aggregator_subdir_name`) + `bug_18_aggregator_cache_invalidation_spec` | DONE | `820d257` |
+| 7 | Phase 0c: `expect-allow-ban` linter crate + Justfile `check-lints` isolation + CI workflow parallel `lints` job | DONE | `820d257` |
+| 8 | Phase 0 single batched commit (covers 0a + 0b + 0c) + push to `origin/main` | DONE | `820d257` |
 | 9 | P-0 cleanup: per-site review of `#[expect]`/`#[allow]` (Phase 0c linter surfaces these) | PENDING | TBD |
 | 10 | P-1 cleanup: `Default` impl removal (1 manual + ~16 derives + ~5 struct-update consumers) | PENDING | TBD |
 | 11 | P-3 cleanup: `Iterator` retype (2 return positions: `render.rs:1251`, `generate.rs:2686`) | PENDING | TBD |
