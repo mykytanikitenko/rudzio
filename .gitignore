@@ -28,5 +28,7 @@ target
 
 # Generated linter reports — regenerated on every `just check-lints`
 # run. The committed `linters/BASELINE.md` is the persistent snapshot.
-linters/non-result-fns-report.txt
+# Glob pattern so every linter's `<name>-report.txt` output is covered
+# without touching this file each time a new linter lands.
+linters/*-report.txt
 linters/target/

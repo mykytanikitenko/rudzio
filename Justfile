@@ -51,13 +51,29 @@ check-udeps:
 
 # Run all custom code-audit linters under `linters/`.
 #
-# Each linter under `linters/` is its own crate; this recipe invokes
-# every one in turn against the repo root. Linters are statistical
-# instruments — they print summary counts and write detailed reports
-# to `linters/*-report.txt`. None gate `just ci` yet; promote them
-# to gates once the baseline is understood.
+# Each linter under `linters/` is its own binary crate; this recipe
+# invokes every one in turn against the repo root. Linters print
+# summary counts to stdout and write detailed reports to
+# `linters/*-report.txt`.
+#
+# Per Phase 0c (D-EXP.8): both linters run unconditionally even if a
+# predecessor exits non-zero, accumulating the worst status into the
+# recipe's exit code. This means a failing linter does NOT mask
+# failures in subsequent linters — the CI lints job sees the full
+# picture in one invocation.
+#
+# Per Phase 0c (D-EXP.7/D-EXP.8): `check-lints` is intentionally NOT
+# in the `ci` aggregate below — the `lints` GitHub Actions job
+# invokes this recipe in parallel with `just ci`, so a linter
+# failure does not block `check-fmt` / `check-clippy` / `check-audit`
+# / `check-deny` / `test` from executing.
 check-lints:
-    cargo run --manifest-path linters/Cargo.toml -p non-result-fns
+    #!/usr/bin/env bash
+    set -uo pipefail
+    status=0
+    cargo run --manifest-path linters/Cargo.toml -p non-result-fns || status=$?
+    cargo run --manifest-path linters/Cargo.toml -p expect-allow-ban || status=$?
+    exit $status
 
 # --- Testing ---
 
@@ -160,4 +176,9 @@ pre-commit: check-fmt check-taplo check check-clippy check-udeps test
 # is intentionally NOT in this aggregate until the first crates.io
 # publish creates a baseline (it errors with "not found in registry"
 # pre-publish). After v0.1.0 lands, add `check-semver` to this list.
-ci: check-fmt check-taplo check-clippy check-audit check-deny check-lints test
+#
+# Per Phase 0c (D-EXP.8): `check-lints` is intentionally REMOVED
+# from this aggregate. The CI workflow runs `just check-lints` as a
+# separate parallel job (see `.github/workflows/ci.yml`) so a linter
+# failure cannot block any other gate from executing.
+ci: check-fmt check-taplo check-clippy check-audit check-deny test

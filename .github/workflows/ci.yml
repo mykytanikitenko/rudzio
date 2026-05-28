@@ -38,3 +38,21 @@ jobs:
 
       - name: just ci
         run: nix develop --extra-experimental-features 'nix-command flakes' --command just ci
+
+  lints:
+    name: just check-lints (linter gate)
+    # Independent of `ci`. Per Phase 0c (D-EXP.7) this job is expected
+    # to be RED until per-site allowlist entries are written or attrs
+    # removed. Per D-EXP.8, GitHub Actions runs jobs in this workflow
+    # in parallel by default, so a failing `lints` job does NOT block
+    # the `ci` job from executing — `check-fmt`, `check-clippy`,
+    # `check-audit`, `check-deny`, and `test` all run regardless of
+    # this job's outcome.
+    runs-on: [self-hosted, linux, hetzner-builder, nix, rust]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: just check-lints
+        run: nix develop --extra-experimental-features 'nix-command flakes' --command just check-lints

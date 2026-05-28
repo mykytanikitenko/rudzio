@@ -1,0 +1,42 @@
+# expect-allow-ban allowlist
+#
+# Each entry pre-justifies one `#[expect(...)]` or `#[allow(...)]`
+# attribute in the workspace. The linter fails CI on every detected
+# attribute NOT present here (and on every entry here that has no
+# matching attribute — orphan detection).
+#
+# Per Phase 0c (D-EXP.2 / D-EXP.7), this file ships EMPTY. Every
+# existing `#[expect]` and `#[allow]` in the workspace fails CI
+# until either:
+#   1. The underlying code is refactored to not need suppression
+#      (REMOVE — best outcome), OR
+#   2. An entry is added here with a freshly-authored, human-vetted
+#      `reason` string (ALLOWLIST — for legitimate cases), OR
+#   3. An entry is added with a `reason` that points to a deferred
+#      tracking issue (DEFER — for cases waiting on out-of-scope
+#      work like the planned unsafe-code consolidation crate per
+#      D-EXP.5).
+#
+# Existing `reason = "..."` strings on attributes MUST NOT be
+# auto-copied into entries here. Per user direction, those strings
+# may be LLM-authored escape hatches that bypassed code review;
+# each site requires fresh human review.
+#
+# Schema:
+#
+#   [[entry]]
+#   path = "src/runner.rs"        # repo-relative, forward-slashes
+#   line = 794                    # 1-based line of the attribute
+#   kind = "expect"               # "expect" | "allow"
+#   lints = ["unsafe_code"]       # exact set, order-insensitive
+#   reason = "<vetted justification, human-authored>"
+#
+# Notes:
+# - `kind` distinguishes `#[expect]` vs `#[allow]` only — outer
+#   `#[...]` vs inner `#![...]` styles are NOT distinguished
+#   (file:line is unique).
+# - `lints` matching is set-equal (order doesn't matter), but every
+#   lint named in the attribute must appear in the entry and vice
+#   versa.
+# - Multiple entries can target the same file. There is no merge
+#   semantics — each entry stands alone.

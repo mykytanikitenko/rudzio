@@ -45,6 +45,14 @@ const BRIDGE_SKIPLIST: &[&str] = &[
     "target",
     ".git",
 ];
+/// Build-time stamp captured by `cargo-rudzio/build.rs` and embedded
+/// into the compiled binary via `env!`. Format:
+/// `<CARGO_PKG_VERSION>-<unix_epoch_seconds>`.
+///
+/// Hashed into [`Plan::aggregator_subdir_name`] so a freshly built
+/// `cargo-rudzio` always produces a distinct aggregator directory.
+/// See Bug #18 and `cargo-rudzio/build.rs` for the rationale.
+const BUILD_STAMP: &str = env!("CARGO_RUDZIO_BUILD_STAMP");
 /// Crate name used for the `rudzio` dependency lookup in member manifests.
 const RUDZIO_DEP: &str = "rudzio";
 
@@ -747,14 +755,34 @@ impl Plan {
     #[inline]
     #[must_use]
     pub fn aggregator_subdir_name(&self) -> String {
+        // FNV-1a 64-bit. Inlined twice (once per input) rather than
+        // factored into a helper because the workspace's item-ordering
+        // lints would force a free-function helper into the file's
+        // tail alongside hundreds of unrelated fns, hurting locality.
+        //
+        // The hash is intentionally stable across rustc releases
+        // (`std::collections::hash_map::DefaultHasher` is not): cargo's
+        // incremental caching relies on the subdir name being identical
+        // from one invocation to the next, even after the toolchain
+        // updates.
         const FNV_OFFSET_64: u64 = 0xcbf2_9ce4_8422_2325;
         const FNV_PRIME_64: u64 = 0x0000_0100_0000_01b3;
-        let mut hash: u64 = FNV_OFFSET_64;
+        let mut workspace_hash: u64 = FNV_OFFSET_64;
         for byte in self.workspace_root.as_str().as_bytes() {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(FNV_PRIME_64);
+            workspace_hash ^= u64::from(*byte);
+            workspace_hash = workspace_hash.wrapping_mul(FNV_PRIME_64);
         }
-        format!("{AGGREGATOR_NAME}-{hash:016x}")
+        // Bug #18: hashing `BUILD_STAMP` into the subdir name ensures
+        // a fresh `cargo-rudzio` binary produces a fresh aggregator
+        // directory, so cargo's fingerprinter cannot skip the relink
+        // on byte-identical generated source. See `build.rs` for the
+        // stamp shape.
+        let mut stamp_hash: u64 = FNV_OFFSET_64;
+        for byte in BUILD_STAMP.as_bytes() {
+            stamp_hash ^= u64::from(*byte);
+            stamp_hash = stamp_hash.wrapping_mul(FNV_PRIME_64);
+        }
+        format!("{AGGREGATOR_NAME}-{workspace_hash:016x}-{stamp_hash:016x}")
     }
 
     /// Default output directory for the generated aggregator crate.
@@ -3102,6 +3130,18 @@ pub fn write_runner(plan: &Plan, out_dir: &Path) -> Result<()> {
     // line of `write_runner` so the failure triggers before any
     // filesystem state is touched.
     validate_no_unmounted_markers(plan)?;
+
+    // Bug #18 orphan-detection note (deferred): a `cargo-rudzio`
+    // version change creates a new aggregator dir alongside any
+    // previous version's dir under the same target root. A future
+    // enhancement could surface a one-line note pointing at the
+    // manual cleanup command (`rm -rf <target>/rudzio-auto-runner-*`).
+    // Held out of this commit because the canonical mechanism
+    // (`eprintln!`) is forbidden by the workspace `print_stderr`
+    // restriction lint and the Phase 0c policy forbids `#[expect]`
+    // escape hatches. Routes via a structured logger or a
+    // `cargo-rudzio`-level diagnostic API are the proper future-fix.
+
     // Regenerate our own files from scratch. Preserve the aggregator's
     // `target/` directory across invocations — blowing it away on every
     // run would force a full recompile of the entire workspace every
@@ -4012,13 +4052,27 @@ fn build_bridge_lib_rs(member: &MemberPlan, proxies: &[&TestBinaryProxy]) -> Res
 /// so this single mount covers the whole bin source tree.
 fn collect_unmounted_bin_entries(member: &MemberPlan) -> Vec<(String, PathBuf)> {
     let mut out: Vec<(String, PathBuf)> = Vec::new();
+    // Cargo's directory-style bin convention requires BOTH:
+    //   1. entry file basename == "main.rs"
+    //   2. entry file's parent dir is non-shared (not the same as
+    //      `[lib]`'s parent dir)
+    // Computed once outside the loop because `member.src_lib_path`
+    // does not vary across bins. Bug #17 (PLAN.md Phase 0a): the
+    // prior heuristic keyed on `parent.file_name() == bin.name`,
+    // which silently fell through to flat-style for layouts like
+    // `[[bin]] name = "myproject-server", path = "src/bin/server/main.rs"`
+    // (parent name "server" != bin name "myproject-server"). See
+    // PLAN.md "Phase 0a — Bug #17 fix" edge-case coverage matrix.
+    let lib_dir = member.src_lib_path.as_ref().and_then(|lib| lib.parent());
     for bin in &member.bin_targets {
         let parent = bin.src_path.parent();
-        let parent_name_matches = parent
-            .and_then(|parent_path| parent_path.file_name())
+        let is_directory_style_bin = bin
+            .src_path
+            .file_name()
             .and_then(|os_name| os_name.to_str())
-            .is_some_and(|name| name == bin.name);
-        let is_standalone = if parent_name_matches {
+            == Some("main.rs")
+            && parent != lib_dir;
+        let is_standalone = if is_directory_style_bin {
             // Directory-style bin: walk the bin's own subdir.
             parent.is_some_and(|parent_dir| walk_dir_for_test_markers_and_main(parent_dir).1)
         } else {
@@ -4028,7 +4082,7 @@ fn collect_unmounted_bin_entries(member: &MemberPlan) -> Vec<(String, PathBuf)> 
         if is_standalone {
             continue;
         }
-        let has_test_surface = if parent_name_matches {
+        let has_test_surface = if is_directory_style_bin {
             parent.is_some_and(|parent_dir| {
                 !walk_dir_for_test_markers_and_main(parent_dir).0.is_empty()
             })
