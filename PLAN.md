@@ -2,8 +2,8 @@
 
 **Created:** 2026-05-28 (revised after 5-agent gap audit)
 **Branch:** `main`
-**Most recent commit:** `d08826d` ("fix(#16/step-B): walk flat-entry test subdirs in discover_test_root_helpers")
-**Status:** Phase 0 execution in progress (mid-session). See Campaign tracking matrix below for live row-level state. Future-PP updates the matrix as work lands; commit hashes filled before push.
+**Most recent commit:** `1ebe772` ("fix(#19): per-bin bridge crate preserves `crate::*` root in mounted bin sources")
+**Status:** Phase 0 complete (0a + 0b + 0c batched in `820d257`; late-discovered Bug #19 fixed in `1ebe772`). P-0 (`#[expect]`/`#[allow]` per-site review) is next. See Campaign tracking matrix below for live row-level state. Future-PP updates the matrix as work lands; commit hashes filled before push.
 
 ## Revision history
 
@@ -38,16 +38,17 @@ Live progress log. Status values: `DONE` (with commit hash) | `IN PROGRESS` | `P
 | 6 | Phase 0b: Bug #18 fix (`build.rs` + `BUILD_STAMP` + `aggregator_subdir_name`) + `bug_18_aggregator_cache_invalidation_spec` | DONE | `820d257` |
 | 7 | Phase 0c: `expect-allow-ban` linter crate + Justfile `check-lints` isolation + CI workflow parallel `lints` job | DONE | `820d257` |
 | 8 | Phase 0 single batched commit (covers 0a + 0b + 0c) + push to `origin/main` | DONE | `820d257` |
-| 9 | P-0 cleanup: per-site review of `#[expect]`/`#[allow]` (Phase 0c linter surfaces these) | PENDING | TBD |
-| 10 | P-1 cleanup: `Default` impl removal (1 manual + ~16 derives + ~5 struct-update consumers) | PENDING | TBD |
-| 11 | P-3 cleanup: `Iterator` retype (2 return positions: `render.rs:1251`, `generate.rs:2686`) | PENDING | TBD |
-| 12 | P-4 cleanup: `non-result-fns` linter extension (gate counts: `hazards=0` → `non-Result count=0`) | PENDING | TBD |
-| 13 | M-1: `rs-result-sig-rewrite` syn-based signature transformer tool | PENDING | TBD |
-| 14 | M-2: per-module non-Result → Result conversion (hot-spot order from `BASELINE.md`) | PENDING | TBD |
-| 15 | M-3: cosmetic pass | PENDING | TBD |
-| 16 | Phase 2: TODO marker sweep | PENDING | TBD |
+| 9 | Bug #19 fix: per-bin bridge crate preserves `crate::*` root in mounted bin sources + `bug_19_bin_crate_root_resolution_spec` (6 proactive tests) | DONE | `1ebe772` |
+| 10 | P-0 cleanup: per-site review of `#[expect]`/`#[allow]` (Phase 0c linter surfaces these) | PENDING | TBD |
+| 11 | P-1 cleanup: `Default` impl removal (1 manual + ~16 derives + ~5 struct-update consumers) | PENDING | TBD |
+| 12 | P-3 cleanup: `Iterator` retype (2 return positions: `render.rs:1251`, `generate.rs:2686`) | PENDING | TBD |
+| 13 | P-4 cleanup: `non-result-fns` linter extension (gate counts: `hazards=0` → `non-Result count=0`) | PENDING | TBD |
+| 14 | M-1: `rs-result-sig-rewrite` syn-based signature transformer tool | PENDING | TBD |
+| 15 | M-2: per-module non-Result → Result conversion (hot-spot order from `BASELINE.md`) | PENDING | TBD |
+| 16 | M-3: cosmetic pass | PENDING | TBD |
+| 17 | Phase 2: TODO marker sweep | PENDING | TBD |
 
-Last updated: 2026-05-28 (mid-Phase-0-execution). Future-PP MUST update this matrix as work progresses; commit hash MUST be filled before `git push`.
+Last updated: 2026-05-28 (post-Bug-#19 fix). Future-PP MUST update this matrix as work progresses; commit hash MUST be filled before `git push`.
 
 ## Goal
 
