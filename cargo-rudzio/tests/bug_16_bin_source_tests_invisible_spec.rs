@@ -42,60 +42,62 @@
 //! The assertion is **behavioural**: it does not inspect generated
 //! source, bridge layout, or codegen artefacts. Any structural fix
 //! that makes the bin test run end-to-end satisfies it.
+//!
+//! # Phase B migration
+//!
+//! Each `customize_*` helper starts from the suite-provided
+//! `ctx.consumer_workspace()` (template = workspace + minimal
+//! consumer) and mutates the consumer member to match the
+//! fixture's target shape. The template's workspace `Cargo.toml`
+//! provides the rudzio path-dep + anyhow workspace deps; per-test
+//! `consumer/Cargo.toml` overwrites reference them via
+//! `{ workspace = true }`. Bin source files land under
+//! `consumer/src/bin/<role>/`.
 
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
 use rudzio::runtime::tokio::Multithread;
-use tempfile::TempDir;
 
-/// Workspace root of the in-tree `rudzio` crate. The fixture's
-/// `[workspace.dependencies] rudzio = { path = <this> }` makes the
-/// synthetic consumer exercise the rudzio code under test, not a
-/// published version.
-fn rudzio_source_root() -> PathBuf {
-    rudzio::manifest_dir!().join("..")
+/// Trivial `#[rudzio::test]` block shared by both lib and bin
+/// fixtures. The test fn name varies so assertions can grep
+/// stdout for which compile unit fired.
+fn rudzio_test_block(marker_name: &str) -> String {
+    format!(
+        "// rudzio_test marker\n\
+         #[cfg(any(test, rudzio_test))]\n\
+         mod tests {{\n\
+         \x20\x20\x20\x20use rudzio::common::context::{{Suite, Test}};\n\
+         \x20\x20\x20\x20use rudzio::runtime::tokio::Multithread as TokioMultithread;\n\
+         \n\
+         \x20\x20\x20\x20#[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
+         \x20\x20\x20\x20mod inner {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20#[rudzio::test]\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20fn {marker_name}(_t: &super::Test) -> anyhow::Result<()> {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20}}\n\
+         }}\n",
+    )
 }
 
-/// Materialise the bug-report fixture at `root`:
+/// Bug #16 Test 1 fixture: lib baseline + bin source test.
 ///
 /// ```text
-/// root/
-/// ├── Cargo.toml                       (workspace)
+/// <workspace>/
 /// └── consumer/
 ///     ├── Cargo.toml                   ([lib] + [[bin]] server)
 ///     └── src/
-///         ├── lib.rs                   (1 #[rudzio::test] — baseline)
-///         └── bin/
-///             └── server/
-///                 ├── main.rs          (trivial fn main)
-///                 └── ops.rs           (1 #[rudzio::test] — invisible pre-fix)
+///         ├── lib.rs                   (1 #[rudzio::test] — lib_baseline_test)
+///         └── bin/server/
+///             ├── main.rs              (mod ops; trivial fn main)
+///             └── ops.rs               (1 #[rudzio::test] — bin_source_test)
 /// ```
-///
-/// Both test bodies are trivial (`Ok(())`) so the assertion turns
-/// on visibility to the dispatcher, not on any business logic.
-fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    fs::write(
-        root.join("Cargo.toml"),
-        format!(
-            "[workspace]\n\
-             members = [\"consumer\"]\n\
-             resolver = \"3\"\n\
-             \n\
-             [workspace.package]\n\
-             edition = \"2024\"\n\
-             \n\
-             [workspace.dependencies]\n\
-             rudzio = {{ path = \"{rudzio}\", features = [\"common\", \"runtime-tokio-multi-thread\"] }}\n\
-             anyhow = \"=1.0.102\"\n",
-            rudzio = rudzio_root.display(),
-        ),
-    )?;
-
-    let consumer = root.join("consumer");
+fn customize_test_1(workspace: &Path) -> io::Result<()> {
+    let consumer = workspace.join("consumer");
     let bin_dir = consumer.join("src").join("bin").join("server");
     fs::create_dir_all(&bin_dir)?;
 
@@ -120,36 +122,11 @@ fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
          anyhow = { workspace = true }\n",
     )?;
 
-    // Lib baseline: one rudzio test inside a broadened-cfg mod.
-    // Provides the "2 passed" denominator and guards against a
-    // false-pass mode in which BOTH tests vanish (in which case
-    // the summary would still be `0 passed` and the assertion
-    // would catch it).
     fs::write(
         consumer.join("src").join("lib.rs"),
-        "// rudzio_test marker\n\
-         #[cfg(any(test, rudzio_test))]\n\
-         mod tests {\n\
-         \x20\x20\x20\x20use rudzio::common::context::{Suite, Test};\n\
-         \x20\x20\x20\x20use rudzio::runtime::tokio::Multithread as TokioMultithread;\n\
-         \n\
-         \x20\x20\x20\x20#[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
-         \x20\x20\x20\x20mod inner {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20#[rudzio::test]\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20fn lib_baseline_test(_t: &super::Test) -> anyhow::Result<()> {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20}\n\
-         \x20\x20\x20\x20}\n\
-         }\n",
+        rudzio_test_block("lib_baseline_test"),
     )?;
 
-    // Bin entry: trivial main. `mod ops;` brings the bin-side test
-    // surface into the bin's compile unit. Under cargo, this bin
-    // compiles fine as `consumer:bin:server`. Under cargo rudzio
-    // test, the bridge declares an analogous [[bin]] entry against
-    // the same source — but the test registrations land in the
-    // bin compile unit, not the bridge lib, and never reach the
-    // aggregator's `TEST_TOKENS`.
     fs::write(
         bin_dir.join("main.rs"),
         "mod ops;\n\
@@ -159,38 +136,74 @@ fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
          }\n",
     )?;
 
-    // The regression case: a `#[rudzio::test]` whose only home is
-    // a bin source file. Same `mod tests { #[rudzio::suite] mod ...`
-    // shape as the lib baseline, so any divergence in pass/fail
-    // between the two is attributable to bin-vs-lib placement,
-    // not to macro-input shape.
-    fs::write(
-        bin_dir.join("ops.rs"),
-        "// rudzio_test marker\n\
-         #[cfg(any(test, rudzio_test))]\n\
-         mod tests {\n\
-         \x20\x20\x20\x20use rudzio::common::context::{Suite, Test};\n\
-         \x20\x20\x20\x20use rudzio::runtime::tokio::Multithread as TokioMultithread;\n\
-         \n\
-         \x20\x20\x20\x20#[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
-         \x20\x20\x20\x20mod inner {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20#[rudzio::test]\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20fn bin_source_test(_t: &super::Test) -> anyhow::Result<()> {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20}\n\
-         \x20\x20\x20\x20}\n\
-         }\n",
-    )?;
+    fs::write(bin_dir.join("ops.rs"), rudzio_test_block("bin_source_test"))?;
 
     Ok(())
 }
 
-/// Materialise the Phase 0a Test 3 fixture at `root` — the
-/// "default-bin shared mod" regression guard:
+/// Phase 0a Test 2 fixture (Bug #17 reproducer): bin whose
+/// `[[bin]] name` does NOT match its parent directory name.
 ///
 /// ```text
-/// root/
-/// ├── Cargo.toml                       (workspace)
+/// <workspace>/
+/// └── consumer/
+///     ├── Cargo.toml                   ([lib] + [[bin]] myproject-server)
+///     └── src/
+///         ├── lib.rs                   (1 #[rudzio::test] — lib_baseline_test)
+///         └── bin/server/
+///             ├── main.rs              (mod ops; trivial fn main)
+///             └── ops.rs               (1 #[rudzio::test] — bin_source_test)
+/// ```
+fn customize_test_2_mismatched_name(workspace: &Path) -> io::Result<()> {
+    let consumer = workspace.join("consumer");
+    let bin_dir = consumer.join("src").join("bin").join("server");
+    fs::create_dir_all(&bin_dir)?;
+
+    fs::write(
+        consumer.join("Cargo.toml"),
+        "[package]\n\
+         name = \"consumer\"\n\
+         version = \"0.0.0\"\n\
+         edition = { workspace = true }\n\
+         publish = false\n\
+         \n\
+         [lib]\n\
+         name = \"consumer\"\n\
+         path = \"src/lib.rs\"\n\
+         \n\
+         [[bin]]\n\
+         name = \"myproject-server\"\n\
+         path = \"src/bin/server/main.rs\"\n\
+         \n\
+         [dev-dependencies]\n\
+         rudzio = { workspace = true }\n\
+         anyhow = { workspace = true }\n",
+    )?;
+
+    fs::write(
+        consumer.join("src").join("lib.rs"),
+        rudzio_test_block("lib_baseline_test"),
+    )?;
+
+    fs::write(
+        bin_dir.join("main.rs"),
+        "mod ops;\n\
+         \n\
+         fn main() {\n\
+         \x20\x20\x20\x20println!(\"myproject-server stub\");\n\
+         }\n",
+    )?;
+
+    fs::write(bin_dir.join("ops.rs"), rudzio_test_block("bin_source_test"))?;
+
+    Ok(())
+}
+
+/// Phase 0a Test 3 fixture (default-bin shared-mod): src/main.rs +
+/// src/lib.rs both declare `mod common;` against the same file.
+///
+/// ```text
+/// <workspace>/
 /// └── consumer/
 ///     ├── Cargo.toml                   ([lib] + [[bin]] consumer-cli)
 ///     └── src/
@@ -198,41 +211,8 @@ fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
 ///         ├── main.rs                  (mod common; fn main)
 ///         └── common.rs                (1 #[rudzio::test] — common_shared_test)
 /// ```
-///
-/// Both `src/lib.rs` AND `src/main.rs` declare `mod common;`. The
-/// declaration in `main.rs` is unusual in production code (`use
-/// crate::common::...` is more idiomatic), but is intentional here
-/// to surface the regression case: any bin-source-walker that
-/// recurses into `src/main.rs`'s parent directory will encounter
-/// `src/common.rs` and synth-mount it a second time, registering
-/// `common_shared_test` twice.
-///
-/// The Phase 0a `is_directory_style_bin` heuristic guards against
-/// this exact case via `parent != lib_dir`: parent of `src/main.rs`
-/// is `src/`, which is also the lib's parent dir, so the bin is
-/// classified flat-style and walks only `src/main.rs` itself (no
-/// recursion). The test asserts `common_shared_test` runs exactly
-/// once — would fail with two occurrences if the guard were
-/// dropped in a future refactor.
-fn write_fixture_default_bin_shared_mod(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    fs::write(
-        root.join("Cargo.toml"),
-        format!(
-            "[workspace]\n\
-             members = [\"consumer\"]\n\
-             resolver = \"3\"\n\
-             \n\
-             [workspace.package]\n\
-             edition = \"2024\"\n\
-             \n\
-             [workspace.dependencies]\n\
-             rudzio = {{ path = \"{rudzio}\", features = [\"common\", \"runtime-tokio-multi-thread\"] }}\n\
-             anyhow = \"=1.0.102\"\n",
-            rudzio = rudzio_root.display(),
-        ),
-    )?;
-
-    let consumer = root.join("consumer");
+fn customize_test_3_default_bin_shared_mod(workspace: &Path) -> io::Result<()> {
+    let consumer = workspace.join("consumer");
     let src_dir = consumer.join("src");
     fs::create_dir_all(&src_dir)?;
 
@@ -274,187 +254,28 @@ fn write_fixture_default_bin_shared_mod(root: &Path, rudzio_root: &Path) -> io::
     // that MUST run exactly once across lib+bin compile.
     fs::write(
         src_dir.join("common.rs"),
-        "// rudzio_test marker\n\
-         #[cfg(any(test, rudzio_test))]\n\
-         mod tests {\n\
-         \x20\x20\x20\x20use rudzio::common::context::{Suite, Test};\n\
-         \x20\x20\x20\x20use rudzio::runtime::tokio::Multithread as TokioMultithread;\n\
-         \n\
-         \x20\x20\x20\x20#[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
-         \x20\x20\x20\x20mod inner {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20#[rudzio::test]\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20fn common_shared_test(_t: &super::Test) -> anyhow::Result<()> {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20}\n\
-         \x20\x20\x20\x20}\n\
-         }\n",
+        rudzio_test_block("common_shared_test"),
     )?;
 
     Ok(())
 }
 
-/// Materialise the Phase 0a Test 2 fixture at `root` — the
-/// "mismatched name" Bug #17 reproducer:
+/// Phase 0a Test 4 fixture (deeply nested bin submodule).
 ///
 /// ```text
-/// root/
-/// ├── Cargo.toml                       (workspace)
+/// <workspace>/
 /// └── consumer/
 ///     ├── Cargo.toml                   ([lib] + [[bin]] myproject-server)
 ///     └── src/
-///         ├── lib.rs                   (1 #[rudzio::test] — baseline)
-///         └── bin/
-///             └── server/
-///                 ├── main.rs          (trivial fn main + mod ops)
-///                 └── ops.rs           (1 #[rudzio::test] — bin_source_test)
+///         ├── lib.rs                   (1 #[rudzio::test] — lib_baseline_test)
+///         └── bin/server/
+///             ├── main.rs              (mod api; fn main)
+///             ├── api.rs               (mod handler;)
+///             └── api/
+///                 └── handler.rs       (1 #[rudzio::test] — deeply_nested_test)
 /// ```
-///
-/// Structurally identical to `write_fixture` (the Bug #16 Test 1
-/// baseline) except the `[[bin]] name` is `"myproject-server"`
-/// instead of `"server"`. The directory `src/bin/server/` still
-/// matches the `file_name` "server", but no longer matches the
-/// `[[bin]] name`. The pre-Phase-0a heuristic
-/// `parent.file_name() == bin.name` fell through to flat-style on
-/// this layout, leaving `bin_source_test` invisible — the Bug #17
-/// shape reported by downstream consumers.
-///
-/// The Phase 0a `is_directory_style_bin` heuristic keys on
-/// `file_name == "main.rs"` instead, which correctly classifies
-/// this bin as directory-style regardless of the `[[bin]] name`.
-fn write_fixture_mismatched_name(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    fs::write(
-        root.join("Cargo.toml"),
-        format!(
-            "[workspace]\n\
-             members = [\"consumer\"]\n\
-             resolver = \"3\"\n\
-             \n\
-             [workspace.package]\n\
-             edition = \"2024\"\n\
-             \n\
-             [workspace.dependencies]\n\
-             rudzio = {{ path = \"{rudzio}\", features = [\"common\", \"runtime-tokio-multi-thread\"] }}\n\
-             anyhow = \"=1.0.102\"\n",
-            rudzio = rudzio_root.display(),
-        ),
-    )?;
-
-    let consumer = root.join("consumer");
-    let bin_dir = consumer.join("src").join("bin").join("server");
-    fs::create_dir_all(&bin_dir)?;
-
-    fs::write(
-        consumer.join("Cargo.toml"),
-        "[package]\n\
-         name = \"consumer\"\n\
-         version = \"0.0.0\"\n\
-         edition = { workspace = true }\n\
-         publish = false\n\
-         \n\
-         [lib]\n\
-         name = \"consumer\"\n\
-         path = \"src/lib.rs\"\n\
-         \n\
-         [[bin]]\n\
-         name = \"myproject-server\"\n\
-         path = \"src/bin/server/main.rs\"\n\
-         \n\
-         [dev-dependencies]\n\
-         rudzio = { workspace = true }\n\
-         anyhow = { workspace = true }\n",
-    )?;
-
-    fs::write(
-        consumer.join("src").join("lib.rs"),
-        "// rudzio_test marker\n\
-         #[cfg(any(test, rudzio_test))]\n\
-         mod tests {\n\
-         \x20\x20\x20\x20use rudzio::common::context::{Suite, Test};\n\
-         \x20\x20\x20\x20use rudzio::runtime::tokio::Multithread as TokioMultithread;\n\
-         \n\
-         \x20\x20\x20\x20#[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
-         \x20\x20\x20\x20mod inner {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20#[rudzio::test]\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20fn lib_baseline_test(_t: &super::Test) -> anyhow::Result<()> {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20}\n\
-         \x20\x20\x20\x20}\n\
-         }\n",
-    )?;
-
-    fs::write(
-        bin_dir.join("main.rs"),
-        "mod ops;\n\
-         \n\
-         fn main() {\n\
-         \x20\x20\x20\x20println!(\"myproject-server stub\");\n\
-         }\n",
-    )?;
-
-    fs::write(
-        bin_dir.join("ops.rs"),
-        "// rudzio_test marker\n\
-         #[cfg(any(test, rudzio_test))]\n\
-         mod tests {\n\
-         \x20\x20\x20\x20use rudzio::common::context::{Suite, Test};\n\
-         \x20\x20\x20\x20use rudzio::runtime::tokio::Multithread as TokioMultithread;\n\
-         \n\
-         \x20\x20\x20\x20#[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
-         \x20\x20\x20\x20mod inner {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20#[rudzio::test]\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20fn bin_source_test(_t: &super::Test) -> anyhow::Result<()> {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20}\n\
-         \x20\x20\x20\x20}\n\
-         }\n",
-    )?;
-
-    Ok(())
-}
-
-/// Materialise the Phase 0a Test 4 fixture at `root` — the
-/// "deeply nested bin submodule" recursive-walk guard:
-///
-/// ```text
-/// root/
-/// ├── Cargo.toml                       (workspace)
-/// └── consumer/
-///     ├── Cargo.toml                   ([lib] + [[bin]] myproject-server)
-///     └── src/
-///         ├── lib.rs                   (1 #[rudzio::test] — baseline)
-///         └── bin/
-///             └── server/
-///                 ├── main.rs          (mod api; fn main)
-///                 ├── api.rs           (mod handler;)
-///                 └── api/
-///                     └── handler.rs   (1 #[rudzio::test] — deeply_nested_test)
-/// ```
-///
-/// Same shape as `write_fixture_mismatched_name` (mismatched bin
-/// name) but the rudzio test lives at depth 3 in the bin source
-/// tree (`src/bin/server/api/handler.rs`). The directory-style
-/// walker must recurse beyond the immediate parent to find it.
-/// This regression-guards against any future "walk only one level"
-/// shortcut in `walk_dir_for_test_markers_and_main`.
-fn write_fixture_nested_helper(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    fs::write(
-        root.join("Cargo.toml"),
-        format!(
-            "[workspace]\n\
-             members = [\"consumer\"]\n\
-             resolver = \"3\"\n\
-             \n\
-             [workspace.package]\n\
-             edition = \"2024\"\n\
-             \n\
-             [workspace.dependencies]\n\
-             rudzio = {{ path = \"{rudzio}\", features = [\"common\", \"runtime-tokio-multi-thread\"] }}\n\
-             anyhow = \"=1.0.102\"\n",
-            rudzio = rudzio_root.display(),
-        ),
-    )?;
-
-    let consumer = root.join("consumer");
+fn customize_test_4_nested(workspace: &Path) -> io::Result<()> {
+    let consumer = workspace.join("consumer");
     let server_dir = consumer.join("src").join("bin").join("server");
     let api_dir = server_dir.join("api");
     fs::create_dir_all(&api_dir)?;
@@ -482,20 +303,7 @@ fn write_fixture_nested_helper(root: &Path, rudzio_root: &Path) -> io::Result<()
 
     fs::write(
         consumer.join("src").join("lib.rs"),
-        "// rudzio_test marker\n\
-         #[cfg(any(test, rudzio_test))]\n\
-         mod tests {\n\
-         \x20\x20\x20\x20use rudzio::common::context::{Suite, Test};\n\
-         \x20\x20\x20\x20use rudzio::runtime::tokio::Multithread as TokioMultithread;\n\
-         \n\
-         \x20\x20\x20\x20#[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
-         \x20\x20\x20\x20mod inner {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20#[rudzio::test]\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20fn lib_baseline_test(_t: &super::Test) -> anyhow::Result<()> {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20}\n\
-         \x20\x20\x20\x20}\n\
-         }\n",
+        rudzio_test_block("lib_baseline_test"),
     )?;
 
     fs::write(
@@ -511,20 +319,7 @@ fn write_fixture_nested_helper(root: &Path, rudzio_root: &Path) -> io::Result<()
 
     fs::write(
         api_dir.join("handler.rs"),
-        "// rudzio_test marker\n\
-         #[cfg(any(test, rudzio_test))]\n\
-         mod tests {\n\
-         \x20\x20\x20\x20use rudzio::common::context::{Suite, Test};\n\
-         \x20\x20\x20\x20use rudzio::runtime::tokio::Multithread as TokioMultithread;\n\
-         \n\
-         \x20\x20\x20\x20#[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
-         \x20\x20\x20\x20mod inner {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20#[rudzio::test]\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20fn deeply_nested_test(_t: &super::Test) -> anyhow::Result<()> {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20}\n\
-         \x20\x20\x20\x20}\n\
-         }\n",
+        rudzio_test_block("deeply_nested_test"),
     )?;
 
     Ok(())
@@ -535,9 +330,9 @@ fn write_fixture_nested_helper(root: &Path, rudzio_root: &Path) -> io::Result<()
 ])]
 mod tests {
     use super::{
-        Command, IsolatedCargoTest, Output, Path, PathBuf, Stdio, TempDir, io, rudzio_source_root,
-        write_fixture, write_fixture_default_bin_shared_mod, write_fixture_mismatched_name,
-        write_fixture_nested_helper,
+        Command, IsolatedCargoTest, Output, Path, Stdio, customize_test_1,
+        customize_test_2_mismatched_name, customize_test_3_default_bin_shared_mod,
+        customize_test_4_nested, io,
     };
     use anyhow::Context as _;
 
@@ -545,12 +340,7 @@ mod tests {
     /// isolated cargo state (hardlinked registry + fresh target
     /// dir). `CARGO_NET_OFFLINE=true` keeps the spawned cargo away
     /// from the network; the pre-warmed registry covers every
-    /// crate the fixture pulls in. The helper takes path slices
-    /// rather than `&IsolatedCargoTest` to dodge the
-    /// `elided-lifetimes-in-paths` forbid lint (the rudzio test
-    /// macro rewrites `&IsolatedCargoTest` parameters at the
-    /// `#[rudzio::test]` boundary; non-rewritten helper signatures
-    /// would need explicit generics that aren't in scope here).
+    /// crate the fixture pulls in.
     fn run_cargo_rudzio_test(
         root: &Path,
         cargo_home: &Path,
@@ -584,20 +374,12 @@ mod tests {
     async fn rudzio_test_in_deeply_nested_bin_submodule_runs_under_cargo_rudzio_test(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new_in(ctx.suite_tempdir())
-            .with_context(|| {
-                format!(
-                    "Test 4 step1: TempDir::new_in({})",
-                    ctx.suite_tempdir().display()
-                )
-            })?;
-        let root: &Path = workspace.path();
-        let rudzio_root: PathBuf = rudzio_source_root();
-        write_fixture_nested_helper(root, &rudzio_root)
-            .with_context(|| format!("Test 4 step2: write_fixture_nested_helper at {}", root.display()))?;
+        let workspace: &Path = ctx.consumer_workspace();
+        customize_test_4_nested(workspace)
+            .with_context(|| format!("Test 4 step1: customize at {}", workspace.display()))?;
 
-        let output = run_cargo_rudzio_test(root, ctx.cargo_home(), ctx.cargo_target_dir())
-            .with_context(|| "Test 4 step3: run_cargo_rudzio_test")?;
+        let output = run_cargo_rudzio_test(workspace, ctx.cargo_home(), ctx.cargo_target_dir())
+            .with_context(|| "Test 4 step2: run_cargo_rudzio_test")?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -645,36 +427,16 @@ mod tests {
     /// the captured output and the summary reports 1 passed
     /// instead of 2. Post-fix both tests run and the summary
     /// reports 2 passed.
-    ///
-    /// The two assertions triangulate the regression:
-    ///
-    ///  1. The bin-side test function name (`bin_source_test`)
-    ///     appears in the captured stdout. Pre-fix it never
-    ///     surfaces — the registration never made it into
-    ///     `TEST_TOKENS`, so the dispatcher cannot enumerate it.
-    ///  2. The summary line says exactly 2 passed. Catches the
-    ///     opposite failure mode where the lib baseline also
-    ///     stops running (would be 0 or 1 passed instead of 2)
-    ///     and any future regression where extra tests start
-    ///     materialising out of nowhere.
     #[rudzio::test]
     async fn rudzio_test_inside_bin_source_runs_under_cargo_rudzio_test(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new_in(ctx.suite_tempdir())
-            .with_context(|| {
-                format!(
-                    "Test 1 step1: TempDir::new_in({})",
-                    ctx.suite_tempdir().display()
-                )
-            })?;
-        let root: &Path = workspace.path();
-        let rudzio_root: PathBuf = rudzio_source_root();
-        write_fixture(root, &rudzio_root)
-            .with_context(|| format!("Test 1 step2: write_fixture at {}", root.display()))?;
+        let workspace: &Path = ctx.consumer_workspace();
+        customize_test_1(workspace)
+            .with_context(|| format!("Test 1 step1: customize at {}", workspace.display()))?;
 
-        let output = run_cargo_rudzio_test(root, ctx.cargo_home(), ctx.cargo_target_dir())
-            .with_context(|| "Test 1 step3: run_cargo_rudzio_test")?;
+        let output = run_cargo_rudzio_test(workspace, ctx.cargo_home(), ctx.cargo_target_dir())
+            .with_context(|| "Test 1 step2: run_cargo_rudzio_test")?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -699,18 +461,14 @@ mod tests {
         anyhow::ensure!(
             stdout.contains("lib_baseline_test"),
             "`lib_baseline_test` (lib baseline) is missing from the \
-             output — the fixture itself is broken, not the bug. \
-             Investigate before treating any downstream assertion as \
-             meaningful.\n\
+             output — the fixture itself is broken, not the bug.\n\
              --- captured stdout ---\n{stdout}\n\
              --- captured stderr ---\n{stderr}",
         );
 
         // Summary line shape:
         //   `test result: ok. N passed; 0 failed; ...`
-        // Pre-fix N=1, post-fix N=2. The leading space + trailing
-        // ` passed;` anchor disambiguates from substrings like
-        // `12 passed` if the count ever spuriously grows.
+        // Pre-fix N=1, post-fix N=2.
         anyhow::ensure!(
             stdout.contains(" 2 passed;"),
             "summary line must report exactly 2 passed (1 lib + 1 bin). \
@@ -725,35 +483,17 @@ mod tests {
     /// **Phase 0a Test 2 (Bug #17 reproducer)**: a `#[rudzio::test]`
     /// inside a `[[bin]]` source file whose `[[bin]] name` does NOT
     /// match the parent directory name must still run when invoked
-    /// through `cargo rudzio test`. Pre-Phase-0a the heuristic
-    /// `parent.file_name() == bin.name` fell through to flat-style
-    /// on this layout — the directory `server` does not equal
-    /// `[[bin]] name = "myproject-server"` — leaving the bin's
-    /// test silently invisible.
-    ///
-    /// The Phase 0a `is_directory_style_bin` heuristic keys on
-    /// `file_name == "main.rs"` (the actual Cargo directory-style
-    /// signal) rather than on bin-name matching, so the bin is
-    /// correctly classified as directory-style regardless of the
-    /// `[[bin]] name`.
+    /// through `cargo rudzio test`.
     #[rudzio::test]
     async fn rudzio_test_inside_bin_with_mismatched_name_runs_under_cargo_rudzio_test(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new_in(ctx.suite_tempdir())
-            .with_context(|| {
-                format!(
-                    "Test 2 step1: TempDir::new_in({})",
-                    ctx.suite_tempdir().display()
-                )
-            })?;
-        let root: &Path = workspace.path();
-        let rudzio_root: PathBuf = rudzio_source_root();
-        write_fixture_mismatched_name(root, &rudzio_root)
-            .with_context(|| format!("Test 2 step2: write_fixture_mismatched_name at {}", root.display()))?;
+        let workspace: &Path = ctx.consumer_workspace();
+        customize_test_2_mismatched_name(workspace)
+            .with_context(|| format!("Test 2 step1: customize at {}", workspace.display()))?;
 
-        let output = run_cargo_rudzio_test(root, ctx.cargo_home(), ctx.cargo_target_dir())
-            .with_context(|| "Test 2 step3: run_cargo_rudzio_test")?;
+        let output = run_cargo_rudzio_test(workspace, ctx.cargo_home(), ctx.cargo_target_dir())
+            .with_context(|| "Test 2 step2: run_cargo_rudzio_test")?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -797,42 +537,19 @@ mod tests {
     }
 
     /// **Phase 0a Test 3 (`lib_dir` guard regression guard)**: when
-    /// `src/main.rs` shares its parent directory with `src/lib.rs`
-    /// (the conventional Cargo single-package layout), a rudzio
-    /// test inside a submodule both files reference (`mod common;`)
-    /// must run exactly once — not twice.
-    ///
-    /// The Phase 0a `is_directory_style_bin` heuristic includes a
-    /// `parent != lib_dir` guard precisely for this case: parent of
-    /// `src/main.rs` is `src/`, which is also `[lib]`'s parent dir,
-    /// so the bin is classified flat-style and walks only the
-    /// `main.rs` file itself. Without the guard, the directory-
-    /// style walker would recurse into `src/`, encounter
-    /// `src/common.rs` (already mounted via the lib), and
-    /// synth-mount it a second time. `common_shared_test` would
-    /// register twice and run twice.
-    ///
-    /// This test asserts `common_shared_test` runs exactly once. A
-    /// regression that drops the `parent != lib_dir` guard would
-    /// produce two occurrences in stdout and fail this test.
+    /// `src/main.rs` shares its parent directory with `src/lib.rs`,
+    /// a rudzio test inside a submodule both files reference
+    /// (`mod common;`) must run exactly once — not twice.
     #[rudzio::test]
     async fn rudzio_tests_in_default_bin_main_rs_and_lib_rs_run_exactly_once_each(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new_in(ctx.suite_tempdir())
-            .with_context(|| {
-                format!(
-                    "Test 3 step1: TempDir::new_in({})",
-                    ctx.suite_tempdir().display()
-                )
-            })?;
-        let root: &Path = workspace.path();
-        let rudzio_root: PathBuf = rudzio_source_root();
-        write_fixture_default_bin_shared_mod(root, &rudzio_root)
-            .with_context(|| format!("Test 3 step2: write_fixture_default_bin_shared_mod at {}", root.display()))?;
+        let workspace: &Path = ctx.consumer_workspace();
+        customize_test_3_default_bin_shared_mod(workspace)
+            .with_context(|| format!("Test 3 step1: customize at {}", workspace.display()))?;
 
-        let output = run_cargo_rudzio_test(root, ctx.cargo_home(), ctx.cargo_target_dir())
-            .with_context(|| "Test 3 step3: run_cargo_rudzio_test")?;
+        let output = run_cargo_rudzio_test(workspace, ctx.cargo_home(), ctx.cargo_target_dir())
+            .with_context(|| "Test 3 step2: run_cargo_rudzio_test")?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
