@@ -67,47 +67,29 @@
 //!    declaration shared between `src/lib.rs` and `src/main.rs`
 //!    runs its tests exactly once (no double-mount via per-bin
 //!    bridge).
+//!
+//! # Phase B migration
+//!
+//! Each `customize_*` helper starts from the suite-provided
+//! `ctx.consumer_workspace()` (template = workspace + minimal
+//! consumer) and mutates the consumer member to match the
+//! fixture's target shape. The template's workspace `Cargo.toml`
+//! provides the rudzio path-dep + anyhow workspace deps; per-test
+//! `consumer/Cargo.toml` overwrites reference them via
+//! `{ workspace = true }`.
 
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
 use rudzio::runtime::tokio::Multithread;
-use tempfile::TempDir;
-
-/// Workspace root of the in-tree `rudzio` crate.
-fn rudzio_source_root() -> PathBuf {
-    rudzio::manifest_dir!().join("..")
-}
-
-/// Write the workspace `Cargo.toml` at `root` pointing at the
-/// in-tree rudzio source. Reused by every fixture below.
-fn write_workspace_toml(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    fs::write(
-        root.join("Cargo.toml"),
-        format!(
-            "[workspace]\n\
-             members = [\"consumer\"]\n\
-             resolver = \"3\"\n\
-             \n\
-             [workspace.package]\n\
-             edition = \"2024\"\n\
-             \n\
-             [workspace.dependencies]\n\
-             rudzio = {{ path = \"{rudzio}\", features = [\"common\", \"runtime-tokio-multi-thread\"] }}\n\
-             anyhow = \"=1.0.102\"\n",
-            rudzio = rudzio_root.display(),
-        ),
-    )
-}
 
 /// **Test 1 fixture** — user's exact Bug #19 repro:
 ///
 /// ```text
-/// root/
-/// ├── Cargo.toml                       (workspace)
+/// <workspace>/
 /// └── consumer/
 ///     ├── Cargo.toml                   ([lib] + [[bin]] consumer-server)
 ///     └── src/
@@ -122,10 +104,8 @@ fn write_workspace_toml(root: &Path, rudzio_root: &Path) -> io::Result<()> {
 /// The test inside `api/mod.rs` references `crate::api::helper()`
 /// — pre-fix this fails to compile because `crate::` resolves to
 /// the BRIDGE, not the bin.
-fn write_fixture_crate_api_helper(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    write_workspace_toml(root, rudzio_root)?;
-
-    let consumer = root.join("consumer");
+fn customize_test_1_crate_api_helper(workspace: &Path) -> io::Result<()> {
+    let consumer = workspace.join("consumer");
     let api_dir = consumer.join("src").join("bin").join("server").join("api");
     fs::create_dir_all(&api_dir)?;
 
@@ -193,13 +173,8 @@ fn write_fixture_crate_api_helper(root: &Path, rudzio_root: &Path) -> io::Result
 /// bridge so `crate::api_one::value()` in bin one and
 /// `crate::api_two::value()` in bin two resolve INDEPENDENTLY,
 /// without cross-contamination.
-fn write_fixture_multi_bin_crate_isolation(
-    root: &Path,
-    rudzio_root: &Path,
-) -> io::Result<()> {
-    write_workspace_toml(root, rudzio_root)?;
-
-    let consumer = root.join("consumer");
+fn customize_test_2_multi_bin_crate_isolation(workspace: &Path) -> io::Result<()> {
+    let consumer = workspace.join("consumer");
     let bin_one_dir = consumer.join("src").join("bin").join("one");
     let bin_two_dir = consumer.join("src").join("bin").join("two");
     fs::create_dir_all(&bin_one_dir)?;
@@ -302,10 +277,8 @@ fn write_fixture_multi_bin_crate_isolation(
 /// │   │   ├── common.rs        (pub type Resp = i32;)
 /// │   │   └── create.rs        (uses crate::api::handler::common::Resp + test)
 /// ```
-fn write_fixture_deep_crate_paths(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    write_workspace_toml(root, rudzio_root)?;
-
-    let consumer = root.join("consumer");
+fn customize_test_3_deep_crate_paths(workspace: &Path) -> io::Result<()> {
+    let consumer = workspace.join("consumer");
     let server_dir = consumer.join("src").join("bin").join("server");
     let handler_dir = server_dir.join("api").join("handler");
     fs::create_dir_all(&handler_dir)?;
@@ -377,10 +350,8 @@ fn write_fixture_deep_crate_paths(root: &Path, rudzio_root: &Path) -> io::Result
 /// └── src/bin/server/
 ///     └── main.rs             (use consumer::lib_helper; + test asserting == 17)
 /// ```
-fn write_fixture_bin_uses_member_lib(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    write_workspace_toml(root, rudzio_root)?;
-
-    let consumer = root.join("consumer");
+fn customize_test_4_bin_uses_member_lib(workspace: &Path) -> io::Result<()> {
+    let consumer = workspace.join("consumer");
     let server_dir = consumer.join("src").join("bin").join("server");
     fs::create_dir_all(&server_dir)?;
 
@@ -452,10 +423,8 @@ fn write_fixture_bin_uses_member_lib(root: &Path, rudzio_root: &Path) -> io::Res
 /// The structural test for the regression: `cargo rudzio test`
 /// reports the bin's test exactly ONCE (it self-aggregates as a
 /// standalone runner, not via the aggregator's main).
-fn write_fixture_standalone_bin(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    write_workspace_toml(root, rudzio_root)?;
-
-    let consumer = root.join("consumer");
+fn customize_test_5_standalone_bin(workspace: &Path) -> io::Result<()> {
+    let consumer = workspace.join("consumer");
     let bin_dir = consumer.join("src").join("bin");
     fs::create_dir_all(&bin_dir)?;
 
@@ -521,13 +490,8 @@ fn write_fixture_standalone_bin(root: &Path, rudzio_root: &Path) -> io::Result<(
 /// bridge creation — `is_directory_style_bin` is false for this
 /// layout, so no per-bin bridge is built, and `common_shared_test`
 /// runs exactly once via the lib mount only.
-fn write_fixture_default_bin_shared_mod(
-    root: &Path,
-    rudzio_root: &Path,
-) -> io::Result<()> {
-    write_workspace_toml(root, rudzio_root)?;
-
-    let consumer = root.join("consumer");
+fn customize_test_6_default_bin_shared_mod(workspace: &Path) -> io::Result<()> {
+    let consumer = workspace.join("consumer");
     let src_dir = consumer.join("src");
     fs::create_dir_all(&src_dir)?;
 
@@ -584,10 +548,10 @@ fn write_fixture_default_bin_shared_mod(
 ])]
 mod tests {
     use super::{
-        Command, IsolatedCargoTest, Output, Path, Stdio, TempDir, io, rudzio_source_root,
-        write_fixture_bin_uses_member_lib, write_fixture_crate_api_helper,
-        write_fixture_deep_crate_paths, write_fixture_default_bin_shared_mod,
-        write_fixture_multi_bin_crate_isolation, write_fixture_standalone_bin,
+        Command, IsolatedCargoTest, Output, Path, Stdio, customize_test_1_crate_api_helper,
+        customize_test_2_multi_bin_crate_isolation, customize_test_3_deep_crate_paths,
+        customize_test_4_bin_uses_member_lib, customize_test_5_standalone_bin,
+        customize_test_6_default_bin_shared_mod, io,
     };
     use anyhow::Context as _;
 
@@ -600,15 +564,12 @@ mod tests {
     async fn bin_using_member_lib_via_use_resolves(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new_in(ctx.suite_tempdir())
-            .with_context(|| "test4 step1: TempDir::new_in")?;
-        let root = workspace.path();
-        let rudzio_root = rudzio_source_root();
-        write_fixture_bin_uses_member_lib(root, &rudzio_root)
-            .with_context(|| "test4 step2: write_fixture_bin_uses_member_lib")?;
+        let workspace: &Path = ctx.consumer_workspace();
+        customize_test_4_bin_uses_member_lib(workspace)
+            .with_context(|| "test4 step1: customize_test_4_bin_uses_member_lib")?;
 
-        let output = run_cargo_rudzio_test(root, ctx.cargo_home(), ctx.cargo_target_dir())
-            .with_context(|| "test4 step3: run_cargo_rudzio_test")?;
+        let output = run_cargo_rudzio_test(workspace, ctx.cargo_home(), ctx.cargo_target_dir())
+            .with_context(|| "test4 step2: run_cargo_rudzio_test")?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -643,15 +604,12 @@ mod tests {
     async fn bin_using_crate_paths_compiles_and_runs(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new_in(ctx.suite_tempdir())
-            .with_context(|| "test1 step1: TempDir::new_in")?;
-        let root = workspace.path();
-        let rudzio_root = rudzio_source_root();
-        write_fixture_crate_api_helper(root, &rudzio_root)
-            .with_context(|| "test1 step2: write_fixture_crate_api_helper")?;
+        let workspace: &Path = ctx.consumer_workspace();
+        customize_test_1_crate_api_helper(workspace)
+            .with_context(|| "test1 step1: customize_test_1_crate_api_helper")?;
 
-        let output = run_cargo_rudzio_test(root, ctx.cargo_home(), ctx.cargo_target_dir())
-            .with_context(|| "test1 step3: run_cargo_rudzio_test")?;
+        let output = run_cargo_rudzio_test(workspace, ctx.cargo_home(), ctx.cargo_target_dir())
+            .with_context(|| "test1 step2: run_cargo_rudzio_test")?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -687,15 +645,12 @@ mod tests {
     async fn deeply_nested_bin_crate_paths_resolve(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new_in(ctx.suite_tempdir())
-            .with_context(|| "test3 step1: TempDir::new_in")?;
-        let root = workspace.path();
-        let rudzio_root = rudzio_source_root();
-        write_fixture_deep_crate_paths(root, &rudzio_root)
-            .with_context(|| "test3 step2: write_fixture_deep_crate_paths")?;
+        let workspace: &Path = ctx.consumer_workspace();
+        customize_test_3_deep_crate_paths(workspace)
+            .with_context(|| "test3 step1: customize_test_3_deep_crate_paths")?;
 
-        let output = run_cargo_rudzio_test(root, ctx.cargo_home(), ctx.cargo_target_dir())
-            .with_context(|| "test3 step3: run_cargo_rudzio_test")?;
+        let output = run_cargo_rudzio_test(workspace, ctx.cargo_home(), ctx.cargo_target_dir())
+            .with_context(|| "test3 step2: run_cargo_rudzio_test")?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -727,15 +682,12 @@ mod tests {
     async fn default_bin_with_shared_mod_via_lib_runs_test_once(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new_in(ctx.suite_tempdir())
-            .with_context(|| "test6 step1: TempDir::new_in")?;
-        let root = workspace.path();
-        let rudzio_root = rudzio_source_root();
-        write_fixture_default_bin_shared_mod(root, &rudzio_root)
-            .with_context(|| "test6 step2: write_fixture_default_bin_shared_mod")?;
+        let workspace: &Path = ctx.consumer_workspace();
+        customize_test_6_default_bin_shared_mod(workspace)
+            .with_context(|| "test6 step1: customize_test_6_default_bin_shared_mod")?;
 
-        let output = run_cargo_rudzio_test(root, ctx.cargo_home(), ctx.cargo_target_dir())
-            .with_context(|| "test6 step3: run_cargo_rudzio_test")?;
+        let output = run_cargo_rudzio_test(workspace, ctx.cargo_home(), ctx.cargo_target_dir())
+            .with_context(|| "test6 step2: run_cargo_rudzio_test")?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -769,15 +721,12 @@ mod tests {
     async fn multi_bin_each_with_independent_crate_root(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new_in(ctx.suite_tempdir())
-            .with_context(|| "test2 step1: TempDir::new_in")?;
-        let root = workspace.path();
-        let rudzio_root = rudzio_source_root();
-        write_fixture_multi_bin_crate_isolation(root, &rudzio_root)
-            .with_context(|| "test2 step2: write_fixture_multi_bin_crate_isolation")?;
+        let workspace: &Path = ctx.consumer_workspace();
+        customize_test_2_multi_bin_crate_isolation(workspace)
+            .with_context(|| "test2 step1: customize_test_2_multi_bin_crate_isolation")?;
 
-        let output = run_cargo_rudzio_test(root, ctx.cargo_home(), ctx.cargo_target_dir())
-            .with_context(|| "test2 step3: run_cargo_rudzio_test")?;
+        let output = run_cargo_rudzio_test(workspace, ctx.cargo_home(), ctx.cargo_target_dir())
+            .with_context(|| "test2 step2: run_cargo_rudzio_test")?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -834,15 +783,12 @@ mod tests {
     async fn standalone_bin_with_rudzio_main_remains_standalone(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new_in(ctx.suite_tempdir())
-            .with_context(|| "test5 step1: TempDir::new_in")?;
-        let root = workspace.path();
-        let rudzio_root = rudzio_source_root();
-        write_fixture_standalone_bin(root, &rudzio_root)
-            .with_context(|| "test5 step2: write_fixture_standalone_bin")?;
+        let workspace: &Path = ctx.consumer_workspace();
+        customize_test_5_standalone_bin(workspace)
+            .with_context(|| "test5 step1: customize_test_5_standalone_bin")?;
 
-        let output = run_cargo_rudzio_test(root, ctx.cargo_home(), ctx.cargo_target_dir())
-            .with_context(|| "test5 step3: run_cargo_rudzio_test")?;
+        let output = run_cargo_rudzio_test(workspace, ctx.cargo_home(), ctx.cargo_target_dir())
+            .with_context(|| "test5 step2: run_cargo_rudzio_test")?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 

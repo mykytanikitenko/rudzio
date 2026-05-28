@@ -22,56 +22,50 @@
 //! Subprocess approach (not library-level) is mandatory because the
 //! filter belongs at the CLI → `Plan` boundary, which a library
 //! caller bypasses; only the binary exercises the full flow.
+//!
+//! # Phase B migration
+//!
+//! The original fixture used a workspace member named `member`;
+//! Phase B's template fixes the member name to `consumer` so the
+//! migration renames the member to match. The assertion is name-
+//! agnostic (it checks the subprocess exit code only), so the
+//! rename is mechanical.
 
 use std::env;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
 use rudzio::runtime::tokio::Multithread as TokioMultithread;
-use tempfile::TempDir;
 
-/// Workspace root of the in-tree rudzio package (one level above
-/// `manifest_dir!()` which points at the rudzio crate itself).
-fn rudzio_source_root() -> PathBuf {
-    rudzio::manifest_dir!().join("..")
-}
-
-/// Materialise a single-member workspace with a compiling `good`
-/// test binary and a deliberately-broken `broken` one.
+/// Customize the suite-provided consumer workspace into the
+/// filter-test fixture: overwrite `consumer/Cargo.toml` with two
+/// `[[test]]` binaries (`good` + `broken`, `autotests = false`,
+/// `harness = false`) and overwrite `consumer/src/lib.rs` with a
+/// marker-only stub. Materialises both binaries' source trees
+/// under `consumer/tests/`.
 ///
-/// The fixture path-pins rudzio to the in-tree source so no registry
-/// fetch is required when the subprocess runs cargo against it.
-fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
+/// `broken/mod.rs` references an undefined symbol so its compile
+/// fails — exactly the pre-fix Bug #3 symptom when `--test good`
+/// is dropped at the aggregator level.
+fn customize_fixture(workspace: &Path) -> io::Result<()> {
+    let consumer = workspace.join("consumer");
+    fs::create_dir_all(consumer.join("src"))?;
+    fs::create_dir_all(consumer.join("tests").join("good"))?;
+    fs::create_dir_all(consumer.join("tests").join("broken"))?;
     fs::write(
-        root.join("Cargo.toml"),
-        format!(
-            "[workspace]\n\
-             members = [\"member\"]\n\
-             resolver = \"3\"\n\
-             \n\
-             [workspace.dependencies]\n\
-             rudzio = {{ path = \"{rudzio}\", default-features = false, features = [\"common\", \"runtime-tokio-multi-thread\"] }}\n",
-            rudzio = rudzio_root.display(),
-        ),
-    )?;
-    let member = root.join("member");
-    fs::create_dir_all(member.join("src"))?;
-    fs::create_dir_all(member.join("tests").join("good"))?;
-    fs::create_dir_all(member.join("tests").join("broken"))?;
-    fs::write(
-        member.join("Cargo.toml"),
+        consumer.join("Cargo.toml"),
         "[package]\n\
-         name = \"member\"\n\
+         name = \"consumer\"\n\
          version = \"0.0.0\"\n\
          edition = \"2024\"\n\
          publish = false\n\
          autotests = false\n\
          \n\
          [lib]\n\
-         name = \"member\"\n\
+         name = \"consumer\"\n\
          path = \"src/lib.rs\"\n\
          \n\
          [[test]]\n\
@@ -87,9 +81,9 @@ fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
          [dev-dependencies]\n\
          rudzio = { workspace = true }\n",
     )?;
-    fs::write(member.join("src").join("lib.rs"), "// rudzio_test marker\n")?;
+    fs::write(consumer.join("src").join("lib.rs"), "// rudzio_test marker\n")?;
     fs::write(
-        member.join("tests").join("good").join("mod.rs"),
+        consumer.join("tests").join("good").join("mod.rs"),
         "// rudzio_test marker\n#[rudzio::main]\nfn main() {}\n",
     )?;
     // `undefined_symbol` doesn't resolve. If the filter actually
@@ -98,7 +92,7 @@ fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
     // tries to compile this file and the build fails — which is
     // exactly the pre-fix Bug #3 symptom.
     fs::write(
-        member.join("tests").join("broken").join("mod.rs"),
+        consumer.join("tests").join("broken").join("mod.rs"),
         "// rudzio_test marker\n#[rudzio::main]\nfn main() { let _: () = undefined_symbol; }\n",
     )?;
     Ok(())
@@ -108,16 +102,15 @@ fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
     (runtime = TokioMultithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
 ])]
 mod tests {
-    use super::{Command, IsolatedCargoTest, TempDir, env, rudzio_source_root, write_fixture};
+    use super::{Command, IsolatedCargoTest, Path, customize_fixture, env};
 
     #[rudzio::test]
     fn cargo_rudzio_test_with_test_filter_skips_other_binaries(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let temp = TempDir::new_in(ctx.suite_tempdir())?;
-        let rudzio_root = rudzio_source_root();
-        write_fixture(temp.path(), &rudzio_root)?;
-        let manifest = temp.path().join("Cargo.toml");
+        let workspace: &Path = ctx.consumer_workspace();
+        customize_fixture(workspace)?;
+        let manifest = workspace.join("Cargo.toml");
         let cargo_rudzio = env!("CARGO_BIN_EXE_cargo-rudzio");
         // Per-test cargo state (hardlinked from suite's pre-warmed
         // registry) + offline mode = sibling tests do not contend on

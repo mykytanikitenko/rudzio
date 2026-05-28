@@ -40,7 +40,6 @@ use cargo_rudzio::generate::{plan_from_manifest, write_runner};
 use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
 use rudzio::runtime::tokio::Multithread as TokioMultithread;
 use rudzio::{normalize_module_path, qualified_test_name};
-use tempfile::TempDir;
 
 /// Common prefix every internal aggregator-wrapper name carries.
 ///
@@ -59,31 +58,24 @@ use tempfile::TempDir;
 /// `__rudzio` prefix convention.
 const SYNTH_MARKER: &str = "__rudzio";
 
-/// Workspace root of the in-tree rudzio package.
-fn rudzio_source_root() -> PathBuf {
-    rudzio::manifest_dir!().join("..")
-}
-
-/// Single-binary fixture with a `common` helper. Exercises the
-/// Bug #10 per-binary scoping (the binary's helper still goes
-/// through `__rudzio__<binary_id>__common` synth-name generation
-/// even with one binary), without triggering the collision
-/// detector (which fires when TWO binaries declare the same
-/// helper name against DIFFERENT files).
-fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    fs::write(
-        root.join("Cargo.toml"),
-        format!(
-            "[workspace]\n\
-             members = [\"consumer\"]\n\
-             resolver = \"3\"\n\
-             \n\
-             [workspace.dependencies]\n\
-             rudzio = {{ path = \"{rudzio}\", default-features = false, features = [\"common\", \"runtime-tokio-multi-thread\"] }}\n",
-            rudzio = rudzio_root.display(),
-        ),
-    )?;
-    let consumer = root.join("consumer");
+/// Customize the suite-provided consumer workspace into the
+/// synth-leak fixture: overwrite `consumer/Cargo.toml` with a
+/// single-`[[test]]` shape (`autotests = false`, `harness = false`,
+/// `integration` binary) and overwrite `consumer/src/lib.rs` with
+/// a marker-only stub. Writes the `tests/integration/{mod,common,foo}.rs`
+/// tree.
+///
+/// Exercises Bug #10 per-binary scoping (the binary's helper still
+/// goes through `__rudzio__<binary_id>__common` synth-name generation
+/// even with one binary), without triggering the collision detector
+/// (which fires when TWO binaries declare the same helper name
+/// against DIFFERENT files).
+///
+/// The template's workspace `Cargo.toml` already path-pins rudzio
+/// with the features this spec needs; `customize_fixture` only
+/// mutates the consumer member.
+fn customize_fixture(workspace: &Path) -> io::Result<()> {
+    let consumer = workspace.join("consumer");
     fs::create_dir_all(consumer.join("src"))?;
     fs::write(
         consumer.join("Cargo.toml"),
@@ -105,7 +97,7 @@ fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
          \n\
          [dev-dependencies]\n\
          rudzio = { workspace = true }\n\
-         anyhow = \"=1.0.102\"\n",
+         anyhow = { workspace = true }\n",
     )?;
     fs::write(
         consumer.join("src").join("lib.rs"),
@@ -312,10 +304,10 @@ fn collect_string_literals(text: &str) -> Vec<String> {
 ])]
 mod tests {
     use super::{
-        Command, IsolatedCargoTest, Path, SYNTH_MARKER, TempDir, collect_string_literals, env, fs,
-        is_cargo_build_line, is_rust_backtrace_line, normalize_module_path, plan_from_manifest,
-        qualified_test_name, read_emitted_sources, rudzio_source_root, with_cargo_offline,
-        write_fixture, write_runner,
+        Command, IsolatedCargoTest, Path, SYNTH_MARKER, collect_string_literals,
+        customize_fixture, env, fs, is_cargo_build_line, is_rust_backtrace_line,
+        normalize_module_path, plan_from_manifest, qualified_test_name, read_emitted_sources,
+        with_cargo_offline, write_runner,
     };
 
     /// Layer 1 — static: synth names must NEVER appear in string
@@ -326,10 +318,9 @@ mod tests {
     /// surface verbatim at runtime.
     #[rudzio::test]
     fn no_synth_marker_in_emitted_string_literals(ctx: &IsolatedCargoTest) -> anyhow::Result<()> {
-        let temp = TempDir::new_in(ctx.suite_tempdir())?;
-        let rudzio_root = rudzio_source_root();
-        write_fixture(temp.path(), &rudzio_root)?;
-        let manifest = temp.path().join("Cargo.toml");
+        let workspace: &Path = ctx.consumer_workspace();
+        customize_fixture(workspace)?;
+        let manifest = workspace.join("Cargo.toml");
         // `plan_from_manifest` runs `cargo metadata --no-deps`
         // in-process; `--no-deps` skips registry reads, so the
         // inherited (system) `CARGO_HOME` is fine here. The
@@ -382,10 +373,9 @@ mod tests {
     fn no_synth_marker_in_aggregator_stdout_or_stderr(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let temp = TempDir::new_in(ctx.suite_tempdir())?;
-        let rudzio_root = rudzio_source_root();
-        write_fixture(temp.path(), &rudzio_root)?;
-        let manifest = temp.path().join("Cargo.toml");
+        let workspace: &Path = ctx.consumer_workspace();
+        customize_fixture(workspace)?;
+        let manifest = workspace.join("Cargo.toml");
         let cargo_rudzio = env!("CARGO_BIN_EXE_cargo-rudzio");
         // Per-test cargo state (hardlinked from suite pre-warm) +
         // offline mode = no flock contention, no host-target
@@ -576,11 +566,10 @@ mod tests {
     fn fixture_writes_consumer_with_one_binary_and_helper(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let temp = TempDir::new_in(ctx.suite_tempdir())?;
-        let rudzio_root = rudzio_source_root();
-        write_fixture(temp.path(), &rudzio_root)?;
-        let workspace_toml = fs::read_to_string(temp.path().join("Cargo.toml"))?;
-        let consumer_toml = fs::read_to_string(temp.path().join("consumer").join("Cargo.toml"))?;
+        let workspace: &Path = ctx.consumer_workspace();
+        customize_fixture(workspace)?;
+        let workspace_toml = fs::read_to_string(workspace.join("Cargo.toml"))?;
+        let consumer_toml = fs::read_to_string(workspace.join("consumer").join("Cargo.toml"))?;
         anyhow::ensure!(
             workspace_toml.contains("rudzio = { path ="),
             "fixture workspace must path-pin rudzio for offline runs",
