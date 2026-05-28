@@ -2,8 +2,8 @@
 
 **Created:** 2026-05-28 (revised after 5-agent gap audit)
 **Branch:** `main`
-**Most recent commit:** `92151ff` ("feat(test-helpers): Phase B framework — Suite-owned warmup snapshot + per-test full-recursive copy")
-**Status:** Phase 0 complete (`820d257`+`1ebe772`). Phase B framework landed (`92151ff`) — `IsolatedCargoSuite`/`IsolatedCargoTest` now own per-test isolation via warmup snapshot + full-recursive copy; `bug_18` migrated as proof. Row 11 (migrate remaining specs) + row 12 (aggregator pre-compile in snapshot, `--remap-path-prefix`) PENDING. P-0 (`#[expect]`/`#[allow]` per-site review) is the natural next item after row 11 migration. See Campaign tracking matrix below for live row-level state. Future-PP updates the matrix as work lands; commit hashes filled before push.
+**Most recent commit:** `5c7b359` ("refactor(tests): Phase B Tier-3 migrations — bug_19 + synth_name_leak + test_filter")
+**Status:** Phase 0 complete (`820d257`+`1ebe772`). Phase B framework landed (`92151ff`) — `IsolatedCargoSuite`/`IsolatedCargoTest` now own per-test isolation via warmup snapshot + full-recursive copy. Phase B migrations complete: 8 of 10 specs using `IsolatedCargoSuite` now use `ctx.consumer_workspace()`; remaining 2 (`cross_bridge`, `bug_14`) intentionally not migrated (parametric fixtures). Row 12 (aggregator pre-compile in snapshot, `--remap-path-prefix`) PENDING. P-0 (`#[expect]`/`#[allow]` per-site review) is the natural next item. See Campaign tracking matrix below for live row-level state. Future-PP updates the matrix as work lands; commit hashes filled before push.
 
 ## Revision history
 
@@ -40,7 +40,7 @@ Live progress log. Status values: `DONE` (with commit hash) | `IN PROGRESS` | `P
 | 8 | Phase 0 single batched commit (covers 0a + 0b + 0c) + push to `origin/main` | DONE | `820d257` |
 | 9 | Bug #19 fix: per-bin bridge crate preserves `crate::*` root in mounted bin sources + `bug_19_bin_crate_root_resolution_spec` (6 proactive tests) | DONE | `1ebe772` |
 | 10 | Phase B framework: `IsolatedCargoSuite` warmup snapshot (template consumer workspace) + `IsolatedCargoTest` per-test full-recursive-copy + RAII cleanup; one spec migrated as proof-of-concept (`bug_18`). Aggregator pre-compile in snapshot DEFERRED (cargo's incremental cache uses absolute paths; cross-path reuse needs `--remap-path-prefix` work). | DONE | `92151ff` |
-| 11 | Phase B migration: remaining specs (`bug_16`, `bug_19`, `surface_visibility`, `silent_member_drop`, parallel/cross-bridge specs) migrated to warmup-snapshot pattern | PENDING | TBD |
+| 11 | Phase B migration: 8 of 10 specs using `IsolatedCargoSuite` migrated to `ctx.consumer_workspace()` (`bug_18`/`silent_member_drop`/`parallel_invocations`/`surface_visibility`/`bug_16`/`bug_19`/`synth_name_leak`/`test_filter`). `cross_bridge` + `bug_14` intentionally NOT migrated (parametric fixture shapes incompatible with template — see `.opencode/issues.md` 2026-05-28 Tier-4 entry). | DONE | `6645ab6`+`a79ccae`+`ff4d66d`+`5c7b359` |
 | 12 | Phase B aggregator-pre-compile-in-snapshot follow-up (`--remap-path-prefix` strategy for cargo cache survival across per-test paths) | PENDING | TBD |
 | 13 | P-0 cleanup: per-site review of `#[expect]`/`#[allow]` (Phase 0c linter surfaces these) | PENDING | TBD |
 | 14 | P-1 cleanup: `Default` impl removal (1 manual + ~16 derives + ~5 struct-update consumers) | PENDING | TBD |
