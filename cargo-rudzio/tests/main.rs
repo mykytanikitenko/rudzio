@@ -7,6 +7,7 @@ mod bug_10_helper_isolation_edge_cases_spec;
 mod bug_11_double_execution_edge_cases_spec;
 mod bug_12_bare_use_alias_spec;
 mod bug_14_monolith_sigkill_spec;
+mod bug_16_bin_source_tests_invisible_spec;
 mod bug_8_helper_discovery_edge_cases_spec;
 mod cfg_test_warning_narrowing_spec;
 mod cli_spec;
@@ -23,6 +24,7 @@ mod per_binary_helper_isolation_spec;
 mod proper_architecture_spec;
 mod registry_preservation_spec;
 mod strict_parse_spec;
+mod surface_visibility_invariant_spec;
 mod synth_name_leak_spec;
 mod test_filter_spec;
 

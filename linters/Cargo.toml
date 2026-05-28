@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+members = ["non-result-fns"]
+
+# Linters live in their own cargo workspace so they don't pollute the
+# main rudzio workspace's build graph, lint config, or `cargo check`
+# /` cargo build --workspace` runtime. They are run on demand via
+# `just check-lints` (or whatever recipe wires them in).
+#
+# Each linter is a self-contained binary crate with one job. To add a
+# new one:
+#   1. Create `linters/<name>/` with its own Cargo.toml + src/main.rs.
+#   2. Add `<name>` to the `members` list above.
+#   3. Add a recipe (or extend the existing one) in the top-level Justfile.
+
+[workspace.package]
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+syn = { version = "=2.0.117", features = ["full", "extra-traits", "visit"] }
+proc-macro2 = { version = "=1.0.106", features = ["span-locations"] }
+quote = "=1.0.45"
+walkdir = "=2.5.0"

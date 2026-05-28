@@ -49,6 +49,16 @@ check-clippy:
 check-udeps:
     cargo +nightly udeps --workspace --all-features --all-targets
 
+# Run all custom code-audit linters under `linters/`.
+#
+# Each linter under `linters/` is its own crate; this recipe invokes
+# every one in turn against the repo root. Linters are statistical
+# instruments — they print summary counts and write detailed reports
+# to `linters/*-report.txt`. None gate `just ci` yet; promote them
+# to gates once the baseline is understood.
+check-lints:
+    cargo run --manifest-path linters/Cargo.toml -p non-result-fns
+
 # --- Testing ---
 
 # Run the full aggregated rudzio suite via the auto-generated runner.
@@ -150,4 +160,4 @@ pre-commit: check-fmt check-taplo check check-clippy check-udeps test
 # is intentionally NOT in this aggregate until the first crates.io
 # publish creates a baseline (it errors with "not found in registry"
 # pre-publish). After v0.1.0 lands, add `check-semver` to this list.
-ci: check-fmt check-taplo check-clippy check-audit check-deny test
+ci: check-fmt check-taplo check-clippy check-audit check-deny check-lints test

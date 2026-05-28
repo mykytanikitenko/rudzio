@@ -25,3 +25,8 @@ target
 # bacon-ls and other bacon logs
 *.log
 .opencode/
+
+# Generated linter reports — regenerated on every `just check-lints`
+# run. The committed `linters/BASELINE.md` is the persistent snapshot.
+linters/non-result-fns-report.txt
+linters/target/
