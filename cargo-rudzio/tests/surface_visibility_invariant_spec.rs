@@ -6,14 +6,14 @@
 //!
 //! For any source file the rudzio toolchain could plausibly compile
 //! under `--cfg rudzio_test`, a `#[rudzio::test]` declaration in
-//! that file must EITHER
+//! that file must satisfy one of the following two outcomes:
 //!
-//!  (a) run when `cargo rudzio test` is invoked against the
-//!      workspace and appear in the captured stdout, OR
+//!  (a) it runs when `cargo rudzio test` is invoked against the
+//!      workspace and appears in the captured stdout.
 //!
-//!  (b) cause `cargo rudzio test` to exit non-zero AND emit a
-//!      stderr message naming the offending file path so the user
-//!      knows which test the toolchain refused to run.
+//!  (b) `cargo rudzio test` exits non-zero AND emits a stderr
+//!      message naming the offending file path so the user knows
+//!      which test the toolchain refused to run.
 //!
 //! Silent green runs with disappeared tests are FORBIDDEN.
 //!
@@ -40,19 +40,24 @@
 //!
 //! # Coverage map
 //!
-//! | Location                              | Bug #16 link                          |
-//! |---------------------------------------|---------------------------------------|
-//! | `src/bin/<n>/main.rs` (entry)         | adjacent — Bug #16 covers helper file |
-//! | `examples/<n>.rs`                     | audit candidate #4 (Examples ignored) |
-//! | `benches/<n>.rs`                      | audit candidate #4 (Benches ignored)  |
+//! | Location                                          | Bug #16 link                       |
+//! |---------------------------------------------------|------------------------------------|
+//! | `src/bin/<n>/main.rs` (entry file)                | adjacent — Bug #16 covers helper   |
+//! | `examples/<n>.rs`                                  | audit candidate #4 (Examples)      |
+//! | `benches/<n>.rs`                                   | audit candidate #4 (Benches)       |
+//! | `tests/<sub>/helper.rs` (submodule of `tests/foo.rs`) | audit candidate #6 (helper gate) |
+//! | `#[path = "../foo.rs"]` mod escaping `<member>/src/`  | audit candidate #1 (src/ walk)   |
+//! | non-default `[lib].path = "src/<sub>/lib.rs"`      | not in audit — preventive          |
 //!
-//! Locations NOT covered here (left for follow-up specs):
-//!  * `#[path = "../foo.rs"]` mod escaping `<member>/src/`
-//!  * non-default `[lib].path = "src/somewhere/else.rs"`
-//!  * `tests/<sub>/main.rs` with `autotests = false`
-//!  * broken transitive path-dep metadata (silent-member-drop class)
-//!  * runtime-side scanned-vs-registered count invariant
+//! Locations NOT covered here (separate defect class — different spec):
+//!  * broken transitive path-dep metadata (silent-member-drop class —
+//!    `extend_with_transitive_path_dep_members:1035` swallows
+//!    `MetadataCommand::exec()` failures).
+//!  * runtime-side scanned-vs-registered count invariant (requires
+//!    codegen mechanism that doesn't exist yet — covered by the
+//!    structural fix's integrity check, not a behavioural test).
 
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -71,7 +76,7 @@ fn rudzio_source_root() -> PathBuf {
 /// Common workspace `Cargo.toml` head. Single `consumer` member,
 /// pinned rudzio path-dep + anyhow, edition 2024.
 fn write_workspace_manifest(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    std::fs::write(
+    fs::write(
         root.join("Cargo.toml"),
         format!(
             "[workspace]\n\
@@ -95,7 +100,7 @@ fn write_workspace_manifest(root: &Path, rudzio_root: &Path) -> io::Result<()> {
 /// produced zero tests", which would otherwise pass a count check
 /// against just the regression test).
 fn write_lib_with_baseline_test(consumer_src: &Path) -> io::Result<()> {
-    std::fs::write(
+    fs::write(
         consumer_src.join("lib.rs"),
         "// rudzio_test marker\n\
          #[cfg(any(test, rudzio_test))]\n\
@@ -149,9 +154,9 @@ fn write_fixture_bin_main_test(root: &Path, rudzio_root: &Path) -> io::Result<()
     let consumer = root.join("consumer");
     let consumer_src = consumer.join("src");
     let bin_dir = consumer_src.join("bin").join("server");
-    std::fs::create_dir_all(&bin_dir)?;
+    fs::create_dir_all(&bin_dir)?;
 
-    std::fs::write(
+    fs::write(
         consumer.join("Cargo.toml"),
         "[package]\n\
          name = \"consumer\"\n\
@@ -181,7 +186,7 @@ fn write_fixture_bin_main_test(root: &Path, rudzio_root: &Path) -> io::Result<()
     // pointing at this same file, so the file compiles inside the
     // bridge — but linkme aggregation only reaches the bridge
     // LIB, not the bin compile unit.
-    std::fs::write(
+    fs::write(
         bin_dir.join("main.rs"),
         format!(
             "{block}\n\
@@ -206,10 +211,10 @@ fn write_fixture_example_test(root: &Path, rudzio_root: &Path) -> io::Result<()>
     let consumer = root.join("consumer");
     let consumer_src = consumer.join("src");
     let examples = consumer.join("examples");
-    std::fs::create_dir_all(&consumer_src)?;
-    std::fs::create_dir_all(&examples)?;
+    fs::create_dir_all(&consumer_src)?;
+    fs::create_dir_all(&examples)?;
 
-    std::fs::write(
+    fs::write(
         consumer.join("Cargo.toml"),
         "[package]\n\
          name = \"consumer\"\n\
@@ -229,7 +234,7 @@ fn write_fixture_example_test(root: &Path, rudzio_root: &Path) -> io::Result<()>
 
     write_lib_with_baseline_test(&consumer_src)?;
 
-    std::fs::write(
+    fs::write(
         examples.join("sample.rs"),
         format!(
             "{block}\n\
@@ -255,10 +260,10 @@ fn write_fixture_bench_test(root: &Path, rudzio_root: &Path) -> io::Result<()> {
     let consumer = root.join("consumer");
     let consumer_src = consumer.join("src");
     let benches = consumer.join("benches");
-    std::fs::create_dir_all(&consumer_src)?;
-    std::fs::create_dir_all(&benches)?;
+    fs::create_dir_all(&consumer_src)?;
+    fs::create_dir_all(&benches)?;
 
-    std::fs::write(
+    fs::write(
         consumer.join("Cargo.toml"),
         "[package]\n\
          name = \"consumer\"\n\
@@ -283,7 +288,7 @@ fn write_fixture_bench_test(root: &Path, rudzio_root: &Path) -> io::Result<()> {
 
     write_lib_with_baseline_test(&consumer_src)?;
 
-    std::fs::write(
+    fs::write(
         benches.join("sample.rs"),
         format!(
             "{block}\n\
@@ -297,30 +302,236 @@ fn write_fixture_bench_test(root: &Path, rudzio_root: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Fixture: `tests/foo.rs` declares `mod helper;`; cargo resolves
+/// the helper at `tests/foo/helper.rs`; the helper file contains
+/// the `#[rudzio::test]`. The audit (#6) flagged
+/// `discover_test_root_helpers` as gating subdirectory walks on
+/// the entry file being named `mod.rs` / `main.rs` / `lib.rs` —
+/// a flat `tests/foo.rs` entry skips its `<sub>/` mod sources.
+/// The marker should still appear in the dispatcher (cargo
+/// compiles `tests/foo.rs` + its `mod helper;` as one test binary
+/// regardless) but the proxy + helper-mount pipeline rudzio
+/// generates may drop the helper.
+fn write_fixture_tests_subdir_helper(root: &Path, rudzio_root: &Path) -> io::Result<()> {
+    write_workspace_manifest(root, rudzio_root)?;
+    let consumer = root.join("consumer");
+    let consumer_src = consumer.join("src");
+    let tests = consumer.join("tests");
+    let foo_subdir = tests.join("foo");
+    fs::create_dir_all(&consumer_src)?;
+    fs::create_dir_all(&foo_subdir)?;
+
+    // Explicit `[[test]]` entry rather than relying on
+    // `autotests = true` discovery. Cargo's auto-discovery would
+    // pick `tests/foo.rs` up identically; the explicit form just
+    // pins the test name and removes one variable from the
+    // fixture's interpretation.
+    fs::write(
+        consumer.join("Cargo.toml"),
+        "[package]\n\
+         name = \"consumer\"\n\
+         version = \"0.0.0\"\n\
+         edition = { workspace = true }\n\
+         publish = false\n\
+         autotests = false\n\
+         \n\
+         [lib]\n\
+         name = \"consumer\"\n\
+         path = \"src/lib.rs\"\n\
+         \n\
+         [[test]]\n\
+         name = \"foo\"\n\
+         path = \"tests/foo.rs\"\n\
+         harness = false\n\
+         \n\
+         [dev-dependencies]\n\
+         rudzio = { workspace = true }\n\
+         anyhow = { workspace = true }\n",
+    )?;
+
+    write_lib_with_baseline_test(&consumer_src)?;
+
+    // The test-binary entry file. Declares the helper submodule;
+    // cargo's mod resolution finds it at `tests/foo/helper.rs`.
+    // `#[rudzio::main]` is required because this test binary is
+    // declared `harness = false`.
+    fs::write(
+        tests.join("foo.rs"),
+        "// rudzio_test marker\n\
+         #![allow(clippy::tests_outside_test_module)]\n\
+         \n\
+         #[rudzio::main]\n\
+         fn main() {}\n\
+         \n\
+         mod helper;\n",
+    )?;
+
+    // The marker — a rudzio test living in a submodule of the
+    // test binary, NOT in the entry file. Whether rudzio's
+    // helper-discovery machinery walks here is the question
+    // under test.
+    fs::write(
+        foo_subdir.join("helper.rs"),
+        rudzio_test_block("tests_subdir_helper_test"),
+    )?;
+
+    Ok(())
+}
+
+/// Fixture: `src/lib.rs` uses `#[path = "../shared/escaped.rs"]`
+/// to pull a file from OUTSIDE the member's `src/` tree into the
+/// lib's module graph. Cargo compiles it (it's reachable from
+/// lib.rs); rudzio's `detect_src_rudzio_suite` walks only `src/`,
+/// so it can't see the marker at scan time. Audit candidate #1:
+/// the canonical "scanner walks A, code lives at B" mismatch.
+fn write_fixture_path_attr_escape(root: &Path, rudzio_root: &Path) -> io::Result<()> {
+    write_workspace_manifest(root, rudzio_root)?;
+    let consumer = root.join("consumer");
+    let consumer_src = consumer.join("src");
+    let shared = root.join("shared");
+    fs::create_dir_all(&consumer_src)?;
+    fs::create_dir_all(&shared)?;
+
+    fs::write(
+        consumer.join("Cargo.toml"),
+        "[package]\n\
+         name = \"consumer\"\n\
+         version = \"0.0.0\"\n\
+         edition = { workspace = true }\n\
+         publish = false\n\
+         \n\
+         [lib]\n\
+         name = \"consumer\"\n\
+         path = \"src/lib.rs\"\n\
+         \n\
+         [dev-dependencies]\n\
+         rudzio = { workspace = true }\n\
+         anyhow = { workspace = true }\n",
+    )?;
+
+    // src/lib.rs: baseline test in place + `#[path]` mod pointing
+    // outside src/. The `// rudzio_test` marker comment keeps
+    // `detect_src_rudzio_suite` returning true so the member gets
+    // bridged at all; without it the bridge wouldn't exist and
+    // both tests would silently disappear (different failure
+    // class, not what this fixture is testing).
+    fs::write(
+        consumer_src.join("lib.rs"),
+        "// rudzio_test marker\n\
+         #[cfg(any(test, rudzio_test))]\n\
+         mod tests {\n\
+         \x20\x20\x20\x20use rudzio::common::context::{Suite, Test};\n\
+         \x20\x20\x20\x20use rudzio::runtime::tokio::Multithread as TokioMultithread;\n\
+         \n\
+         \x20\x20\x20\x20#[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
+         \x20\x20\x20\x20mod inner {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20#[rudzio::test]\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20fn lib_baseline_test(_t: &super::Test) -> anyhow::Result<()> {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}\n\
+         \x20\x20\x20\x20}\n\
+         }\n\
+         \n\
+         #[cfg(any(test, rudzio_test))]\n\
+         #[path = \"../../shared/escaped.rs\"]\n\
+         mod escaped;\n",
+    )?;
+
+    // shared/escaped.rs — outside the member's manifest dir.
+    // Reachable from lib.rs via `#[path]` but invisible to any
+    // scanner that walks `<member>/src/`.
+    fs::write(
+        shared.join("escaped.rs"),
+        rudzio_test_block("path_attr_escape_test"),
+    )?;
+
+    Ok(())
+}
+
+/// Fixture: member declares `[lib].path = "src/custom/lib.rs"`,
+/// not the default `src/lib.rs`. cargo metadata reports the
+/// custom path in `target.src_path`. The question: does rudzio's
+/// `locate_src_lib_path` (1128) honour it, and do all downstream
+/// scanners walk the right directory?
+fn write_fixture_custom_lib_path(root: &Path, rudzio_root: &Path) -> io::Result<()> {
+    write_workspace_manifest(root, rudzio_root)?;
+    let consumer = root.join("consumer");
+    let custom_dir = consumer.join("src").join("custom");
+    fs::create_dir_all(&custom_dir)?;
+
+    fs::write(
+        consumer.join("Cargo.toml"),
+        "[package]\n\
+         name = \"consumer\"\n\
+         version = \"0.0.0\"\n\
+         edition = { workspace = true }\n\
+         publish = false\n\
+         \n\
+         [lib]\n\
+         name = \"consumer\"\n\
+         path = \"src/custom/lib.rs\"\n\
+         \n\
+         [dev-dependencies]\n\
+         rudzio = { workspace = true }\n\
+         anyhow = { workspace = true }\n",
+    )?;
+
+    // The lib at the custom path holds both the baseline and the
+    // marker. Since there's no `src/lib.rs`, if rudzio fails to
+    // honour `[lib].path` BOTH tests vanish — the assertion
+    // catches that via the baseline-presence pre-check.
+    fs::write(
+        custom_dir.join("lib.rs"),
+        "// rudzio_test marker\n\
+         #[cfg(any(test, rudzio_test))]\n\
+         mod tests {\n\
+         \x20\x20\x20\x20use rudzio::common::context::{Suite, Test};\n\
+         \x20\x20\x20\x20use rudzio::runtime::tokio::Multithread as TokioMultithread;\n\
+         \n\
+         \x20\x20\x20\x20#[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
+         \x20\x20\x20\x20mod inner {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20#[rudzio::test]\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20fn lib_baseline_test(_t: &super::Test) -> anyhow::Result<()> {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}\n\
+         \n\
+         \x20\x20\x20\x20\x20\x20\x20\x20#[rudzio::test]\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20fn custom_lib_path_test(_t: &super::Test) -> anyhow::Result<()> {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}\n\
+         \x20\x20\x20\x20}\n\
+         }\n",
+    )?;
+
+    Ok(())
+}
+
 #[rudzio::suite([
     (runtime = Multithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
 ])]
 mod tests {
     use super::{
         Command, IsolatedCargoTest, Output, Path, PathBuf, Stdio, TempDir, io, rudzio_source_root,
-        write_fixture_bench_test, write_fixture_bin_main_test, write_fixture_example_test,
+        write_fixture_bench_test, write_fixture_bin_main_test, write_fixture_custom_lib_path,
+        write_fixture_example_test, write_fixture_path_attr_escape,
+        write_fixture_tests_subdir_helper,
     };
 
-    /// Outcome categories the invariant accepts. The third (silent
-    /// disappearance) is the bug-class symptom and the only
-    /// rejection state for these tests.
+    /// Outcome categories the invariant accepts. `SilentlyDisappeared`
+    /// is the bug-class symptom and the only rejection state for
+    /// these tests.
     enum InvariantOutcome {
-        /// Marker test ran and was counted in the summary.
-        Visible,
-        /// Marker test silently disappeared: cargo rudzio test
-        /// exited 0, summary doesn't include the marker, no stderr
-        /// message names the offending file. **This is the bug.**
-        SilentlyDisappeared,
         /// Marker test was explicitly refused: non-zero exit AND
         /// a stderr message naming the file path. Acceptable per
         /// the "zero silent failure" rule even if the structural
         /// fix doesn't make the location work.
         LoudlyRefused,
+        /// Marker test silently disappeared: cargo rudzio test
+        /// exited 0, summary doesn't include the marker, no stderr
+        /// message names the offending file. **This is the bug.**
+        SilentlyDisappeared,
+        /// Marker test ran and was counted in the summary.
+        Visible,
     }
 
     /// Classify the spawned `cargo rudzio test` invocation against
@@ -371,7 +582,7 @@ mod tests {
             .output()
     }
 
-    /// Single-place reporter for the SilentlyDisappeared verdict
+    /// Single-place reporter for the `SilentlyDisappeared` verdict
     /// so each test site stays focused on the location-specific
     /// scaffolding.
     fn silent_disappearance_failure(
@@ -493,6 +704,128 @@ mod tests {
             "lib baseline test is missing from successful output — the \
              fixture is broken, investigate before treating any downstream \
              assertion as meaningful.\n\
+             --- captured stdout ---\n{stdout}\n\
+             --- captured stderr ---\n{stderr}",
+            stderr = String::from_utf8_lossy(&output.stderr),
+        );
+
+        match classify(&output, marker_name, marker_path) {
+            InvariantOutcome::Visible | InvariantOutcome::LoudlyRefused => Ok(()),
+            InvariantOutcome::SilentlyDisappeared => {
+                Err(silent_disappearance_failure(marker_path, marker_name, &output))
+            }
+        }
+    }
+
+    /// A `#[rudzio::test]` inside `tests/foo/helper.rs` (a
+    /// submodule of `tests/foo.rs`) must satisfy the invariant.
+    /// Audit candidate #6: `discover_test_root_helpers` requires
+    /// the entry file to be `mod.rs` / `main.rs` / `lib.rs` —
+    /// a flat `tests/foo.rs` entry skips its `<sub>/` mod sources.
+    #[rudzio::test]
+    async fn rudzio_test_in_tests_subdir_helper_is_not_silently_invisible(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
+        let root: &Path = workspace.path();
+        let rudzio_root: PathBuf = rudzio_source_root();
+        write_fixture_tests_subdir_helper(root, &rudzio_root)?;
+
+        let output = run_cargo_rudzio_test(root, ctx.cargo_home(), ctx.cargo_target_dir())?;
+        let marker_path = "tests/foo/helper.rs";
+        let marker_name = "tests_subdir_helper_test";
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::ensure!(
+            stdout.contains("lib_baseline_test") || !output.status.success(),
+            "lib baseline test is missing from successful output — the \
+             fixture is broken, investigate before treating any downstream \
+             assertion as meaningful.\n\
+             --- captured stdout ---\n{stdout}\n\
+             --- captured stderr ---\n{stderr}",
+            stderr = String::from_utf8_lossy(&output.stderr),
+        );
+
+        match classify(&output, marker_name, marker_path) {
+            InvariantOutcome::Visible | InvariantOutcome::LoudlyRefused => Ok(()),
+            InvariantOutcome::SilentlyDisappeared => {
+                Err(silent_disappearance_failure(marker_path, marker_name, &output))
+            }
+        }
+    }
+
+    /// A `#[rudzio::test]` reached via `#[path = "../shared/escaped.rs"]`
+    /// from `src/lib.rs` must satisfy the invariant. Audit
+    /// candidate #1: `detect_src_rudzio_suite` walks only
+    /// `<member>/src/`, so a marker in a path-escaped file is
+    /// invisible at scan time. The bridge may also fail to
+    /// re-resolve the `#[path]` relative reference under its
+    /// own `<bridge>/src/lib.rs` location.
+    #[rudzio::test]
+    async fn rudzio_test_in_path_attr_escape_is_not_silently_invisible(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
+        let root: &Path = workspace.path();
+        let rudzio_root: PathBuf = rudzio_source_root();
+        write_fixture_path_attr_escape(root, &rudzio_root)?;
+
+        let output = run_cargo_rudzio_test(root, ctx.cargo_home(), ctx.cargo_target_dir())?;
+        let marker_path = "shared/escaped.rs";
+        let marker_name = "path_attr_escape_test";
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::ensure!(
+            stdout.contains("lib_baseline_test") || !output.status.success(),
+            "lib baseline test is missing from successful output — the \
+             fixture is broken, investigate before treating any downstream \
+             assertion as meaningful.\n\
+             --- captured stdout ---\n{stdout}\n\
+             --- captured stderr ---\n{stderr}",
+            stderr = String::from_utf8_lossy(&output.stderr),
+        );
+
+        match classify(&output, marker_name, marker_path) {
+            InvariantOutcome::Visible | InvariantOutcome::LoudlyRefused => Ok(()),
+            InvariantOutcome::SilentlyDisappeared => {
+                Err(silent_disappearance_failure(marker_path, marker_name, &output))
+            }
+        }
+    }
+
+    /// A member declaring `[lib].path = "src/custom/lib.rs"` (NOT
+    /// the default `src/lib.rs`) must have its lib's
+    /// `#[rudzio::test]`s reach the dispatcher. Not in the audit
+    /// directly — preventive: `cargo metadata` reports the custom
+    /// `src_path` so rudzio's `locate_src_lib_path` should pick
+    /// it up; this test confirms every downstream scanner walks
+    /// the resolved directory rather than hardcoding `src/`.
+    #[rudzio::test]
+    async fn rudzio_test_in_custom_lib_path_is_not_silently_invisible(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
+        let root: &Path = workspace.path();
+        let rudzio_root: PathBuf = rudzio_source_root();
+        write_fixture_custom_lib_path(root, &rudzio_root)?;
+
+        let output = run_cargo_rudzio_test(root, ctx.cargo_home(), ctx.cargo_target_dir())?;
+        let marker_path = "src/custom/lib.rs";
+        let marker_name = "custom_lib_path_test";
+
+        // Baseline check is special-cased here: the baseline test
+        // lives in the SAME file as the marker (both inside the
+        // non-default lib path), so a failure of the baseline
+        // here means rudzio's `[lib].path` handling is broken,
+        // not the fixture. The classifier still distinguishes
+        // visible / loud / silent so the failure mode is precise.
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::ensure!(
+            stdout.contains("lib_baseline_test") || !output.status.success(),
+            "lib baseline test is missing from successful output — either \
+             rudzio's `[lib].path` handling is broken (then the marker \
+             assertion below will also fail loudly), or the fixture is \
+             broken; either way investigate before continuing.\n\
              --- captured stdout ---\n{stdout}\n\
              --- captured stderr ---\n{stderr}",
             stderr = String::from_utf8_lossy(&output.stderr),

@@ -43,6 +43,7 @@
 //! source, bridge layout, or codegen artefacts. Any structural fix
 //! that makes the bin test run end-to-end satisfies it.
 
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -77,7 +78,7 @@ fn rudzio_source_root() -> PathBuf {
 /// Both test bodies are trivial (`Ok(())`) so the assertion turns
 /// on visibility to the dispatcher, not on any business logic.
 fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    std::fs::write(
+    fs::write(
         root.join("Cargo.toml"),
         format!(
             "[workspace]\n\
@@ -96,9 +97,9 @@ fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
 
     let consumer = root.join("consumer");
     let bin_dir = consumer.join("src").join("bin").join("server");
-    std::fs::create_dir_all(&bin_dir)?;
+    fs::create_dir_all(&bin_dir)?;
 
-    std::fs::write(
+    fs::write(
         consumer.join("Cargo.toml"),
         "[package]\n\
          name = \"consumer\"\n\
@@ -124,7 +125,7 @@ fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
     // false-pass mode in which BOTH tests vanish (in which case
     // the summary would still be `0 passed` and the assertion
     // would catch it).
-    std::fs::write(
+    fs::write(
         consumer.join("src").join("lib.rs"),
         "// rudzio_test marker\n\
          #[cfg(any(test, rudzio_test))]\n\
@@ -149,7 +150,7 @@ fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
     // the same source — but the test registrations land in the
     // bin compile unit, not the bridge lib, and never reach the
     // aggregator's `TEST_TOKENS`.
-    std::fs::write(
+    fs::write(
         bin_dir.join("main.rs"),
         "mod ops;\n\
          \n\
@@ -163,7 +164,7 @@ fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
     // shape as the lib baseline, so any divergence in pass/fail
     // between the two is attributable to bin-vs-lib placement,
     // not to macro-input shape.
-    std::fs::write(
+    fs::write(
         bin_dir.join("ops.rs"),
         "// rudzio_test marker\n\
          #[cfg(any(test, rudzio_test))]\n\

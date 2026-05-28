@@ -133,6 +133,43 @@ impl Section {
     }
 }
 
+/// Cargo target kinds the v2 bridge does NOT link into the aggregator.
+///
+/// Any rudzio surface (`#[rudzio::test]` / `rudzio::suite` /
+/// `rudzio_test` cfg) inside these targets is invisible to the
+/// dispatcher and surfaces as a hard error from
+/// `validate_no_unmounted_markers`.
+///
+/// `[[bin]]` is tracked under Bug #16 for structural bridge support;
+/// `[[example]]` and `[[bench]]` have no active design. Until any of
+/// these flips to "supported", the integrity check hard-errors
+/// rather than letting the silent-fallthrough Bug #16 shape persist.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum UnmountedTargetKind {
+    /// `[[bench]]` target — its compile unit is a separate
+    /// executable, not linked into the aggregator.
+    Bench,
+    /// `[[bin]]` target — its compile unit is a separate
+    /// executable, not linked into the aggregator.
+    Bin,
+    /// `[[example]]` target — same shape as the others above.
+    Example,
+}
+
+impl UnmountedTargetKind {
+    /// Render as the cargo manifest section name for error messages.
+    #[inline]
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Bench => "[[bench]]",
+            Self::Bin => "[[bin]]",
+            Self::Example => "[[example]]",
+        }
+    }
+}
+
 /// Description of a single `[dev-dependencies]` (or `[dependencies]`) entry
 /// pulled from a workspace member's manifest.
 #[derive(Clone, Debug)]
@@ -190,6 +227,19 @@ pub struct DevDepSpec {
     /// Used when it says `workspace = true` and we need to defer to the
     /// workspace entry.
     pub workspace_inherited: bool,
+}
+
+/// Bug #16 integrity-check marker location.
+///
+/// Surfaced only inside `validate_no_unmounted_markers`'s error
+/// message — not a load-bearing public type beyond that path.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct MarkerLocation {
+    /// Absolute path to the `.rs` file containing the marker.
+    pub path: PathBuf,
+    /// The cargo target kind whose compile unit owns the file.
+    pub target_kind: UnmountedTargetKind,
 }
 
 /// A single `[[bin]]` target declared by a workspace member.
@@ -2804,6 +2854,263 @@ const fn toml_type_name(val: &Value) -> &'static str {
     }
 }
 
+/// True iff `path` is a `.rs` file with a rudzio TEST surface marker.
+///
+/// "Test surface" = `#[rudzio::test]`, `#[rudzio::suite]`, or the
+/// `rudzio_test` cfg gate. Specifically excludes `#[rudzio::main]`
+/// — files with `rudzio::main` are standalone test runners that
+/// self-aggregate (the existing rudzio dogfood pattern under
+/// `fixtures/src/bin/*.rs` and `examples/*.rs`); their test
+/// surface is intentional and must NOT be flagged as unmounted.
+///
+/// Substring scan, same convention as `detect_src_rudzio_suite` at
+/// line 1323 — false positives from markers embedded in comments
+/// are tolerated. Over-reporting in a hard-error path is fine;
+/// under-reporting is the Bug #16 silent-failure class.
+fn rs_file_contains_rudzio_test_marker(path: &Path) -> bool {
+    if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+        return false;
+    }
+    let Ok(text) = fs::read_to_string(path) else {
+        return false;
+    };
+    text.contains("rudzio::test")
+        || text.contains("rudzio::suite")
+        || text.contains("rudzio_test")
+}
+
+/// True iff `path` is a `.rs` file containing `rudzio::main`.
+///
+/// Used by the integrity check to distinguish standalone test
+/// runners (self-aggregating: a `#[rudzio::main]` in the bin /
+/// example / bench source means the target IS the runner, doesn't
+/// need a bridge) from accidentally-invisible test surface (the
+/// Bug #16 class: rudzio test markers in a bin source with no
+/// `rudzio::main` anywhere — these vanish into a compile unit the
+/// aggregator does not link).
+fn rs_file_contains_rudzio_main(path: &Path) -> bool {
+    if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+        return false;
+    }
+    let Ok(text) = fs::read_to_string(path) else {
+        return false;
+    };
+    text.contains("rudzio::main")
+}
+
+/// Walk `dir` recursively, returning a tuple `(test_files, has_main)`.
+///
+/// `test_files` is every `.rs` file containing a rudzio TEST
+/// surface marker (per `rs_file_contains_rudzio_test_marker`).
+/// `has_main` is `true` iff any `.rs` file in the tree contains
+/// `rudzio::main`. The integrity check skips the whole subtree
+/// when `has_main` is true — it's a self-aggregating standalone
+/// runner, not an accidentally-invisible surface.
+///
+/// Unreadable directories are tolerated silently — same convention
+/// as `detect_src_rudzio_suite`: unreadable files surface their own
+/// errors later in the build.
+fn walk_dir_for_test_markers_and_main(dir: &Path) -> (Vec<PathBuf>, bool) {
+    let mut test_files: Vec<PathBuf> = Vec::new();
+    let mut has_main = false;
+    if !dir.is_dir() {
+        return (test_files, has_main);
+    }
+    let mut stack: Vec<PathBuf> = vec![dir.to_path_buf()];
+    while let Some(current_dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&current_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            if text.contains("rudzio::main") {
+                has_main = true;
+            }
+            if text.contains("rudzio::test")
+                || text.contains("rudzio::suite")
+                || text.contains("rudzio_test")
+            {
+                test_files.push(path);
+            }
+        }
+    }
+    (test_files, has_main)
+}
+
+/// Enumerate every rudzio marker in `member`'s unmounted target trees.
+///
+/// Covers `[[bin]]`, `[[example]]`, and `[[bench]]` source trees.
+/// Cargo conventions:
+///
+///   * `src/main.rs`            → default `[[bin]]`, flat
+///   * `src/bin/<n>.rs`         → `[[bin]]` "n", flat
+///   * `src/bin/<n>/main.rs`    → `[[bin]]` "n", directory-style
+///   * `examples/<n>.rs`        → `[[example]]` "n", flat
+///   * `examples/<n>/main.rs`   → `[[example]]` "n", directory-style
+///   * `benches/<n>.rs`         → `[[bench]]` "n", flat
+///   * `benches/<n>/main.rs`    → `[[bench]]` "n", directory-style
+///
+/// For directory-style targets (parent dir basename matches target
+/// name) the helper walks the parent recursively, catching
+/// submodule files like `src/bin/server/ops.rs`. For flat targets
+/// only the single `src_path` file is checked — its parent dir is
+/// shared with sibling targets and `MemberBin` doesn't carry
+/// enough info to distinguish.
+///
+/// Examples/benches use the conventional `<manifest_dir>/examples/`
+/// and `<manifest_dir>/benches/` paths; the function walks each
+/// recursively when present.
+fn enumerate_unmounted_markers(member: &MemberPlan) -> Vec<MarkerLocation> {
+    let mut out: Vec<MarkerLocation> = Vec::new();
+
+    for bin in &member.bin_targets {
+        let parent = bin.src_path.parent();
+        let parent_name_matches = parent
+            .and_then(|parent_path| parent_path.file_name())
+            .and_then(|os_name| os_name.to_str())
+            .is_some_and(|name| name == bin.name);
+        if parent_name_matches {
+            if let Some(parent_dir) = parent {
+                let (test_files, has_main) =
+                    walk_dir_for_test_markers_and_main(parent_dir);
+                if !has_main {
+                    for path in test_files {
+                        out.push(MarkerLocation {
+                            path,
+                            target_kind: UnmountedTargetKind::Bin,
+                        });
+                    }
+                }
+            }
+        } else {
+            // Flat target: src_path's parent is shared with sibling
+            // targets (e.g. all `src/bin/*.rs` flat bins share
+            // `src/bin/`) — check only the entry file itself.
+            // `rudzio::main` in the file marks the bin as a
+            // self-aggregating standalone runner (the existing
+            // rudzio dogfood pattern under `fixtures/src/bin/*.rs`).
+            if !rs_file_contains_rudzio_main(&bin.src_path)
+                && rs_file_contains_rudzio_test_marker(&bin.src_path)
+            {
+                out.push(MarkerLocation {
+                    path: bin.src_path.clone(),
+                    target_kind: UnmountedTargetKind::Bin,
+                });
+            }
+        }
+    }
+
+    // Examples and benches: walk each top-level dir. If ANY file
+    // in the tree has `rudzio::main` the whole tree is treated as
+    // standalone runners (the existing `examples/*.rs` pattern in
+    // this repo). Otherwise every test-marker-bearing file is
+    // reported as unmounted. Per-target granularity inside these
+    // dirs would require threading example/bench target metadata
+    // through `MemberPlan`; the all-or-nothing heuristic is
+    // sufficient for the Bug #16 family and gets refined when
+    // structural support for these target kinds lands.
+    let examples_dir = member.manifest_dir.join("examples");
+    let (example_files, examples_have_main) =
+        walk_dir_for_test_markers_and_main(&examples_dir);
+    if !examples_have_main {
+        for path in example_files {
+            out.push(MarkerLocation {
+                path,
+                target_kind: UnmountedTargetKind::Example,
+            });
+        }
+    }
+
+    let benches_dir = member.manifest_dir.join("benches");
+    let (bench_files, benches_have_main) =
+        walk_dir_for_test_markers_and_main(&benches_dir);
+    if !benches_have_main {
+        for path in bench_files {
+            out.push(MarkerLocation {
+                path,
+                target_kind: UnmountedTargetKind::Bench,
+            });
+        }
+    }
+
+    out
+}
+
+/// Bug #16 integrity invariant: refuse `write_runner` if any marker is unmounted.
+///
+/// Walks every member's `[[bin]]` / `[[example]]` / `[[bench]]`
+/// source trees looking for rudzio surface markers
+/// (`#[rudzio::test]` / `rudzio::suite` / `rudzio_test`). Any
+/// finding surfaces as a hard error naming every offending file
+/// path, rather than silently producing a green run with the
+/// marker's test absent. Called from `write_runner` at its first
+/// line so the failure triggers before any filesystem state is
+/// created.
+///
+/// # Errors
+///
+/// Returns `Err` when one or more markers are found in `[[bin]]`,
+/// `[[example]]`, or `[[bench]]` source trees. The error message
+/// lists every offending file path and target kind so the user
+/// can locate them without re-scanning.
+#[inline]
+pub fn validate_no_unmounted_markers(plan: &Plan) -> Result<()> {
+    let mut findings: Vec<(String, MarkerLocation)> = Vec::new();
+    for member in &plan.members {
+        for loc in enumerate_unmounted_markers(member) {
+            findings.push((member.package_name.clone(), loc));
+        }
+    }
+    if findings.is_empty() {
+        return Ok(());
+    }
+
+    let mut msg = String::from(
+        "rudzio surface found in cargo targets that the v2 bridge does not link \
+         into the aggregator's `TEST_TOKENS` slice. As a result these tests \
+         would silently never run.\n\n\
+         Affected files:\n",
+    );
+    for (member_name, loc) in &findings {
+        // `writeln!` into a `String` is infallible, but the return
+        // value is `#[must_use]`. Bind it to a typed name so the
+        // intent is explicit (same pattern as `suite_codegen.rs`'s
+        // `_alias_emit: FmtResult = writeln!(...)`).
+        let _line_emit: FmtResult = writeln!(
+            msg,
+            "  {kind} in member `{member}`: {path}",
+            kind = loc.target_kind.label(),
+            member = member_name,
+            path = loc.path.display(),
+        );
+    }
+    msg.push_str(
+        "\nResolve EACH by either:\n\
+         \x20\x201. Moving the testable surface to `src/lib.rs` (and its module \
+         tree) or `tests/` (integration test target).\n\
+         \x20\x202. Filing an upstream issue for structural bridge support of \
+         the affected target kind. `[[bin]]` support is tracked under Bug #16; \
+         `[[example]]` and `[[bench]]` have no active design.\n",
+    );
+    Err(anyhow!("{msg}"))
+}
+
 /// Write the generated aggregator crate to `out_dir`.
 ///
 /// Recreates `Cargo.toml`, `build.rs`, `src/main.rs`, `src/tests.rs`,
@@ -2816,6 +3123,12 @@ const fn toml_type_name(val: &Value) -> &'static str {
 /// generated bridge / Cargo.toml content cannot be produced.
 #[inline]
 pub fn write_runner(plan: &Plan, out_dir: &Path) -> Result<()> {
+    // Integrity invariant for the Bug #16 defect family: refuse
+    // to emit an aggregator if any member has rudzio surface in a
+    // target kind the v2 bridge does not link. This is the first
+    // line of `write_runner` so the failure triggers before any
+    // filesystem state is touched.
+    validate_no_unmounted_markers(plan)?;
     // Regenerate our own files from scratch. Preserve the aggregator's
     // `target/` directory across invocations — blowing it away on every
     // run would force a full recompile of the entire workspace every
