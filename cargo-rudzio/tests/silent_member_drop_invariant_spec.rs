@@ -37,6 +37,18 @@
 //! broken package's manifest path. Silently producing a green run
 //! with the broken package's tests absent is FORBIDDEN.
 //!
+//! # Phase B migration
+//!
+//! Starts from `ctx.consumer_workspace()` (the suite's template) and
+//! adds:
+//!  1. A `broken-helper/` sibling crate with deliberately malformed
+//!     `Cargo.toml` (missing `version` field).
+//!  2. A `[dev-dependencies] broken-helper = { path = "../broken-helper" }`
+//!     entry appended to the template's `consumer/Cargo.toml`.
+//!
+//! Both mutations land on the per-test copy; the suite's template
+//! is untouched.
+//!
 //! # Note on this being a separate spec file
 //!
 //! The behavioural pattern (build fixture, spawn cargo-rudzio test,
@@ -49,105 +61,41 @@
 
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
 use rudzio::runtime::tokio::Multithread;
-use tempfile::TempDir;
 
-/// Workspace root of the in-tree `rudzio` crate.
-fn rudzio_source_root() -> PathBuf {
-    rudzio::manifest_dir!().join("..")
-}
-
-/// Materialise a workspace where:
+/// Extend the template-provided consumer workspace at `workspace`
+/// with the `broken-helper/` sibling crate the silent-member-drop
+/// invariant probes. The template-provided files are left in place
+/// (the trivial `#[rudzio::test]` in `consumer/src/lib.rs` is the
+/// baseline test rudzio must NOT drop alongside the broken
+/// helper); only the additions below land.
 ///
-///  * `consumer/` is a workspace member with a normal `[lib]` + one
-///    `#[rudzio::test]` baseline.
-///  * `broken-helper/` is a NON-workspace path-dep declared by
-///    `consumer/Cargo.toml [dev-dependencies]`. Its manifest is
-///    malformed in a way `cargo metadata` rejects (missing
-///    `version` field — required by the manifest format).
-///  * `broken-helper/src/lib.rs` carries a rudzio surface marker
-///    (`// rudzio_test`) + `[package.metadata.rudzio].force_bridge = true`
-///    so `extend_with_transitive_path_dep_members` is the function
-///    walking it.
-fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    fs::write(
-        root.join("Cargo.toml"),
-        format!(
-            "[workspace]\n\
-             members = [\"consumer\"]\n\
-             resolver = \"3\"\n\
-             \n\
-             [workspace.package]\n\
-             edition = \"2024\"\n\
-             \n\
-             [workspace.dependencies]\n\
-             rudzio = {{ path = \"{rudzio}\", features = [\"common\", \"runtime-tokio-multi-thread\"] }}\n\
-             anyhow = \"=1.0.102\"\n",
-            rudzio = rudzio_root.display(),
-        ),
-    )?;
-
-    // ---- consumer (workspace member) ----
-    let consumer = root.join("consumer");
-    let consumer_src = consumer.join("src");
-    fs::create_dir_all(&consumer_src)?;
-
-    fs::write(
-        consumer.join("Cargo.toml"),
-        "[package]\n\
-         name = \"consumer\"\n\
-         version = \"0.0.0\"\n\
-         edition = { workspace = true }\n\
-         publish = false\n\
-         \n\
-         [lib]\n\
-         name = \"consumer\"\n\
-         path = \"src/lib.rs\"\n\
-         \n\
-         [dev-dependencies]\n\
-         rudzio = { workspace = true }\n\
-         anyhow = { workspace = true }\n\
-         broken-helper = { path = \"../broken-helper\" }\n",
-    )?;
-
-    fs::write(
-        consumer_src.join("lib.rs"),
-        "// rudzio_test marker\n\
-         #[cfg(any(test, rudzio_test))]\n\
-         mod tests {\n\
-         \x20\x20\x20\x20use rudzio::common::context::{Suite, Test};\n\
-         \x20\x20\x20\x20use rudzio::runtime::tokio::Multithread as TokioMultithread;\n\
-         \n\
-         \x20\x20\x20\x20#[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
-         \x20\x20\x20\x20mod inner {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20#[rudzio::test]\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20fn consumer_baseline_test(_t: &super::Test) -> anyhow::Result<()> {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20}\n\
-         \x20\x20\x20\x20}\n\
-         }\n",
-    )?;
-
-    // ---- broken-helper (non-workspace path-dep with broken manifest) ----
-    let broken = root.join("broken-helper");
+/// Additions:
+///
+///  * `broken-helper/Cargo.toml` — deliberately omits the required
+///    `version` field so `cargo metadata --manifest-path
+///    <broken-helper>/Cargo.toml` rejects it. The
+///    `[package.metadata.rudzio].force_bridge = true` entry forces
+///    `extend_with_transitive_path_dep_members` to descend into
+///    this package even though no rudzio surface in
+///    `consumer/src/lib.rs` reaches into it.
+///  * `broken-helper/src/lib.rs` — carries the
+///    `broken_helper_marker_test` whose presence in the captured
+///    output is one of the two accept signals.
+///  * `consumer/Cargo.toml` — append a `[dev-dependencies]
+///    broken-helper = { path = "../broken-helper" }` line. The
+///    template's existing `[dev-dependencies]` rudzio + anyhow
+///    stay; append (vs. overwrite) keeps the template content
+///    intact.
+fn extend_with_broken_helper(workspace: &Path) -> io::Result<()> {
+    let broken = workspace.join("broken-helper");
     let broken_src = broken.join("src");
     fs::create_dir_all(&broken_src)?;
 
-    // Manifest deliberately missing `version` — a required field.
-    // `cargo metadata --manifest-path <broken>/Cargo.toml` will
-    // reject this; the bug is that rudzio's
-    // `extend_with_transitive_path_dep_members` swallows the
-    // failure with `let Ok else continue` and the marker test
-    // below vanishes from the run.
-    //
-    // `[package.metadata.rudzio].force_bridge = true` forces
-    // `extend_with_transitive_path_dep_members` to descend into
-    // this package even though it has no rudzio surface that the
-    // outer member's bridge would otherwise reach for.
     fs::write(
         broken.join("Cargo.toml"),
         "[package]\n\
@@ -183,6 +131,15 @@ fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
          }\n",
     )?;
 
+    // Append the broken-helper dev-dep to the template's existing
+    // consumer/Cargo.toml. The append is a single trailing line
+    // under the existing `[dev-dependencies]` table — toml-valid
+    // because no new section header intervenes.
+    let consumer_manifest_path = workspace.join("consumer").join("Cargo.toml");
+    let mut consumer_manifest = fs::read_to_string(&consumer_manifest_path)?;
+    consumer_manifest.push_str("broken-helper = { path = \"../broken-helper\" }\n");
+    fs::write(&consumer_manifest_path, consumer_manifest)?;
+
     Ok(())
 }
 
@@ -191,8 +148,7 @@ fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
 ])]
 mod tests {
     use super::{
-        Command, IsolatedCargoTest, Output, Path, PathBuf, Stdio, TempDir, io, rudzio_source_root,
-        write_fixture,
+        Command, IsolatedCargoTest, Output, Path, Stdio, extend_with_broken_helper, io,
     };
 
     /// Spawn `cargo-rudzio test` with per-test isolated cargo state.
@@ -234,7 +190,7 @@ mod tests {
     /// Unacceptable (fails the test):
     ///
     ///  3. `cargo rudzio test` exits ZERO with a green run that
-    ///     contains `consumer_baseline_test` but not the
+    ///     contains the template's trivial test but not the
     ///     `broken_helper_marker_test` AND no stderr mention of
     ///     `broken-helper`. This is the silent-member-drop
     ///     symptom — the broken helper vanished from the plan
@@ -243,12 +199,10 @@ mod tests {
     async fn broken_transitive_path_dep_metadata_does_not_silently_drop_member(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
-        let root: &Path = workspace.path();
-        let rudzio_root: PathBuf = rudzio_source_root();
-        write_fixture(root, &rudzio_root)?;
+        let workspace: &Path = ctx.consumer_workspace();
+        extend_with_broken_helper(workspace)?;
 
-        let output = run_cargo_rudzio_test(root, ctx.cargo_home(), ctx.cargo_target_dir())?;
+        let output = run_cargo_rudzio_test(workspace, ctx.cargo_home(), ctx.cargo_target_dir())?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 

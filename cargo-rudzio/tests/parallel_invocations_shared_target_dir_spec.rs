@@ -49,8 +49,12 @@
 //! distinct runtimes; rudzio's runner schedules those 9 runtime
 //! groups concurrently. Each invocation:
 //!
-//!  1. Creates a fresh distinct synthetic consumer workspace in its
-//!     own tempdir.
+//!  1. Takes the per-test consumer workspace minted by
+//!     `IsolatedCargoSuite::context` (a full-recursive copy of the
+//!     suite's template — distinct path per runtime instance, so
+//!     each subprocess writes to a distinct
+//!     `rudzio-auto-runner-<wshash>-...` subdir under the shared
+//!     `CARGO_TARGET_DIR`).
 //!  2. Computes a process-wide-shared `CARGO_TARGET_DIR` path under
 //!     `TMPDIR` (suffixed with this test process's pid to avoid
 //!     cross-test-run collisions).
@@ -66,6 +70,15 @@
 //!
 //! Post-fix: all 9 invocations write to distinct aggregator subdirs
 //! under the shared `CARGO_TARGET_DIR` and complete cleanly.
+//!
+//! # Phase B migration
+//!
+//! Pre-migration this spec hand-rolled a `write_minimal_consumer`
+//! helper that materialised the same minimal workspace shape the
+//! Phase B template now provides. The helper is gone; the test
+//! reads `ctx.consumer_workspace()` directly. The shared
+//! `CARGO_TARGET_DIR` is orthogonal to the per-test consumer copy
+//! — exactly the property the spec is supposed to assert.
 
 use std::env;
 use std::fs;
@@ -80,15 +93,6 @@ use rudzio::runtime::futures::ThreadPool;
 use rudzio::runtime::monoio;
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
 use rudzio::runtime::{async_std, compio, embassy, smol};
-use tempfile::TempDir;
-
-/// Workspace root of the rudzio repo this test lives in. The
-/// synthetic fixture references the in-tree `rudzio` crate by
-/// `path = <this>` so it exercises the code under test, not a
-/// published version.
-fn rudzio_source_root() -> PathBuf {
-    rudzio::manifest_dir!().join("..")
-}
 
 /// One shared `CARGO_TARGET_DIR` path that every runtime instance of
 /// this test in the current process sees. Forces the contention case:
@@ -99,72 +103,6 @@ fn rudzio_source_root() -> PathBuf {
 /// parallel under `cargo test`) from sharing state across processes.
 fn shared_target_dir() -> PathBuf {
     env::temp_dir().join(format!("rudzio-parallel-contention-spec-{}", process::id()))
-}
-
-/// Materialise a minimal valid rudzio consumer workspace at `root`.
-///
-/// One workspace with one `consumer` member, one trivial
-/// `#[rudzio::test]` in a `#[cfg(any(test, rudzio_test))] mod tests`
-/// gated lib module. The smallest crate that exercises cargo-rudzio's
-/// `write_runner` pipeline end-to-end (aggregator generation,
-/// build.rs, member bridging, proxy emission).
-fn write_minimal_consumer(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    fs::write(
-        root.join("Cargo.toml"),
-        format!(
-            "[workspace]\n\
-             members = [\"consumer\"]\n\
-             resolver = \"3\"\n\
-             \n\
-             [workspace.package]\n\
-             edition = \"2024\"\n\
-             \n\
-             [workspace.dependencies]\n\
-             rudzio = {{ path = \"{rudzio}\", features = [\"common\", \"runtime-tokio-multi-thread\"] }}\n\
-             anyhow = \"=1.0.102\"\n",
-            rudzio = rudzio_root.display(),
-        ),
-    )?;
-
-    fs::create_dir_all(root.join("consumer").join("src"))?;
-    fs::write(
-        root.join("consumer").join("Cargo.toml"),
-        "[package]\n\
-         name = \"consumer\"\n\
-         version = \"0.0.0\"\n\
-         edition = { workspace = true }\n\
-         publish = false\n\
-         \n\
-         [lib]\n\
-         name = \"consumer\"\n\
-         path = \"src/lib.rs\"\n\
-         \n\
-         [dev-dependencies]\n\
-         rudzio = { workspace = true }\n\
-         anyhow = { workspace = true }\n",
-    )?;
-    // `// rudzio_test` marker + `#[cfg(any(test, rudzio_test))]` is
-    // the canonical broadened-cfg shape so cargo-rudzio compiles this
-    // mod under its `--cfg rudzio_test` build.
-    fs::write(
-        root.join("consumer").join("src").join("lib.rs"),
-        "// rudzio_test marker\n\
-         #[cfg(any(test, rudzio_test))]\n\
-         mod tests {\n\
-         \x20\x20\x20\x20use rudzio::common::context::{Suite, Test};\n\
-         \x20\x20\x20\x20use rudzio::runtime::tokio::Multithread as TokioMultithread;\n\
-         \n\
-         \x20\x20\x20\x20#[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
-         \x20\x20\x20\x20mod inner {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20#[rudzio::test]\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20fn trivial(_t: &super::Test) -> anyhow::Result<()> {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20}\n\
-         \x20\x20\x20\x20}\n\
-         }\n",
-    )?;
-
-    Ok(())
 }
 
 #[rudzio::suite([
@@ -182,10 +120,7 @@ fn write_minimal_consumer(root: &Path, rudzio_root: &Path) -> io::Result<()> {
 mod tests {
     use std::process::Output;
 
-    use super::{
-        Command, IsolatedCargoTest, Path, PathBuf, Stdio, TempDir, fs, io, rudzio_source_root,
-        shared_target_dir, write_minimal_consumer,
-    };
+    use super::{Command, IsolatedCargoTest, Path, PathBuf, Stdio, fs, io, shared_target_dir};
 
     /// Spawn `cargo rudzio test` in `root` with `CARGO_TARGET_DIR=
     /// shared` set explicitly. Returns the spawned process's
@@ -221,8 +156,10 @@ mod tests {
     /// Parallel-invocation contention reproducer. The 9-runtime
     /// matrix dispatches this test under 9 runtimes concurrently;
     /// each invocation spawns its own `cargo rudzio test` subprocess
-    /// against its own synthetic consumer workspace, all sharing one
-    /// `CARGO_TARGET_DIR`. Pre-fix at least one subprocess hits the
+    /// against its own per-test consumer workspace (full-recursive
+    /// copy of the suite's template — distinct path per runtime
+    /// instance), all sharing one `CARGO_TARGET_DIR`. Pre-fix at
+    /// least one subprocess hits the
     /// `removing .../Cargo.toml: No such file or directory` race
     /// inside `generate::write_runner`. Post-fix each invocation
     /// writes to a distinct per-consumer aggregator subdir, no race.
@@ -230,14 +167,11 @@ mod tests {
     async fn parallel_invocations_against_distinct_workspaces_sharing_target_dir_all_succeed(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
-        let root = workspace.path();
-        let rudzio_root: PathBuf = rudzio_source_root();
+        let workspace: &Path = ctx.consumer_workspace();
         let shared: PathBuf = shared_target_dir();
         fs::create_dir_all(&shared)?;
-        write_minimal_consumer(root, &rudzio_root)?;
 
-        let output = run_cargo_rudzio_with_shared_target(root, &shared, ctx.cargo_home())?;
+        let output = run_cargo_rudzio_with_shared_target(workspace, &shared, ctx.cargo_home())?;
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
 
