@@ -56,43 +56,28 @@
 //!  * runtime-side scanned-vs-registered count invariant (requires
 //!    codegen mechanism that doesn't exist yet — covered by the
 //!    structural fix's integrity check, not a behavioural test).
+//!
+//! # Phase B migration
+//!
+//! Each `customize_*` helper starts from the suite-provided
+//! `ctx.consumer_workspace()` (a per-test full-recursive copy of
+//! the template) and mutates the consumer member to match the
+//! fixture's target shape. The template's workspace `Cargo.toml`
+//! already carries the rudzio path-dep + anyhow workspace deps so
+//! the consumer manifest variants below reference them via
+//! `{ workspace = true }`. The lib at `consumer/src/lib.rs` is
+//! overwritten per-fixture to embed the fixture-specific
+//! `lib_baseline_test` (the visibility floor — its absence catches
+//! "the WHOLE run silently produced zero tests" without it being
+//! confused for the regression assertion).
 
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
 use rudzio::runtime::tokio::Multithread;
-use tempfile::TempDir;
-
-/// Workspace root of the in-tree `rudzio` crate. The fixtures'
-/// `[workspace.dependencies] rudzio = { path = <this> }` makes each
-/// synthetic consumer exercise the rudzio code under test.
-fn rudzio_source_root() -> PathBuf {
-    rudzio::manifest_dir!().join("..")
-}
-
-/// Common workspace `Cargo.toml` head. Single `consumer` member,
-/// pinned rudzio path-dep + anyhow, edition 2024.
-fn write_workspace_manifest(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    fs::write(
-        root.join("Cargo.toml"),
-        format!(
-            "[workspace]\n\
-             members = [\"consumer\"]\n\
-             resolver = \"3\"\n\
-             \n\
-             [workspace.package]\n\
-             edition = \"2024\"\n\
-             \n\
-             [workspace.dependencies]\n\
-             rudzio = {{ path = \"{rudzio}\", features = [\"common\", \"runtime-tokio-multi-thread\"] }}\n\
-             anyhow = \"=1.0.102\"\n",
-            rudzio = rudzio_root.display(),
-        ),
-    )
-}
 
 /// A trivial `src/lib.rs` carrying exactly ONE `#[rudzio::test]`.
 /// The lib test is the visibility baseline: every fixture asserts
@@ -149,9 +134,8 @@ fn rudzio_test_block(marker_name: &str) -> String {
 /// compile-unit split goes; this variant pins the entry file
 /// specifically because some structural fixes might handle
 /// `mod ops;`-style submodules differently from `main.rs` itself.
-fn write_fixture_bin_main_test(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    write_workspace_manifest(root, rudzio_root)?;
-    let consumer = root.join("consumer");
+fn customize_bin_main_test(workspace: &Path) -> io::Result<()> {
+    let consumer = workspace.join("consumer");
     let consumer_src = consumer.join("src");
     let bin_dir = consumer_src.join("bin").join("server");
     fs::create_dir_all(&bin_dir)?;
@@ -179,13 +163,6 @@ fn write_fixture_bin_main_test(root: &Path, rudzio_root: &Path) -> io::Result<()
 
     write_lib_with_baseline_test(&consumer_src)?;
 
-    // `main.rs` carries BOTH the `fn main()` (required for the
-    // bin to link) AND the rudzio test block. Under `cargo build`
-    // the bin compiles as `consumer:bin:server`; under
-    // `cargo rudzio test` the bridge declares `[[bin]] path = ...`
-    // pointing at this same file, so the file compiles inside the
-    // bridge — but linkme aggregation only reaches the bridge
-    // LIB, not the bin compile unit.
     fs::write(
         bin_dir.join("main.rs"),
         format!(
@@ -206,12 +183,10 @@ fn write_fixture_bin_main_test(root: &Path, rudzio_root: &Path) -> io::Result<()
 /// --examples`. Rudzio's CLI consumes `--examples` but doesn't
 /// honour it; what about a `#[rudzio::test]` in an example file
 /// during a plain `cargo rudzio test` invocation?
-fn write_fixture_example_test(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    write_workspace_manifest(root, rudzio_root)?;
-    let consumer = root.join("consumer");
+fn customize_example_test(workspace: &Path) -> io::Result<()> {
+    let consumer = workspace.join("consumer");
     let consumer_src = consumer.join("src");
     let examples = consumer.join("examples");
-    fs::create_dir_all(&consumer_src)?;
     fs::create_dir_all(&examples)?;
 
     fs::write(
@@ -255,12 +230,10 @@ fn write_fixture_example_test(root: &Path, rudzio_root: &Path) -> io::Result<()>
 /// inside an `#[cfg(any(test, rudzio_test))]` mod should be
 /// equally subject to the "is this compile unit linked into the
 /// aggregator?" invariant.
-fn write_fixture_bench_test(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    write_workspace_manifest(root, rudzio_root)?;
-    let consumer = root.join("consumer");
+fn customize_bench_test(workspace: &Path) -> io::Result<()> {
+    let consumer = workspace.join("consumer");
     let consumer_src = consumer.join("src");
     let benches = consumer.join("benches");
-    fs::create_dir_all(&consumer_src)?;
     fs::create_dir_all(&benches)?;
 
     fs::write(
@@ -312,13 +285,11 @@ fn write_fixture_bench_test(root: &Path, rudzio_root: &Path) -> io::Result<()> {
 /// compiles `tests/foo.rs` + its `mod helper;` as one test binary
 /// regardless) but the proxy + helper-mount pipeline rudzio
 /// generates may drop the helper.
-fn write_fixture_tests_subdir_helper(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    write_workspace_manifest(root, rudzio_root)?;
-    let consumer = root.join("consumer");
+fn customize_tests_subdir_helper(workspace: &Path) -> io::Result<()> {
+    let consumer = workspace.join("consumer");
     let consumer_src = consumer.join("src");
     let tests = consumer.join("tests");
     let foo_subdir = tests.join("foo");
-    fs::create_dir_all(&consumer_src)?;
     fs::create_dir_all(&foo_subdir)?;
 
     // Explicit `[[test]]` entry rather than relying on
@@ -384,12 +355,10 @@ fn write_fixture_tests_subdir_helper(root: &Path, rudzio_root: &Path) -> io::Res
 /// lib.rs); rudzio's `detect_src_rudzio_suite` walks only `src/`,
 /// so it can't see the marker at scan time. Audit candidate #1:
 /// the canonical "scanner walks A, code lives at B" mismatch.
-fn write_fixture_path_attr_escape(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    write_workspace_manifest(root, rudzio_root)?;
-    let consumer = root.join("consumer");
+fn customize_path_attr_escape(workspace: &Path) -> io::Result<()> {
+    let consumer = workspace.join("consumer");
     let consumer_src = consumer.join("src");
-    let shared = root.join("shared");
-    fs::create_dir_all(&consumer_src)?;
+    let shared = workspace.join("shared");
     fs::create_dir_all(&shared)?;
 
     fs::write(
@@ -453,11 +422,18 @@ fn write_fixture_path_attr_escape(root: &Path, rudzio_root: &Path) -> io::Result
 /// custom path in `target.src_path`. The question: does rudzio's
 /// `locate_src_lib_path` (1128) honour it, and do all downstream
 /// scanners walk the right directory?
-fn write_fixture_custom_lib_path(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    write_workspace_manifest(root, rudzio_root)?;
-    let consumer = root.join("consumer");
+fn customize_custom_lib_path(workspace: &Path) -> io::Result<()> {
+    let consumer = workspace.join("consumer");
     let custom_dir = consumer.join("src").join("custom");
     fs::create_dir_all(&custom_dir)?;
+
+    // Remove the template's default `src/lib.rs` so the member
+    // truly has only the custom-path lib — otherwise cargo would
+    // see two libs and complain.
+    let default_lib = consumer.join("src").join("lib.rs");
+    if default_lib.exists() {
+        fs::remove_file(&default_lib)?;
+    }
 
     fs::write(
         consumer.join("Cargo.toml"),
@@ -511,10 +487,9 @@ fn write_fixture_custom_lib_path(root: &Path, rudzio_root: &Path) -> io::Result<
 ])]
 mod tests {
     use super::{
-        Command, IsolatedCargoTest, Output, Path, PathBuf, Stdio, TempDir, io, rudzio_source_root,
-        write_fixture_bench_test, write_fixture_bin_main_test, write_fixture_custom_lib_path,
-        write_fixture_example_test, write_fixture_path_attr_escape,
-        write_fixture_tests_subdir_helper,
+        Command, IsolatedCargoTest, Output, Path, Stdio, customize_bench_test,
+        customize_bin_main_test, customize_custom_lib_path, customize_example_test,
+        customize_path_attr_escape, customize_tests_subdir_helper, io,
     };
 
     /// Outcome categories the invariant accepts. `SilentlyDisappeared`
@@ -616,12 +591,10 @@ mod tests {
     async fn rudzio_test_in_bin_main_rs_is_not_silently_invisible(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
-        let root: &Path = workspace.path();
-        let rudzio_root: PathBuf = rudzio_source_root();
-        write_fixture_bin_main_test(root, &rudzio_root)?;
+        let workspace: &Path = ctx.consumer_workspace();
+        customize_bin_main_test(workspace)?;
 
-        let output = run_cargo_rudzio_test(root, ctx.cargo_home(), ctx.cargo_target_dir())?;
+        let output = run_cargo_rudzio_test(workspace, ctx.cargo_home(), ctx.cargo_target_dir())?;
         let marker_path = "src/bin/server/main.rs";
         let marker_name = "bin_entry_main_rs_test";
 
@@ -654,12 +627,10 @@ mod tests {
     async fn rudzio_test_in_example_file_is_not_silently_invisible(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
-        let root: &Path = workspace.path();
-        let rudzio_root: PathBuf = rudzio_source_root();
-        write_fixture_example_test(root, &rudzio_root)?;
+        let workspace: &Path = ctx.consumer_workspace();
+        customize_example_test(workspace)?;
 
-        let output = run_cargo_rudzio_test(root, ctx.cargo_home(), ctx.cargo_target_dir())?;
+        let output = run_cargo_rudzio_test(workspace, ctx.cargo_home(), ctx.cargo_target_dir())?;
         let marker_path = "examples/sample.rs";
         let marker_name = "example_file_test";
 
@@ -689,12 +660,10 @@ mod tests {
     async fn rudzio_test_in_bench_file_is_not_silently_invisible(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
-        let root: &Path = workspace.path();
-        let rudzio_root: PathBuf = rudzio_source_root();
-        write_fixture_bench_test(root, &rudzio_root)?;
+        let workspace: &Path = ctx.consumer_workspace();
+        customize_bench_test(workspace)?;
 
-        let output = run_cargo_rudzio_test(root, ctx.cargo_home(), ctx.cargo_target_dir())?;
+        let output = run_cargo_rudzio_test(workspace, ctx.cargo_home(), ctx.cargo_target_dir())?;
         let marker_path = "benches/sample.rs";
         let marker_name = "bench_file_test";
 
@@ -726,12 +695,10 @@ mod tests {
     async fn rudzio_test_in_tests_subdir_helper_is_not_silently_invisible(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
-        let root: &Path = workspace.path();
-        let rudzio_root: PathBuf = rudzio_source_root();
-        write_fixture_tests_subdir_helper(root, &rudzio_root)?;
+        let workspace: &Path = ctx.consumer_workspace();
+        customize_tests_subdir_helper(workspace)?;
 
-        let output = run_cargo_rudzio_test(root, ctx.cargo_home(), ctx.cargo_target_dir())?;
+        let output = run_cargo_rudzio_test(workspace, ctx.cargo_home(), ctx.cargo_target_dir())?;
         let marker_path = "tests/foo/helper.rs";
         let marker_name = "tests_subdir_helper_test";
 
@@ -765,12 +732,10 @@ mod tests {
     async fn rudzio_test_in_path_attr_escape_is_not_silently_invisible(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
-        let root: &Path = workspace.path();
-        let rudzio_root: PathBuf = rudzio_source_root();
-        write_fixture_path_attr_escape(root, &rudzio_root)?;
+        let workspace: &Path = ctx.consumer_workspace();
+        customize_path_attr_escape(workspace)?;
 
-        let output = run_cargo_rudzio_test(root, ctx.cargo_home(), ctx.cargo_target_dir())?;
+        let output = run_cargo_rudzio_test(workspace, ctx.cargo_home(), ctx.cargo_target_dir())?;
         let marker_path = "shared/escaped.rs";
         let marker_name = "path_attr_escape_test";
 
@@ -804,12 +769,10 @@ mod tests {
     async fn rudzio_test_in_custom_lib_path_is_not_silently_invisible(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
-        let root: &Path = workspace.path();
-        let rudzio_root: PathBuf = rudzio_source_root();
-        write_fixture_custom_lib_path(root, &rudzio_root)?;
+        let workspace: &Path = ctx.consumer_workspace();
+        customize_custom_lib_path(workspace)?;
 
-        let output = run_cargo_rudzio_test(root, ctx.cargo_home(), ctx.cargo_target_dir())?;
+        let output = run_cargo_rudzio_test(workspace, ctx.cargo_home(), ctx.cargo_target_dir())?;
         let marker_path = "src/custom/lib.rs";
         let marker_name = "custom_lib_path_test";
 
