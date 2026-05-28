@@ -4583,10 +4583,25 @@ fn crate_name_to_ident(name: &str) -> String {
 /// declarations and resolve each to the sibling file. Returns
 /// `(name, abs_path)` pairs in declaration order.
 ///
-/// Only fires for `<dir>/mod.rs` entry points — flat
-/// `tests/<name>.rs` files have no siblings to mirror at the
-/// aggregator crate root, since stock cargo doesn't expose any
-/// `crate::*` modules for them either.
+/// Fires for both directory-style entries (`<dir>/mod.rs`,
+/// `<dir>/main.rs`, `<dir>/lib.rs`) AND flat entries
+/// (`tests/<name>.rs`). Cargo's module resolution differs by
+/// entry kind, and the resolution base used to find each
+/// `mod X;` source file mirrors cargo's rules:
+///
+///   * directory-style entry (`<dir>/mod.rs`, `main.rs`, `lib.rs`):
+///     submods live as siblings of the entry — `mod foo;` →
+///     `<dir>/foo.rs` or `<dir>/foo/mod.rs`.
+///   * flat entry (`tests/foo.rs`): submods live in a subdir
+///     matching the entry's stem — `mod helper;` →
+///     `tests/foo/helper.rs` or `tests/foo/helper/mod.rs`.
+///
+/// Pre-Bug-#16-step-B only directory-style entries were
+/// supported; the flat-entry case silently disappeared because
+/// `discover_test_root_helpers` returned empty AND the proxy
+/// generation stripped `mod helper;` from the proxy entry, so
+/// the helper's `#[rudzio::test]` markers never reached any
+/// compile unit and the dispatcher couldn't see them.
 ///
 /// Detection is line-based, not syn-driven, so the patterns
 /// recognised are intentionally narrow:
@@ -4603,16 +4618,21 @@ fn crate_name_to_ident(name: &str) -> String {
 /// helpers were already opt-in at the test-binary level, and the
 /// aggregator's `--cfg rudzio_test` activation broadens that gate).
 fn discover_test_root_helpers(test_file: &Path) -> Vec<(String, PathBuf)> {
-    // Accept `mod.rs`, `main.rs`, and `lib.rs` as test-root entries.
-    // Pre-Bug-#7 only `mod.rs` was supported; real workspaces use
-    // `main.rs`-rooted (Bug #8C) and `lib.rs`-rooted shapes too,
-    // and helper-mod discovery must apply identically to all three.
-    let file_name = test_file.file_name().and_then(|os_name| os_name.to_str());
-    if !matches!(file_name, Some("mod.rs" | "main.rs" | "lib.rs")) {
-        return Vec::new();
-    }
     let Some(dir) = test_file.parent() else {
         return Vec::new();
+    };
+    let file_name = test_file.file_name().and_then(|os_name| os_name.to_str());
+    // Determine cargo's mod-resolution base for `mod X;` declarations
+    // in this entry. Directory-style entries (mod.rs / main.rs /
+    // lib.rs) resolve siblings; flat entries (tests/<name>.rs)
+    // resolve under a subdir named after the entry's stem.
+    let resolution_base: PathBuf = if matches!(file_name, Some("mod.rs" | "main.rs" | "lib.rs")) {
+        dir.to_path_buf()
+    } else {
+        let Some(stem) = test_file.file_stem().and_then(|stem_name| stem_name.to_str()) else {
+            return Vec::new();
+        };
+        dir.join(stem)
     };
     let Ok(text) = fs::read_to_string(test_file) else {
         return Vec::new();
@@ -4622,12 +4642,12 @@ fn discover_test_root_helpers(test_file: &Path) -> Vec<(String, PathBuf)> {
         let Some(name) = parse_top_level_mod_decl(raw_line) else {
             continue;
         };
-        let sibling_file = dir.join(format!("{name}.rs"));
-        let sibling_dir_mod = dir.join(&name).join("mod.rs");
-        let resolved = if sibling_file.is_file() {
-            sibling_file
-        } else if sibling_dir_mod.is_file() {
-            sibling_dir_mod
+        let child_file = resolution_base.join(format!("{name}.rs"));
+        let child_dir_mod = resolution_base.join(&name).join("mod.rs");
+        let resolved = if child_file.is_file() {
+            child_file
+        } else if child_dir_mod.is_file() {
+            child_dir_mod
         } else {
             // `mod foo;` with no matching file — either a typo in the
             // member's source or the file is generated at build.rs
