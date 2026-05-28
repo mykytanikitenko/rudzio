@@ -39,16 +39,19 @@ Live progress log. Status values: `DONE` (with commit hash) | `IN PROGRESS` | `P
 | 7 | Phase 0c: `expect-allow-ban` linter crate + Justfile `check-lints` isolation + CI workflow parallel `lints` job | DONE | `820d257` |
 | 8 | Phase 0 single batched commit (covers 0a + 0b + 0c) + push to `origin/main` | DONE | `820d257` |
 | 9 | Bug #19 fix: per-bin bridge crate preserves `crate::*` root in mounted bin sources + `bug_19_bin_crate_root_resolution_spec` (6 proactive tests) | DONE | `1ebe772` |
-| 10 | P-0 cleanup: per-site review of `#[expect]`/`#[allow]` (Phase 0c linter surfaces these) | PENDING | TBD |
-| 11 | P-1 cleanup: `Default` impl removal (1 manual + ~16 derives + ~5 struct-update consumers) | PENDING | TBD |
-| 12 | P-3 cleanup: `Iterator` retype (2 return positions: `render.rs:1251`, `generate.rs:2686`) | PENDING | TBD |
-| 13 | P-4 cleanup: `non-result-fns` linter extension (gate counts: `hazards=0` → `non-Result count=0`) | PENDING | TBD |
-| 14 | M-1: `rs-result-sig-rewrite` syn-based signature transformer tool | PENDING | TBD |
-| 15 | M-2: per-module non-Result → Result conversion (hot-spot order from `BASELINE.md`) | PENDING | TBD |
-| 16 | M-3: cosmetic pass | PENDING | TBD |
-| 17 | Phase 2: TODO marker sweep | PENDING | TBD |
+| 10 | Phase B framework: `IsolatedCargoSuite` warmup snapshot (template consumer workspace) + `IsolatedCargoTest` per-test full-recursive-copy + RAII cleanup; one spec migrated as proof-of-concept (`bug_18`). Aggregator pre-compile in snapshot DEFERRED (cargo's incremental cache uses absolute paths; cross-path reuse needs `--remap-path-prefix` work). | DONE | TBD |
+| 11 | Phase B migration: remaining specs (`bug_16`, `bug_19`, `surface_visibility`, `silent_member_drop`, parallel/cross-bridge specs) migrated to warmup-snapshot pattern | PENDING | TBD |
+| 12 | Phase B aggregator-pre-compile-in-snapshot follow-up (`--remap-path-prefix` strategy for cargo cache survival across per-test paths) | PENDING | TBD |
+| 13 | P-0 cleanup: per-site review of `#[expect]`/`#[allow]` (Phase 0c linter surfaces these) | PENDING | TBD |
+| 14 | P-1 cleanup: `Default` impl removal (1 manual + ~16 derives + ~5 struct-update consumers) | PENDING | TBD |
+| 15 | P-3 cleanup: `Iterator` retype (2 return positions: `render.rs:1251`, `generate.rs:2686`) | PENDING | TBD |
+| 16 | P-4 cleanup: `non-result-fns` linter extension (gate counts: `hazards=0` → `non-Result count=0`) | PENDING | TBD |
+| 17 | M-1: `rs-result-sig-rewrite` syn-based signature transformer tool | PENDING | TBD |
+| 18 | M-2: per-module non-Result → Result conversion (hot-spot order from `BASELINE.md`) | PENDING | TBD |
+| 19 | M-3: cosmetic pass | PENDING | TBD |
+| 20 | Phase 2: TODO marker sweep | PENDING | TBD |
 
-Last updated: 2026-05-28 (post-Bug-#19 fix). Future-PP MUST update this matrix as work progresses; commit hash MUST be filled before `git push`.
+Last updated: 2026-05-28 (Phase B framework in progress). Future-PP MUST update this matrix as work progresses; commit hash MUST be filled before `git push`.
 
 ## Goal
 

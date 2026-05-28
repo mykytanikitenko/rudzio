@@ -108,6 +108,22 @@ use tempfile::TempDir;
 /// first invocation.
 const REGISTRY_LOCK_FILES: &[&str] = &[".package-cache", ".package-cache.lock"];
 
+/// Subdir name under `<suite_tempdir>` that holds the immutable
+/// consumer-workspace template materialised once during
+/// [`IsolatedCargoSuite::setup`]. Per-test copies are produced by
+/// full-recursive [`copy_dir_recursive`] under
+/// [`IsolatedCargoSuite::context`]. The template is read-only after
+/// setup completes — no test mutates it, no cleanup step touches it
+/// (suite teardown drops the parent tempdir which removes the
+/// template along with everything else).
+const TEMPLATE_WORKSPACE_DIRNAME: &str = "consumer-workspace-template";
+
+/// Subdir name under `<test_tempdir>` that holds the per-test
+/// consumer workspace materialised by full-recursive copy of the
+/// suite's template. Exposed to tests via
+/// [`IsolatedCargoTest::consumer_workspace`].
+const PER_TEST_WORKSPACE_DIRNAME: &str = "consumer-workspace";
+
 /// Rudzio Suite that allocates a per-suite tempdir + pre-warmed
 /// shared cargo home once in `setup()`. For each test, `context()`
 /// mints a per-test cargo home (hardlinked from the suite's pre-
@@ -141,6 +157,11 @@ where
     /// can also place per-fixture workspaces here directly via
     /// [`IsolatedCargoTest::suite_tempdir`].
     suite_tempdir_path: PathBuf,
+    /// Path to the immutable consumer-workspace template
+    /// materialised once during [`Self::setup`]. Lives at
+    /// `<suite_tempdir>/consumer-workspace-template/`. Source for
+    /// per-test full-recursive copies inside [`Self::context`].
+    template_workspace: PathBuf,
     /// Suite-shared task tracker (for the `&Test::tracker` contract).
     tracker: TaskTracker,
     /// Owned tempdir handle: kept inside the suite so its `Drop`
@@ -160,6 +181,7 @@ where
         f.debug_struct("IsolatedCargoSuite")
             .field("suite_tempdir_path", &self.suite_tempdir_path)
             .field("cargo_home", &self.cargo_home)
+            .field("template_workspace", &self.template_workspace)
             .finish_non_exhaustive()
     }
 }
@@ -208,6 +230,23 @@ where
                 cargo_target_dir.display()
             )
         })?;
+        // Phase B per-test copy: every test starts from an
+        // independent copy of the suite-warmed consumer workspace
+        // template. Tests mutate the copy freely; the per-test
+        // tempdir's `Drop` removes it at test teardown.
+        // `copy_dir_recursive` is a plain byte-level copy (no
+        // hardlinks, no reflink) — slowest but maximally isolated;
+        // matches the user's choice for the snapshot/clone
+        // mechanism. The template itself is read-only after suite
+        // setup, so the copy direction is well-defined.
+        let consumer_workspace = test_root.join(PER_TEST_WORKSPACE_DIRNAME);
+        copy_dir_recursive(&self.template_workspace, &consumer_workspace).with_context(|| {
+            format!(
+                "copying consumer workspace template {} -> {}",
+                self.template_workspace.display(),
+                consumer_workspace.display()
+            )
+        })?;
         Ok(IsolatedCargoTest::new(
             IsolatedCargoTestRuntimeCtx {
                 cancel,
@@ -218,6 +257,7 @@ where
             IsolatedCargoTestPaths {
                 cargo_home,
                 cargo_target_dir,
+                consumer_workspace,
                 suite_tempdir: &self.suite_tempdir_path,
                 test_tempdir,
             },
@@ -258,11 +298,26 @@ where
         // keeps host CPU saturation gradual.
         prepopulate_cargo_home(&cargo_home, &suite_tempdir_path)
             .context("pre-populating shared cargo home for IsolatedCargoSuite")?;
+        // Phase B warmup: materialise the consumer-workspace
+        // template once per suite instance. Per-test copies happen
+        // inside `context()`. The template's content is invariant
+        // across suites (a workspace with one `consumer` member
+        // carrying a trivial `#[rudzio::test]`) so every fixture
+        // that today hand-rolls this boilerplate can opt in by
+        // reading `ctx.consumer_workspace()` instead.
+        let template_workspace = suite_tempdir_path.join(TEMPLATE_WORKSPACE_DIRNAME);
+        materialize_consumer_workspace_template(&template_workspace).with_context(|| {
+            format!(
+                "materialising consumer-workspace template at {}",
+                template_workspace.display()
+            )
+        })?;
         Ok(Self {
             cancel: cancel.child_token(),
             cargo_home,
             rt,
             suite_tempdir_path,
+            template_workspace,
             tracker: TaskTracker::new(),
             _suite_tempdir: suite_tempdir,
         })
@@ -307,6 +362,13 @@ where
 ///   runs previously accumulated ~63 GB of orphaned
 ///   `rudzio-auto-runner-<hash>/` dirs). When the test drops, the
 ///   tempdir's `Drop` removes everything atomically.
+/// * `consumer_workspace()` — a **per-test** full-recursive copy of
+///   the suite's consumer-workspace template. Tests mutate the copy
+///   freely without affecting siblings or the template; the per-test
+///   tempdir's `Drop` removes the copy at teardown. Migration target
+///   for every spec that hand-rolls a `write_fixture(root, ...)` —
+///   the template already provides the workspace + consumer member
+///   + a trivial `#[rudzio::test]` gating the aggregator build.
 /// * `suite_tempdir()` — the per-suite tempdir, exposed for any
 ///   fixture that wants a workspace location outside its own per-
 ///   test tempdir (kept for back-compat with existing specs).
@@ -328,6 +390,13 @@ where
     cargo_target_dir: PathBuf,
     /// Resolved CLI/env configuration.
     config: &'test_context Config,
+    /// Per-test consumer workspace (owned; lives inside
+    /// `_test_tempdir`). Full-recursive copy of the suite's
+    /// consumer-workspace template, materialised by
+    /// [`IsolatedCargoSuite::context`] before this struct is
+    /// constructed. Tests mutate freely; teardown removes via the
+    /// tempdir's `Drop`.
+    consumer_workspace: PathBuf,
     /// Borrow of the async runtime driving this test.
     rt: &'test_context R,
     /// Per-suite tempdir (borrowed from suite); tests can create
@@ -337,9 +406,10 @@ where
     /// Suite-shared task tracker.
     tracker: TaskTracker,
     /// Owned per-test tempdir handle: `Drop` removes the entire
-    /// `cargo_home` + `cargo_target_dir` tree when the test drops.
-    /// Underscore-prefixed because nothing reads it directly — it
-    /// exists purely for its `Drop` side-effect.
+    /// `cargo_home` + `cargo_target_dir` + `consumer_workspace`
+    /// tree when the test drops. Underscore-prefixed because
+    /// nothing reads it directly — it exists purely for its `Drop`
+    /// side-effect.
     _test_tempdir: TempDir,
 }
 
@@ -368,6 +438,9 @@ pub struct IsolatedCargoTestPaths<'test_context> {
     pub cargo_home: PathBuf,
     /// Per-test empty `CARGO_TARGET_DIR`.
     pub cargo_target_dir: PathBuf,
+    /// Per-test consumer workspace, full-recursive copied from the
+    /// suite's template.
+    pub consumer_workspace: PathBuf,
     /// Per-suite tempdir, borrowed for the test's lifetime.
     pub suite_tempdir: &'test_context Path,
     /// Owned per-test tempdir handle whose `Drop` removes the entire
@@ -396,6 +469,7 @@ where
             suite_tempdir,
             cargo_home,
             cargo_target_dir,
+            consumer_workspace,
             test_tempdir,
         } = paths;
         Self {
@@ -403,6 +477,7 @@ where
             cargo_home,
             cargo_target_dir,
             config,
+            consumer_workspace,
             rt,
             suite_tempdir,
             tracker,
@@ -431,6 +506,30 @@ where
         &self.cargo_target_dir
     }
 
+    /// Path to the **per-test** consumer workspace materialised by
+    /// full-recursive copy of the suite's template at
+    /// [`IsolatedCargoSuite::context`]. Workspace layout:
+    ///
+    /// ```text
+    /// <consumer_workspace>/
+    /// ├── Cargo.toml          (workspace + workspace.dependencies)
+    /// └── consumer/
+    ///     ├── Cargo.toml      ([lib] only)
+    ///     └── src/
+    ///         └── lib.rs      (1 #[rudzio::test])
+    /// ```
+    ///
+    /// Tests may mutate any file under this path (write additional
+    /// members, append `[[bin]]` entries, replace `lib.rs`, etc.) —
+    /// the per-test copy is independent of siblings and of the
+    /// suite template. The per-test tempdir's `Drop` removes the
+    /// entire copy at teardown.
+    #[inline]
+    #[must_use]
+    pub fn consumer_workspace(&self) -> &Path {
+        &self.consumer_workspace
+    }
+
     /// Path to the per-suite temp directory. Kept for back-compat:
     /// existing specs place per-fixture workspaces under here. New
     /// specs are free to place them under the per-test tempdir
@@ -452,6 +551,7 @@ where
             .field("suite_tempdir", &self.suite_tempdir)
             .field("cargo_home", &self.cargo_home)
             .field("cargo_target_dir", &self.cargo_target_dir)
+            .field("consumer_workspace", &self.consumer_workspace)
             .finish_non_exhaustive()
     }
 }
@@ -630,6 +730,184 @@ rudzio = {{ path = "{rudzio_root}", features = ["common", "runtime-tokio-multi-t
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+    Ok(())
+}
+
+/// Materialise the consumer-workspace template at `dest`. Called
+/// exactly once per [`IsolatedCargoSuite`] instance, from
+/// [`IsolatedCargoSuite::setup`].
+///
+/// Layout written:
+///
+/// ```text
+/// <dest>/
+/// ├── Cargo.toml          (workspace + workspace.dependencies)
+/// └── consumer/
+///     ├── Cargo.toml      ([lib] only, rudzio + anyhow dev-deps)
+///     └── src/
+///         └── lib.rs      (1 #[rudzio::test])
+/// ```
+///
+/// The single rudzio surface ensures the workspace produces an
+/// aggregator when cargo-rudzio runs against it — without at least
+/// one `#[rudzio::test]`, cargo-rudzio emits no aggregator subdir
+/// and downstream tests have nothing to assert against. The
+/// `rudzio` workspace.dependency points at the rudzio repo this
+/// helper crate lives inside (env!("CARGO_MANIFEST_DIR") of this
+/// crate, parent dir = rudzio root), so the template exercises the
+/// rudzio code under test rather than a published version.
+///
+/// `features` enabled on the workspace `rudzio` entry are the
+/// union of what existing fixtures' hand-rolled workspaces enable
+/// (`common` + the two tokio runtimes). Tests that need additional
+/// rudzio features rewrite this `Cargo.toml` after the per-test
+/// copy lands — the template is the baseline, not a hard ceiling.
+///
+/// # Errors
+///
+/// Returns an error when any `fs::write` or `fs::create_dir_all`
+/// call fails, or when the helper crate has no parent dir (the
+/// `CARGO_MANIFEST_DIR` ancestry-walk should never fail in a
+/// correctly-checked-out workspace; the explicit error surfaces if
+/// it does).
+fn materialize_consumer_workspace_template(dest: &Path) -> Result<()> {
+    fs::create_dir_all(dest)
+        .with_context(|| format!("creating template workspace dir at {}", dest.display()))?;
+    let rudzio_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "cargo-rudzio-test-helpers has no parent dir; expected to live as a workspace \
+                 member at <workspace>/cargo-rudzio-test-helpers/"
+            )
+        })?
+        .to_path_buf();
+    fs::write(
+        dest.join("Cargo.toml"),
+        format!(
+            "[workspace]\n\
+             members = [\"consumer\"]\n\
+             resolver = \"3\"\n\
+             \n\
+             [workspace.package]\n\
+             edition = \"2024\"\n\
+             \n\
+             [workspace.dependencies]\n\
+             rudzio = {{ path = \"{rudzio}\", features = [\"common\", \"runtime-tokio-multi-thread\", \"runtime-tokio-current-thread\"] }}\n\
+             anyhow = \"=1.0.102\"\n",
+            rudzio = rudzio_root.display(),
+        ),
+    )
+    .with_context(|| format!("writing template workspace Cargo.toml under {}", dest.display()))?;
+    let consumer_dir = dest.join("consumer");
+    let consumer_src = consumer_dir.join("src");
+    fs::create_dir_all(&consumer_src).with_context(|| {
+        format!(
+            "creating consumer src dir at {}",
+            consumer_src.display()
+        )
+    })?;
+    fs::write(
+        consumer_dir.join("Cargo.toml"),
+        "[package]\n\
+         name = \"consumer\"\n\
+         version = \"0.0.0\"\n\
+         edition = { workspace = true }\n\
+         publish = false\n\
+         \n\
+         [lib]\n\
+         name = \"consumer\"\n\
+         path = \"src/lib.rs\"\n\
+         \n\
+         [dev-dependencies]\n\
+         rudzio = { workspace = true }\n\
+         anyhow = { workspace = true }\n",
+    )
+    .with_context(|| {
+        format!(
+            "writing consumer Cargo.toml at {}",
+            consumer_dir.join("Cargo.toml").display()
+        )
+    })?;
+    fs::write(
+        consumer_src.join("lib.rs"),
+        "// rudzio_test marker\n\
+         #[cfg(any(test, rudzio_test))]\n\
+         mod tests {\n\
+         \x20\x20\x20\x20use rudzio::common::context::{Suite, Test};\n\
+         \x20\x20\x20\x20use rudzio::runtime::tokio::Multithread as TokioMultithread;\n\
+         \n\
+         \x20\x20\x20\x20#[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
+         \x20\x20\x20\x20mod inner {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20#[rudzio::test]\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20fn trivial_test(_t: &super::Test) -> anyhow::Result<()> {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}\n\
+         \x20\x20\x20\x20}\n\
+         }\n",
+    )
+    .with_context(|| {
+        format!(
+            "writing consumer lib.rs at {}",
+            consumer_src.join("lib.rs").display()
+        )
+    })?;
+    Ok(())
+}
+
+/// Full-recursive byte-level copy of `src` to `dst`. Used by
+/// [`IsolatedCargoSuite::context`] to materialise a per-test copy
+/// of the consumer-workspace template.
+///
+/// Trade-off chosen: plain `fs::copy` (which on Linux uses
+/// `copy_file_range` and the kernel may opt into reflink/CoW
+/// transparently when source and destination share a CoW-capable
+/// filesystem like btrfs/xfs/zfs/apfs — purely a kernel-level
+/// optimisation that does not change the userspace semantics). The
+/// userspace contract is independent per-test copies; any concrete
+/// space-sharing the FS layer provides is a bonus.
+///
+/// Symlinks inside `src` are bailed on (the template never produces
+/// any; if a future template adds symlinks, this fn needs the
+/// `symlink_metadata` + `symlink` branch).
+///
+/// # Errors
+///
+/// Returns the first I/O error encountered when reading `src`,
+/// creating `dst` subdirectories, or copying a file. Symlinks
+/// inside `src` produce an explicit "unsupported" error rather
+/// than silent skip so a future template change doesn't silently
+/// lose files.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst).with_context(|| format!("creating {}", dst.display()))?;
+    for entry in
+        fs::read_dir(src).with_context(|| format!("reading source dir {}", src.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("iterating dir entry under {}", src.display()))?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("stat'ing dir entry {}", entry.path().display()))?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else if file_type.is_file() {
+            fs::copy(&src_path, &dst_path).with_context(|| {
+                format!(
+                    "copying {} -> {}",
+                    src_path.display(),
+                    dst_path.display()
+                )
+            })?;
+        } else {
+            anyhow::bail!(
+                "copy_dir_recursive: unsupported entry type at {} (only regular files and \
+                 directories are handled; symlinks/sockets/devices would silently drop bytes)",
+                src_path.display(),
+            );
+        }
+    }
     Ok(())
 }
 

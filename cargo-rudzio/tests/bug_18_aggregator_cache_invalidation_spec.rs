@@ -48,6 +48,16 @@
 //!      (`"0.0.0-99999"`). A regression that drops the stamp from
 //!      the subdir name would make the observed hash collapse into
 //!      something else (or fail the layout check entirely).
+//!
+//! # Phase B migration
+//!
+//! This spec is the proof-of-concept for the Phase B
+//! warmup-snapshot pattern: instead of hand-rolling a workspace
+//! fixture via `write_fixture(...)` inside the test, it uses
+//! `ctx.consumer_workspace()` — a per-test full-recursive copy of
+//! the suite's pre-warmed consumer-workspace template. The
+//! template ships a trivial `#[rudzio::test]` which is exactly
+//! what this spec needs to gate the aggregator build.
 
 use std::fs;
 use std::io;
@@ -56,7 +66,6 @@ use std::process::{Command, Output, Stdio};
 
 use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
 use rudzio::runtime::tokio::Multithread;
-use tempfile::TempDir;
 
 /// FNV-1a 64-bit hash — must mirror the algorithm in
 /// `cargo-rudzio/src/generate.rs::Plan::aggregator_subdir_name`.
@@ -73,96 +82,11 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
     })
 }
 
-/// Workspace root of the in-tree `rudzio` crate. The fixture's
-/// `[workspace.dependencies] rudzio = { path = <this> }` makes the
-/// synthetic consumer exercise the rudzio code under test, not a
-/// published version.
-fn rudzio_source_root() -> PathBuf {
-    rudzio::manifest_dir!().join("..")
-}
-
-/// Materialise a minimal lib-only consumer at `root`:
-///
-/// ```text
-/// root/
-/// ├── Cargo.toml          (workspace)
-/// └── consumer/
-///     ├── Cargo.toml      ([lib] only)
-///     └── src/
-///         └── lib.rs      (1 #[rudzio::test] — trivial_test)
-/// ```
-///
-/// The single test gates the aggregator subdir creation: without
-/// at least one rudzio surface in the workspace, `cargo rudzio
-/// test` would emit an empty aggregator and the structural probe
-/// below would find nothing to inspect.
-fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
-    fs::write(
-        root.join("Cargo.toml"),
-        format!(
-            "[workspace]\n\
-             members = [\"consumer\"]\n\
-             resolver = \"3\"\n\
-             \n\
-             [workspace.package]\n\
-             edition = \"2024\"\n\
-             \n\
-             [workspace.dependencies]\n\
-             rudzio = {{ path = \"{rudzio}\", features = [\"common\", \"runtime-tokio-multi-thread\"] }}\n\
-             anyhow = \"=1.0.102\"\n",
-            rudzio = rudzio_root.display(),
-        ),
-    )?;
-
-    let consumer = root.join("consumer");
-    fs::create_dir_all(consumer.join("src"))?;
-
-    fs::write(
-        consumer.join("Cargo.toml"),
-        "[package]\n\
-         name = \"consumer\"\n\
-         version = \"0.0.0\"\n\
-         edition = { workspace = true }\n\
-         publish = false\n\
-         \n\
-         [lib]\n\
-         name = \"consumer\"\n\
-         path = \"src/lib.rs\"\n\
-         \n\
-         [dev-dependencies]\n\
-         rudzio = { workspace = true }\n\
-         anyhow = { workspace = true }\n",
-    )?;
-
-    fs::write(
-        consumer.join("src").join("lib.rs"),
-        "// rudzio_test marker\n\
-         #[cfg(any(test, rudzio_test))]\n\
-         mod tests {\n\
-         \x20\x20\x20\x20use rudzio::common::context::{Suite, Test};\n\
-         \x20\x20\x20\x20use rudzio::runtime::tokio::Multithread as TokioMultithread;\n\
-         \n\
-         \x20\x20\x20\x20#[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
-         \x20\x20\x20\x20mod inner {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20#[rudzio::test]\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20fn trivial_test(_t: &super::Test) -> anyhow::Result<()> {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20}\n\
-         \x20\x20\x20\x20}\n\
-         }\n",
-    )?;
-
-    Ok(())
-}
-
 #[rudzio::suite([
     (runtime = Multithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
 ])]
 mod tests {
-    use super::{
-        Command, IsolatedCargoTest, Output, Path, PathBuf, Stdio, TempDir, fnv1a64, fs, io,
-        rudzio_source_root, write_fixture,
-    };
+    use super::{Command, IsolatedCargoTest, Output, Path, PathBuf, Stdio, fnv1a64, fs, io};
 
     /// **Bug #18 structural regression guard**: the aggregator
     /// subdir name must encode both the workspace hash AND the
@@ -181,12 +105,14 @@ mod tests {
     async fn cargo_rudzio_test_creates_distinct_aggregator_subdir_when_stamp_changes(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
-        let root: &Path = workspace.path();
-        let rudzio_root: PathBuf = rudzio_source_root();
-        write_fixture(root, &rudzio_root)?;
+        // Phase B: the per-test consumer workspace is a fresh
+        // full-recursive copy of the suite's template. The
+        // template already ships a trivial `#[rudzio::test]`, so
+        // the workspace is ready to feed `cargo rudzio test` with
+        // no additional setup.
+        let workspace: &Path = ctx.consumer_workspace();
 
-        let output = run_cargo_rudzio_test(root, ctx.cargo_home(), ctx.cargo_target_dir())?;
+        let output = run_cargo_rudzio_test(workspace, ctx.cargo_home(), ctx.cargo_target_dir())?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -280,10 +206,9 @@ mod tests {
         Ok(path)
     }
 
-    /// Spawn `cargo-rudzio test` against the fixture under per-test
-    /// isolated cargo state (hardlinked registry + fresh target
-    /// dir). Mirrors the helper in
-    /// `bug_16_bin_source_tests_invisible_spec.rs`.
+    /// Spawn `cargo-rudzio test` against the per-test consumer
+    /// workspace under per-test isolated cargo state (hardlinked
+    /// registry + fresh target dir).
     fn run_cargo_rudzio_test(
         root: &Path,
         cargo_home: &Path,
