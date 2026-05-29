@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["expect-allow-ban", "non-result-fns"]
+members = ["expect-allow-ban", "no-default-impls", "non-result-fns"]
 
 # Linters live in their own cargo workspace so they don't pollute the
 # main rudzio workspace's build graph, lint config, or `cargo check`

@@ -73,6 +73,7 @@ check-lints:
     status=0
     cargo run --manifest-path linters/Cargo.toml -p non-result-fns || status=$?
     cargo run --manifest-path linters/Cargo.toml -p expect-allow-ban || status=$?
+    cargo run --manifest-path linters/Cargo.toml -p no-default-impls || status=$?
     exit $status
 
 # --- Testing ---

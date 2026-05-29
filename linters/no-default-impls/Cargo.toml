@@ -1,0 +1,11 @@
+[package]
+name = "no-default-impls"
+version = "0.0.0"
+edition = { workspace = true }
+publish = { workspace = true }
+
+[dependencies]
+anyhow = { workspace = true }
+proc-macro2 = { workspace = true }
+syn = { workspace = true }
+walkdir = { workspace = true }
