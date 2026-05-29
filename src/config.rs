@@ -255,7 +255,7 @@ do not abort the run.
 ///
 /// [`BenchMode::Smoke`] is the default — `cargo test` on a bench-annotated
 /// test runs its body once as a regular test.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum BenchMode {
     /// `--bench`: dispatch each bench-annotated test through its
@@ -266,10 +266,11 @@ pub enum BenchMode {
     /// reported as ignored so the count still makes sense). Useful on
     /// slow CI where even the smoke run is too much.
     Skip,
-    /// Default: run the body once as a regular test, ignore the
-    /// `benchmark = ...` argument. Keeps `cargo test` fast on CI while
-    /// still exercising the bench body for correctness.
-    #[default]
+    /// Initial / fall-through: run the body once as a regular test,
+    /// ignore the `benchmark = ...` argument. Keeps `cargo test` fast
+    /// on CI while still exercising the bench body for correctness.
+    /// Callers that want the "no flag observed" state pick this
+    /// variant explicitly (P-1: no `Default` impls).
     Smoke,
 }
 
@@ -322,13 +323,14 @@ impl CargoMeta {
 }
 
 /// ANSI colour policy for terminal output.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ColorMode {
     /// Force colour on.
     Always,
     /// Enable colour if stdout is a TTY and `NO_COLOR` is unset.
-    #[default]
+    /// Initial / fall-through choice; callers pick this variant
+    /// explicitly (P-1: no `Default` impls).
     Auto,
     /// Force colour off.
     Never,
@@ -590,11 +592,12 @@ pub enum EnsureTimeViolation {
 }
 
 /// Output rendering style.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Format {
     /// One line per test with status and elapsed time.
-    #[default]
+    /// Initial / fall-through choice; callers pick this variant
+    /// explicitly (P-1: no `Default` impls).
     Pretty,
     /// One character per test (`.`/`F`/`c`/`i`) on a single line.
     Terse,
@@ -625,7 +628,7 @@ enum EnsureTimeArg {
 ///
 /// `Default` is [`Self::Unset`], meaning "no flag observed, fall back to the
 /// per-bench-mode default at resolution time".
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 enum HardlimitArg {
     /// `--threads-parallel-hardlimit=none`: gate is disabled outright.
     Disabled,
@@ -635,7 +638,8 @@ enum HardlimitArg {
     /// thread count (explicit spelling of the default).
     Threads,
     /// Flag not observed; resolve to the per-bench-mode default.
-    #[default]
+    /// Initial / fall-through choice; callers pick this variant
+    /// explicitly (P-1: no `Default` impls).
     Unset,
 }
 
@@ -679,7 +683,6 @@ pub enum OutputMode {
 /// Splitting the long `from_argv_and_env` flag-loop into `parse_argv` plus
 /// per-flag-family helpers keeps cognitive complexity inside the parser
 /// loop bounded — each helper handles one category of flag.
-#[derive(Default)]
 struct ParsedArgs {
     /// Resolved bench mode from `--bench` / `--no-bench`.
     bench_mode: BenchMode,
@@ -761,12 +764,50 @@ struct ParsedArgs {
     unparsed: Vec<String>,
 }
 
+impl ParsedArgs {
+    /// Empty parser state — every flag-derived field at its
+    /// "no flag observed" value. Replaces `Default::default()`
+    /// per P-1 (no `Default` impls in workspace-internal types).
+    /// Each enum field names its initial variant explicitly so
+    /// the choice is visible at the call site.
+    const fn empty() -> Self {
+        Self {
+            bench_mode: BenchMode::Smoke,
+            cancel_grace_period: None,
+            color: ColorMode::Auto,
+            compat_consumed: Vec::new(),
+            concurrency_limit: None,
+            ensure_time: None,
+            exact_match: false,
+            filter: None,
+            format: Format::Pretty,
+            hardlimit_arg: HardlimitArg::Unset,
+            logfile: None,
+            output_mode_explicit: None,
+            phase_hang_grace: None,
+            print_only: PrintOnly::None,
+            run_ignored: RunIgnoredMode::Normal,
+            run_timeout: None,
+            shuffle: false,
+            shuffle_seed: None,
+            skip_filters: Vec::new(),
+            suite_setup_timeout: None,
+            suite_teardown_timeout: None,
+            test_setup_timeout: None,
+            test_teardown_timeout: None,
+            test_timeout: None,
+            threads: None,
+            unparsed: Vec::new(),
+        }
+    }
+}
+
 /// Exit-after-print mode selected by `--help` / `--list`.
 ///
 /// Both flags short-circuit a normal run; `Config` carries the chosen
 /// branch so the runner can dispatch to the correct print path. Default
 /// `None` keeps the regular run-tests path active.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PrintOnly {
     /// `--help` / `-h`: print USAGE and exit before the output-capture
@@ -777,18 +818,20 @@ pub enum PrintOnly {
     /// line, and exit without running anything.
     List,
     /// No exit-after-print mode requested; run tests normally.
-    #[default]
+    /// Initial / fall-through choice; callers pick this variant
+    /// explicitly (P-1: no `Default` impls).
     None,
 }
 
 /// How `#[ignore]`d tests should be treated for this run.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RunIgnoredMode {
     /// `--include-ignored`: run every test, ignored or not.
     Include,
-    /// Default: skip tests marked `#[ignore]`, report them as ignored.
-    #[default]
+    /// Skip tests marked `#[ignore]`, report them as ignored.
+    /// Initial / fall-through choice; callers pick this variant
+    /// explicitly (P-1: no `Default` impls).
     Normal,
     /// `--ignored`: only run ignored tests.
     Only,
@@ -1328,7 +1371,7 @@ fn parse_argv(argv: &[String]) -> ParsedArgs {
     // `process::exit(2)` so the binary can't hang forever.
     let mut state = ParsedArgs {
         cancel_grace_period: Some(Duration::from_secs(5)),
-        ..ParsedArgs::default()
+        ..ParsedArgs::empty()
     };
 
     let mut i = 0_usize;
