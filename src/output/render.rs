@@ -22,6 +22,7 @@ use std::str;
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
+use anyhow::{Context as _, Result};
 use crossbeam_channel::{Receiver, Sender, select};
 
 use super::color::Policy as ColorPolicy;
@@ -1238,12 +1239,18 @@ fn outcome_message(outcome: &TestOutcome) -> String {
 /// Print a test's buffered stdout/stderr underneath its completion
 /// header in live mode.
 fn emit_captured_block(terminal: &mut File, state: &TestState, color: ColorPolicy) {
-    for line in split_lines(&state.stdout_buffer) {
-        let formatted = format!("  {line}\n");
+    for entry in split_lines(&state.stdout_buffer) {
+        let formatted = match entry {
+            Ok(line) => format!("  {line}\n"),
+            Err(err) => format!("  <{err:#}>\n"),
+        };
         drop(terminal.write_all(formatted.as_bytes()));
     }
-    for line in split_lines(&state.stderr_buffer) {
-        let formatted = format!("  {line}\n");
+    for entry in split_lines(&state.stderr_buffer) {
+        let formatted = match entry {
+            Ok(line) => format!("  {line}\n"),
+            Err(err) => format!("  <{err:#}>\n"),
+        };
         drop(terminal.write_all(color.red(&formatted).as_bytes()));
     }
 }
@@ -1257,8 +1264,11 @@ fn emit_plain_lines(
     stream: StdStream,
     color: ColorPolicy,
 ) {
-    for line in split_lines(bytes) {
-        let formatted = format!("  {line}\n");
+    for entry in split_lines(bytes) {
+        let formatted = match entry {
+            Ok(line) => format!("  {line}\n"),
+            Err(err) => format!("  <{err:#}>\n"),
+        };
         let styled = match stream {
             StdStream::Stdout => formatted,
             StdStream::Stderr => color.red(&formatted),
@@ -1267,13 +1277,30 @@ fn emit_plain_lines(
     }
 }
 
-/// Iterate over non-empty lines of UTF-8 in `bytes`, returning an
-/// empty iterator when the bytes are not valid UTF-8.
-fn split_lines(bytes: &[u8]) -> impl Iterator<Item = &str> {
-    str::from_utf8(bytes)
-        .unwrap_or("")
-        .split('\n')
-        .filter(|line| !line.is_empty())
+/// Iterate over non-empty lines of UTF-8 in `bytes`.
+///
+/// On valid UTF-8, yields `Ok(line)` for each non-empty `\n`-split
+/// line. On invalid UTF-8, yields a single `Err` containing the
+/// failed-byte count, then terminates — the caller is responsible
+/// for surfacing the failure (e.g. by writing a diagnostic marker
+/// to the terminal) instead of silently dropping the output. The
+/// previous contract — `unwrap_or("")` swallowing non-UTF-8 — has
+/// been replaced because it concealed real test output from the
+/// operator without any visible signal.
+fn split_lines(bytes: &[u8]) -> impl Iterator<Item = Result<&str>> {
+    let (text, parse_err) = match str::from_utf8(bytes) {
+        Ok(text) => (text, None),
+        Err(err) => ("", Some(err)),
+    };
+    let byte_len = bytes.len();
+    parse_err
+        .map(move |err| {
+            Err(err).with_context(|| {
+                format!("split_lines: bytes are not valid UTF-8 ({byte_len} bytes suppressed)")
+            })
+        })
+        .into_iter()
+        .chain(text.split('\n').filter(|line| !line.is_empty()).map(Ok))
 }
 
 /// Replace `dst` with the last complete (non-empty) line in `bytes`,

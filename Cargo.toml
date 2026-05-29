@@ -15,6 +15,12 @@ categories = ["development-tools::testing", "asynchronous"]
 autotests = false
 
 [dependencies]
+# Error chains for runtime-internal fallible paths (renderer UTF-8
+# decoding, future Result-cleanup phases — see PLAN.md M-2). Kept in
+# the runtime crate (not just dev-dependencies) because public
+# helpers in `crate::output::render` propagate `anyhow::Result`
+# values that surface to operators via the drawer thread.
+anyhow = { workspace = true }
 # `channel` enables `SpawnExt::spawn_with_handle` / `LocalSpawnExt::spawn_local_with_handle`,
 # used by the futures-executor runtime.
 futures-util = { workspace = true, features = ["channel"] }

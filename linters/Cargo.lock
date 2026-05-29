@@ -43,6 +43,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "no-default-impls"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "proc-macro2",
+ "syn",
+ "walkdir",
+]
+
+[[package]]
 name = "non-result-fns"
 version = "0.0.0"
 dependencies = [

@@ -500,6 +500,70 @@ mod tests {
         );
         Ok(())
     }
+
+    /// P-3 retype contract: when a test emits non-UTF-8 bytes on its
+    /// stdout, the captured-block must surface a `bytes are not valid
+    /// UTF-8` diagnostic marker instead of silently dropping the
+    /// output. Previous `split_lines` behaviour ran
+    /// `str::from_utf8(...).unwrap_or("")`, so any invalid byte
+    /// sequence anywhere in the buffer caused the entire captured
+    /// block to render as nothing — the operator could not tell
+    /// the test produced output at all. After the P-3 retype to
+    /// `impl Iterator<Item = Result<&str, anyhow::Error>>`, the
+    /// caller materialises the `Err` as `<…>` so the suppression
+    /// is visible.
+    #[rudzio::test]
+    fn captured_block_surfaces_non_utf8_diagnostic() -> anyhow::Result<()> {
+        let harness = Harness::spawn()?;
+        let test_id = TestId::next();
+        let drawer_owner_thread = harness.drawer_thread.thread().id();
+
+        harness.life_tx.send(LifecycleEvent::TestStarted {
+            test_id,
+            module_path: "synthetic::module",
+            test_name: "non_utf8_stdout",
+            runtime_name: "tokio::Multithread",
+            thread: drawer_owner_thread,
+            at: Instant::now(),
+        })?;
+        // Lone continuation bytes — not a valid UTF-8 start sequence,
+        // so `str::from_utf8` rejects the whole buffer.
+        harness
+            .pipe_tx
+            .send(PipeChunk::new(vec![0xFF, 0xFE, 0xFD], StdStream::Stdout))?;
+        thread::sleep(Duration::from_millis(140));
+
+        harness.life_tx.send(LifecycleEvent::TestCompleted {
+            test_id,
+            outcome: TestOutcome::Passed {
+                elapsed: Duration::from_millis(140),
+            },
+        })?;
+        thread::sleep(Duration::from_millis(80));
+
+        let captured = harness.finish()?;
+        let completion_idx = captured.find("[OK]").ok_or_else(|| {
+            anyhow::anyhow!(
+                "drawer never emitted the test-completion line; captured bytes:\n{captured}",
+            )
+        })?;
+        let post_completion = captured.get(completion_idx..).ok_or_else(|| {
+            anyhow::anyhow!("completion index out of bounds; captured bytes:\n{captured}")
+        })?;
+
+        anyhow::ensure!(
+            post_completion.contains("bytes are not valid UTF-8"),
+            "non-UTF-8 captured stdout must surface the `bytes are not valid UTF-8` \
+             diagnostic in the captured block — silent drop hides real test output. \
+             Got post-completion bytes:\n{post_completion:?}",
+        );
+        anyhow::ensure!(
+            post_completion.contains("3 bytes suppressed"),
+            "diagnostic must report the suppressed byte count so the operator can \
+             gauge how much output was dropped. Got post-completion bytes:\n{post_completion:?}",
+        );
+        Ok(())
+    }
 }
 
 /// Tiny VT100-style emulator. Just enough to interpret what the
