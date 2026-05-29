@@ -27,8 +27,9 @@ const TESTS_MAIN_EXISTS_WARNING: &str = "tests/main.rs already exists; leaving i
 /// Drive the migrator using the ambient process argv.
 #[inline]
 #[must_use]
-pub fn entry() -> ExitCode {
-    entry_with_args(env::args().collect())
+pub fn entry() -> anyhow::Result<ExitCode> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
+    Ok(entry_with_args(env::args().collect()))
 }
 
 /// Same as [`entry`] but takes argv explicitly so embedders (e.g.
@@ -36,27 +37,27 @@ pub fn entry() -> ExitCode {
 /// without relying on the ambient process argv.
 #[inline]
 #[must_use]
-pub fn entry_with_args(args: Vec<String>) -> ExitCode {
+pub fn entry_with_args(args: Vec<String>) -> anyhow::Result<ExitCode> {
     let parsed = match cli::parse(args) {
         Ok(parsed_cli) => parsed_cli,
         Err(cli::ParseError::HelpRequested) => {
             write_stdout(cli::USAGE);
-            return ExitCode::SUCCESS;
+            return Ok(ExitCode::SUCCESS);
         }
         Err(err) => {
             write_stderr(&format!("rudzio-migrate: {err}\n\n"));
             write_stderr(cli::USAGE);
-            return ExitCode::from(2);
+            return Ok(ExitCode::from(2));
         }
     };
 
-    match run(&parsed) {
+    Ok(match run(&parsed) {
         Ok(code) => code,
         Err(err) => {
             write_stderr(&format!("rudzio-migrate: {err:#}\n"));
             ExitCode::from(2)
         }
-    }
+    })
 }
 
 /// Drive the full migration pipeline against `args`.
@@ -89,6 +90,7 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
         }
     }
     let test_contexts = test_context::resolve(&packages)?;
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let workspace_dep_names = collect_workspace_dep_names(&args.path);
 
     let mut report = report::Report::empty();
@@ -100,6 +102,7 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
     };
 
     for pkg in &packages {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         process_package(
             args,
             pkg,
@@ -195,7 +198,7 @@ fn process_package(
     workspace_dep_names: &BTreeSet<String>,
     emit_opts: &emit::Options<'_>,
     report: &mut report::Report,
-) {
+) -> anyhow::Result<()> {
     let mut pkg_edits = manifest::Edits {
         workspace_dep_names: workspace_dep_names.clone(),
         has_lib_rs: pkg.root.join("src/lib.rs").is_file(),
@@ -208,6 +211,7 @@ fn process_package(
     // wiring-only and stays unchanged, but the binary still needs a
     // `fn main` to link. Fixed up below.
     let mut suite_roots_needing_main: BTreeSet<PathBuf> = BTreeSet::new();
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let pkg_had_conversions = process_package_files(
         args,
         pkg,
@@ -225,21 +229,27 @@ fn process_package(
     // conversion, so the user's intent (no unsafe in their code)
     // is preserved while leaving room for the macro expansion.
     if pkg_edits.had_src_conversion && !args.run.dry_run {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         finalize_lib_forbid_demotion(pkg, report);
+        // FIXME(rs-cleanup): callee returns Result, add ?
         finalize_lib_main(pkg, report);
     }
     if !args.run.dry_run {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         finalize_suite_main_injections(&suite_roots_needing_main, report);
     }
     if want_shared_runner && !args.run.dry_run && pkg_had_conversions {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         finalize_shared_runner_scaffold(pkg, &mut pkg_edits, report);
     }
     if pkg_had_conversions {
         pkg_edits.needs.rudzio_test_cfg = true;
     }
     if !args.run.dry_run && pkg_had_conversions {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         finalize_manifest_apply(pkg, &pkg_edits, report);
-    }
+    };
+    Ok(())
 }
 
 /// Iterate over every `src/` and `tests/` file in `pkg`, run the
@@ -254,7 +264,7 @@ fn process_package_files(
     pkg_edits: &mut manifest::Edits,
     suite_roots_needing_main: &mut BTreeSet<PathBuf>,
     report: &mut report::Report,
-) -> bool {
+) -> anyhow::Result<bool> {
     let mut pkg_had_conversions = false;
     let src_iter: Box<dyn Iterator<Item = &PathBuf>> = if args.run.tests_only {
         Box::new(iter::empty())
@@ -283,9 +293,11 @@ fn process_package_files(
                 if promoted_suite && file.starts_with(pkg.root.join("src")) {
                     pkg_edits.had_src_conversion = true;
                 }
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 if let Some(entry) = integration_test_entry_for(file, &pkg.root) {
                     pkg_edits.tests_integration.push(entry);
                 }
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 if let Some(root) = suite_root_mod_rs_for(file, &pkg.root) {
                     let _inserted = suite_roots_needing_main.insert(root);
                 }
@@ -300,13 +312,13 @@ fn process_package_files(
             }
         }
     }
-    pkg_had_conversions
+    Ok(pkg_had_conversions)
 }
 
 /// Run the `#![forbid(unsafe_code)] → #![deny(unsafe_code)]`
 /// downgrade on the package's lib.rs, recording the touched path or
 /// a warning on `report`.
-fn finalize_lib_forbid_demotion(pkg: &discovery::Package, report: &mut report::Report) {
+fn finalize_lib_forbid_demotion(pkg: &discovery::Package, report: &mut report::Report) -> anyhow::Result<()> {
     match demote_forbid_unsafe_in_lib(&pkg.root) {
         Ok(Some(path)) => report.touched(path),
         Ok(None) => {}
@@ -317,12 +329,13 @@ fn finalize_lib_forbid_demotion(pkg: &discovery::Package, report: &mut report::R
                 format!("failed to demote forbid(unsafe_code): {err:#}"),
             );
         }
-    }
+    };
+    Ok(())
 }
 
 /// Append `#[cfg(test)] #[rudzio::main] fn main() {}` to lib.rs (when
 /// applicable), recording the touched path or a warning on `report`.
-fn finalize_lib_main(pkg: &discovery::Package, report: &mut report::Report) {
+fn finalize_lib_main(pkg: &discovery::Package, report: &mut report::Report) -> anyhow::Result<()> {
     match ensure_lib_has_rudzio_main(&pkg.root) {
         Ok(Some(path)) => report.touched(path),
         Ok(None) => {}
@@ -333,13 +346,14 @@ fn finalize_lib_main(pkg: &discovery::Package, report: &mut report::Report) {
                 format!("failed to append rudzio::main to src/lib.rs: {err:#}"),
             );
         }
-    }
+    };
+    Ok(())
 }
 
 /// For each suite root `mod.rs` in `roots`, append `#[rudzio::main]
 /// fn main() {}` if needed. Records touched paths / warnings on
 /// `report`.
-fn finalize_suite_main_injections(roots: &BTreeSet<PathBuf>, report: &mut report::Report) {
+fn finalize_suite_main_injections(roots: &BTreeSet<PathBuf>, report: &mut report::Report) -> anyhow::Result<()> {
     for mod_rs in roots {
         match ensure_suite_root_has_main(mod_rs) {
             Ok(true) => report.touched(mod_rs.clone()),
@@ -352,7 +366,8 @@ fn finalize_suite_main_injections(roots: &BTreeSet<PathBuf>, report: &mut report
                 );
             }
         }
-    }
+    };
+    Ok(())
 }
 
 /// Generate the shared `tests/main.rs` runner scaffold and record
@@ -361,7 +376,7 @@ fn finalize_shared_runner_scaffold(
     pkg: &discovery::Package,
     pkg_edits: &mut manifest::Edits,
     report: &mut report::Report,
-) {
+) -> anyhow::Result<()> {
     let tests_main = pkg.root.join("tests").join("main.rs");
     // Lib crate name uses hyphen→underscore per rustc's "hyphens in
     // crate names are normalized" rule.
@@ -397,7 +412,8 @@ fn finalize_shared_runner_scaffold(
                 format!("failed to scaffold tests/main.rs: {err:#}"),
             );
         }
-    }
+    };
+    Ok(())
 }
 
 /// Apply `pkg_edits` to the package's Cargo.toml and record the
@@ -406,7 +422,7 @@ fn finalize_manifest_apply(
     pkg: &discovery::Package,
     pkg_edits: &manifest::Edits,
     report: &mut report::Report,
-) {
+) -> anyhow::Result<()> {
     match manifest::apply(&pkg.manifest_path, pkg_edits) {
         Ok(true) => report.cargo_edit(pkg.manifest_path.clone()),
         Ok(false) => {}
@@ -417,7 +433,8 @@ fn finalize_manifest_apply(
                 format!("Cargo.toml edit failed: {err:#}"),
             );
         }
-    }
+    };
+    Ok(())
 }
 
 /// Walk upward from `start` looking for a Cargo.toml whose
@@ -425,9 +442,9 @@ fn finalize_manifest_apply(
 /// set of dep names declared there. When found we use
 /// `{ workspace = true, ... }` for dep edits instead of pinning a
 /// fresh version per crate.
-fn collect_workspace_dep_names(start: &Path) -> BTreeSet<String> {
+fn collect_workspace_dep_names(start: &Path) -> anyhow::Result<BTreeSet<String>> {
     let mut current = start.to_path_buf();
-    loop {
+    Ok(loop {
         let candidate = current.join("Cargo.toml");
         if candidate.is_file()
             && let Ok(source) = fs::read_to_string(&candidate)
@@ -439,12 +456,12 @@ fn collect_workspace_dep_names(start: &Path) -> BTreeSet<String> {
                 .and_then(|table| table.get("dependencies"))
                 .and_then(toml_edit::Item::as_table)
         {
-            return ws_deps.iter().map(|(key, _)| key.to_owned()).collect();
+            return Ok(ws_deps.iter().map(|(key, _)| key.to_owned()).collect());
         }
         if !current.pop() {
-            return BTreeSet::new();
+            return Ok(BTreeSet::new());
         }
-    }
+    })
 }
 
 /// Rewrite `#![forbid(unsafe_code)]` → `#![deny(unsafe_code)]` in
@@ -546,8 +563,9 @@ fn ensure_suite_root_has_main(mod_rs: &Path) -> anyhow::Result<bool> {
 /// `tests/<suite>/mod.rs` root — otherwise `None`. Used to detect
 /// the binary root that needs a `fn main` even though it wasn't
 /// directly modified.
-fn suite_root_mod_rs_for(file: &Path, pkg_root: &Path) -> Option<PathBuf> {
+fn suite_root_mod_rs_for(file: &Path, pkg_root: &Path) -> anyhow::Result<Option<PathBuf>> {
     let tests_dir = pkg_root.join("tests");
+    // TODO(rs-cleanup): silencing at line 551 — review and replace with Result-propagating equivalent
     let rel = file.strip_prefix(&tests_dir).ok()?;
     let mut components = rel.components();
     let suite = components.next()?.as_os_str().to_str()?.to_owned();
@@ -555,11 +573,11 @@ fn suite_root_mod_rs_for(file: &Path, pkg_root: &Path) -> Option<PathBuf> {
     // File IS the suite root; nothing to do here — the rewriter
     // handles fn main injection for files that did change.
     match rest.as_slice() {
-        [] => return None,
-        [only] if *only == OsStr::new("mod.rs") => return None,
+        [] => return Ok(None),
+        [only] if *only == OsStr::new("mod.rs") => return Ok(None),
         _ => {}
     }
-    Some(tests_dir.join(&suite).join("mod.rs"))
+    Ok(Some(tests_dir.join(&suite).join("mod.rs")))
 }
 
 /// Returns the `[[test]]` entry for a file if it's a test-binary
@@ -571,8 +589,9 @@ fn suite_root_mod_rs_for(file: &Path, pkg_root: &Path) -> Option<PathBuf> {
 fn integration_test_entry_for(
     file: &Path,
     pkg_root: &Path,
-) -> Option<manifest::IntegrationTestEntry> {
+) -> anyhow::Result<Option<manifest::IntegrationTestEntry>> {
     let tests_dir = pkg_root.join("tests");
+    // TODO(rs-cleanup): silencing at line 576 — review and replace with Result-propagating equivalent
     let rel = file.strip_prefix(&tests_dir).ok()?;
     let mut components = rel.components();
     let first = components.next()?.as_os_str().to_str()?.to_owned();
@@ -582,15 +601,15 @@ fn integration_test_entry_for(
     if rest.is_empty() {
         let name = first.strip_suffix(".rs")?.to_owned();
         let path = format!("tests/{name}.rs");
-        return Some(manifest::IntegrationTestEntry { name, path });
+        return Ok(Some(manifest::IntegrationTestEntry { name, path }));
     }
 
     // `tests/<suite>/mod.rs` — a suite root. Deeper files in that
     // suite are submodules and don't get their own entry.
     if matches!(rest.as_slice(), [only] if *only == OsStr::new("mod.rs")) {
         let path = format!("tests/{first}/mod.rs");
-        return Some(manifest::IntegrationTestEntry { name: first, path });
+        return Ok(Some(manifest::IntegrationTestEntry { name: first, path }));
     }
 
-    None
+    Ok(None)
 }

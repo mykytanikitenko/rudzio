@@ -99,6 +99,7 @@ pub fn process_file(
     // Even if the file itself had no test-fn rewrites, it may still be
     // the impl_file for one or more test-context plans and need bridge
     // impls appended.
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let bridge_suffix = render_bridge_for_file(path, opts.test_contexts);
 
     if !rewrite.changed && bridge_suffix.is_empty() {
@@ -116,6 +117,7 @@ pub fn process_file(
         // spliced out and the original impl text is stitched in. The
         // rest of the file (the tests the user actually cares about)
         // unparses normally.
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let salvaged = salvage_verbatim_impls(&mut tree, &source);
         // Last-resort safety net: if prettyplease still panics on some
         // shape we didn't normalise, skip the whole rewrite with a
@@ -131,6 +133,7 @@ pub fn process_file(
             return Ok(None);
         };
         if !salvaged.is_empty() {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             rendered = splice_salvaged_verbatim_impls(&rendered, &salvaged);
         }
         rendered
@@ -138,9 +141,11 @@ pub fn process_file(
         source.to_string()
     };
     if opts.preserve_originals && rewrite.changed {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         output = splice_preserved_originals(&output, &rewrite.original_snippets);
     }
     if !bridge_suffix.is_empty() {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         output = splice_bridge_before_first_suite_or_main(&output, &bridge_suffix);
     }
 
@@ -161,7 +166,7 @@ pub fn process_file(
 /// attribute lines until we hit something else; return the
 /// earliest-attribute byte offset (start of the line the first
 /// encountered attribute lives on).
-fn backward_scan_to_attrs(text: &str, const_pos: usize) -> usize {
+fn backward_scan_to_attrs(text: &str, const_pos: usize) -> anyhow::Result<usize> {
     // `const_pos` points at `c` of the placeholder const; the newline
     // immediately before it (at const_pos-1) terminates the attribute
     // line we want to grab. Start earliest at the beginning of the
@@ -171,7 +176,9 @@ fn backward_scan_to_attrs(text: &str, const_pos: usize) -> usize {
     loop {
         // Exclude the newline right before `earliest`, otherwise
         // `rfind('\n')` returns the same newline forever.
+        // TODO(rs-cleanup): masking_arith at line 174 — review and replace with Result-propagating equivalent
         let search_end = earliest.saturating_sub(1);
+        // TODO(rs-cleanup): silencing at line 175 — review and replace with Result-propagating equivalent
         let prefix = text.get(..search_end).unwrap_or("");
         let Some(prev_newline) = prefix.rfind('\n') else {
             // Reached start of file — nothing left to consume.
@@ -184,7 +191,9 @@ fn backward_scan_to_attrs(text: &str, const_pos: usize) -> usize {
             }
             break;
         };
+        // TODO(rs-cleanup): masking_arith at line 187 — review and replace with Result-propagating equivalent
         let line_start = prev_newline.saturating_add(1);
+        // TODO(rs-cleanup): silencing at line 188 — review and replace with Result-propagating equivalent
         let line = text.get(line_start..search_end).unwrap_or("");
         let trimmed = line.trim_start();
         if trimmed.starts_with("#[") {
@@ -193,53 +202,57 @@ fn backward_scan_to_attrs(text: &str, const_pos: usize) -> usize {
             break;
         }
     }
-    earliest
+    Ok(earliest)
 }
 
 /// Compute the byte range of an item from the source by walking its
 /// span. Uses `proc_macro2`'s `span-locations` feature; the range
 /// covers the outermost attribute through the closing brace.
-fn capture_item_source(item: &syn::Item, source: &str) -> Option<String> {
+fn capture_item_source(item: &syn::Item, source: &str) -> anyhow::Result<Option<String>> {
     let start = if let syn::Item::Impl(impl_block) = item {
         impl_block
             .attrs
             .iter()
             .map(|attr| attr.span().byte_range().start)
             .min()
+            // TODO(rs-cleanup): silencing at line 209 — review and replace with Result-propagating equivalent
             .unwrap_or_else(|| impl_block.impl_token.span.byte_range().start)
     } else {
         item.span().byte_range().start
     };
     let end = item.span().byte_range().end;
-    if start < end && end <= source.len() {
+    Ok(if start < end && end <= source.len() {
         source.get(start..end).map(str::to_owned)
     } else {
         None
-    }
+    })
 }
 
 /// Leading-spaces character count for `text`.
-fn indent_at(text: &str, pos: usize) -> String {
+fn indent_at(text: &str, pos: usize) -> anyhow::Result<String> {
+    // TODO(rs-cleanup): silencing at line 223 — review and replace with Result-propagating equivalent
     let prefix = text.get(..pos).unwrap_or("");
+    // TODO(rs-cleanup): masking_arith at line 224 — review and replace with Result-propagating equivalent
     let line_start = prefix.rfind('\n').map_or(0, |idx| idx.saturating_add(1));
+    // TODO(rs-cleanup): silencing at line 225 — review and replace with Result-propagating equivalent
     let line = text.get(line_start..pos).unwrap_or("");
-    line.chars()
+    Ok(line.chars()
         .take_while(|ch| *ch == ' ' || *ch == '\t')
-        .collect()
+        .collect())
 }
 
 /// Count of leading ASCII space bytes in `text`.
-fn leading_space_count(text: &str) -> usize {
-    text.bytes().take_while(|byte| *byte == b' ').count()
+fn leading_space_count(text: &str) -> anyhow::Result<usize> {
+    Ok(text.bytes().take_while(|byte| *byte == b' ').count())
 }
 
 /// Strip the common leading whitespace shared across non-empty lines so
 /// the original's relative indentation is preserved while we place it
 /// under the target indent.
-fn normalize_snippet_indent(snippet: &str) -> String {
+fn normalize_snippet_indent(snippet: &str) -> anyhow::Result<String> {
     let lines: Vec<&str> = snippet.lines().collect();
     if lines.len() <= 1 {
-        return snippet.to_owned();
+        return Ok(snippet.to_owned());
     }
     // The first line starts at the attribute byte, so it has no leading
     // indent; ignore it when computing common indent.
@@ -247,8 +260,10 @@ fn normalize_snippet_indent(snippet: &str) -> String {
         .iter()
         .skip(1)
         .filter(|line| !line.trim().is_empty())
+        // FIXME(rs-cleanup): callee returns Result, add ?
         .map(|line| leading_space_count(line))
         .min()
+        // TODO(rs-cleanup): silencing at line 252 — review and replace with Result-propagating equivalent
         .unwrap_or(0);
     let mut out = String::with_capacity(snippet.len());
     for (idx, line) in lines.iter().enumerate() {
@@ -258,20 +273,25 @@ fn normalize_snippet_indent(snippet: &str) -> String {
             // Blank line: leave it as a bare newline so we preserve
             // separation without trying to dedent into nothing.
         } else {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let skip = leading_space_count(line).min(min_indent);
+            // TODO(rs-cleanup): silencing at line 262 — review and replace with Result-propagating equivalent
             out.push_str(line.get(skip..).unwrap_or(""));
         }
         out.push('\n');
     }
-    out
+    Ok(out)
 }
 
 /// Match a pretty-printed line against the placeholder sentinel form
 /// emitted by the rewriter; return `(indent, idx)` if it matches.
-fn parse_sentinel_line(line: &str) -> Option<(&str, usize)> {
+fn parse_sentinel_line(line: &str) -> anyhow::Result<Option<(&str, usize)>> {
     let trimmed = line.trim_end_matches(['\n', '\r']);
+    // TODO(rs-cleanup): masking_arith at line 273 — review and replace with Result-propagating equivalent
     let leading_len = trimmed.len().saturating_sub(trimmed.trim_start().len());
+    // TODO(rs-cleanup): silencing at line 274 — review and replace with Result-propagating equivalent
     let indent = trimmed.get(..leading_len).unwrap_or("");
+    // TODO(rs-cleanup): silencing at line 275 — review and replace with Result-propagating equivalent
     let body = trimmed.get(leading_len..).unwrap_or("");
     // Accept both `/// <sentinel>` and `///<sentinel>` forms; the
     // former is what prettyplease emits when the doc string starts with
@@ -279,18 +299,21 @@ fn parse_sentinel_line(line: &str) -> Option<(&str, usize)> {
     let after_triple_raw = body.strip_prefix("///")?;
     let after_triple = after_triple_raw
         .strip_prefix(' ')
+        // TODO(rs-cleanup): silencing at line 282 — review and replace with Result-propagating equivalent
         .unwrap_or(after_triple_raw);
     let after_prefix = after_triple.strip_prefix(SENTINEL_INNER_PREFIX)?;
     let digits = after_prefix.strip_suffix(SENTINEL_INNER_SUFFIX)?;
+    // TODO(rs-cleanup): silencing at line 285 — review and replace with Result-propagating equivalent
     let idx: usize = digits.parse().ok()?;
-    Some((indent, idx))
+    Ok(Some((indent, idx)))
 }
 
 /// Append a `/* pre-migration (rudzio-migrate): … */` block comment
 /// covering `snippet`, preserving the leading `indent` on every line.
-fn push_block_comment(out: &mut String, indent: &str, snippet: &str) {
+fn push_block_comment(out: &mut String, indent: &str, snippet: &str) -> anyhow::Result<()> {
     out.push_str(indent);
     out.push_str("/* pre-migration (rudzio-migrate):\n");
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let normalized = normalize_snippet_indent(snippet);
     for original_line in normalized.lines() {
         if !original_line.is_empty() {
@@ -301,11 +324,12 @@ fn push_block_comment(out: &mut String, indent: &str, snippet: &str) {
     }
     out.push_str(indent);
     out.push_str("*/\n");
+    Ok(())
 }
 
 /// Re-indent `original` so each line carries `indent` as a prefix. When
 /// `indent` is empty, returns the original verbatim (typical case).
-fn reindent_block(original: &str, indent: &str) -> String {
+fn reindent_block(original: &str, indent: &str) -> anyhow::Result<String> {
     // The impl's source already carries its own leading indent relative
     // to its position in the input file; the placeholder's `indent`
     // from the post-prettyplease output is typically "". When `indent`
@@ -313,11 +337,12 @@ fn reindent_block(original: &str, indent: &str) -> String {
     // interior whitespace. Otherwise prepend `indent` on each line —
     // rare case, mostly defensive.
     if indent.is_empty() {
-        return original.to_owned();
+        return Ok(original.to_owned());
     }
     let mut out = String::with_capacity(
         original
             .len()
+            // TODO(rs-cleanup): masking_arith at line 321 — review and replace with Result-propagating equivalent
             .saturating_add(indent.len().saturating_mul(8)),
     );
     for (idx, line) in original.lines().enumerate() {
@@ -330,19 +355,19 @@ fn reindent_block(original: &str, indent: &str) -> String {
     if original.ends_with('\n') {
         out.push('\n');
     }
-    out
+    Ok(out)
 }
 
 /// Append every `test_context` bridge impl that targets `path` into a
 /// single string. Empty when no plan owns this file.
-fn render_bridge_for_file(path: &Path, resolver: &TestContextResolver) -> String {
+fn render_bridge_for_file(path: &Path, resolver: &TestContextResolver) -> anyhow::Result<String> {
     let mut out = String::new();
     for plan in resolver.plans.values() {
         if plan.impl_file == path {
             out.push_str(&test_context::render_bridge_impls(plan));
         }
     }
-    out
+    Ok(out)
 }
 
 /// Walk `file.items` and nested module bodies. For every `Item::Impl`
@@ -350,10 +375,11 @@ fn render_bridge_for_file(path: &Path, resolver: &TestContextResolver) -> String
 /// source text via span byte-range and replace the item with a
 /// placeholder const that prettyplease can render. Returns one
 /// `SalvagedImpl` per replacement.
-fn salvage_verbatim_impls(file: &mut syn::File, source: &str) -> Vec<SalvagedImpl> {
+fn salvage_verbatim_impls(file: &mut syn::File, source: &str) -> anyhow::Result<Vec<SalvagedImpl>> {
     let mut out = Vec::new();
+    // FIXME(rs-cleanup): callee returns Result, add ?
     salvage_verbatim_impls_in_items(&mut file.items, source, &mut out);
-    out
+    Ok(out)
 }
 
 /// Recursive helper for [`salvage_verbatim_impls`] that handles a
@@ -362,7 +388,7 @@ fn salvage_verbatim_impls_in_items(
     items: &mut [syn::Item],
     source: &str,
     out: &mut Vec<SalvagedImpl>,
-) {
+) -> anyhow::Result<()> {
     for item in items.iter_mut() {
         let impl_has_verbatim = if let syn::Item::Impl(impl_block) = item {
             impl_block
@@ -373,7 +399,9 @@ fn salvage_verbatim_impls_in_items(
             false
         };
         if impl_has_verbatim {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let original_source = capture_item_source(item, source)
+                // TODO(rs-cleanup): silencing at line 377 — review and replace with Result-propagating equivalent
                 .unwrap_or_else(|| quote::ToTokens::to_token_stream(item).to_string());
             let index = out.len();
             out.push(SalvagedImpl {
@@ -392,9 +420,11 @@ fn salvage_verbatim_impls_in_items(
         if let syn::Item::Mod(module) = item
             && let Some((_, inner)) = &mut module.content
         {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             salvage_verbatim_impls_in_items(inner, source, out);
         }
-    }
+    };
+    Ok(())
 }
 
 /// Place the generated bridge / suite types right before the first
@@ -406,7 +436,7 @@ fn salvage_verbatim_impls_in_items(
 /// types BEFORE the suite block + fn main keeps the generated diff
 /// readable: the user reads the new declarations first, then sees them
 /// referenced.
-fn splice_bridge_before_first_suite_or_main(output: &str, bridge: &str) -> String {
+fn splice_bridge_before_first_suite_or_main(output: &str, bridge: &str) -> anyhow::Result<String> {
     const ANCHORS: &[&str] = &[
         "#[::rudzio::suite(",
         "#[rudzio::suite(",
@@ -417,6 +447,7 @@ fn splice_bridge_before_first_suite_or_main(output: &str, bridge: &str) -> Strin
         .lines()
         .scan(0_usize, |offset, line| {
             let here = *offset;
+            // TODO(rs-cleanup): masking_arith at line 420 — review and replace with Result-propagating equivalent
             *offset = here.saturating_add(line.len()).saturating_add(1);
             Some((here, line))
         })
@@ -427,7 +458,7 @@ fn splice_bridge_before_first_suite_or_main(output: &str, bridge: &str) -> Strin
                 .any(|anchor| trimmed.starts_with(anchor))
                 .then_some(offset)
         });
-    earliest_anchor.map_or_else(
+    Ok(earliest_anchor.map_or_else(
         || {
             let mut out = output.to_owned();
             if !out.ends_with('\n') {
@@ -438,40 +469,47 @@ fn splice_bridge_before_first_suite_or_main(output: &str, bridge: &str) -> Strin
         },
         |idx| {
             let mut out =
+                // TODO(rs-cleanup): masking_arith at line 441 — review and replace with Result-propagating equivalent
                 String::with_capacity(output.len().saturating_add(bridge.len()).saturating_add(1));
+            // TODO(rs-cleanup): silencing at line 442 — review and replace with Result-propagating equivalent
             out.push_str(output.get(..idx).unwrap_or(""));
             out.push_str(bridge);
             if !bridge.ends_with('\n') {
                 out.push('\n');
             }
+            // TODO(rs-cleanup): silencing at line 447 — review and replace with Result-propagating equivalent
             out.push_str(output.get(idx..).unwrap_or(""));
             out
         },
-    )
+    ))
 }
 
 /// Replace every sentinel doc-comment line with a `/* pre-migration */`
 /// block carrying the user's original test fn body.
-fn splice_preserved_originals(output: &str, originals: &[String]) -> String {
+fn splice_preserved_originals(output: &str, originals: &[String]) -> anyhow::Result<String> {
     if originals.is_empty() {
-        return output.to_owned();
+        return Ok(output.to_owned());
     }
     let mut out = String::with_capacity(
         output
             .len()
+            // TODO(rs-cleanup): masking_arith at line 462 — review and replace with Result-propagating equivalent
             .saturating_add(originals.iter().map(String::len).sum::<usize>())
+            // TODO(rs-cleanup): masking_arith at line 463 — review and replace with Result-propagating equivalent
             .saturating_add(256),
     );
     for line in output.split_inclusive('\n') {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         if let Some((indent, idx)) = parse_sentinel_line(line)
             && let Some(snippet) = originals.get(idx)
         {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             push_block_comment(&mut out, indent, snippet);
             continue;
         }
         out.push_str(line);
     }
-    out
+    Ok(out)
 }
 
 /// After `prettyplease::unparse` renders the tree, each salvaged impl
@@ -480,7 +518,7 @@ fn splice_preserved_originals(output: &str, originals: &[String]) -> String {
 /// `#[allow(...)]` on the line above). This finds the placeholder
 /// block and swaps it back for the original impl source text captured
 /// earlier.
-fn splice_salvaged_verbatim_impls(output: &str, salvaged: &[SalvagedImpl]) -> String {
+fn splice_salvaged_verbatim_impls(output: &str, salvaged: &[SalvagedImpl]) -> anyhow::Result<String> {
     let mut result = output.to_owned();
     for entry in salvaged {
         let const_line = format!(
@@ -492,13 +530,17 @@ fn splice_salvaged_verbatim_impls(output: &str, salvaged: &[SalvagedImpl]) -> St
         };
         // Walk backward to grab the leading `#[allow(...)]` attr line
         // that prettyplease emits with the placeholder.
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let block_start = backward_scan_to_attrs(&result, const_pos);
+        // TODO(rs-cleanup): masking_arith at line 496 — review and replace with Result-propagating equivalent
         let block_end = const_pos.saturating_add(const_line.len());
         // Indentation of the first replaced byte — carry into each
         // line of the spliced-in original so nesting stays intact.
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let indent = indent_at(&result, block_start);
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let indented = reindent_block(&entry.original_source, &indent);
         result.replace_range(block_start..block_end, &indented);
     }
-    result
+    Ok(result)
 }

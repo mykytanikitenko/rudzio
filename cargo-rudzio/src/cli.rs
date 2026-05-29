@@ -139,7 +139,8 @@ impl ParsedTestArgs {
 /// `--no-run`).
 #[inline]
 #[must_use]
-pub fn aggregator_cargo_args(parsed: &ParsedTestArgs, manifest: &str) -> Vec<String> {
+pub fn aggregator_cargo_args(parsed: &ParsedTestArgs, manifest: &str) -> anyhow::Result<Vec<String>> {
+    // TODO(rs-cleanup): masking_arith at line 143 — review and replace with Result-propagating equivalent
     let capacity = parsed.forwarded_cargo_args.len().saturating_add(8_usize);
     let mut argv = Vec::with_capacity(capacity);
     argv.push("build".to_owned());
@@ -148,10 +149,11 @@ pub fn aggregator_cargo_args(parsed: &ParsedTestArgs, manifest: &str) -> Vec<Str
     argv.push("--manifest-path".to_owned());
     argv.push(manifest.to_owned());
     argv.extend(parsed.forwarded_cargo_args.iter().cloned());
+    // FIXME(rs-cleanup): callee returns Result, add ?
     if !user_supplied_message_format(&parsed.forwarded_cargo_args) {
         argv.push("--message-format=json-render-diagnostics".to_owned());
     }
-    argv
+    Ok(argv)
 }
 
 /// Pull `--exclude <name>` / `--exclude=<name>` out of `args`.
@@ -226,9 +228,11 @@ pub fn parse_build_forwarder_flags(args: &[String]) -> Result<(Vec<String>, Vec<
     let mut remaining = Vec::new();
     let mut idx = 0_usize;
     while let Some(arg) = args.get(idx) {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         if is_unit_build_flag(arg) {
             forwarded.push(arg.clone());
             idx = idx.saturating_add(1_usize);
+        // FIXME(rs-cleanup): callee returns Result, add ?
         } else if is_value_build_flag(arg) {
             let next_idx = idx.saturating_add(1_usize);
             let value = args
@@ -239,6 +243,7 @@ pub fn parse_build_forwarder_flags(args: &[String]) -> Result<(Vec<String>, Vec<
             idx = next_idx.saturating_add(1_usize);
         } else if let Some(value_pos) = arg.find('=')
             && let Some(head) = arg.get(..value_pos)
+            // FIXME(rs-cleanup): callee returns Result, add ?
             && is_value_build_flag(head)
         {
             let value = arg.get(value_pos.saturating_add(1_usize)..).unwrap_or("");
@@ -258,8 +263,8 @@ pub fn parse_build_forwarder_flags(args: &[String]) -> Result<(Vec<String>, Vec<
 /// Return `true` if `arg` is a recognised unit (no-value) cargo
 /// build-graph forwarder flag.
 #[inline]
-fn is_unit_build_flag(arg: &str) -> bool {
-    matches!(
+fn is_unit_build_flag(arg: &str) -> anyhow::Result<bool> {
+    Ok(matches!(
         arg,
         "-r" | "--release"
             | "--frozen"
@@ -275,15 +280,15 @@ fn is_unit_build_flag(arg: &str) -> bool {
             | "--no-default-features"
             | "--unit-graph"
             | "--future-incompat-report"
-    )
+    ))
 }
 
 /// Return `true` if `arg` is a recognised value-bearing cargo
 /// build-graph forwarder flag (matches the bare flag name; the equals
 /// form is detected at the call site by stripping after `=`).
 #[inline]
-fn is_value_build_flag(arg: &str) -> bool {
-    matches!(
+fn is_value_build_flag(arg: &str) -> anyhow::Result<bool> {
+    Ok(matches!(
         arg,
         "-F" | "--features"
             | "--profile"
@@ -295,17 +300,17 @@ fn is_value_build_flag(arg: &str) -> bool {
             | "--config"
             | "-Z"
             | "--lockfile-path"
-    )
+    ))
 }
 
 /// Return `true` if `forwarded` already contains a `--message-format`
 /// (any spelling) so the no-run auto-injection can be skipped.
 #[inline]
 #[must_use]
-fn user_supplied_message_format(forwarded: &[String]) -> bool {
-    forwarded
+fn user_supplied_message_format(forwarded: &[String]) -> anyhow::Result<bool> {
+    Ok(forwarded
         .iter()
-        .any(|arg| arg == "--message-format" || arg.starts_with("--message-format="))
+        .any(|arg| arg == "--message-format" || arg.starts_with("--message-format=")))
 }
 
 /// Drop every arg matching one of `flags` from `args`, returning the
@@ -317,7 +322,7 @@ fn user_supplied_message_format(forwarded: &[String]) -> bool {
 /// "honest no-op" audit trail consistent and lets `parse_test_args`
 /// accumulate `compat_consumed` from one place.
 #[inline]
-fn consume_compat_flag(args: &[String], flags: &[&str]) -> (Vec<String>, Vec<String>) {
+fn consume_compat_flag(args: &[String], flags: &[&str]) -> anyhow::Result<(Vec<String>, Vec<String>)> {
     let mut consumed = Vec::new();
     let mut remaining = Vec::with_capacity(args.len());
     for arg in args {
@@ -327,7 +332,7 @@ fn consume_compat_flag(args: &[String], flags: &[&str]) -> (Vec<String>, Vec<Str
             remaining.push(arg.clone());
         }
     }
-    (consumed, remaining)
+    Ok((consumed, remaining))
 }
 
 /// Drop `--nocapture` and `--show-output` from `args`.
@@ -346,8 +351,9 @@ fn consume_compat_flag(args: &[String], flags: &[&str]) -> (Vec<String>, Vec<Str
 /// debug tooling.
 #[inline]
 #[must_use]
-pub fn parse_capture_flags(args: &[String]) -> Vec<String> {
-    consume_compat_flag(args, &["--nocapture", "--show-output"]).1
+pub fn parse_capture_flags(args: &[String]) -> anyhow::Result<Vec<String>> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
+    Ok(consume_compat_flag(args, &["--nocapture", "--show-output"]).1)
 }
 
 /// Pull `--manifest-path <PATH>` / `--manifest-path=<PATH>` out of `args`.
@@ -397,7 +403,7 @@ pub fn parse_manifest_path_flag(args: &[String]) -> Result<(Option<PathBuf>, Vec
 /// it through the `cargo run` we'd otherwise spawn.
 #[inline]
 #[must_use]
-pub fn parse_no_run_flag(args: &[String]) -> (bool, Vec<String>) {
+pub fn parse_no_run_flag(args: &[String]) -> anyhow::Result<(bool, Vec<String>)> {
     let mut found = false;
     let mut remaining = Vec::with_capacity(args.len());
     for arg in args {
@@ -407,7 +413,7 @@ pub fn parse_no_run_flag(args: &[String]) -> (bool, Vec<String>) {
             remaining.push(arg.clone());
         }
     }
-    (found, remaining)
+    Ok((found, remaining))
 }
 
 /// Pull `-p <name>` / `-p=<name>` / `--package <name>` / `--package=<name>` out of `args`.
@@ -573,15 +579,15 @@ pub fn parse_target_selection_flags(args: &[String]) -> Result<(Vec<String>, Vec
 /// and unit-testable.
 #[inline]
 #[must_use]
-pub fn format_target_flag_warning(consumed: &[String]) -> Option<String> {
+pub fn format_target_flag_warning(consumed: &[String]) -> anyhow::Result<Option<String>> {
     if consumed.is_empty() {
-        return None;
+        return Ok(None);
     }
     let joined = consumed.join(", ");
-    Some(format!(
+    Ok(Some(format!(
         "ignored cargo target-selection flags: {joined} (the rudzio aggregator is one binary; \
          per-target selection has no analog — every workspace member's tests will run)"
-    ))
+    )))
 }
 
 /// Compose every `cargo rudzio test` parser into a single structured result.
@@ -612,12 +618,16 @@ where
     let (manifest_path, after_manifest) = parse_manifest_path_flag(args)?;
     let (include_packages, after_packages) = parse_package_filters(&after_manifest)?;
     let (exclude_packages, after_excludes) = parse_exclude_filters(&after_packages)?;
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let (no_run, after_no_run) = parse_no_run_flag(&after_excludes);
     let (workspace_consumed, after_workspace) =
+        // FIXME(rs-cleanup): callee returns Result, add ?
         consume_compat_flag(&after_no_run, &["--workspace", "--all"]);
     let (no_fail_fast_consumed, after_no_fail_fast) =
+        // FIXME(rs-cleanup): callee returns Result, add ?
         consume_compat_flag(&after_workspace, &["--no-fail-fast"]);
     let (capture_consumed, after_capture) =
+        // FIXME(rs-cleanup): callee returns Result, add ?
         consume_compat_flag(&after_no_fail_fast, &["--nocapture", "--show-output"]);
     let mut compat_consumed = Vec::with_capacity(
         workspace_consumed
@@ -633,6 +643,7 @@ where
     let (include_test_binaries, after_test_filter) = parse_test_binary_filter_flag(&after_capture)?;
     let (ignored_target_flags, after_targets) = parse_target_selection_flags(&after_test_filter)?;
     let (forwarded_cargo_args, after_forwarders) = parse_build_forwarder_flags(&after_targets)?;
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let (include_paths, runner_args) = split_path_args(&after_forwarders, is_dir);
     Ok(ParsedTestArgs {
         compat_consumed,
@@ -663,8 +674,9 @@ where
 /// for, since the flag matches the default behaviour.
 #[inline]
 #[must_use]
-pub fn parse_workspace_flag(args: &[String]) -> Vec<String> {
-    consume_compat_flag(args, &["--workspace", "--all"]).1
+pub fn parse_workspace_flag(args: &[String]) -> anyhow::Result<Vec<String>> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
+    Ok(consume_compat_flag(args, &["--workspace", "--all"]).1)
 }
 
 /// Drop `--no-fail-fast` from `args`.
@@ -681,8 +693,9 @@ pub fn parse_workspace_flag(args: &[String]) -> Vec<String> {
 /// for, since the flag matches the default behaviour.
 #[inline]
 #[must_use]
-pub fn parse_no_fail_fast_flag(args: &[String]) -> Vec<String> {
-    consume_compat_flag(args, &["--no-fail-fast"]).1
+pub fn parse_no_fail_fast_flag(args: &[String]) -> anyhow::Result<Vec<String>> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
+    Ok(consume_compat_flag(args, &["--no-fail-fast"]).1)
 }
 
 /// Split positional `cargo rudzio test` args into directory paths
@@ -696,25 +709,26 @@ pub fn parse_no_fail_fast_flag(args: &[String]) -> Vec<String> {
 /// path arg practically must exist as a directory at the time of the
 /// run. `is_dir` is injected so tests can drive synthetic paths.
 #[inline]
-pub fn split_path_args<F>(args: &[String], is_dir: F) -> (Vec<PathBuf>, Vec<String>)
+pub fn split_path_args<F>(args: &[String], is_dir: F) -> anyhow::Result<(Vec<PathBuf>, Vec<String>)>
 where
     F: Fn(&Path) -> bool,
 {
     let mut paths = Vec::new();
     let mut runner = Vec::new();
     for arg in args {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         if is_existing_dir_path_arg(arg, &is_dir) {
             paths.push(PathBuf::from(arg));
         } else {
             runner.push(arg.clone());
         }
     }
-    (paths, runner)
+    Ok((paths, runner))
 }
 
 /// Return `true` iff `arg` looks path-shaped AND `is_dir` accepts it.
 #[inline]
-fn is_existing_dir_path_arg<F>(arg: &str, is_dir: &F) -> bool
+fn is_existing_dir_path_arg<F>(arg: &str, is_dir: &F) -> anyhow::Result<bool>
 where
     F: Fn(&Path) -> bool,
 {
@@ -723,5 +737,5 @@ where
         || arg.starts_with("./")
         || arg.starts_with("../")
         || arg.starts_with('/');
-    path_shaped && is_dir(Path::new(arg))
+    Ok(path_shaped && is_dir(Path::new(arg)))
 }

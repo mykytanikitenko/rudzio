@@ -131,6 +131,7 @@ pub fn apply(manifest_path: &Path, edits: &Edits) -> Result<bool> {
     let before = doc.to_string();
 
     if edits.had_src_conversion {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         set_autotests_false(&mut doc);
         if edits.has_lib_rs {
             // Unit tests live in the lib's own test target; libtest
@@ -141,13 +142,16 @@ pub fn apply(manifest_path: &Path, edits: &Edits) -> Result<bool> {
             // Bin-only crates have no `[lib]` target, so setting
             // `[lib] harness = false` there would tell Cargo we
             // have a library that doesn't exist.
+            // FIXME(rs-cleanup): callee returns Result, add ?
             set_lib_harness_false(&mut doc);
         }
     }
     if edits.has_lib_rs {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         set_lib_test_false(&mut doc);
     }
     for name in &edits.bin_names {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         set_bin_test_false(&mut doc, name);
     }
     // Only add `rudzio` as a dev-dep when at least one test fn was
@@ -156,6 +160,7 @@ pub fn apply(manifest_path: &Path, edits: &Edits) -> Result<bool> {
     // broadening doesn't need rudzio itself (that rewrite only
     // references the cfg symbol, not the crate).
     if !edits.runtimes.is_empty() {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         set_rudzio_dependency(
             &mut doc,
             &edits.runtimes,
@@ -163,12 +168,15 @@ pub fn apply(manifest_path: &Path, edits: &Edits) -> Result<bool> {
         );
     }
     if edits.needs.anyhow {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         set_anyhow_dependency(&mut doc, edits.workspace_dep_names.contains("anyhow"));
     }
     for entry in &edits.tests_integration {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         ensure_test_entry(&mut doc, entry);
     }
     if edits.needs.rudzio_test_cfg {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         ensure_check_cfg_rudzio_test(&mut doc);
     }
 
@@ -187,15 +195,15 @@ pub fn apply(manifest_path: &Path, edits: &Edits) -> Result<bool> {
 /// declares the named crate. Used to keep the tool from clobbering
 /// a manually-curated entry — features may be tuned, paths may
 /// point at a workspace fork, etc.
-fn dep_already_present(doc: &DocumentMut, name: &str) -> bool {
+fn dep_already_present(doc: &DocumentMut, name: &str) -> anyhow::Result<bool> {
     for section in ["dependencies", "dev-dependencies"] {
         if let Some(tbl) = doc.as_table().get(section).and_then(Item::as_table)
             && tbl.contains_key(name)
         {
-            return true;
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }
 
 /// Ensure `[lints.rust] unexpected_cfgs = { level = "warn", check-cfg
@@ -204,7 +212,7 @@ fn dep_already_present(doc: &DocumentMut, name: &str) -> bool {
 /// to add the `cfg(rudzio_test)` entry if it's missing). `level` is
 /// added only when `unexpected_cfgs` didn't already exist — we never
 /// override a user-chosen severity.
-fn ensure_check_cfg_rudzio_test(doc: &mut DocumentMut) {
+fn ensure_check_cfg_rudzio_test(doc: &mut DocumentMut) -> anyhow::Result<()> {
     const CFG_ENTRY: &str = "cfg(rudzio_test)";
     let lints_was_absent = !doc.as_table().contains_key("lints");
     let lints = doc
@@ -212,7 +220,7 @@ fn ensure_check_cfg_rudzio_test(doc: &mut DocumentMut) {
         .entry("lints")
         .or_insert(Item::Table(Table::new()));
     let Some(lints_tbl) = lints.as_table_mut() else {
-        return;
+        return Ok(());
     };
     if lints_was_absent {
         // Avoid emitting a bare `[lints]` header before `[lints.rust]`.
@@ -222,7 +230,7 @@ fn ensure_check_cfg_rudzio_test(doc: &mut DocumentMut) {
     }
     let rust = lints_tbl.entry("rust").or_insert(Item::Table(Table::new()));
     let Some(rust_tbl) = rust.as_table_mut() else {
-        return;
+        return Ok(());
     };
     let existed = rust_tbl.contains_key("unexpected_cfgs");
     let unexpected =
@@ -237,10 +245,10 @@ fn ensure_check_cfg_rudzio_test(doc: &mut DocumentMut) {
                 table
             })));
     if !existed {
-        return;
+        return Ok(());
     }
     let Item::Value(toml_edit::Value::InlineTable(inline)) = unexpected else {
-        return;
+        return Ok(());
     };
     let check_cfg_item = inline
         .entry("check-cfg")
@@ -252,7 +260,8 @@ fn ensure_check_cfg_rudzio_test(doc: &mut DocumentMut) {
         if !already {
             arr.push(CFG_ENTRY);
         }
-    }
+    };
+    Ok(())
 }
 
 /// Ensure a `[[test]]` entry covering `entry` exists, with `harness =
@@ -261,13 +270,13 @@ fn ensure_check_cfg_rudzio_test(doc: &mut DocumentMut) {
 /// a custom `[[test]] path = "..."` layout pointing at the same file
 /// with a different `name`); leave other fields untouched. If no
 /// match is found, append a minimal `name + path + harness` entry.
-fn ensure_test_entry(doc: &mut DocumentMut, entry: &IntegrationTestEntry) {
+fn ensure_test_entry(doc: &mut DocumentMut, entry: &IntegrationTestEntry) -> anyhow::Result<()> {
     let tests_item = doc
         .as_table_mut()
         .entry("test")
         .or_insert(Item::ArrayOfTables(ArrayOfTables::new()));
     let Some(arr) = tests_item.as_array_of_tables_mut() else {
-        return;
+        return Ok(());
     };
     for existing in arr.iter_mut() {
         let name_match = existing
@@ -286,7 +295,7 @@ fn ensure_test_entry(doc: &mut DocumentMut, entry: &IntegrationTestEntry) {
             if !harness_is_false {
                 let _prev = existing.insert("harness", value(false));
             }
-            return;
+            return Ok(());
         }
     }
     let mut tbl = Table::new();
@@ -294,14 +303,16 @@ fn ensure_test_entry(doc: &mut DocumentMut, entry: &IntegrationTestEntry) {
     let _prev_path = tbl.insert("path", value(entry.path.clone()));
     let _prev_harness = tbl.insert("harness", value(false));
     arr.push(tbl);
+    Ok(())
 }
 
 /// Add `anyhow` to `[dev-dependencies]` if it isn't already declared.
 /// Prefers `{ workspace = true }` when the workspace pins anyhow,
 /// otherwise hard-codes `"1.0"`.
-fn set_anyhow_dependency(doc: &mut DocumentMut, workspace_pins_anyhow: bool) {
+fn set_anyhow_dependency(doc: &mut DocumentMut, workspace_pins_anyhow: bool) -> anyhow::Result<()> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     if dep_already_present(doc, "anyhow") {
-        return;
+        return Ok(());
     }
     let entry = if workspace_pins_anyhow {
         let mut tbl = InlineTable::new();
@@ -315,23 +326,25 @@ fn set_anyhow_dependency(doc: &mut DocumentMut, workspace_pins_anyhow: bool) {
         .entry("dev-dependencies")
         .or_insert(Item::Table(Table::new()));
     let Some(dev_tbl) = dev_deps.as_table_mut() else {
-        return;
+        return Ok(());
     };
     let _prev = dev_tbl.insert("anyhow", entry);
+    Ok(())
 }
 
 /// Set `[package] autotests = false` to suppress libtest's auto-found
 /// integration test pass — every `tests/*.rs` file is now wired
 /// explicitly through `[[test]]` entries with `harness = false`.
-fn set_autotests_false(doc: &mut DocumentMut) {
+fn set_autotests_false(doc: &mut DocumentMut) -> anyhow::Result<()> {
     let package = doc
         .as_table_mut()
         .entry("package")
         .or_insert(Item::Table(Table::new()));
     let Some(pkg) = package.as_table_mut() else {
-        return;
+        return Ok(());
     };
     let _prev = pkg.insert("autotests", value(false));
+    Ok(())
 }
 
 /// Ensure `[[bin]] name = "<name>"` has `test = false`. If an entry
@@ -339,13 +352,13 @@ fn set_autotests_false(doc: &mut DocumentMut) {
 /// a minimal `name + test` entry. Cargo merges these with
 /// auto-discovered bins (keyed by name), so we don't need to specify
 /// `path`.
-fn set_bin_test_false(doc: &mut DocumentMut, bin_name: &str) {
+fn set_bin_test_false(doc: &mut DocumentMut, bin_name: &str) -> anyhow::Result<()> {
     let bins_item = doc
         .as_table_mut()
         .entry("bin")
         .or_insert(Item::ArrayOfTables(ArrayOfTables::new()));
     let Some(arr) = bins_item.as_array_of_tables_mut() else {
-        return;
+        return Ok(());
     };
     for existing in arr.iter_mut() {
         let name_match = existing
@@ -361,13 +374,14 @@ fn set_bin_test_false(doc: &mut DocumentMut, bin_name: &str) {
             if !already_false {
                 let _prev = existing.insert("test", value(false));
             }
-            return;
+            return Ok(());
         }
     }
     let mut tbl = Table::new();
     let _prev_name = tbl.insert("name", value(bin_name.to_owned()));
     let _prev_test = tbl.insert("test", value(false));
     arr.push(tbl);
+    Ok(())
 }
 
 /// Set `[lib] harness = false` so the lib's test target runs
@@ -375,13 +389,13 @@ fn set_bin_test_false(doc: &mut DocumentMut, bin_name: &str) {
 /// than libtest. If the user already set `harness = true`
 /// explicitly we leave it — maybe they want libtest alongside.
 /// Otherwise we flip it (or create the `[lib]` table if missing).
-fn set_lib_harness_false(doc: &mut DocumentMut) {
+fn set_lib_harness_false(doc: &mut DocumentMut) -> anyhow::Result<()> {
     let lib = doc
         .as_table_mut()
         .entry("lib")
         .or_insert(Item::Table(Table::new()));
     let Some(lib_tbl) = lib.as_table_mut() else {
-        return;
+        return Ok(());
     };
     // Preserve an explicit `harness = true` override (user opted
     // into libtest on purpose — e.g. running rudzio out of a
@@ -392,9 +406,10 @@ fn set_lib_harness_false(doc: &mut DocumentMut) {
         .and_then(toml_edit::Value::as_bool)
         .is_some_and(|flag| flag);
     if user_opted_in {
-        return;
+        return Ok(());
     }
     let _prev = lib_tbl.insert("harness", value(false));
+    Ok(())
 }
 
 /// `[lib] test = false` suppresses cargo's default libtest "unit
@@ -402,13 +417,13 @@ fn set_lib_harness_false(doc: &mut DocumentMut) {
 /// `#[test]` fns — they've been rewritten into `#[rudzio::test]`
 /// and run via `#[rudzio::main]` — so the libtest pass is empty
 /// noise. Respects an explicit `test = true` override.
-fn set_lib_test_false(doc: &mut DocumentMut) {
+fn set_lib_test_false(doc: &mut DocumentMut) -> anyhow::Result<()> {
     let lib = doc
         .as_table_mut()
         .entry("lib")
         .or_insert(Item::Table(Table::new()));
     let Some(lib_tbl) = lib.as_table_mut() else {
-        return;
+        return Ok(());
     };
     let user_opted_in = lib_tbl
         .get("test")
@@ -416,9 +431,10 @@ fn set_lib_test_false(doc: &mut DocumentMut) {
         .and_then(toml_edit::Value::as_bool)
         .is_some_and(|flag| flag);
     if user_opted_in {
-        return;
+        return Ok(());
     }
     let _prev = lib_tbl.insert("test", value(false));
+    Ok(())
 }
 
 /// Add `rudzio` to `[dev-dependencies]` with the right `features = [
@@ -430,9 +446,10 @@ fn set_rudzio_dependency(
     doc: &mut DocumentMut,
     runtimes: &BTreeSet<RuntimeChoice>,
     workspace_pins_rudzio: bool,
-) {
+) -> anyhow::Result<()> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     if dep_already_present(doc, "rudzio") {
-        return;
+        return Ok(());
     }
     let features = {
         let mut arr = Array::new();
@@ -468,7 +485,8 @@ fn set_rudzio_dependency(
         .entry("dev-dependencies")
         .or_insert(Item::Table(Table::new()));
     let Some(dev_tbl) = dev_deps.as_table_mut() else {
-        return;
+        return Ok(());
     };
     let _prev = dev_tbl.insert("rudzio", Item::Value(table.into()));
+    Ok(())
 }

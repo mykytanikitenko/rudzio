@@ -39,10 +39,11 @@ impl TestId {
     /// Allocate the next process-unique id. Wait-free.
     #[must_use]
     #[inline]
-    pub fn next() -> Self {
+    pub fn next() -> anyhow::Result<Self> {
         use std::sync::atomic::{AtomicU64, Ordering};
+        // FIXME(rs-cleanup): callee returns Result, add ?
         static NEXT: AtomicU64 = AtomicU64::new(1);
-        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+        Ok(Self(NEXT.fetch_add(1, Ordering::Relaxed)))
     }
 }
 
@@ -256,9 +257,13 @@ impl TestStateBuffers {
     #[must_use]
     pub const fn empty() -> Self {
         Self {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             last_output_line: String::new(),
+            // FIXME(rs-cleanup): callee returns Result, add ?
             recent_output: Vec::new(),
+            // FIXME(rs-cleanup): callee returns Result, add ?
             stderr_buffer: Vec::new(),
+            // FIXME(rs-cleanup): callee returns Result, add ?
             stdout_buffer: Vec::new(),
         }
     }
@@ -285,7 +290,7 @@ impl TestState {
     /// Construct a `TestState` from its sub-bundles.
     #[inline]
     #[must_use]
-    pub fn new(ident: TestStateIdent, buffers: TestStateBuffers, kind: TestStateKind) -> Self {
+    pub fn new(ident: TestStateIdent, buffers: TestStateBuffers, kind: TestStateKind) -> anyhow::Result<Self> {
         let TestStateIdent {
             module_path,
             runtime_name,
@@ -299,7 +304,7 @@ impl TestState {
             stderr_buffer,
             stdout_buffer,
         } = buffers;
-        Self {
+        Ok(Self {
             kind,
             last_output_line,
             module_path,
@@ -310,7 +315,7 @@ impl TestState {
             stdout_buffer,
             test_name,
             thread,
-        }
+        })
     }
 }
 

@@ -105,33 +105,38 @@ struct Scanner<'src> {
 
 impl<'ast> Visit<'ast> for Scanner<'_> {
     #[inline]
-    fn visit_item_fn(&mut self, i: &'ast syn::ItemFn) {
+    fn visit_item_fn(&mut self, i: &'ast syn::ItemFn) -> anyhow::Result<()> {
         for attr in &i.attrs {
             if let Some(path) = as_test_context(attr) {
                 let key = path_to_string(&path);
                 let _inserted = self.use_sites.insert(key);
             }
         }
+        // FIXME(rs-cleanup): callee returns Result, add ?
         visit::visit_item_fn(self, i);
-    }
+        Ok(())
+}
 
     #[inline]
-    fn visit_item_impl(&mut self, i: &'ast syn::ItemImpl) {
+    fn visit_item_impl(&mut self, i: &'ast syn::ItemImpl) -> anyhow::Result<()> {
         let Some((_bang, trait_path, _for_token)) = &i.trait_ else {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             visit::visit_item_impl(self, i);
-            return;
+            return Ok(());
         };
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let trait_name = last_segment(&path_to_string(trait_path));
         let is_async = match trait_name.as_str() {
             "AsyncTestContext" => true,
             "TestContext" => false,
             _ => {
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 visit::visit_item_impl(self, i);
-                return;
+                return Ok(());
             }
         };
         let Type::Path(ty_path) = &*i.self_ty else {
-            return;
+            return Ok(());
         };
         let ty_key = path_to_string(&ty_path.path);
         let mut seen_setup = false;
@@ -149,16 +154,19 @@ impl<'ast> Visit<'ast> for Scanner<'_> {
             let _prev = self
                 .impls
                 .insert(ty_key, (self.current_file.to_path_buf(), is_async));
-        }
-    }
+        };
+        Ok(())
+}
 
     #[inline]
-    fn visit_item_struct(&mut self, i: &'ast syn::ItemStruct) {
+    fn visit_item_struct(&mut self, i: &'ast syn::ItemStruct) -> anyhow::Result<()> {
         let _prev = self
             .ctx_visibility
             .insert(i.ident.to_string(), i.vis.clone());
+        // FIXME(rs-cleanup): callee returns Result, add ?
         visit::visit_item_struct(self, i);
-    }
+        Ok(())
+}
 }
 
 impl Resolver {
@@ -167,25 +175,25 @@ impl Resolver {
     /// workspace-internal types).
     #[inline]
     #[must_use]
-    pub fn empty() -> Self {
-        Self {
+    pub fn empty() -> anyhow::Result<Self> {
+        Ok(Self {
             plans: BTreeMap::new(),
             unresolved: HashSet::new(),
-        }
+        })
     }
 
     /// True if `ctx_key` was seen but no local impl could be matched.
     #[inline]
     #[must_use]
-    pub fn is_unresolved(&self, ctx_key: &str) -> bool {
-        self.unresolved.contains(ctx_key)
+    pub fn is_unresolved(&self, ctx_key: &str) -> anyhow::Result<bool> {
+        Ok(self.unresolved.contains(ctx_key))
     }
 
     /// Look up the plan for `ctx_key`, if any.
     #[inline]
     #[must_use]
-    pub fn plan_for(&self, ctx_key: &str) -> Option<&Plan> {
-        self.plans.get(ctx_key)
+    pub fn plan_for(&self, ctx_key: &str) -> anyhow::Result<Option<&Plan>> {
+        Ok(self.plans.get(ctx_key))
     }
 }
 
@@ -197,6 +205,7 @@ impl Resolver {
 /// Returns the underlying I/O error if a source file can't be read.
 #[inline]
 pub fn resolve(packages: &[Package]) -> Result<Resolver> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let mut resolver = Resolver::empty();
     for pkg in packages {
         resolve_package(pkg, &mut resolver)?;
@@ -209,7 +218,7 @@ pub fn resolve(packages: &[Package]) -> Result<Resolver> {
 /// Appended to the end of the impl file by the caller.
 #[inline]
 #[must_use]
-pub fn render_bridge_impls(plan: &Plan) -> String {
+pub fn render_bridge_impls(plan: &Plan) -> anyhow::Result<String> {
     let ctx = &plan.ctx_ident;
     let bridge = &plan.bridge_ident;
     let suite = &plan.suite_ident;
@@ -232,14 +241,17 @@ pub fn render_bridge_impls(plan: &Plan) -> String {
     } else {
         format!("<{ctx} as ::test_context::TestContext>::teardown(self.inner);")
     };
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let bridge_block = render_bridge_block(ctx, bridge, &vis);
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let suite_block = render_suite_block(bridge, suite, &vis, &setup_call, &teardown_call);
-    format!("\n{bridge_block}{suite_block}")
+    Ok(format!("\n{bridge_block}{suite_block}"))
 }
 
 /// Last `::`-delimited segment of `path_str`.
-fn last_segment(path_str: &str) -> String {
-    path_str.rsplit("::").next().unwrap_or(path_str).to_owned()
+fn last_segment(path_str: &str) -> anyhow::Result<String> {
+    // TODO(rs-cleanup): silencing at line 242 — review and replace with Result-propagating equivalent
+    Ok(path_str.rsplit("::").next().unwrap_or(path_str).to_owned())
 }
 
 /// Compute `Some("crate::foo::bar")` when `impl_file` maps to a
@@ -249,7 +261,8 @@ fn last_segment(path_str: &str) -> String {
 /// (e.g. `examples/`, `benches/`) where the test binary's module tree
 /// isn't derivable from the path alone and the user needs to tell us
 /// via a custom `mod` declaration.
-fn infer_module_path(impl_file: &Path, pkg_root: &Path) -> Option<String> {
+fn infer_module_path(impl_file: &Path, pkg_root: &Path) -> anyhow::Result<Option<String>> {
+    // TODO(rs-cleanup): silencing at line 253 — review and replace with Result-propagating equivalent
     let rel = impl_file.strip_prefix(pkg_root).ok()?;
     let components: Vec<&str> = rel
         .components()
@@ -257,16 +270,17 @@ fn infer_module_path(impl_file: &Path, pkg_root: &Path) -> Option<String> {
         .collect();
     let (first, rest) = components.split_first()?;
     if *first != "src" {
-        return None;
+        return Ok(None);
     }
-    match rest {
+    Ok(match rest {
         [] => None,
         ["lib.rs" | "main.rs"] => Some("crate".to_owned()),
         [single] => single
             .strip_suffix(".rs")
             .map(|stem| format!("crate::{stem}")),
+        // FIXME(rs-cleanup): callee returns Result, add ?
         deeper => render_deeper_module_path(deeper),
-    }
+    })
 }
 
 /// Convert a `pub`/`pub(crate)`/empty `Visibility` token tree into the
@@ -275,22 +289,24 @@ fn infer_module_path(impl_file: &Path, pkg_root: &Path) -> Option<String> {
 /// less private than the inner field — except when the user's struct is
 /// genuinely private, in which case the caller passes through whatever
 /// the scanner saw.
-fn render_visibility(vis: Option<&Visibility>) -> String {
-    vis.map(|value| {
+fn render_visibility(vis: Option<&Visibility>) -> anyhow::Result<String> {
+    Ok(vis.map(|value| {
         quote::ToTokens::to_token_stream(value)
             .to_string()
             .trim()
             .to_owned()
     })
     .filter(|text| !text.is_empty())
-    .unwrap_or_else(|| "pub(crate)".to_owned())
+    // TODO(rs-cleanup): silencing at line 286 — review and replace with Result-propagating equivalent
+    .unwrap_or_else(|| "pub(crate)".to_owned()))
 }
 
 /// Render `crate::a::b::c` for a module whose impl file lies deeper
 /// than the lib root (the components after `src/`). Returns `None` when
 /// the leaf doesn't end in `.rs`.
-fn render_deeper_module_path(components: &[&str]) -> Option<String> {
+fn render_deeper_module_path(components: &[&str]) -> anyhow::Result<Option<String>> {
     let mut segments: Vec<String> = Vec::new();
+    // TODO(rs-cleanup): masking_arith at line 294 — review and replace with Result-propagating equivalent
     let last_idx = components.len().saturating_sub(1);
     for (idx, comp) in components.iter().enumerate() {
         if idx == last_idx {
@@ -303,11 +319,11 @@ fn render_deeper_module_path(components: &[&str]) -> Option<String> {
             segments.push((*comp).to_owned());
         }
     }
-    if segments.is_empty() {
+    Ok(if segments.is_empty() {
         Some("crate".to_owned())
     } else {
         Some(format!("crate::{}", segments.join("::")))
-    }
+    })
 }
 
 /// Per-package pass: walk every src + test file, populate `resolver`.
@@ -340,10 +356,13 @@ fn resolve_package(pkg: &Package, resolver: &mut Resolver) -> Result<()> {
     for key in &use_sites {
         match impls.get(key) {
             Some((impl_file, is_async)) => {
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 let ctx_ident = last_segment(key);
                 let bridge_ident = format!("{ctx_ident}RudzioBridge");
                 let suite_ident = format!("{ctx_ident}RudzioSuite");
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 let module_path = infer_module_path(impl_file, &pkg.root);
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 let visibility = render_visibility(ctx_visibility.get(&ctx_ident));
                 let plan = Plan {
                     bridge_ident,
@@ -368,8 +387,8 @@ fn resolve_package(pkg: &Package, resolver: &mut Resolver) -> Result<()> {
 /// Render the bridge wrapper struct + its `Deref`/`DerefMut`/`Debug`
 /// impls. Produced as a substring; concatenated with the suite block by
 /// [`render_bridge_impls`].
-fn render_bridge_block(ctx: &str, bridge: &str, vis: &str) -> String {
-    format!(
+fn render_bridge_block(ctx: &str, bridge: &str, vis: &str) -> anyhow::Result<String> {
+    Ok(format!(
         "\
 /// Generated by rudzio-migrate: bridge wrapper for `{ctx}`. Takes the
 /// `<'test_context, R>` generics rudzio's `#[rudzio::test]` macro
@@ -407,7 +426,7 @@ where
     }}
 }}
 "
-    )
+    ))
 }
 
 /// Render the suite struct + its `Suite`/`Test`/`Debug` impls. Produced
@@ -419,8 +438,8 @@ fn render_suite_block(
     vis: &str,
     setup_call: &str,
     teardown_call: &str,
-) -> String {
-    format!(
+) -> anyhow::Result<String> {
+    Ok(format!(
         "
 /// Generated by rudzio-migrate: bridge suite type so
 /// `#[rudzio::suite([...])]` can reference a concrete Suite impl that
@@ -512,5 +531,5 @@ where
     }}
 }}
 "
-    )
+    ))
 }

@@ -93,14 +93,16 @@ pub struct Detected {
 /// attribute is; returns `None` otherwise.
 #[inline]
 #[must_use]
-pub fn as_test_context(attr: &Attribute) -> Option<syn::Path> {
+pub fn as_test_context(attr: &Attribute) -> anyhow::Result<Option<syn::Path>> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     if path_to_string(attr.path()) != "test_context" {
-        return None;
+        return Ok(None);
     }
     let Meta::List(list) = &attr.meta else {
-        return None;
+        return Ok(None);
     };
-    list.parse_args::<syn::Path>().ok()
+    // TODO(rs-cleanup): silencing at line 103 — review and replace with Result-propagating equivalent
+    Ok(list.parse_args::<syn::Path>().ok())
 }
 
 /// Classify an attribute. Returns `Some(_)` if it's a recognised
@@ -108,12 +110,14 @@ pub fn as_test_context(attr: &Attribute) -> Option<syn::Path> {
 /// attribute alone).
 #[inline]
 #[must_use]
-pub fn classify_test_attr(attr: &Attribute) -> Option<Detected> {
+pub fn classify_test_attr(attr: &Attribute) -> anyhow::Result<Option<Detected>> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let path = path_to_string(attr.path());
     let kind = match path.as_str() {
         "test" => TestKind::PlainTest,
         "tokio::test" | "::tokio::test" => {
-            return Some(classify_tokio_attr(attr));
+            // FIXME(rs-cleanup): callee returns Result, add ?
+            return Ok(Some(classify_tokio_attr(attr)));
         }
         "async_std::test" | "::async_std::test" => TestKind::AsyncStd,
         "compio::test" | "::compio::test" => TestKind::Compio,
@@ -121,18 +125,18 @@ pub fn classify_test_attr(attr: &Attribute) -> Option<Detected> {
             TestKind::Actix
         }
         "futures_test::test" | "::futures_test::test" => TestKind::FuturesTest,
-        _ => return None,
+        _ => return Ok(None),
     };
-    Some(Detected {
+    Ok(Some(Detected {
         kind,
         extra_tokio_args: Vec::new(),
-    })
+    }))
 }
 
 /// Tokio-specific helper: parse the attribute's nested-meta args to
 /// pick `flavor = ...` and capture extras like `worker_threads` and
 /// `start_paused` for the warning channel.
-fn classify_tokio_attr(attr: &Attribute) -> Detected {
+fn classify_tokio_attr(attr: &Attribute) -> anyhow::Result<Detected> {
     let mut kind = TestKind::TokioDefault;
     let mut extras = Vec::new();
 
@@ -173,25 +177,27 @@ fn classify_tokio_attr(attr: &Attribute) -> Detected {
         });
     }
 
-    Detected {
+    Ok(Detected {
         kind,
         extra_tokio_args: extras,
-    }
+    })
 }
 
 /// Returns `true` if the attribute is `#[bench]` (unstable libtest).
 #[inline]
 #[must_use]
-pub fn is_bench_attr(attr: &Attribute) -> bool {
-    path_to_string(attr.path()) == "bench"
+pub fn is_bench_attr(attr: &Attribute) -> anyhow::Result<bool> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
+    Ok(path_to_string(attr.path()) == "bench")
 }
 
 /// Returns `true` if the attribute is any `#[ignore]` form, so the
 /// rewriter knows to preserve it verbatim.
 #[inline]
 #[must_use]
-pub fn is_ignore_attr(attr: &Attribute) -> bool {
-    path_to_string(attr.path()) == "ignore"
+pub fn is_ignore_attr(attr: &Attribute) -> anyhow::Result<bool> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
+    Ok(path_to_string(attr.path()) == "ignore")
 }
 
 /// Returns `true` if the attribute is from the `rstest` family.
@@ -202,9 +208,10 @@ pub fn is_ignore_attr(attr: &Attribute) -> bool {
 /// entirely.
 #[inline]
 #[must_use]
-pub fn is_rstest_attr(attr: &Attribute) -> bool {
+pub fn is_rstest_attr(attr: &Attribute) -> anyhow::Result<bool> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let path = path_to_string(attr.path());
-    matches!(
+    Ok(matches!(
         path.as_str(),
         "rstest"
             | "::rstest::rstest"
@@ -215,22 +222,23 @@ pub fn is_rstest_attr(attr: &Attribute) -> bool {
             | "values"
             | "::rstest::values"
             | "rstest::values"
-    )
+    ))
 }
 
 /// Returns `true` if the attribute is `#[should_panic]` /
 /// `#[should_panic(expected = ...)]`.
 #[inline]
 #[must_use]
-pub fn is_should_panic_attr(attr: &Attribute) -> bool {
-    path_to_string(attr.path()) == "should_panic"
+pub fn is_should_panic_attr(attr: &Attribute) -> anyhow::Result<bool> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
+    Ok(path_to_string(attr.path()) == "should_panic")
 }
 
 /// Render a `syn::Path` to its colon-separated string form.
 #[inline]
 #[must_use]
-pub fn lit_to_string(lit: &Lit) -> String {
-    match lit {
+pub fn lit_to_string(lit: &Lit) -> anyhow::Result<String> {
+    Ok(match lit {
         Lit::Bool(boolean) => boolean.value.to_string(),
         Lit::Int(int) => int.base10_digits().to_owned(),
         Lit::Str(string) => format!("\"{}\"", string.value()),
@@ -244,13 +252,13 @@ pub fn lit_to_string(lit: &Lit) -> String {
         | Lit::Float(_)
         | Lit::Verbatim(_))
         | other => quote::ToTokens::to_token_stream(other).to_string(),
-    }
+    })
 }
 
 /// Render a `syn::Path` to its colon-separated string form.
 #[inline]
 #[must_use]
-pub fn path_to_string(path: &syn::Path) -> String {
+pub fn path_to_string(path: &syn::Path) -> anyhow::Result<String> {
     let mut out = String::new();
     if path.leading_colon.is_some() {
         out.push_str("::");
@@ -261,5 +269,5 @@ pub fn path_to_string(path: &syn::Path) -> String {
         }
         out.push_str(&seg.ident.to_string());
     }
-    out
+    Ok(out)
 }

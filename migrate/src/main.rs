@@ -6,6 +6,6 @@ use std::process::ExitCode;
 
 use rudzio_migrate::run;
 
-fn main() -> ExitCode {
-    run::entry()
+fn main() -> anyhow::Result<ExitCode> {
+    Ok(run::entry())
 }
