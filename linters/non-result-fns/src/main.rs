@@ -120,7 +120,7 @@ impl ReturnCategory {
 /// Per-fn body hazard counts. Each field counts occurrences of
 /// the named hazard inside the fn body (and inside any nested
 /// closures / blocks the visitor descends into).
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct HazardCounts {
     /// `.unwrap()` on Option/Result. Panics on None/Err.
     unwrap: usize,
@@ -159,6 +159,21 @@ struct HazardCounts {
 }
 
 impl HazardCounts {
+    /// All-zero counts — replaces the prior `Default::default()`
+    /// per P-1 (no `Default` impls in workspace-internal types).
+    const fn empty() -> Self {
+        Self {
+            unwrap: 0,
+            expect: 0,
+            silencing: 0,
+            arithmetic: 0,
+            indexing: 0,
+            panic_macros: 0,
+            numeric_cast: 0,
+            masking_arith: 0,
+        }
+    }
+
     /// Total hazard count for ranking.
     const fn total(&self) -> usize {
         self.unwrap
@@ -391,7 +406,7 @@ fn categorize(ty: &Type, rendered: &str) -> ReturnCategory {
 /// by the walker).
 fn count_hazards(block: Option<&syn::Block>) -> HazardCounts {
     let Some(block) = block else {
-        return HazardCounts::default();
+        return HazardCounts::empty();
     };
     let mut visitor = HazardVisitor::new();
     visitor.visit_block(block);
@@ -545,7 +560,7 @@ fn render_report(findings: &[Finding], repo_root: &Path) -> String {
 /// by-return-type, top hotspots, top timebombs.
 fn print_summary(findings: &[Finding], repo_root: &Path) {
     let total_fns = findings.len();
-    let mut totals = HazardCounts::default();
+    let mut totals = HazardCounts::empty();
     let mut by_cat: BTreeMap<ReturnCategory, usize> = BTreeMap::new();
     let mut by_crate_fns: BTreeMap<String, usize> = BTreeMap::new();
     let mut by_crate_hazards: BTreeMap<String, usize> = BTreeMap::new();

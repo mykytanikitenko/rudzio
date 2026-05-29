@@ -130,10 +130,20 @@ struct AllowlistEntry {
     reason: String,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 struct Allowlist {
     #[serde(default)]
     entry: Vec<AllowlistEntry>,
+}
+
+impl Allowlist {
+    /// Empty allowlist — used as the fall-back when the
+    /// `allowlist.toml` file is missing. Replaces the prior
+    /// `Default::default()` per P-1 (no `Default` impls in
+    /// workspace-internal types).
+    const fn empty() -> Self {
+        Self { entry: Vec::new() }
+    }
 }
 
 struct AttrVisitor<'a> {
@@ -206,7 +216,7 @@ fn is_skipped(relative: &Path) -> bool {
 fn load_allowlist(repo_root: &Path) -> anyhow::Result<Allowlist> {
     let path = repo_root.join(ALLOWLIST_PATH);
     if !path.exists() {
-        return Ok(Allowlist::default());
+        return Ok(Allowlist::empty());
     }
     let text = fs::read_to_string(&path)
         .map_err(|err| anyhow::anyhow!("reading {}: {}", path.display(), err))?;
