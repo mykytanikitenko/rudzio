@@ -1,0 +1,18 @@
+[package]
+name = "rs-result-sig-rewrite"
+version = "0.0.0"
+edition = { workspace = true }
+publish = false
+
+[lib]
+name = "rs_result_sig_rewrite"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rs-result-sig-rewrite"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+proc-macro2 = { workspace = true }
+syn = { workspace = true }
