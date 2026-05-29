@@ -59,8 +59,18 @@ use syn::spanned::Spanned as _;
 use syn::visit::Visit;
 use syn::{
     BinOp, Block, Expr, ExprCall, ExprPath, ExprReturn, ImplItem, Item, ItemFn, ItemImpl,
-    ReturnType, Signature, Stmt, Type,
+    ReturnType, Signature, Stmt, Type, Visibility,
 };
+
+/// True iff `vis` is a bare `pub` (fully public). `clippy::unnecessary_wraps`
+/// only exempts exported (bare-`pub`, reachable) functions — `pub(crate)`
+/// and private fns trip the lint when their body always returns `Ok`/`Some`.
+/// In `--pub-only` mode the transformer restricts itself to these so the
+/// converted signatures don't violate the workspace lint without a real
+/// error path. See `.opencode/issues.md` 2026-05-29 finding.
+fn is_bare_pub(vis: &Visibility) -> bool {
+    matches!(vis, Visibility::Public(_))
+}
 
 /// Traits whose impl-block fns are exempt from rewriting. Membership
 /// criterion mirrors `linters/non-result-fns`: the trait signature is
@@ -197,9 +207,22 @@ pub struct TransformOutcome {
 /// `source` must be a complete Rust file syn can parse; a parse
 /// failure is bubbled up so the CLI can return exit code 2.
 pub fn transform(source: &str) -> Result<TransformOutcome> {
+    transform_with_options(source, false)
+}
+
+/// As [`transform`], but when `pub_only` is set only bare-`pub`
+/// functions are rewritten (see [`is_bare_pub`]). Private and
+/// `pub(crate)` functions are left untouched so the converted
+/// signatures cannot trip `clippy::unnecessary_wraps`.
+///
+/// # Errors
+///
+/// Returns `Err` if the source fails to parse or an internal edit
+/// range is out of bounds.
+pub fn transform_with_options(source: &str, pub_only: bool) -> Result<TransformOutcome> {
     let parsed = syn::parse_file(source).map_err(|e| anyhow!("parse error: {e}"))?;
 
-    let mut planner = Planner::new(source);
+    let mut planner = Planner::new(source, pub_only);
     planner.walk_items(&parsed.items);
 
     if !planner.converted_names.is_empty() {
@@ -243,6 +266,8 @@ pub fn transform(source: &str) -> Result<TransformOutcome> {
 /// Per-file mutable state threaded through the walker.
 struct Planner<'src> {
     source: &'src str,
+    /// When set, only bare-`pub` fns are rewritten.
+    pub_only: bool,
     edits: Vec<Edit>,
     logs: Vec<String>,
     converted_names: BTreeSet<String>,
@@ -255,9 +280,10 @@ struct Planner<'src> {
 }
 
 impl<'src> Planner<'src> {
-    fn new(source: &'src str) -> Self {
+    fn new(source: &'src str, pub_only: bool) -> Self {
         Self {
             source,
+            pub_only,
             edits: Vec::new(),
             logs: Vec::new(),
             converted_names: BTreeSet::new(),
@@ -292,12 +318,23 @@ impl<'src> Planner<'src> {
                         self.skipped = self.skipped.saturating_add(1);
                         continue;
                     }
+                    if self.pub_only && !is_bare_pub(&f.vis) {
+                        self.skipped = self.skipped.saturating_add(1);
+                        continue;
+                    }
                     self.process_fn(&f.sig, &f.block);
                 }
                 Item::Impl(imp) => {
                     self.walk_impl(imp);
                 }
                 Item::Trait(tr) => {
+                    // Under --pub-only, trait default methods are skipped:
+                    // their effective visibility follows the trait's, which
+                    // we don't track here, and a private trait would trip
+                    // clippy::unnecessary_wraps on the rewritten default.
+                    if self.pub_only {
+                        continue;
+                    }
                     for trait_item in &tr.items {
                         if let syn::TraitItem::Fn(f) = trait_item
                             && let Some(block) = f.default.as_ref()
@@ -346,6 +383,14 @@ impl<'src> Planner<'src> {
                 }
                 if skipped_trait {
                     self.log_skip_trait(trait_label.as_deref(), &f.sig);
+                    self.skipped = self.skipped.saturating_add(1);
+                    continue;
+                }
+                // Under --pub-only, only convert bare-`pub` inherent methods.
+                // Trait-impl methods (skipped_trait == false but imp.trait_
+                // is Some for non-skip-list traits) are conservatively
+                // skipped too: their signature is locked by the trait.
+                if self.pub_only && (imp.trait_.is_some() || !is_bare_pub(&f.vis)) {
                     self.skipped = self.skipped.saturating_add(1);
                     continue;
                 }

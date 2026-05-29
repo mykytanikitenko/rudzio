@@ -18,7 +18,7 @@ use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 
-use rs_result_sig_rewrite::{TransformOutcome, render_diff, transform};
+use rs_result_sig_rewrite::{TransformOutcome, render_diff, transform_with_options};
 
 /// Parsed command-line flags.
 struct Cli {
@@ -26,6 +26,7 @@ struct Cli {
     dry_run: bool,
     write: bool,
     confirm_write: bool,
+    pub_only: bool,
 }
 
 impl Cli {
@@ -35,6 +36,7 @@ impl Cli {
             dry_run: true,
             write: false,
             confirm_write: false,
+            pub_only: false,
         }
     }
 }
@@ -59,6 +61,7 @@ fn parse_cli(args: &[String]) -> Result<Cli, String> {
                 cli.dry_run = false;
             }
             "--confirm-write" => cli.confirm_write = true,
+            "--pub-only" => cli.pub_only = true,
             other => return Err(format!("unknown flag {other:?}")),
         }
         idx = idx.saturating_add(1);
@@ -98,7 +101,7 @@ fn run() -> ExitCode {
         }
     };
 
-    let outcome: TransformOutcome = match transform(&source) {
+    let outcome: TransformOutcome = match transform_with_options(&source, cli.pub_only) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("rs-result-sig-rewrite: {e}");
