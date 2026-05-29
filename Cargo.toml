@@ -450,20 +450,19 @@ tests_outside_test_module = { level = "allow", priority = 1 }
 # return so the surrounding framework machinery still type-checks.
 panic_in_result_fn = { level = "allow", priority = 1 }
 
-# ----- Result-everywhere policy (M-2 force-Result, user directive) -----
-# The workspace is converging on "every function returns `anyhow::Result`
-# and propagates with context; error handling > compatibility". Two
-# pedantic lints actively fight that goal and are deliberately allowed:
+# ----- Result-everywhere policy (M-2, user directive) -----
+# The workspace is converging on "every function returns `Result`
+# (anyhow in lib/runtime code, syn in the proc-macro layer) and
+# propagates with context; error handling > compatibility".
 #
-#   • `unnecessary_wraps`: fires when a fn always returns `Ok(..)`/`Some(..)`.
-#     Under the Result-everywhere policy a total fn intentionally returns
-#     `Ok(value)` so its callers uniformly `?`-propagate; the wrap is the
-#     point, not an accident. (Public fns were already exempt; this extends
-#     the exemption to private fns so the policy is uniform.)
-#   • `missing_errors_doc`: would require a hand-written `# Errors` section
-#     on every one of the (soon) ~hundreds of `pub fn -> Result`. With
-#     uniform Result that doc requirement is pure noise. `unwrap_used` /
-#     `expect_used` / `panic` stay forbidden, so the propagate-don't-panic
-#     intent is still enforced.
+#   • `unnecessary_wraps`: ALLOWED — design-aligned. Under the
+#     Result-everywhere contract a total fn intentionally returns
+#     `Ok(value)` so callers uniformly `?`-propagate; the wrap is the
+#     point, not an accident. This is a deliberate config choice, not
+#     a suppression-to-hide.
+#
+# `missing_errors_doc` stays FORBIDDEN (group default): every
+# `pub fn -> Result` carries a hand-written `# Errors` section.
+# `unwrap_used` / `expect_used` / `panic` stay forbidden, so the
+# propagate-don't-panic discipline holds.
 unnecessary_wraps = { level = "allow", priority = 1 }
-missing_errors_doc = { level = "allow", priority = 1 }
