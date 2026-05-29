@@ -193,8 +193,15 @@ pub struct TransformOutcome {
     /// Number of `TODO(rs-cleanup)` comments inserted at hazard sites.
     pub hazard_todos: usize,
     /// Number of `FIXME(rs-cleanup)` comments inserted above
-    /// intra-file call sites of converted fns.
+    /// intra-file call sites of converted fns that fall OUTSIDE a
+    /// converted body (where `?` would not compile).
     pub fixme_callsites: usize,
+    /// T-2: number of `?` operators auto-inserted at converted-callee
+    /// call sites inside converted fn bodies.
+    pub question_callsites: usize,
+    /// T-1: number of `# Errors` doc stubs inserted on bare-`pub`
+    /// converted fns.
+    pub errors_docs: usize,
     /// Process exit code suggestion. `0` = clean, `3` = unsupported
     /// case encountered (e.g. const fn) that the human should review.
     pub exit_code: u8,
@@ -232,12 +239,28 @@ pub fn transform_with_options(source: &str, pub_only: bool) -> Result<TransformO
         };
         visitor.visit_file(&parsed);
         for span in visitor.sites {
-            planner.push_fixme_callsite(span);
+            let r = span.byte_range();
+            // T-2: inside a converted fn body → the enclosing fn now
+            // returns Result, so `?` is legal and is the propagate-now
+            // policy. Outside (skipped/locked/const body, closure) →
+            // FIXME, because `?` there would not compile.
+            if planner.in_converted_body(r.start) {
+                planner.push_question_mark_callsite(r.end);
+            } else {
+                planner.push_fixme_callsite(span);
+            }
         }
     }
 
     let mut edits = planner.edits;
-    edits.sort_by(|a, b| b.start.cmp(&a.start).then_with(|| b.seq.cmp(&a.seq)));
+    // Apply later file positions first (start DESC) so earlier byte
+    // offsets stay valid. For multiple insertions at the SAME position,
+    // apply in seq ASCENDING: an earlier-created edit (e.g. an `Ok(…)`
+    // wrap close, seq low) applies before a later-created one (e.g. a
+    // T-2 `?`, seq high), and since each same-position insert pushes
+    // prior content right, the later-applied `?` lands to the LEFT of
+    // the wrap close — yielding `Ok(call()?)`, not `Ok(call())?`.
+    edits.sort_by(|a, b| b.start.cmp(&a.start).then_with(|| a.seq.cmp(&b.seq)));
 
     let mut out = source.to_owned();
     for edit in edits {
@@ -258,6 +281,8 @@ pub fn transform_with_options(source: &str, pub_only: bool) -> Result<TransformO
         skipped: planner.skipped,
         hazard_todos: planner.hazard_todos,
         fixme_callsites: planner.fixme_callsites,
+        question_callsites: planner.question_callsites,
+        errors_docs: planner.errors_docs,
         exit_code: planner.exit_code,
         logs: planner.logs,
     })
@@ -271,10 +296,19 @@ struct Planner<'src> {
     edits: Vec<Edit>,
     logs: Vec<String>,
     converted_names: BTreeSet<String>,
+    /// Byte ranges of the bodies of fns this run converted. T-2 only
+    /// inserts `?` at converted-callee call sites that fall INSIDE one
+    /// of these ranges — i.e. inside a fn that now returns `Result` and
+    /// can therefore legally `?`-propagate. Call sites elsewhere
+    /// (skipped/locked-trait/const bodies, closures) get a FIXME
+    /// instead, since `?` there would not compile.
+    converted_bodies: Vec<(usize, usize)>,
     transformed: usize,
     skipped: usize,
     hazard_todos: usize,
     fixme_callsites: usize,
+    question_callsites: usize,
+    errors_docs: usize,
     exit_code: u8,
     next_seq: usize,
 }
@@ -287,10 +321,13 @@ impl<'src> Planner<'src> {
             edits: Vec::new(),
             logs: Vec::new(),
             converted_names: BTreeSet::new(),
+            converted_bodies: Vec::new(),
             transformed: 0,
             skipped: 0,
             hazard_todos: 0,
             fixme_callsites: 0,
+            question_callsites: 0,
+            errors_docs: 0,
             exit_code: 0,
             next_seq: 0,
         }
@@ -322,7 +359,7 @@ impl<'src> Planner<'src> {
                         self.skipped = self.skipped.saturating_add(1);
                         continue;
                     }
-                    self.process_fn(&f.sig, &f.block);
+                    self.process_fn(&f.sig, &f.block, is_bare_pub(&f.vis));
                 }
                 Item::Impl(imp) => {
                     self.walk_impl(imp);
@@ -342,8 +379,12 @@ impl<'src> Planner<'src> {
                             // Trait default methods: rewrite as if
                             // they were free fns. Implementors can
                             // override, so the default carries the
-                            // hazard surface.
-                            self.process_fn(&f.sig, block);
+                            // hazard surface. Trait methods carry no
+                            // `vis`; treat as non-pub for the `# Errors`
+                            // doc (a pub trait's default would need it
+                            // hand-added — rare; the abstract Reporter
+                            // trait has no defaults).
+                            self.process_fn(&f.sig, block, false);
                         }
                     }
                 }
@@ -394,7 +435,11 @@ impl<'src> Planner<'src> {
                     self.skipped = self.skipped.saturating_add(1);
                     continue;
                 }
-                self.process_fn(&f.sig, &f.block);
+                // `# Errors` doc only for bare-`pub` INHERENT methods.
+                // Trait-impl methods inherit the trait's doc, so clippy
+                // does not require `# Errors` on them.
+                let needs_doc = imp.trait_.is_none() && is_bare_pub(&f.vis);
+                self.process_fn(&f.sig, &f.block, needs_doc);
             }
         }
     }
@@ -407,7 +452,7 @@ impl<'src> Planner<'src> {
             .push(format!("skipping {trait_name}::{method} at line {line}"));
     }
 
-    fn process_fn(&mut self, sig: &Signature, block: &Block) {
+    fn process_fn(&mut self, sig: &Signature, block: &Block, is_pub: bool) {
         if sig.constness.is_some() {
             let name = sig.ident.to_string();
             let line = sig.fn_token.span.start().line;
@@ -440,6 +485,19 @@ impl<'src> Planner<'src> {
         self.rewrite_body(block, mode);
         self.collect_hazards(block);
 
+        // T-1: a bare-`pub` fn that now returns `Result` needs a
+        // `# Errors` section or `clippy::missing_errors_doc` (forbid)
+        // fails the build. Insert a stub just before the fn keyword.
+        if is_pub {
+            self.insert_errors_doc(sig);
+        }
+
+        // T-2: record this fn's body byte range so the call-site pass
+        // only inserts `?` at converted-callee calls inside it.
+        let body_start = block.brace_token.span.open().byte_range().start;
+        let body_end = block.brace_token.span.close().byte_range().end;
+        self.converted_bodies.push((body_start, body_end));
+
         self.converted_names.insert(sig.ident.to_string());
         self.transformed = self.transformed.saturating_add(1);
         self.logs.push(format!(
@@ -447,6 +505,24 @@ impl<'src> Planner<'src> {
             name = sig.ident,
             line = sig.fn_token.span.start().line,
         ));
+    }
+
+    /// T-1: insert a `# Errors` doc stub at the START of the fn's line
+    /// (before the leading indentation), so it lands after any
+    /// preceding attrs/summary doc and immediately before the
+    /// `pub fn` — never splitting the `pub`/`fn` keywords. Each
+    /// inserted line carries the fn's indentation.
+    fn insert_errors_doc(&mut self, sig: &Signature) {
+        let fn_start = sig.fn_token.span.byte_range().start;
+        let (line_start, indent) = line_start_with_indent(self.source, fn_start);
+        let stub = format!(
+            "{indent}/// # Errors\n\
+             {indent}///\n\
+             {indent}/// Returns `Err` if an underlying operation fails. \
+             TODO(rs-cleanup): describe the failure conditions.\n",
+        );
+        self.push_edit(line_start, line_start, stub);
+        self.errors_docs = self.errors_docs.saturating_add(1);
     }
 
     fn rewrite_signature(&mut self, sig: &Signature, mode: TransformMode) {
@@ -587,6 +663,21 @@ impl<'src> Planner<'src> {
             format!("{indent}// FIXME(rs-cleanup): callee returns Result, add ?\n"),
         );
         self.fixme_callsites = self.fixme_callsites.saturating_add(1);
+    }
+
+    /// T-2: append `?` at `end` (the byte just after a converted
+    /// callee's closing paren). `foo(a)` → `foo(a)?`. Inside a `!`
+    /// context `!is_x(a)` → `!is_x(a)?` which parses as `!(is_x(a)?)`.
+    fn push_question_mark_callsite(&mut self, end: usize) {
+        self.push_edit(end, end, "?".to_owned());
+        self.question_callsites = self.question_callsites.saturating_add(1);
+    }
+
+    /// T-2: is byte `pos` within the body of a fn this run converted?
+    fn in_converted_body(&self, pos: usize) -> bool {
+        self.converted_bodies
+            .iter()
+            .any(|&(start, end)| pos >= start && pos < end)
     }
 }
 

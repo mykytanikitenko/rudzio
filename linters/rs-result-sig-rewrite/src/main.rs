@@ -127,10 +127,12 @@ fn run() -> ExitCode {
     }
 
     eprintln!(
-        "rs-result-sig-rewrite: {t} fns transformed, {s} skipped, {h} hazard TODOs inserted, {c} FIXME callsites flagged",
+        "rs-result-sig-rewrite: {t} fns transformed, {s} skipped, {h} hazard TODOs, {q} `?` inserted, {d} `# Errors` docs, {c} FIXME callsites",
         t = outcome.transformed,
         s = outcome.skipped,
         h = outcome.hazard_todos,
+        q = outcome.question_callsites,
+        d = outcome.errors_docs,
         c = outcome.fixme_callsites,
     );
 

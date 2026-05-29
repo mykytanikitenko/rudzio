@@ -9,5 +9,8 @@ fn intra_file_callsite() {
         0,
     );
     assert_eq!(outcome.transformed, 2);
-    assert_eq!(outcome.fixme_callsites, 1);
+    // T-2: the call is inside the converted `caller` body, so `?` is
+    // inserted (not a FIXME).
+    assert_eq!(outcome.question_callsites, 1);
+    assert_eq!(outcome.fixme_callsites, 0);
 }
