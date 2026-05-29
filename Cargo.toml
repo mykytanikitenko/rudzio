@@ -1,6 +1,6 @@
 [package]
 name = "rudzio"
-version = "0.1.1"
+version = "0.1.2"
 edition = { workspace = true }
 description = "Async testing framework with pluggable runtimes (tokio, compio) and per-test context setup/teardown."
 license = "MIT OR Apache-2.0"
@@ -70,7 +70,7 @@ libc = { workspace = true }
 # cause a duplicate build.
 [dev-dependencies]
 # Dogfood under every runtime rudzio ships.
-rudzio = { version = "0.1.1", path = ".", features = [
+rudzio = { version = "0.1.2", path = ".", features = [
   "common",
   "runtime-tokio-multi-thread",
   "runtime-tokio-current-thread",
@@ -146,10 +146,10 @@ edition = "2024"
 
 [workspace.dependencies]
 # Local crates
-rudzio = { version = "0.1.1", path = "." }
-rudzio-macro = { version = "0.1.1", path = "macro" }
-rudzio-macro-internals = { version = "0.1.1", path = "macro-internals" }
-rudzio-migrate = { version = "0.1.1", path = "migrate" }
+rudzio = { version = "0.1.2", path = "." }
+rudzio-macro = { version = "0.1.2", path = "macro" }
+rudzio-macro-internals = { version = "0.1.2", path = "macro-internals" }
+rudzio-migrate = { version = "0.1.2", path = "migrate" }
 
 # External crates (pinned to exact versions for reproducible builds)
 anyhow = "=1.0.102"
