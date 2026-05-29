@@ -103,7 +103,13 @@ impl Strategy for Sequential {
             }
             let done = idx.saturating_add(1);
             if done.checked_rem(stride).is_some_and(|rem| rem == 0) || done == iterations {
-                on_progress(ProgressSnapshot::from_samples(&samples, done, iterations));
+                // TODO(rs-cleanup): from_samples is currently infallible. When it
+                // gains real errors, Strategy::run must propagate them (it returns
+                // Report; consider Result<Report>). unwrap_or_else with a neutral
+                // initial snapshot keeps the hazard visible without a trait change.
+                let __snapshot = ProgressSnapshot::from_samples(&samples, done, iterations)
+                    .unwrap_or_else(|_| ProgressSnapshot::initial(iterations));
+                on_progress(__snapshot);
             }
         }
         Report {
@@ -182,7 +188,13 @@ impl Strategy for Concurrent {
             }
             done = done.saturating_add(1);
             if done.is_multiple_of(stride) || done == iterations {
-                on_progress(ProgressSnapshot::from_samples(&samples, done, iterations));
+                // TODO(rs-cleanup): from_samples is currently infallible. When it
+                // gains real errors, Strategy::run must propagate them (it returns
+                // Report; consider Result<Report>). unwrap_or_else with a neutral
+                // initial snapshot keeps the hazard visible without a trait change.
+                let __snapshot = ProgressSnapshot::from_samples(&samples, done, iterations)
+                    .unwrap_or_else(|_| ProgressSnapshot::initial(iterations));
+                on_progress(__snapshot);
             }
         }
         Report {
