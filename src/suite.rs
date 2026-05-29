@@ -162,7 +162,7 @@ impl<'req> RunRequest<'req> {
 }
 
 /// Aggregated per-group counts.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct Summary {
     pub cancelled: usize,
@@ -187,7 +187,7 @@ pub struct Summary {
 /// Per-outcome counters bundled so [`Summary::new`] takes one struct
 /// instead of seven positional args, sidestepping
 /// `clippy::too_many_arguments`.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct SummaryOutcomes {
     /// See [`Summary::cancelled`].
