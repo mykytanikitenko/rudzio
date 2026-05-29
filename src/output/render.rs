@@ -190,7 +190,7 @@ enum StatusLabel {
 
 /// Aggregated counters and detailed failure records used to print the
 /// final post-run summary block.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Summary {
     /// Successful benchmark count.
     benched: usize,
@@ -216,6 +216,27 @@ struct Summary {
     teardown_failures: usize,
     /// Tests that exceeded their timeout.
     timed_out: usize,
+}
+
+impl Summary {
+    /// All-zero counters, no failures, no recorded start time.
+    /// Replaces `Default::default()` per P-1 (no `Default` impls in
+    /// workspace-internal types).
+    const fn empty() -> Self {
+        Self {
+            benched: 0,
+            cancelled: 0,
+            failed: 0,
+            failures: Vec::new(),
+            hung: 0,
+            ignored: 0,
+            panicked: 0,
+            passed: 0,
+            started_at: None,
+            teardown_failures: 0,
+            timed_out: 0,
+        }
+    }
 }
 
 /// One failure entry surfaced in the post-run failures section.
@@ -795,7 +816,7 @@ impl Drawer {
             tests: HashMap::new(),
             thread_to_test: HashMap::new(),
             last_live_rows: 0,
-            summary: Summary::default(),
+            summary: Summary::empty(),
             size_override: None,
         }
     }

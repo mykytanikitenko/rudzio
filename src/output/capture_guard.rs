@@ -43,7 +43,7 @@ pub struct CaptureGuard {
 /// Non-Unix guard — everything is `None`/no-op. Keeps the public
 /// type surface identical across platforms so downstream code doesn't
 /// have to `cfg!` around it.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[cfg(not(unix))]
 pub struct CaptureGuard {
     _private: (),
@@ -89,8 +89,8 @@ impl CaptureGuard {
 #[cfg(not(unix))]
 impl CaptureGuard {
     #[inline]
-    pub(crate) fn plain() -> Self {
-        Self::default()
+    pub(crate) const fn plain() -> Self {
+        Self { _private: () }
     }
 }
 
