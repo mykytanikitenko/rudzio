@@ -115,10 +115,12 @@ struct PlainState {
 impl PlainState {
     /// Append a failure record to the shared list, holding the mutex
     /// only for the duration of the push.
-    fn record_failure(&self, info: FailureInfo) {
+    fn record_failure(&self, info: FailureInfo) -> anyhow::Result<()> {
+        // TODO(rs-cleanup): silencing at line 119 — review and replace with Result-propagating equivalent
         let mut guard = self.failures.lock().unwrap_or_else(PoisonError::into_inner);
         guard.push(info);
-    }
+        Ok(())
+}
 }
 
 /// Status tag rendered before each result line in the plain-mode
@@ -207,28 +209,35 @@ impl ModeReporter {
 
     /// Construct a reporter wired for either plain or live output mode
     /// based on `config.output_mode`.
-    fn new(config: &Config) -> Self {
+    fn new(config: &Config) -> anyhow::Result<Self> {
         let logfile = LogfileWriter::open(config.logfile.as_deref());
-        match config.output_mode {
+        Ok(match config.output_mode {
             OutputMode::Plain => Self {
                 ensure_time: config.ensure_time,
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 ensure_time_exceeded: AtomicUsize::new(0),
                 logfile,
                 plain: Some(PlainState {
+                    // FIXME(rs-cleanup): callee returns Result, add ?
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     failures: Mutex::new(Vec::new()),
                     fmt: config.format,
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     colored: use_color(config.color),
                 }),
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 test_teardown_failures: AtomicUsize::new(0),
             },
             OutputMode::Live => Self {
                 ensure_time: config.ensure_time,
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 ensure_time_exceeded: AtomicUsize::new(0),
                 logfile,
                 plain: None,
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 test_teardown_failures: AtomicUsize::new(0),
             },
-        }
+        })
     }
 }
 
@@ -255,30 +264,37 @@ impl StatusLabel {
 }
 
 impl SuiteReporter for ModeReporter {
-    fn report_cancelled(&self, token: &'static TestToken, runtime_name: &'static str) {
+    fn report_cancelled(&self, token: &'static TestToken, runtime_name: &'static str) -> anyhow::Result<()> {
         if self.logfile.is_enabled() {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let qualified = qualified_test_name(token.module_path, token.name);
             self.logfile.write_line("ignored", &qualified);
         }
         if let Some(plain) = &self.plain {
             match plain.fmt {
                 Format::Terse => {
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     write_stdout(&yellow("c", plain.colored));
                     let _flush = io::stdout().flush();
                 }
                 Format::Pretty => {
                     let (tag_rendered, tag_visible) =
+                        // FIXME(rs-cleanup): callee returns Result, add ?
                         status_tag(StatusLabel::Cancel, plain.colored);
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     let display = qualified_test_name(token.module_path, token.name);
                     let lhs_naked = format!("{:width$} {display}", "", width = tag_visible);
                     let lhs_rendered = format!("{tag_rendered} {display}");
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     let trailing = runtime_only_info(runtime_name);
                     let line =
+                        // FIXME(rs-cleanup): callee returns Result, add ?
+                        // FIXME(rs-cleanup): callee returns Result, add ?
                         render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
                     write_stdout(&format!("{line}\n"));
                 }
             }
-            return;
+            return Ok(());
         }
         output::send_lifecycle(LifecycleEvent::TestIgnored {
             module_path: token.module_path,
@@ -286,24 +302,30 @@ impl SuiteReporter for ModeReporter {
             runtime_name,
             reason: "cancelled before dispatch",
         });
-    }
+        Ok(())
+}
 
-    fn report_ignored(&self, token: &'static TestToken, runtime_name: &'static str) {
+    fn report_ignored(&self, token: &'static TestToken, runtime_name: &'static str) -> anyhow::Result<()> {
         if self.logfile.is_enabled() {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let qualified = qualified_test_name(token.module_path, token.name);
             self.logfile.write_line("ignored", &qualified);
         }
         if let Some(plain) = &self.plain {
             match plain.fmt {
                 Format::Terse => {
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     write_stdout(&yellow("i", plain.colored));
                     let _flush = io::stdout().flush();
                 }
                 Format::Pretty => {
                     let (tag_rendered, tag_visible) =
+                        // FIXME(rs-cleanup): callee returns Result, add ?
                         status_tag(StatusLabel::Ignore, plain.colored);
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     let display = qualified_test_name(token.module_path, token.name);
                     let trailing = if token.ignore_reason.is_empty() {
+                        // FIXME(rs-cleanup): callee returns Result, add ?
                         runtime_only_info(runtime_name)
                     } else {
                         format!("<{runtime_name}, {}>", token.ignore_reason)
@@ -311,11 +333,13 @@ impl SuiteReporter for ModeReporter {
                     let lhs_naked = format!("{:width$} {display}", "", width = tag_visible);
                     let lhs_rendered = format!("{tag_rendered} {display}");
                     let line =
+                        // FIXME(rs-cleanup): callee returns Result, add ?
+                        // FIXME(rs-cleanup): callee returns Result, add ?
                         render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
                     write_stdout(&format!("{line}\n"));
                 }
             }
-            return;
+            return Ok(());
         }
         output::send_lifecycle(LifecycleEvent::TestIgnored {
             module_path: token.module_path,
@@ -323,15 +347,17 @@ impl SuiteReporter for ModeReporter {
             runtime_name,
             reason: token.ignore_reason,
         });
-    }
+        Ok(())
+}
 
     fn report_outcome(
         &self,
         token: &'static TestToken,
         runtime_name: &'static str,
         outcome: TestOutcome,
-    ) {
+    ) -> anyhow::Result<()> {
         if self.logfile.is_enabled() {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let qualified = qualified_test_name(token.module_path, token.name);
             self.logfile
                 .write_line(Self::logfile_status_for(&outcome), &qualified);
@@ -339,7 +365,9 @@ impl SuiteReporter for ModeReporter {
         if let (Some(thresholds), TestOutcome::Passed { elapsed }) = (self.ensure_time, &outcome)
             && let Some(level) = thresholds.violation(*elapsed)
         {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let qualified = qualified_test_name(token.module_path, token.name);
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let notice = format_ensure_time_notice(&qualified, *elapsed, level, &thresholds);
             write_stderr(&format!("{notice}\n"));
             if matches!(level, EnsureTimeViolation::Critical) {
@@ -349,7 +377,7 @@ impl SuiteReporter for ModeReporter {
         let Some(plain) = &self.plain else {
             // Live mode: macro-generated dispatch already emitted
             // TestCompleted with the full outcome; nothing to do.
-            return;
+            return Ok(());
         };
         match plain.fmt {
             Format::Terse => {
@@ -359,12 +387,15 @@ impl SuiteReporter for ModeReporter {
                     | TestOutcome::Panicked { .. }
                     | TestOutcome::SetupFailed { .. }
                     | TestOutcome::TimedOut
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     | TestOutcome::Hung { .. } => red("F", plain.colored),
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     TestOutcome::Cancelled => yellow("c", plain.colored),
                     TestOutcome::Benched { report, .. } => {
                         if report.is_success() {
                             "b".to_owned()
                         } else {
+                            // FIXME(rs-cleanup): callee returns Result, add ?
                             red("B", plain.colored)
                         }
                     }
@@ -373,6 +404,7 @@ impl SuiteReporter for ModeReporter {
                 let _flush = io::stdout().flush();
             }
             Format::Pretty => {
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 let block = pretty_outcome_block(token, runtime_name, &outcome, plain.colored);
                 write_stdout(&format!("{block}\n"));
             }
@@ -410,8 +442,9 @@ impl SuiteReporter for ModeReporter {
             | TestOutcome::Panicked { .. }
             | TestOutcome::Passed { .. }
             | TestOutcome::TimedOut => {}
-        }
-    }
+        };
+        Ok(())
+}
 
     fn report_suite_setup_finished(
         &self,
@@ -419,7 +452,7 @@ impl SuiteReporter for ModeReporter {
         suite: &'static str,
         elapsed: Duration,
         error: Option<&str>,
-    ) {
+    ) -> anyhow::Result<()> {
         if let Some(plain) = &self.plain {
             if matches!(plain.fmt, Format::Pretty) {
                 // Suite-level setup failure: render as [FAIL]. The
@@ -432,12 +465,15 @@ impl SuiteReporter for ModeReporter {
                 } else {
                     StatusLabel::Ok
                 };
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 let (tag_rendered, tag_visible) = status_tag(label, plain.colored);
                 let display = format!("setup {}", normalize_module_path(suite));
                 let trailing = format!("<{runtime_name}, {}>", format_elapsed(elapsed));
                 let lhs_naked = format!("{:width$} {display}", "", width = tag_visible);
                 let lhs_rendered = format!("{tag_rendered} {display}");
                 let line =
+                    // FIXME(rs-cleanup): callee returns Result, add ?
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
                 write_stdout(&format!("{line}\n"));
                 if let Some(msg) = error {
@@ -456,7 +492,7 @@ impl SuiteReporter for ModeReporter {
                     ),
                 });
             }
-            return;
+            return Ok(());
         }
         output::send_lifecycle(LifecycleEvent::SuiteSetupFinished {
             runtime_name,
@@ -465,17 +501,19 @@ impl SuiteReporter for ModeReporter {
             elapsed,
             error: error.map(str::to_owned),
         });
-    }
+        Ok(())
+}
 
-    fn report_suite_setup_started(&self, runtime_name: &'static str, suite: &'static str) {
+    fn report_suite_setup_started(&self, runtime_name: &'static str, suite: &'static str) -> anyhow::Result<()> {
         if let Some(plain) = &self.plain {
             if matches!(plain.fmt, Format::Pretty) {
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 let suite_disp = normalize_module_path(suite);
                 write_stdout(&format!(
                     "setup    {suite_disp} ... started <{runtime_name}>\n"
                 ));
             }
-            return;
+            return Ok(());
         }
         output::send_lifecycle(LifecycleEvent::SuiteSetupStarted {
             runtime_name,
@@ -483,7 +521,8 @@ impl SuiteReporter for ModeReporter {
             thread: thread::current().id(),
             at: Instant::now(),
         });
-    }
+        Ok(())
+}
 
     fn report_suite_teardown_finished(
         &self,
@@ -491,8 +530,9 @@ impl SuiteReporter for ModeReporter {
         suite: &'static str,
         elapsed: Duration,
         result: TeardownResult,
-    ) {
+    ) -> anyhow::Result<()> {
         if let Some(plain) = &self.plain {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let suite_disp = normalize_module_path(suite);
             if matches!(plain.fmt, Format::Pretty) {
                 let label = match result {
@@ -502,12 +542,15 @@ impl SuiteReporter for ModeReporter {
                     TeardownResult::TimedOut => StatusLabel::Timeout,
                     TeardownResult::Hung => StatusLabel::Hang,
                 };
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 let (tag_rendered, tag_visible) = status_tag(label, plain.colored);
                 let display = format!("teardown {suite_disp}");
                 let trailing = format!("<{runtime_name}, {}>", format_elapsed(elapsed));
                 let lhs_naked = format!("{:width$} {display}", "", width = tag_visible);
                 let lhs_rendered = format!("{tag_rendered} {display}");
                 let line =
+                    // FIXME(rs-cleanup): callee returns Result, add ?
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
                 write_stdout(&format!("{line}\n"));
                 match &result {
@@ -569,7 +612,7 @@ impl SuiteReporter for ModeReporter {
                     });
                 }
             }
-            return;
+            return Ok(());
         }
         output::send_lifecycle(LifecycleEvent::SuiteTeardownFinished {
             runtime_name,
@@ -578,17 +621,19 @@ impl SuiteReporter for ModeReporter {
             elapsed,
             result,
         });
-    }
+        Ok(())
+}
 
-    fn report_suite_teardown_started(&self, runtime_name: &'static str, suite: &'static str) {
+    fn report_suite_teardown_started(&self, runtime_name: &'static str, suite: &'static str) -> anyhow::Result<()> {
         if let Some(plain) = &self.plain {
             if matches!(plain.fmt, Format::Pretty) {
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 let suite_disp = normalize_module_path(suite);
                 write_stdout(&format!(
                     "teardown {suite_disp} ... started <{runtime_name}>\n"
                 ));
             }
-            return;
+            return Ok(());
         }
         output::send_lifecycle(LifecycleEvent::SuiteTeardownStarted {
             runtime_name,
@@ -596,33 +641,38 @@ impl SuiteReporter for ModeReporter {
             thread: thread::current().id(),
             at: Instant::now(),
         });
-    }
+        Ok(())
+}
 
     fn report_test_teardown_failure(
         &self,
         token: &'static TestToken,
         runtime_name: &'static str,
         result: TeardownResult,
-    ) {
+    ) -> anyhow::Result<()> {
         if !matches!(result, TeardownResult::Ok) {
             let _prev = self.test_teardown_failures.fetch_add(1, Ordering::Relaxed);
         }
         if let Some(plain) = &self.plain {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let display = qualified_test_name(token.module_path, token.name);
             if matches!(plain.fmt, Format::Pretty) {
                 let label = match result {
-                    TeardownResult::Ok => return,
+                    TeardownResult::Ok => return Ok(()),
                     TeardownResult::Err(_) => StatusLabel::Fail,
                     TeardownResult::Panicked(_) => StatusLabel::Panic,
                     TeardownResult::TimedOut => StatusLabel::Timeout,
                     TeardownResult::Hung => StatusLabel::Hang,
                 };
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 let (tag_rendered, tag_visible) = status_tag(label, plain.colored);
                 let lhs_display = format!("teardown {display}");
                 let trailing = format!("<{runtime_name}>");
                 let lhs_naked = format!("{:width$} {lhs_display}", "", width = tag_visible);
                 let lhs_rendered = format!("{tag_rendered} {lhs_display}");
                 let line =
+                    // FIXME(rs-cleanup): callee returns Result, add ?
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
                 write_stdout(&format!("{line}\n"));
                 match &result {
@@ -684,7 +734,7 @@ impl SuiteReporter for ModeReporter {
                     });
                 }
             }
-            return;
+            return Ok(());
         }
         output::send_lifecycle(LifecycleEvent::TestTeardownFailed {
             module_path: token.module_path,
@@ -692,11 +742,13 @@ impl SuiteReporter for ModeReporter {
             runtime_name,
             result,
         });
-    }
+        Ok(())
+}
 
-    fn report_warning(&self, message: &str) {
+    fn report_warning(&self, message: &str) -> anyhow::Result<()> {
         write_stderr(&format!("warning: {message}\n"));
-    }
+        Ok(())
+}
 }
 
 impl TestSummary {
@@ -780,8 +832,9 @@ impl From<SuiteSummary> for TestSummary {
 // ---------------------------------------------------------------------------
 
 /// Wrap `text` with the bold ANSI SGR code when `colored` is true.
-fn bold(text: &str, colored: bool) -> String {
-    paint(text, "1", colored)
+fn bold(text: &str, colored: bool) -> anyhow::Result<String> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
+    Ok(paint(text, "1", colored))
 }
 
 /// Set `RUST_BACKTRACE=full` and `RUST_LIB_BACKTRACE=full` if neither
@@ -789,7 +842,7 @@ fn bold(text: &str, colored: bool) -> String {
 /// backtrace under the rudzio runner. When the binary is launched
 /// directly (no rudzio runner), this fn is never called and stdlib's
 /// normal env-var lookup applies.
-fn enable_full_backtrace_default() {
+fn enable_full_backtrace_default() -> anyhow::Result<()> {
     if env::var_os("RUST_BACKTRACE").is_none() {
         #[expect(
             unsafe_code,
@@ -813,13 +866,14 @@ fn enable_full_backtrace_default() {
         unsafe {
             env::set_var("RUST_LIB_BACKTRACE", "full");
         }
-    }
+    };
+    Ok(())
 }
 
 /// Format `elapsed` for the trailing `<runtime, …>` block using a
 /// short `1.23s`-style representation.
-fn format_elapsed(elapsed: Duration) -> String {
-    fmt_duration(elapsed)
+fn format_elapsed(elapsed: Duration) -> anyhow::Result<String> {
+    Ok(fmt_duration(elapsed))
 }
 
 /// Format the libtest-shape stderr notice for a `--ensure-time`
@@ -830,16 +884,16 @@ fn format_ensure_time_notice(
     elapsed: Duration,
     level: EnsureTimeViolation,
     thresholds: &EnsureTimes,
-) -> String {
+) -> anyhow::Result<String> {
     let (label, threshold) = match level {
         EnsureTimeViolation::Critical => ("critical", thresholds.critical),
         EnsureTimeViolation::Warn => ("warn", thresholds.warn),
     };
-    format!(
+    Ok(format!(
         "note: ensure-time {label}: test {qualified} took {elapsed}, exceeds threshold {threshold}",
         elapsed = fmt_duration(elapsed),
         threshold = fmt_duration(threshold),
-    )
+    ))
 }
 
 /// Print a one-shot stderr notice listing every CLI argument the rudzio
@@ -849,9 +903,9 @@ fn format_ensure_time_notice(
 /// silently no-op while looking like the real flag was honored.
 ///
 /// No-op when `unparsed` is empty, so legitimate runs don't see noise.
-fn warn_on_unparsed_args(unparsed: &[String]) {
+fn warn_on_unparsed_args(unparsed: &[String]) -> anyhow::Result<()> {
     if unparsed.is_empty() {
-        return;
+        return Ok(());
     }
     let plural = if unparsed.len() == 1_usize {
         "argument"
@@ -865,29 +919,33 @@ fn warn_on_unparsed_args(unparsed: &[String]) {
         count = unparsed.len(),
         joined = unparsed.join(", "),
     ));
+    Ok(())
 }
 
 /// Wrap `text` with the green ANSI SGR code when `colored` is true.
-fn green(text: &str, colored: bool) -> String {
-    paint(text, "32", colored)
+fn green(text: &str, colored: bool) -> anyhow::Result<String> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
+    Ok(paint(text, "32", colored))
 }
 
 /// Install SIGINT/SIGTERM handlers that flip `token`, giving in-flight
 /// tests a chance to observe cooperative cancellation.
 #[cfg(unix)]
-fn install_signal_handler(token: CancellationToken) {
+fn install_signal_handler(token: CancellationToken) -> anyhow::Result<()> {
     use signal_hook::consts::{SIGINT, SIGTERM};
     use signal_hook::iterator::Signals;
 
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let mut signals = match Signals::new([SIGINT, SIGTERM]) {
         Ok(handle) => handle,
         Err(err) => {
             write_stderr(&format!(
                 "warning: failed to install signal handler: {err}\n"
             ));
-            return;
+            return Ok(());
         }
     };
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let _handle = thread::Builder::new()
         .name("rudzio-signal-handler".to_owned())
         .spawn(move || {
@@ -901,10 +959,12 @@ fn install_signal_handler(token: CancellationToken) {
                 token.cancel();
             }
         });
+    Ok(())
 }
 
 #[cfg(not(unix))]
-fn install_signal_handler(_token: CancellationToken) {}
+fn install_signal_handler(_token: CancellationToken) -> anyhow::Result<()> {    Ok(())
+}
 
 /// Strip rudzio-autogenerated segments from a `module_path!()` string
 /// so the displayed test path begins at the user's crate or module
@@ -942,7 +1002,7 @@ fn install_signal_handler(_token: CancellationToken) {}
 #[doc(hidden)]
 #[must_use]
 #[inline]
-pub fn normalize_module_path(mp: &str) -> String {
+pub fn normalize_module_path(mp: &str) -> anyhow::Result<String> {
     // Discriminator: aggregator mode is signalled by the bridge-mount
     // wrapper `__rudzio_test_<id>` appearing somewhere in the path.
     // Without it we are in per-crate mode (single cargo `[[test]]`
@@ -954,9 +1014,11 @@ pub fn normalize_module_path(mp: &str) -> String {
     // `<member>__<stem>`, so the binary id always starts with that
     // ident plus `__`. Capture the prefix once so we can dedupe the
     // member name out of every unwrapped binary id in this pass.
+    // TODO(rs-cleanup): silencing at line 957 — review and replace with Result-propagating equivalent
     let head_segment = mp.split("::").next().unwrap_or("");
     let member_prefix =
         (is_aggregator && !head_segment.is_empty()).then(|| format!("{head_segment}__"));
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let mut out: Vec<&str> = Vec::new();
     let mut just_dropped_crate = false;
     for (i, seg) in mp.split("::").enumerate() {
@@ -976,6 +1038,7 @@ pub fn normalize_module_path(mp: &str) -> String {
             let cleaned = member_prefix
                 .as_deref()
                 .and_then(|prefix| test_id.strip_prefix(prefix))
+                // TODO(rs-cleanup): silencing at line 979 — review and replace with Result-propagating equivalent
                 .unwrap_or(test_id);
             if !cleaned.is_empty() {
                 out.push(cleaned);
@@ -987,7 +1050,7 @@ pub fn normalize_module_path(mp: &str) -> String {
         }
         out.push(seg);
     }
-    out.join("::")
+    Ok(out.join("::"))
 }
 
 /// Build the multi-line Pretty-mode block for a finished test
@@ -998,13 +1061,18 @@ fn pretty_outcome_block(
     runtime_name: &'static str,
     outcome: &TestOutcome,
     colored: bool,
-) -> String {
+) -> anyhow::Result<String> {
     let label = StatusLabel::from_outcome(outcome);
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let (tag_rendered, tag_visible) = status_tag(label, colored);
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let display = qualified_test_name(token.module_path, token.name);
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let trailing = trailing_info(outcome, runtime_name);
     let lhs_naked = format!("{:width$} {display}", "", width = tag_visible);
     let lhs_rendered = format!("{tag_rendered} {display}");
+    // FIXME(rs-cleanup): callee returns Result, add ?
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let header = render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
     let mut buf = header;
     if let TestOutcome::Benched { report, .. } = outcome {
@@ -1021,6 +1089,7 @@ fn pretty_outcome_block(
                 buf.push_str(histogram.trim_end_matches('\n'));
             }
         }
+    // FIXME(rs-cleanup): callee returns Result, add ?
     } else if let Some(msg) = outcome_inline_message(outcome) {
         // Single atomic write: header + inlined failure message,
         // rendered in the tag's color for failing outcomes so the
@@ -1036,6 +1105,7 @@ fn pretty_outcome_block(
                     | StatusLabel::Timeout
                     | StatusLabel::Cancel
             ) {
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 red(&body, colored)
             } else {
                 body
@@ -1045,15 +1115,15 @@ fn pretty_outcome_block(
     } else {
         // Passed / Ignored / etc.; the status line is the whole payload.
     }
-    buf
+    Ok(buf)
 }
 
 /// One-shot diagnostic message for a finished test — rendered
 /// indented right under its status line so the reason for failure
 /// (test body error, setup error, panic payload, timeout note)
 /// is visible without scrolling to the end-of-run failures section.
-fn outcome_inline_message(outcome: &TestOutcome) -> Option<String> {
-    match outcome {
+fn outcome_inline_message(outcome: &TestOutcome) -> anyhow::Result<Option<String>> {
+    Ok(match outcome {
         TestOutcome::Failed { message, .. } => Some(message.clone()),
         TestOutcome::SetupFailed { message, .. } => Some(format!("test setup failed: {message}")),
         TestOutcome::TimedOut => Some("test exceeded its timeout".to_owned()),
@@ -1062,17 +1132,17 @@ fn outcome_inline_message(outcome: &TestOutcome) -> Option<String> {
         TestOutcome::Panicked { .. } | TestOutcome::Passed { .. } | TestOutcome::Benched { .. } => {
             None
         }
-    }
+    })
 }
 
 /// Wrap `text` with the given ANSI SGR `code` when `colored` is true,
 /// otherwise return `text` unchanged.
-fn paint(text: &str, code: &str, colored: bool) -> String {
-    if colored {
+fn paint(text: &str, code: &str, colored: bool) -> anyhow::Result<String> {
+    Ok(if colored {
         format!("\x1b[{code}m{text}\x1b[0m")
     } else {
         text.to_owned()
-    }
+    })
 }
 
 /// Format a token's display name as the runner shows it everywhere:
@@ -1082,18 +1152,20 @@ fn paint(text: &str, code: &str, colored: bool) -> String {
 #[doc(hidden)]
 #[must_use]
 #[inline]
-pub fn qualified_test_name(module_path: &str, test_name: &str) -> String {
+pub fn qualified_test_name(module_path: &str, test_name: &str) -> anyhow::Result<String> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let normalized = normalize_module_path(module_path);
-    if normalized.is_empty() {
+    Ok(if normalized.is_empty() {
         test_name.to_owned()
     } else {
         format!("{normalized}::{test_name}")
-    }
+    })
 }
 
 /// Wrap `text` with the red ANSI SGR code when `colored` is true.
-fn red(text: &str, colored: bool) -> String {
-    paint(text, "31", colored)
+fn red(text: &str, colored: bool) -> anyhow::Result<String> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
+    Ok(paint(text, "31", colored))
 }
 
 /// Right-align `trailing` to the terminal width, with at least
@@ -1106,17 +1178,21 @@ fn render_status_line(
     lhs_rendered: &str,
     trailing: &str,
     term_cols: usize,
-) -> String {
+) -> anyhow::Result<String> {
     let lhs_visible = lhs_naked.chars().count();
     let trailing_visible = trailing.chars().count();
     let pad = term_cols
+        // TODO(rs-cleanup): masking_arith at line 1113 — review and replace with Result-propagating equivalent
         .saturating_sub(lhs_visible)
+        // TODO(rs-cleanup): masking_arith at line 1114 — review and replace with Result-propagating equivalent
         .saturating_sub(trailing_visible)
         .max(MIN_TRAILING_PAD);
     let mut out = String::with_capacity(
         lhs_rendered
             .len()
+            // TODO(rs-cleanup): masking_arith at line 1119 — review and replace with Result-propagating equivalent
             .saturating_add(pad)
+            // TODO(rs-cleanup): masking_arith at line 1120 — review and replace with Result-propagating equivalent
             .saturating_add(trailing.len()),
     );
     out.push_str(lhs_rendered);
@@ -1124,7 +1200,7 @@ fn render_status_line(
         out.push(' ');
     }
     out.push_str(trailing);
-    out
+    Ok(out)
 }
 
 /// Collect all registered [`TestToken`]s and dispatch them.
@@ -1152,13 +1228,14 @@ fn print_plain_summary(
     filtered_out: usize,
     elapsed: Duration,
     colored_plain: bool,
-) {
+) -> anyhow::Result<()> {
     if plain.fmt == Format::Terse && total_count > 0 {
         write_stdout("\n");
     }
     let guard = plain
         .failures
         .lock()
+        // TODO(rs-cleanup): silencing at line 1162 — review and replace with Result-propagating equivalent
         .unwrap_or_else(PoisonError::into_inner);
     if !guard.is_empty() {
         write_stdout("\nfailures:\n\n");
@@ -1175,8 +1252,12 @@ fn print_plain_summary(
     drop(guard);
 
     let result_label = if grand_total.is_success() {
+        // FIXME(rs-cleanup): callee returns Result, add ?
+        // FIXME(rs-cleanup): callee returns Result, add ?
         bold(&green("ok", colored_plain), colored_plain)
     } else {
+        // FIXME(rs-cleanup): callee returns Result, add ?
+        // FIXME(rs-cleanup): callee returns Result, add ?
         bold(&red("FAILED", colored_plain), colored_plain)
     };
     let elapsed_text = fmt_duration(elapsed);
@@ -1195,6 +1276,7 @@ fn print_plain_summary(
         grand_total.total,
         filtered_out,
     ));
+    Ok(())
 }
 
 /// Group `tokens` by `(runtime_group_key)` and dispatch one OS thread
@@ -1207,7 +1289,7 @@ fn dispatch_test_groups(
     config: &Config,
     root_token: &CancellationToken,
     reporter: &ModeReporter,
-) -> TestSummary {
+) -> anyhow::Result<TestSummary> {
     // Defense-in-depth: confirm macro-generated owner and token agree on
     // the (Runtime, Suite) identity before any cross-type pointer cast
     // can happen inside `RuntimeGroupOwner::run_group`. With the
@@ -1222,12 +1304,13 @@ fn dispatch_test_groups(
     // better than SEGVing in a runtime allocator's memcpy.
     if let Err(msg) = validate_dispatch_table(tokens) {
         write_stderr(&format!("{msg}\n"));
-        return TestSummary {
+        return Ok(TestSummary {
             panicked: 1,
             total: 1,
             ..TestSummary::zero()
-        };
+        });
     }
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let mut groups: HashMap<RuntimeGroupKey, Vec<&'static TestToken>> = HashMap::new();
     for token in tokens {
         groups
@@ -1235,9 +1318,10 @@ fn dispatch_test_groups(
             .or_default()
             .push(token);
     }
-    thread::scope(|scope| {
+    Ok(thread::scope(|scope| {
         // Spawn every group's thread first; a lazy iterator + fold
         // would serialize spawn-join-spawn-join.
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let mut handles = Vec::new();
         for mut group_tokens in groups.into_values() {
             group_tokens.sort_by_key(|token| (token.file, token.line));
@@ -1253,6 +1337,7 @@ fn dispatch_test_groups(
                 // this should `?`-propagate instead of logging. Handling the
                 // Result here keeps the hazard visible without cascading the
                 // signature change through run() yet.
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 if let Err(err) = permute_with_seed(&mut group_tokens, resolved_shuffle_seed(config)) {
                     write_stderr(&format!("shuffle failed: {err:#}\n"));
                 }
@@ -1282,6 +1367,7 @@ fn dispatch_test_groups(
                         .downcast_ref::<&str>()
                         .copied()
                         .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                        // TODO(rs-cleanup): silencing at line 1285 — review and replace with Result-propagating equivalent
                         .unwrap_or("unknown panic");
                     write_stderr(&format!("error: runtime thread panicked: {msg}\n"));
                     total = total.merge(TestSummary {
@@ -1293,12 +1379,12 @@ fn dispatch_test_groups(
             }
         }
         total
-    })
+    }))
 }
 
 /// Run-timeout watchdog: cancels `token` once `dur` elapses unless
 /// the token has already been cancelled (SIGINT/SIGTERM, etc.).
-fn spawn_run_timeout_watchdog(token: CancellationToken, dur: Duration) {
+fn spawn_run_timeout_watchdog(token: CancellationToken, dur: Duration) -> anyhow::Result<()> {
     let _watchdog = thread::spawn(move || {
         thread::sleep(dur);
         if !token.is_cancelled() {
@@ -1309,6 +1395,7 @@ fn spawn_run_timeout_watchdog(token: CancellationToken, dur: Duration) {
             token.cancel();
         }
     });
+    Ok(())
 }
 
 /// Layer-1 process-exit watchdog. Listens for `token` cancellation
@@ -1317,7 +1404,8 @@ fn spawn_run_timeout_watchdog(token: CancellationToken, dur: Duration) {
 /// safety net for sync-blocked tasks that ignore every cooperative
 /// cancellation signal — no amount of token-listening or `abort()`
 /// will free the worker, but `_exit` lets the OS reap every thread.
-fn spawn_grace_force_exit_watchdog(token: CancellationToken, grace: Duration) {
+fn spawn_grace_force_exit_watchdog(token: CancellationToken, grace: Duration) -> anyhow::Result<()> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let _watchdog = thread::Builder::new()
         .name("rudzio-cancel-grace-watchdog".to_owned())
         .spawn(move || {
@@ -1348,14 +1436,16 @@ fn spawn_grace_force_exit_watchdog(token: CancellationToken, grace: Duration) {
                 libc::_exit(2);
             }
         });
+    Ok(())
 }
 
 /// Resolve the shuffle seed for a `Config`: the user's explicit
 /// `--shuffle-seed=N` if present, otherwise a clock-derived value via
 /// [`derive_shuffle_seed`]. Both branches return the same `u64` so the
 /// caller can pass it to `permute_with_seed` and print it for repro.
-fn resolved_shuffle_seed(config: &Config) -> u64 {
-    config.shuffle_seed.unwrap_or_else(derive_shuffle_seed)
+fn resolved_shuffle_seed(config: &Config) -> anyhow::Result<u64> {
+    // TODO(rs-cleanup): silencing at line 1358 — review and replace with Result-propagating equivalent
+    Ok(config.shuffle_seed.unwrap_or_else(derive_shuffle_seed))
 }
 
 /// Build a fresh shuffle seed from the wall clock. Used when the user
@@ -1366,19 +1456,21 @@ fn resolved_shuffle_seed(config: &Config) -> u64 {
 /// wrapping arithmetic to dodge the u128 → u64 truncation cast: both
 /// `secs` (`u64`) and `subsec_nanos` (`u32`) already fit, so no
 /// information is lost beyond the natural u64 wrap on year ~2554.
-fn derive_shuffle_seed() -> u64 {
-    SystemTime::now()
+fn derive_shuffle_seed() -> anyhow::Result<u64> {
+    Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |dur| {
             dur.as_secs()
+                // TODO(rs-cleanup): masking_arith at line 1374 — review and replace with Result-propagating equivalent
                 .wrapping_mul(1_000_000_000)
+                // TODO(rs-cleanup): masking_arith at line 1375 — review and replace with Result-propagating equivalent
                 .wrapping_add(u64::from(dur.subsec_nanos()))
-        })
+        }))
 }
 
 #[must_use]
 #[inline]
-pub fn run(cargo: CargoMeta) -> ExitCode {
+pub fn run(cargo: CargoMeta) -> anyhow::Result<ExitCode> {
     // Default `RUST_BACKTRACE=full` (and `RUST_LIB_BACKTRACE`) **only
     // when the user hasn't set them**. Backtraces are essential for
     // diagnosing panics in async test bodies — the libtest harness
@@ -1389,6 +1481,7 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
     // value applies to direct panics and to library code (e.g. tokio's
     // worker-thread panics) alike. Skip the override entirely when the
     // user has expressed any preference, including `RUST_BACKTRACE=0`.
+    // FIXME(rs-cleanup): callee returns Result, add ?
     enable_full_backtrace_default();
 
     let mut config = Config::parse(cargo);
@@ -1401,6 +1494,7 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
     // to stderr before the help check so `--help --foo` still flags the
     // typo, and before the output-capture pipe is installed so it
     // reaches the user's terminal directly.
+    // FIXME(rs-cleanup): callee returns Result, add ?
     warn_on_unparsed_args(&config.unparsed);
 
     // --help / -h: print USAGE to real stdout and exit before the
@@ -1408,9 +1502,10 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
     // user's terminal directly.
     if matches!(config.print_only, PrintOnly::Help) {
         write_stdout(USAGE);
-        return ExitCode::SUCCESS;
+        return Ok(ExitCode::SUCCESS);
     }
 
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let colored_plain = matches!(config.output_mode, OutputMode::Plain) && use_color(config.color);
 
     // Output capture + render. In Plain mode returns a no-op guard
@@ -1422,7 +1517,7 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
             write_stderr(&format!(
                 "rudzio: failed to initialise output capture: {err}\n"
             ));
-            return ExitCode::from(2);
+            return Ok(ExitCode::from(2));
         }
     };
 
@@ -1432,7 +1527,9 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
         .iter()
         .copied()
         .filter(|token| {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let qualified = qualified_test_name(token.module_path, token.name);
+            // FIXME(rs-cleanup): callee returns Result, add ?
             token_passes_filters(
                 &qualified,
                 token.ignored,
@@ -1444,6 +1541,7 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
         })
         .collect();
 
+    // TODO(rs-cleanup): masking_arith at line 1447 — review and replace with Result-propagating equivalent
     let filtered_out = all_tokens.len().saturating_sub(filtered_tokens.len());
 
     if matches!(config.print_only, PrintOnly::List) {
@@ -1454,7 +1552,7 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
                 qualified_test_name(token.module_path, token.name)
             ));
         }
-        return ExitCode::SUCCESS;
+        return Ok(ExitCode::SUCCESS);
     }
 
     let total_count = filtered_tokens.len();
@@ -1473,25 +1571,32 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
     // in libtest-compatible form: a re-run with `--shuffle-seed=<N>`
     // reproduces the same order.
     if config.shuffle {
+        // TODO(rs-cleanup): silencing at line 1476 — review and replace with Result-propagating equivalent
         let seed = config.shuffle_seed.unwrap_or_else(derive_shuffle_seed);
         config.shuffle_seed = Some(seed);
         write_stdout(&format!("shuffle seed: {seed}\n"));
     }
 
     // Root cancellation token: cancelled on run-timeout, SIGINT, or SIGTERM.
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let root_token = CancellationToken::new();
+    // FIXME(rs-cleanup): callee returns Result, add ?
     install_signal_handler(root_token.clone());
 
     if let Some(dur) = config.run_timeout {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         spawn_run_timeout_watchdog(root_token.clone(), dur);
     }
     if let Some(grace) = config.cancel_grace_period {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         spawn_grace_force_exit_watchdog(root_token.clone(), grace);
     }
 
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let reporter = ModeReporter::new(&config);
     let start = Instant::now();
 
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let total = dispatch_test_groups(&filtered_tokens, &config, &root_token, &reporter);
 
     // Per-test teardown failures aren't visible to the per-thread
@@ -1508,6 +1613,7 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
     // Plain-mode summary rendering. Live mode lets the drawer handle
     // it during its shutdown path.
     if let Some(plain) = &reporter.plain {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         print_plain_summary(
             plain,
             grand_total,
@@ -1541,25 +1647,25 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
             "rudzio: {bg_panics} background-thread panic(s) detected outside any test boundary; \
              marking run as FAILED. Re-run with RUST_BACKTRACE=full for the panic location.\n"
         ));
-        return ExitCode::from(1);
+        return Ok(ExitCode::from(1));
     }
 
-    if grand_total.is_success() {
+    Ok(if grand_total.is_success() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
-    }
+    })
 }
 
 /// Format the `<runtime>` info block for events that don't carry an
 /// elapsed or outcome (ignored / cancelled-before-dispatch).
-fn runtime_only_info(runtime_name: &str) -> String {
-    format!("<{runtime_name}>")
+fn runtime_only_info(runtime_name: &str) -> anyhow::Result<String> {
+    Ok(format!("<{runtime_name}>"))
 }
 
 /// Build the padded, coloured status tag for an outcome.
 /// Returns `(rendered_with_color, visible_width)`.
-fn status_tag(outcome_label: StatusLabel, colored: bool) -> (String, usize) {
+fn status_tag(outcome_label: StatusLabel, colored: bool) -> anyhow::Result<(String, usize)> {
     let (word, code) = match outcome_label {
         StatusLabel::Ok => ("OK", "32"),
         StatusLabel::Fail => ("FAIL", "31"),
@@ -1574,20 +1680,22 @@ fn status_tag(outcome_label: StatusLabel, colored: bool) -> (String, usize) {
     };
     let naked = format!("[{word}]");
     let visible = naked.chars().count();
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let painted = paint(&naked, code, colored);
     // Pad with trailing spaces so the status column has uniform width.
+    // TODO(rs-cleanup): masking_arith at line 1579 — review and replace with Result-propagating equivalent
     let pad = STATUS_TAG_WIDTH.saturating_sub(visible);
     let mut out = painted;
     for _ in 0..pad {
         out.push(' ');
     }
-    (out, STATUS_TAG_WIDTH)
+    Ok((out, STATUS_TAG_WIDTH))
 }
 
 /// Best-effort terminal column count for right-aligning the trailing
 /// info. Falls back to 100 when we can't query the TTY.
 #[cfg(unix)]
-fn terminal_width() -> usize {
+fn terminal_width() -> anyhow::Result<usize> {
     use std::os::fd::AsRawFd as _;
     #[expect(
         unsafe_code,
@@ -1606,14 +1714,14 @@ fn terminal_width() -> usize {
     // Result is read only on success.
     let ioctl_ret = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &raw mut ws) };
     if ioctl_ret == 0_i32 && ws.ws_col > 0 {
-        return usize::from(ws.ws_col);
+        return Ok(usize::from(ws.ws_col));
     }
-    100
+    Ok(100)
 }
 
 #[cfg(not(unix))]
-fn terminal_width() -> usize {
-    100
+fn terminal_width() -> anyhow::Result<usize> {
+    Ok(100)
 }
 
 /// Decide whether a single test should run, given the user-supplied
@@ -1636,39 +1744,41 @@ pub fn token_passes_filters(
     skip_filters: &[String],
     run_ignored: RunIgnoredMode,
     exact_match: bool,
-) -> bool {
+) -> anyhow::Result<bool> {
     if let Some(needle) = filter
+        // FIXME(rs-cleanup): callee returns Result, add ?
         && !name_matches(qualified_name, needle, exact_match)
     {
-        return false;
+        return Ok(false);
     }
     for skip in skip_filters {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         if name_matches(qualified_name, skip.as_str(), exact_match) {
-            return false;
+            return Ok(false);
         }
     }
-    match run_ignored {
+    Ok(match run_ignored {
         RunIgnoredMode::Normal | RunIgnoredMode::Include => true,
         RunIgnoredMode::Only => ignored,
-    }
+    })
 }
 
 /// Test-name predicate shared by the positional filter and every
 /// `--skip` entry: substring match by default, exact-equality match
 /// under the libtest `--exact` flag.
 #[inline]
-fn name_matches(qualified_name: &str, needle: &str, exact_match: bool) -> bool {
-    if exact_match {
+fn name_matches(qualified_name: &str, needle: &str, exact_match: bool) -> anyhow::Result<bool> {
+    Ok(if exact_match {
         qualified_name == needle
     } else {
         qualified_name.contains(needle)
-    }
+    })
 }
 
 /// Format the trailing `<...>` info block for an outcome. Runtime
 /// name comes first, then elapsed, then bench-specific details.
-fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
-    match outcome {
+fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> anyhow::Result<String> {
+    Ok(match outcome {
         TestOutcome::Passed { elapsed }
         | TestOutcome::Failed { elapsed, .. }
         | TestOutcome::Panicked { elapsed }
@@ -1689,20 +1799,21 @@ fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
             }
             format!("<{inner}>")
         }
-    }
+    })
 }
 
 /// Decide whether ANSI colour escapes should be emitted in plain
 /// mode, honouring `--color`, `NO_COLOR`, and the stdout-TTY check.
-fn use_color(mode: ColorMode) -> bool {
-    match mode {
+fn use_color(mode: ColorMode) -> anyhow::Result<bool> {
+    Ok(match mode {
         ColorMode::Always => true,
         ColorMode::Never => false,
         ColorMode::Auto => env::var_os("NO_COLOR").is_none() && io::stdout().is_terminal(),
-    }
+    })
 }
 
 /// Wrap `text` with the yellow ANSI SGR code when `colored` is true.
-fn yellow(text: &str, colored: bool) -> String {
-    paint(text, "33", colored)
+fn yellow(text: &str, colored: bool) -> anyhow::Result<String> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
+    Ok(paint(text, "33", colored))
 }

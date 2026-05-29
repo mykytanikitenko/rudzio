@@ -509,7 +509,7 @@ struct CratePathRewriter<'helpers> {
 }
 
 impl VisitMut for CratePathRewriter<'_> {
-    fn visit_path_mut(&mut self, i: &mut syn::Path) {
+    fn visit_path_mut(&mut self, i: &mut syn::Path) -> Result<()> {
         use syn::punctuated::Punctuated;
         if i.leading_colon.is_none() {
             // Helper-name rewrite: `crate::<helper>::*` → `crate::<synth>::*`.
@@ -538,10 +538,12 @@ impl VisitMut for CratePathRewriter<'_> {
                 i.segments = tail;
             }
         }
+        // FIXME(rs-cleanup): callee returns Result, add ?
         visit_mut::visit_path_mut(self, i);
-    }
+        Ok(())
+}
 
-    fn visit_use_tree_mut(&mut self, i: &mut syn::UseTree) {
+    fn visit_use_tree_mut(&mut self, i: &mut syn::UseTree) -> Result<()> {
         if let syn::UseTree::Path(use_path) = i
             && use_path.ident == "crate"
         {
@@ -550,10 +552,13 @@ impl VisitMut for CratePathRewriter<'_> {
             // when it appears in our substitution table. Glob (`*`)
             // and bare group (`{...}`) variants are handled by
             // recursing into nested entries via the default walker.
+            // FIXME(rs-cleanup): callee returns Result, add ?
             rewrite_first_use_tree_ident(&mut use_path.tree, self.helpers);
         }
+        // FIXME(rs-cleanup): callee returns Result, add ?
         visit_mut::visit_use_tree_mut(self, i);
-    }
+        Ok(())
+}
 }
 
 /// Container for the standard `CARGO_PKG_*` / `CARGO_MANIFEST_LINKS` strings
@@ -754,7 +759,7 @@ impl Plan {
     /// explicitly documented as unstable across releases.
     #[inline]
     #[must_use]
-    pub fn aggregator_subdir_name(&self) -> String {
+    pub fn aggregator_subdir_name(&self) -> Result<String> {
         // FNV-1a 64-bit. Inlined twice (once per input) rather than
         // factored into a helper because the workspace's item-ordering
         // lints would force a free-function helper into the file's
@@ -770,6 +775,7 @@ impl Plan {
         let mut workspace_hash: u64 = FNV_OFFSET_64;
         for byte in self.workspace_root.as_str().as_bytes() {
             workspace_hash ^= u64::from(*byte);
+            // TODO(rs-cleanup): masking_arith at line 773 — review and replace with Result-propagating equivalent
             workspace_hash = workspace_hash.wrapping_mul(FNV_PRIME_64);
         }
         // Bug #18: hashing `BUILD_STAMP` into the subdir name ensures
@@ -780,9 +786,10 @@ impl Plan {
         let mut stamp_hash: u64 = FNV_OFFSET_64;
         for byte in BUILD_STAMP.as_bytes() {
             stamp_hash ^= u64::from(*byte);
+            // TODO(rs-cleanup): masking_arith at line 783 — review and replace with Result-propagating equivalent
             stamp_hash = stamp_hash.wrapping_mul(FNV_PRIME_64);
         }
-        format!("{AGGREGATOR_NAME}-{workspace_hash:016x}-{stamp_hash:016x}")
+        Ok(format!("{AGGREGATOR_NAME}-{workspace_hash:016x}-{stamp_hash:016x}"))
     }
 
     /// Default output directory for the generated aggregator crate.
@@ -794,8 +801,8 @@ impl Plan {
     /// user has a single shared `CARGO_TARGET_DIR` set.
     #[inline]
     #[must_use]
-    pub fn default_output_dir(&self) -> PathBuf {
-        PathBuf::from(self.target_directory.as_std_path()).join(self.aggregator_subdir_name())
+    pub fn default_output_dir(&self) -> Result<PathBuf> {
+        Ok(PathBuf::from(self.target_directory.as_std_path()).join(self.aggregator_subdir_name()))
     }
 
     /// Drop every member whose `package_name` matches one of `excluded`.
@@ -882,10 +889,13 @@ impl Plan {
     pub fn restrict_to_paths(&mut self, roots: &[PathBuf]) -> Result<()> {
         let abs_roots: Vec<PathBuf> = roots
             .iter()
+            // FIXME(rs-cleanup): callee returns Result, add ?
             .map(|root| canonicalize_or_keep(root))
             .collect();
         self.members.retain(|member| {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let abs = canonicalize_or_keep(&member.manifest_dir);
+            // FIXME(rs-cleanup): callee returns Result, add ?
             member_under_any_root(&abs, &abs_roots)
         });
         if self.members.is_empty() {
@@ -922,6 +932,7 @@ impl Plan {
         let wanted_set: BTreeSet<&str> = wanted.iter().map(String::as_str).collect();
         for member in &mut self.members {
             member.test_files.retain(|file| {
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 let name = test_binary_name_for(file);
                 wanted_set.contains(name.as_str())
             });
@@ -985,13 +996,14 @@ impl WorkspaceDepSpec {
 /// filesystem.
 #[inline]
 #[must_use]
-pub fn member_under_any_root(member_dir: &Path, roots: &[PathBuf]) -> bool {
-    roots.iter().any(|root| member_dir.starts_with(root))
+pub fn member_under_any_root(member_dir: &Path, roots: &[PathBuf]) -> Result<bool> {
+    Ok(roots.iter().any(|root| member_dir.starts_with(root)))
 }
 
 /// Canonicalize `path`, falling back to the input when the OS call fails.
-fn canonicalize_or_keep(path: &Path) -> PathBuf {
-    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+fn canonicalize_or_keep(path: &Path) -> Result<PathBuf> {
+    // TODO(rs-cleanup): silencing at line 994 — review and replace with Result-propagating equivalent
+    Ok(fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()))
 }
 
 /// Reconcile the workspace's `cargo metadata` output into a `Plan` for the generator.
@@ -1054,6 +1066,7 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
 
     let initial_spec = collect_rudzio_spec(&members, &workspace_deps, workspace_root_std)
         .context("deriving rudzio dependency spec for the aggregator")?;
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let rudzio_spec = inject_required_features(initial_spec, &runtime_features);
 
     Ok(Plan {
@@ -1085,6 +1098,7 @@ fn extend_with_transitive_path_dep_members(
 ) -> Result<()> {
     let mut visited: BTreeSet<PathBuf> = members
         .iter()
+        // FIXME(rs-cleanup): callee returns Result, add ?
         .map(|member| canonicalize_or_keep(member.manifest_dir.as_path()))
         .collect();
     let mut frontier: VecDeque<PathBuf> = members
@@ -1093,6 +1107,7 @@ fn extend_with_transitive_path_dep_members(
         .filter_map(|dep| {
             dep.path
                 .as_ref()
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 .map(|raw_path| canonicalize_or_keep(raw_path))
         })
         .filter(|path| !visited.contains(path))
@@ -1117,6 +1132,7 @@ fn extend_with_transitive_path_dep_members(
             let Some(pkg_parent) = pkg_manifest.parent() else {
                 continue;
             };
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let canon_pkg_dir = canonicalize_or_keep(pkg_parent);
             // Only process the specific package whose manifest_dir
             // matches the path-dep target. The sub-metadata may
@@ -1152,6 +1168,7 @@ fn extend_with_transitive_path_dep_members(
                 // the frontier so we walk the full reachable graph.
                 for dep in &plan.dev_deps {
                     if let Some(raw_path) = &dep.path {
+                        // FIXME(rs-cleanup): callee returns Result, add ?
                         let canon = canonicalize_or_keep(raw_path);
                         if !visited.contains(&canon) {
                             frontier.push_back(canon);
@@ -1167,8 +1184,8 @@ fn extend_with_transitive_path_dep_members(
 
 /// Collect every `[[bin]]` target in `pkg` into the `MemberBin` shape
 /// the bridge codegen consumes (name + absolute src path).
-fn collect_bin_targets(pkg: &Package) -> Vec<MemberBin> {
-    pkg.targets
+fn collect_bin_targets(pkg: &Package) -> Result<Vec<MemberBin>> {
+    Ok(pkg.targets
         .iter()
         .filter(|target| {
             target
@@ -1182,24 +1199,24 @@ fn collect_bin_targets(pkg: &Package) -> Vec<MemberBin> {
                 target.src_path.as_std_path().to_path_buf(),
             )
         })
-        .collect()
+        .collect())
 }
 
 /// `true` when `pkg` declares a proc-macro library. Mirrored verbatim
 /// from `bridge_applies_to`'s gating rule (Decisions Log [E7]).
-fn detect_proc_macro_lib(pkg: &Package) -> bool {
-    pkg.targets.iter().any(|target| {
+fn detect_proc_macro_lib(pkg: &Package) -> Result<bool> {
+    Ok(pkg.targets.iter().any(|target| {
         target
             .kind
             .iter()
             .any(|kind| matches!(kind, TargetKind::ProcMacro))
-    })
+    }))
 }
 
 /// Absolute path to `pkg`'s `[lib]` source file, if it has one. `None`
 /// for bin-only / proc-macro-only members.
-fn locate_src_lib_path(pkg: &Package) -> Option<PathBuf> {
-    pkg.targets
+fn locate_src_lib_path(pkg: &Package) -> Result<Option<PathBuf>> {
+    Ok(pkg.targets
         .iter()
         .find(|target| {
             target
@@ -1207,57 +1224,65 @@ fn locate_src_lib_path(pkg: &Package) -> Option<PathBuf> {
                 .iter()
                 .any(|kind| matches!(kind, TargetKind::Lib))
         })
-        .map(|target| target.src_path.as_std_path().to_path_buf())
+        .map(|target| target.src_path.as_std_path().to_path_buf()))
 }
 
 /// Project `pkg.features` into the owned `BTreeMap` shape the bridge
 /// `[features]` mirror expects.
-fn collect_features_map(pkg: &Package) -> BTreeMap<String, Vec<String>> {
-    pkg.features
+fn collect_features_map(pkg: &Package) -> Result<BTreeMap<String, Vec<String>>> {
+    Ok(pkg.features
         .iter()
         .map(|(name, deps)| (name.clone(), deps.clone()))
-        .collect()
+        .collect())
 }
 
 /// Project a `cargo_metadata::Package` into the metadata-string bundle.
-fn collect_package_metadata_fields(pkg: &Package) -> PackageMetadataFields {
-    PackageMetadataFields {
+fn collect_package_metadata_fields(pkg: &Package) -> Result<PackageMetadataFields> {
+    Ok(PackageMetadataFields {
         // Cargo's documented `CARGO_PKG_AUTHORS` convention joins authors
         // with `:` (colon).
         authors: pkg.authors.join(":"),
+        // TODO(rs-cleanup): silencing at line 1228 — review and replace with Result-propagating equivalent
         description: pkg.description.clone().unwrap_or_default(),
+        // TODO(rs-cleanup): silencing at line 1229 — review and replace with Result-propagating equivalent
         homepage: pkg.homepage.clone().unwrap_or_default(),
+        // TODO(rs-cleanup): silencing at line 1230 — review and replace with Result-propagating equivalent
         license: pkg.license.clone().unwrap_or_default(),
         license_file: pkg
             .license_file
             .as_ref()
             .map(ToString::to_string)
+            // TODO(rs-cleanup): silencing at line 1235 — review and replace with Result-propagating equivalent
             .unwrap_or_default(),
+        // TODO(rs-cleanup): silencing at line 1236 — review and replace with Result-propagating equivalent
         links: pkg.links.clone().unwrap_or_default(),
         readme: pkg
             .readme
             .as_ref()
             .map(ToString::to_string)
+            // TODO(rs-cleanup): silencing at line 1241 — review and replace with Result-propagating equivalent
             .unwrap_or_default(),
+        // TODO(rs-cleanup): silencing at line 1242 — review and replace with Result-propagating equivalent
         repository: pkg.repository.clone().unwrap_or_default(),
         rust_version: pkg
             .rust_version
             .as_ref()
             .map(ToString::to_string)
+            // TODO(rs-cleanup): silencing at line 1247 — review and replace with Result-propagating equivalent
             .unwrap_or_default(),
-    }
+    })
 }
 
 /// Project a `cargo_metadata::Package`'s semver fields into the
 /// version-string bundle.
-fn collect_package_version_fields(pkg: &Package) -> PackageVersionFields {
-    PackageVersionFields {
+fn collect_package_version_fields(pkg: &Package) -> Result<PackageVersionFields> {
+    Ok(PackageVersionFields {
         version: pkg.version.to_string(),
         version_major: pkg.version.major.to_string(),
         version_minor: pkg.version.minor.to_string(),
         version_patch: pkg.version.patch.to_string(),
         version_pre: pkg.version.pre.to_string(),
-    }
+    })
 }
 
 /// Construct a `MemberPlan` for one workspace package.
@@ -1286,8 +1311,11 @@ fn build_member_plan(pkg: &Package) -> Result<Option<MemberPlan>> {
     let test_files = discover_test_files(pkg, &manifest_dir_std, &exclude_list)
         .with_context(|| format!("discovering test files for `{}`", pkg.name))?;
 
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let bin_targets = collect_bin_targets(pkg);
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let is_proc_macro = detect_proc_macro_lib(pkg);
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let src_lib_path = locate_src_lib_path(pkg);
     let edition = pkg.edition.to_string();
 
@@ -1302,6 +1330,7 @@ fn build_member_plan(pkg: &Package) -> Result<Option<MemberPlan>> {
         .as_deref()
         .and_then(|lib| lib.parent())
         .is_some_and(detect_src_rudzio_suite);
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let features = collect_features_map(pkg);
 
     let rudzio_activated_features = load_rudzio_activated_features(pkg.manifest_path.as_std_path())
@@ -1326,7 +1355,9 @@ fn build_member_plan(pkg: &Package) -> Result<Option<MemberPlan>> {
     // MEMBER's manifest, not the bridge's synthetic shell. Cargo's
     // own convention treats absent manifest fields as empty strings;
     // both helpers mirror that.
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let metadata_fields = collect_package_metadata_fields(pkg);
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let version_fields = collect_package_version_fields(pkg);
     let PackageMetadataFields {
         authors,
@@ -1393,9 +1424,9 @@ fn build_member_plan(pkg: &Package) -> Result<Option<MemberPlan>> {
 /// unreadable the aggregator build will surface its own error).
 #[inline]
 #[must_use]
-pub fn detect_src_rudzio_suite(src_root: &Path) -> bool {
+pub fn detect_src_rudzio_suite(src_root: &Path) -> Result<bool> {
     if !src_root.is_dir() {
-        return false;
+        return Ok(false);
     }
     let mut stack: Vec<PathBuf> = vec![src_root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -1421,11 +1452,11 @@ pub fn detect_src_rudzio_suite(src_root: &Path) -> bool {
                 continue;
             };
             if text.contains("rudzio::suite") || text.contains("rudzio_test") {
-                return true;
+                return Ok(true);
             }
         }
     }
-    false
+    Ok(false)
 }
 
 /// Find `#[cfg(test)]`-gated modules in `member`'s src tree that are not broadened for rudzio AND actually contain test functions.
@@ -1447,15 +1478,15 @@ pub fn detect_src_rudzio_suite(src_root: &Path) -> bool {
 /// missing cfg-test warning is not the most useful signal.
 #[inline]
 #[must_use]
-pub fn scan_unbroadened_cfg_test_mods(member: &MemberPlan) -> Vec<String> {
+pub fn scan_unbroadened_cfg_test_mods(member: &MemberPlan) -> Result<Vec<String>> {
     let Some(lib) = member.src_lib_path.as_deref() else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let Some(src_root) = lib.parent() else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     if !src_root.is_dir() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let mut out: Vec<String> = Vec::new();
@@ -1488,6 +1519,7 @@ pub fn scan_unbroadened_cfg_test_mods(member: &MemberPlan) -> Vec<String> {
         let Ok(text) = fs::read_to_string(path) else {
             continue;
         };
+        // FIXME(rs-cleanup): callee returns Result, add ?
         if file_has_rudzio_opt_out_marker(&text) {
             // User has placed an explicit opt-out marker comment
             // (`// rudzio_test` or `// rudzio::suite ...`) in this
@@ -1505,9 +1537,10 @@ pub fn scan_unbroadened_cfg_test_mods(member: &MemberPlan) -> Vec<String> {
         let Ok(parsed) = syn::parse_file(&text) else {
             continue;
         };
+        // FIXME(rs-cleanup): callee returns Result, add ?
         scan_items_for_unbroadened_cfg_test_mods(&parsed.items, path, &mut out);
     }
-    out
+    Ok(out)
 }
 
 /// True when `text` contains an explicit rudzio-related marker
@@ -1530,8 +1563,8 @@ pub fn scan_unbroadened_cfg_test_mods(member: &MemberPlan) -> Vec<String> {
 /// (`#[cfg(any(test, rudzio_test))]` or `#[rudzio::suite(...)]` on a
 /// mod) silences its own warning before reaching the per-mod analysis
 /// that detects the partial migration.
-fn file_has_rudzio_opt_out_marker(text: &str) -> bool {
-    text.lines().any(|line| {
+fn file_has_rudzio_opt_out_marker(text: &str) -> Result<bool> {
+    Ok(text.lines().any(|line| {
         let Some(comment_idx) = line.find("//") else {
             return false;
         };
@@ -1539,7 +1572,7 @@ fn file_has_rudzio_opt_out_marker(text: &str) -> bool {
             return false;
         };
         comment_body.contains("rudzio_test") || comment_body.contains("rudzio::suite")
-    })
+    }))
 }
 
 /// Recursive walker: visit every `Item::Mod` in `items`, emit one
@@ -1564,7 +1597,7 @@ fn scan_items_for_unbroadened_cfg_test_mods(
     items: &[syn::Item],
     path: &Path,
     out: &mut Vec<String>,
-) {
+) -> Result<()> {
     for item in items {
         let syn::Item::Mod(mod_item) = item else {
             continue;
@@ -1574,6 +1607,7 @@ fn scan_items_for_unbroadened_cfg_test_mods(
         let out_of_line_body: Option<Vec<syn::Item>> = if inline_children.is_some() {
             None
         } else {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             load_out_of_line_mod_items(mod_item, path)
         };
         let effective_body: Option<&[syn::Item]> = inline_children
@@ -1583,15 +1617,20 @@ fn scan_items_for_unbroadened_cfg_test_mods(
         // Decide whether THIS mod is warn-worthy. Skip mods without a
         // test-relevant cfg attr (no cfg, `cfg(not(test))`, etc.) AND
         // without test markers in their body.
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let test_cfg_state = find_test_cfg_attr_state(&mod_item.attrs);
         if let Some(body) = effective_body
+            // FIXME(rs-cleanup): callee returns Result, add ?
             && (test_cfg_state.is_some() || mod_body_has_test_fn(body))
+            // FIXME(rs-cleanup): callee returns Result, add ?
             && mod_body_has_test_fn(body)
         {
             let narrow_cfg = test_cfg_state
                 .as_ref()
                 .is_some_and(|state| !state.is_broadened);
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let has_suite = mod_has_rudzio_suite_attr(&mod_item.attrs);
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let all_rudzio = mod_body_has_only_rudzio_test_fns(body);
             // A test-cfg mod warns when ANY of the three migration
             // conditions fails. A non-test-cfg mod (no `#[cfg(...)]`
@@ -1631,9 +1670,11 @@ fn scan_items_for_unbroadened_cfg_test_mods(
         // in their own files and are picked up by the outer file walk
         // in `scan_unbroadened_cfg_test_mods`.
         if let Some(children) = inline_children {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             scan_items_for_unbroadened_cfg_test_mods(children, path, out);
         }
-    }
+    };
+    Ok(())
 }
 
 /// Return the first `#[cfg(...)]` attribute that mentions `test`
@@ -1646,14 +1687,15 @@ fn scan_items_for_unbroadened_cfg_test_mods(
 ///   * `Some(state)` with `is_broadened == true`: broadened cfg, mod
 ///     compiles under rudzio. Whether it warns depends on whether
 ///     the suite wrap and `#[rudzio::test]` attrs are in place.
-fn find_test_cfg_attr_state(attrs: &[syn::Attribute]) -> Option<TestCfgState<'_>> {
-    attrs.iter().find_map(|attr| {
+fn find_test_cfg_attr_state(attrs: &[syn::Attribute]) -> Result<Option<TestCfgState<'_>>> {
+    Ok(attrs.iter().find_map(|attr| {
         if !attr.path().is_ident("cfg") {
             return None;
         }
         let mut bare_test = false;
         let mut has_rudzio_test = false;
         let _walk_top: syn::Result<()> = attr.parse_nested_meta(|meta| {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             walk_cfg_meta(&meta, false, &mut bare_test, &mut has_rudzio_test);
             Ok(())
         });
@@ -1661,7 +1703,7 @@ fn find_test_cfg_attr_state(attrs: &[syn::Attribute]) -> Option<TestCfgState<'_>
             attr,
             is_broadened: has_rudzio_test,
         })
-    })
+    }))
 }
 
 /// True when `attrs` contains a `#[rudzio::suite(...)]` attribute.
@@ -1670,13 +1712,13 @@ fn find_test_cfg_attr_state(attrs: &[syn::Attribute]) -> Option<TestCfgState<'_>
 /// and `#[test]` (or async-runtime test) fns but no suite wrap is
 /// still invisible to rudzio's runner, since the runner only collects
 /// fns inside an explicit `#[rudzio::suite(...)]`-annotated mod.
-fn mod_has_rudzio_suite_attr(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|attr| {
+fn mod_has_rudzio_suite_attr(attrs: &[syn::Attribute]) -> Result<bool> {
+    Ok(attrs.iter().any(|attr| {
         let mut iter = attr.path().segments.iter();
         iter.next().is_some_and(|seg| seg.ident == "rudzio")
             && iter.next().is_some_and(|seg| seg.ident == "suite")
             && iter.next().is_none()
-    })
+    }))
 }
 
 /// True when every test-marker fn in `body` carries the
@@ -1687,14 +1729,15 @@ fn mod_has_rudzio_suite_attr(attrs: &[syn::Attribute]) -> bool {
 /// A fn with the `#[rudzio::test]` marker AND another marker (e.g.
 /// `#[tokio::test]`) is treated as non-rudzio because the non-rudzio
 /// marker would also fire and confuse libtest.
-fn mod_body_has_only_rudzio_test_fns(body: &[syn::Item]) -> bool {
-    body.iter().all(|item| {
+fn mod_body_has_only_rudzio_test_fns(body: &[syn::Item]) -> Result<bool> {
+    Ok(body.iter().all(|item| {
         let syn::Item::Fn(fn_item) = item else {
             return true;
         };
         let test_attrs: Vec<&syn::Attribute> = fn_item
             .attrs
             .iter()
+            // FIXME(rs-cleanup): callee returns Result, add ?
             .filter(|attr| is_test_marker_attr(attr))
             .collect();
         if test_attrs.is_empty() {
@@ -1706,7 +1749,7 @@ fn mod_body_has_only_rudzio_test_fns(body: &[syn::Item]) -> bool {
                 && iter.next().is_some_and(|seg| seg.ident == "test")
                 && iter.next().is_none()
         })
-    })
+    }))
 }
 
 /// Resolve `mod foo;` (no inline body) to the file that holds the
@@ -1724,9 +1767,9 @@ fn mod_body_has_only_rudzio_test_fns(body: &[syn::Item]) -> bool {
 fn load_out_of_line_mod_items(
     mod_item: &syn::ItemMod,
     current_file: &Path,
-) -> Option<Vec<syn::Item>> {
+) -> Result<Option<Vec<syn::Item>>> {
     if mod_item.content.is_some() {
-        return None;
+        return Ok(None);
     }
     let parent = current_file.parent()?;
     let name = mod_item.ident.to_string();
@@ -1737,11 +1780,13 @@ fn load_out_of_line_mod_items(
     } else if nested.is_file() {
         nested
     } else {
-        return None;
+        return Ok(None);
     };
+    // TODO(rs-cleanup): silencing at line 1742 — review and replace with Result-propagating equivalent
     let text = fs::read_to_string(&body_path).ok()?;
+    // TODO(rs-cleanup): silencing at line 1743 — review and replace with Result-propagating equivalent
     let parsed = syn::parse_file(&text).ok()?;
-    Some(parsed.items)
+    Ok(Some(parsed.items))
 }
 
 /// Recursively walk a `cfg(...)` meta tree, setting `bare_test` /
@@ -1754,21 +1799,22 @@ fn walk_cfg_meta(
     inside_not: bool,
     bare_test: &mut bool,
     has_rudzio_test: &mut bool,
-) {
+) -> Result<()> {
     if meta.path.is_ident("test") {
         if !inside_not {
             *bare_test = true;
         }
-        return;
+        return Ok(());
     }
     if meta.path.is_ident("rudzio_test") {
         if !inside_not {
             *has_rudzio_test = true;
         }
-        return;
+        return Ok(());
     }
     let entering_not = meta.path.is_ident("not");
     let _walk_inner: syn::Result<()> = meta.parse_nested_meta(|inner| {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         walk_cfg_meta(
             &inner,
             inside_not || entering_not,
@@ -1777,19 +1823,20 @@ fn walk_cfg_meta(
         );
         Ok(())
     });
+    Ok(())
 }
 
 /// `true` when any item in `body` is a function annotated with one
 /// of the cargo / rudzio test attributes. Drives the Bug #4 narrow:
 /// a mod that ONLY contains helper items (consts, type aliases,
 /// non-test fns) gets quietly skipped.
-fn mod_body_has_test_fn(body: &[syn::Item]) -> bool {
-    body.iter().any(|item| {
+fn mod_body_has_test_fn(body: &[syn::Item]) -> Result<bool> {
+    Ok(body.iter().any(|item| {
         let syn::Item::Fn(fn_item) = item else {
             return false;
         };
         fn_item.attrs.iter().any(is_test_marker_attr)
-    })
+    }))
 }
 
 /// True when `attr` is a test-like marker that flags the function as
@@ -1810,14 +1857,14 @@ fn mod_body_has_test_fn(body: &[syn::Item]) -> bool {
 /// the async-runtime wrappers is what lets the cfg-narrowing
 /// warning reach modules whose author migrated to `#[tokio::test]`
 /// without fully migrating the rest of the rudzio surface.
-fn is_test_marker_attr(attr: &syn::Attribute) -> bool {
+fn is_test_marker_attr(attr: &syn::Attribute) -> Result<bool> {
     let path = attr.path();
     if path.is_ident("test") || path.is_ident("bench") {
-        return true;
+        return Ok(true);
     }
     // Multi-segment path: only the LAST segment matters. Catches
     // `tokio::test`, `async_std::test`, `rudzio::test`, etc.
-    path.segments.last().is_some_and(|seg| seg.ident == "test")
+    Ok(path.segments.last().is_some_and(|seg| seg.ident == "test"))
 }
 
 /// Plan-level convenience: scan every member's src tree and return the
@@ -1825,12 +1872,13 @@ fn is_test_marker_attr(attr: &syn::Attribute) -> bool {
 /// `build_plan` sorts by package name, so output is deterministic).
 #[inline]
 #[must_use]
-pub fn scan_unbroadened_cfg_test_mods_in_plan(plan: &Plan) -> Vec<String> {
+pub fn scan_unbroadened_cfg_test_mods_in_plan(plan: &Plan) -> Result<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
     for member in &plan.members {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         out.extend(scan_unbroadened_cfg_test_mods(member));
     }
-    out
+    Ok(out)
 }
 
 /// Per-plan scan that surfaces proc-macro members which v2 declines
@@ -1844,7 +1892,7 @@ pub fn scan_unbroadened_cfg_test_mods_in_plan(plan: &Plan) -> Vec<String> {
 /// is not aggregated.
 #[inline]
 #[must_use]
-pub fn scan_proc_macro_members_in_plan(plan: &Plan) -> Vec<String> {
+pub fn scan_proc_macro_members_in_plan(plan: &Plan) -> Result<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
     for member in &plan.members {
         if !member.is_proc_macro {
@@ -1866,7 +1914,7 @@ pub fn scan_proc_macro_members_in_plan(plan: &Plan) -> Vec<String> {
             name = member.package_name
         ));
     }
-    out
+    Ok(out)
 }
 
 /// Add the features the aggregator unconditionally needs (`common`)
@@ -1879,14 +1927,14 @@ pub fn scan_proc_macro_members_in_plan(plan: &Plan) -> Vec<String> {
 fn inject_required_features(
     mut spec: RudzioSpec,
     runtime_features: &BTreeSet<String>,
-) -> RudzioSpec {
+) -> Result<RudzioSpec> {
     let mut feats: BTreeSet<String> = spec.features.into_iter().collect();
     let _common_inserted: bool = feats.insert("common".to_owned());
     for feat in runtime_features {
         let _runtime_inserted: bool = feats.insert(feat.clone());
     }
     spec.features = feats.into_iter().collect();
-    spec
+    Ok(spec)
 }
 
 /// Walk every rudzio-using member's raw Cargo.toml and reconcile their
@@ -2074,14 +2122,16 @@ fn resolve_rudzio_declarations(
 /// workspace member, otherwise fall back to the workspace-derived spec.
 #[inline]
 #[must_use]
-fn aggregator_rudzio_inline_table(plan: &Plan) -> InlineTable {
-    plan.members
+fn aggregator_rudzio_inline_table(plan: &Plan) -> Result<InlineTable> {
+    Ok(plan.members
         .iter()
         .find(|member| member.package_name == RUDZIO_DEP && bridge_applies_to(member))
         .map_or_else(
+            // FIXME(rs-cleanup): callee returns Result, add ?
             || build_rudzio_inline_table(&plan.rudzio_spec),
+            // FIXME(rs-cleanup): callee returns Result, add ?
             |member| build_rudzio_bridge_inline_table(member, &plan.rudzio_spec),
-        )
+        ))
 }
 
 /// Render the aggregator's rudzio dep as a sibling-bridge entry pointing
@@ -2100,7 +2150,7 @@ fn aggregator_rudzio_inline_table(plan: &Plan) -> InlineTable {
 pub fn build_rudzio_bridge_inline_table(
     rudzio_member: &MemberPlan,
     spec: &RudzioSpec,
-) -> InlineTable {
+) -> Result<InlineTable> {
     let mut tbl = InlineTable::new();
     tbl.insert(
         "path",
@@ -2111,6 +2161,7 @@ pub fn build_rudzio_bridge_inline_table(
     );
     tbl.insert(
         "package",
+        // FIXME(rs-cleanup): callee returns Result, add ?
         Value::String(Formatted::new(bridge_package_name(rudzio_member))),
     );
     if !spec.features.is_empty() {
@@ -2123,7 +2174,7 @@ pub fn build_rudzio_bridge_inline_table(
     if !spec.uses_default_features {
         tbl.insert("default-features", Value::Boolean(Formatted::new(false)));
     }
-    tbl
+    Ok(tbl)
 }
 
 /// Render a `RudzioSpec` as a Cargo dependency inline table.
@@ -2133,7 +2184,7 @@ pub fn build_rudzio_bridge_inline_table(
 /// `default-features = false` (only when the user opted out).
 #[inline]
 #[must_use]
-pub fn build_rudzio_inline_table(spec: &RudzioSpec) -> InlineTable {
+pub fn build_rudzio_inline_table(spec: &RudzioSpec) -> Result<InlineTable> {
     let mut tbl = InlineTable::new();
     match &spec.location {
         RudzioLocation::Path(path_buf) => {
@@ -2174,7 +2225,7 @@ pub fn build_rudzio_inline_table(spec: &RudzioSpec) -> InlineTable {
     if !spec.uses_default_features {
         tbl.insert("default-features", Value::Boolean(Formatted::new(false)));
     }
-    tbl
+    Ok(tbl)
 }
 
 /// For each member, list the integration-test source files that should
@@ -2244,6 +2295,7 @@ fn discover_test_files(
     };
 
     if !exclude.is_empty() {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         files.retain(|file| !exclude.iter().any(|excluded| paths_equal(file, excluded)));
     }
 
@@ -2890,16 +2942,16 @@ const fn toml_type_name(val: &Value) -> &'static str {
 /// line 1323 — false positives from markers embedded in comments
 /// are tolerated. Over-reporting in a hard-error path is fine;
 /// under-reporting is the Bug #16 silent-failure class.
-fn rs_file_contains_rudzio_test_marker(path: &Path) -> bool {
+fn rs_file_contains_rudzio_test_marker(path: &Path) -> Result<bool> {
     if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
-        return false;
+        return Ok(false);
     }
     let Ok(text) = fs::read_to_string(path) else {
-        return false;
+        return Ok(false);
     };
-    text.contains("rudzio::test")
+    Ok(text.contains("rudzio::test")
         || text.contains("rudzio::suite")
-        || text.contains("rudzio_test")
+        || text.contains("rudzio_test"))
 }
 
 /// True iff `path` is a `.rs` file containing `rudzio::main`.
@@ -2911,14 +2963,14 @@ fn rs_file_contains_rudzio_test_marker(path: &Path) -> bool {
 /// Bug #16 class: rudzio test markers in a bin source with no
 /// `rudzio::main` anywhere — these vanish into a compile unit the
 /// aggregator does not link).
-fn rs_file_contains_rudzio_main(path: &Path) -> bool {
+fn rs_file_contains_rudzio_main(path: &Path) -> Result<bool> {
     if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
-        return false;
+        return Ok(false);
     }
     let Ok(text) = fs::read_to_string(path) else {
-        return false;
+        return Ok(false);
     };
-    text.contains("rudzio::main")
+    Ok(text.contains("rudzio::main"))
 }
 
 /// Walk `dir` recursively, returning a tuple `(test_files, has_main)`.
@@ -2933,11 +2985,11 @@ fn rs_file_contains_rudzio_main(path: &Path) -> bool {
 /// Unreadable directories are tolerated silently — same convention
 /// as `detect_src_rudzio_suite`: unreadable files surface their own
 /// errors later in the build.
-fn walk_dir_for_test_markers_and_main(dir: &Path) -> (Vec<PathBuf>, bool) {
+fn walk_dir_for_test_markers_and_main(dir: &Path) -> Result<(Vec<PathBuf>, bool)> {
     let mut test_files: Vec<PathBuf> = Vec::new();
     let mut has_main = false;
     if !dir.is_dir() {
-        return (test_files, has_main);
+        return Ok((test_files, has_main));
     }
     let mut stack: Vec<PathBuf> = vec![dir.to_path_buf()];
     while let Some(current_dir) = stack.pop() {
@@ -2973,7 +3025,7 @@ fn walk_dir_for_test_markers_and_main(dir: &Path) -> (Vec<PathBuf>, bool) {
             }
         }
     }
-    (test_files, has_main)
+    Ok((test_files, has_main))
 }
 
 /// Enumerate every rudzio marker in `member`'s unmounted target trees.
@@ -2999,7 +3051,7 @@ fn walk_dir_for_test_markers_and_main(dir: &Path) -> (Vec<PathBuf>, bool) {
 /// Examples/benches use the conventional `<manifest_dir>/examples/`
 /// and `<manifest_dir>/benches/` paths; the function walks each
 /// recursively when present.
-fn enumerate_unmounted_markers(member: &MemberPlan) -> Vec<MarkerLocation> {
+fn enumerate_unmounted_markers(member: &MemberPlan) -> Result<Vec<MarkerLocation>> {
     let mut out: Vec<MarkerLocation> = Vec::new();
 
     // `[[bin]]` targets are handled structurally by per-bin bridge
@@ -3025,6 +3077,7 @@ fn enumerate_unmounted_markers(member: &MemberPlan) -> Vec<MarkerLocation> {
     // target kinds lands.
     let examples_dir = member.manifest_dir.join("examples");
     let (example_files, examples_have_main) =
+        // FIXME(rs-cleanup): callee returns Result, add ?
         walk_dir_for_test_markers_and_main(&examples_dir);
     if !examples_have_main {
         for path in example_files {
@@ -3037,6 +3090,7 @@ fn enumerate_unmounted_markers(member: &MemberPlan) -> Vec<MarkerLocation> {
 
     let benches_dir = member.manifest_dir.join("benches");
     let (bench_files, benches_have_main) =
+        // FIXME(rs-cleanup): callee returns Result, add ?
         walk_dir_for_test_markers_and_main(&benches_dir);
     if !benches_have_main {
         for path in bench_files {
@@ -3047,7 +3101,7 @@ fn enumerate_unmounted_markers(member: &MemberPlan) -> Vec<MarkerLocation> {
         }
     }
 
-    out
+    Ok(out)
 }
 
 /// Bug #16 integrity invariant: refuse `write_runner` if any marker is unmounted.
@@ -3071,6 +3125,7 @@ fn enumerate_unmounted_markers(member: &MemberPlan) -> Vec<MarkerLocation> {
 pub fn validate_no_unmounted_markers(plan: &Plan) -> Result<()> {
     let mut findings: Vec<(String, MarkerLocation)> = Vec::new();
     for member in &plan.members {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         for loc in enumerate_unmounted_markers(member) {
             findings.push((member.package_name.clone(), loc));
         }
@@ -3161,12 +3216,15 @@ pub fn write_runner(plan: &Plan, out_dir: &Path) -> Result<()> {
         out_dir.join("Cargo.lock"),
         out_dir.join("build.rs"),
     ] {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         remove_file_tolerating_missing(&path)
             .with_context(|| format!("removing {}", path.display()))?;
     }
+    // FIXME(rs-cleanup): callee returns Result, add ?
     remove_dir_all_tolerating_missing(&src_dir)
         .with_context(|| format!("removing {}", src_dir.display()))?;
     let members_dir = out_dir.join("members");
+    // FIXME(rs-cleanup): callee returns Result, add ?
     remove_dir_all_tolerating_missing(&members_dir)
         .with_context(|| format!("removing {}", members_dir.display()))?;
     fs::create_dir_all(&src_dir).with_context(|| format!("creating {}", src_dir.display()))?;
@@ -3187,6 +3245,7 @@ pub fn write_runner(plan: &Plan, out_dir: &Path) -> Result<()> {
     // made `crate::api` resolve at the member bridge's root, which
     // broke every bin-internal `crate::` import).
     for member in &plan.members {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         for bin in collect_bridged_bin_targets(member) {
             write_bin_bridge_crate(plan, member, bin, &members_dir).with_context(|| {
                 format!(
@@ -3208,6 +3267,7 @@ pub fn write_runner(plan: &Plan, out_dir: &Path) -> Result<()> {
     // `<bridge>/src/proxies/` BEFORE writing bridge `src/lib.rs` —
     // the lib.rs references proxy file paths via `#[path = ...]` and
     // cargo will fail at compile time if the files don't yet exist.
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let proxies = collect_test_binary_proxies(plan, out_dir);
     write_test_binary_proxies(&proxies)
         .with_context(|| format!("writing test-binary proxies under {}", out_dir.display()))?;
@@ -3222,6 +3282,7 @@ pub fn write_runner(plan: &Plan, out_dir: &Path) -> Result<()> {
         if !bridge_applies_to(member) {
             continue;
         }
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let bridge_dir = members_dir.join(bridge_dir_name(member));
         let bridge_proxies: Vec<&TestBinaryProxy> = proxies
             .iter()
@@ -3249,9 +3310,11 @@ pub fn write_runner(plan: &Plan, out_dir: &Path) -> Result<()> {
     fs::write(out_dir.join("Cargo.toml"), cargo_toml)
         .with_context(|| format!("writing Cargo.toml under {}", out_dir.display()))?;
 
+    // FIXME(rs-cleanup): callee returns Result, add ?
     fs::write(src_dir.join("main.rs"), build_main_rs(plan, out_dir))
         .with_context(|| format!("writing src/main.rs under {}", out_dir.display()))?;
 
+    // FIXME(rs-cleanup): callee returns Result, add ?
     fs::write(out_dir.join("build.rs"), build_build_rs(plan))
         .with_context(|| format!("writing build.rs under {}", out_dir.display()))?;
 
@@ -3336,6 +3399,7 @@ pub const fn bridge_applies_to(member: &MemberPlan) -> bool {
 /// emitted, or when symlinking the member tree fails.
 #[inline]
 pub fn write_bridge_crate(plan: &Plan, member: &MemberPlan, out: &Path) -> Result<()> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let bridge_dir = out.join(bridge_dir_name(member));
     // Wipe any pre-existing bridge directory so stale symlinks from a
     // prior run (member entry renamed or removed) don't survive.
@@ -3348,6 +3412,7 @@ pub fn write_bridge_crate(plan: &Plan, member: &MemberPlan, out: &Path) -> Resul
     let manifest = build_bridge_cargo_toml(plan, member)?;
     fs::write(bridge_dir.join("Cargo.toml"), manifest)
         .with_context(|| format!("writing bridge Cargo.toml at {}", bridge_dir.display()))?;
+    // FIXME(rs-cleanup): callee returns Result, add ?
     fs::write(bridge_dir.join("build.rs"), build_bridge_build_rs(member))
         .with_context(|| format!("writing bridge build.rs at {}", bridge_dir.display()))?;
     symlink_member_tree_into_bridge(&member.manifest_dir, &bridge_dir)?;
@@ -3393,6 +3458,7 @@ fn write_bin_bridge_crate(
     bin: &MemberBin,
     out: &Path,
 ) -> Result<()> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let bridge_dir = out.join(bin_bridge_dir_name(member, bin));
     if bridge_dir.exists() {
         fs::remove_dir_all(&bridge_dir)
@@ -3404,6 +3470,7 @@ fn write_bin_bridge_crate(
         .with_context(|| format!("rendering bin bridge Cargo.toml at {}", bridge_dir.display()))?;
     fs::write(bridge_dir.join("Cargo.toml"), manifest)
         .with_context(|| format!("writing bin bridge Cargo.toml at {}", bridge_dir.display()))?;
+    // FIXME(rs-cleanup): callee returns Result, add ?
     fs::write(bridge_dir.join("build.rs"), build_bin_bridge_build_rs(member))
         .with_context(|| format!("writing bin bridge build.rs at {}", bridge_dir.display()))?;
     Ok(())
@@ -3447,6 +3514,7 @@ fn materialize_bridge_src_dir(member_dir: &Path, bridge_dir: &Path) -> Result<()
         }
         let source = entry.path();
         let target = bridge_src.join(&name);
+        // FIXME(rs-cleanup): callee returns Result, add ?
         create_symlink(&source, &target).with_context(|| {
             format!(
                 "symlinking bridge src entry {} -> {}",
@@ -3483,6 +3551,7 @@ fn symlink_member_tree_into_bridge(member_dir: &Path, bridge_dir: &Path) -> Resu
         }
         let source = entry.path();
         let target = bridge_dir.join(&name);
+        // FIXME(rs-cleanup): callee returns Result, add ?
         create_symlink(&source, &target).with_context(|| {
             format!(
                 "symlinking bridge entry {} -> {}",
@@ -3510,27 +3579,27 @@ fn symlink_member_tree_into_bridge(member_dir: &Path, bridge_dir: &Path) -> Resu
 /// still errors with the original `AlreadyExists` so the user sees
 /// the inconsistent state rather than silent overwrite.
 #[cfg(unix)]
-fn create_symlink(source: &Path, target: &Path) -> IoResult<()> {
+fn create_symlink(source: &Path, target: &Path) -> Result<IoResult<()>> {
     use std::io::ErrorKind;
     use std::os::unix::fs::symlink;
-    match symlink(source, target) {
+    Ok(match symlink(source, target) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == ErrorKind::AlreadyExists => match fs::read_link(target) {
             Ok(existing) if existing == source => Ok(()),
             Ok(_) | Err(_) => Err(err),
         },
         Err(err) => Err(err),
-    }
+    })
 }
 
 /// Create a filesystem symlink from `source` to `target` (Windows stub).
 #[cfg(windows)]
-fn create_symlink(_source: &Path, _target: &Path) -> IoResult<()> {
+fn create_symlink(_source: &Path, _target: &Path) -> Result<IoResult<()>> {
     use std::io::{Error, ErrorKind};
-    Err(Error::new(
+    Ok(Err(Error::new(
         ErrorKind::Unsupported,
         "cargo-rudzio bridge symlinking is not yet implemented on Windows",
-    ))
+    )))
 }
 
 /// `fs::remove_dir_all` that treats `NotFound` as success.
@@ -3541,13 +3610,13 @@ fn create_symlink(_source: &Path, _target: &Path) -> IoResult<()> {
 /// between this invocation's `exists()` check and its remove call.
 /// Treating `NotFound` as a no-op keeps the cleanup phase idempotent
 /// without locking.
-fn remove_dir_all_tolerating_missing(path: &Path) -> IoResult<()> {
+fn remove_dir_all_tolerating_missing(path: &Path) -> Result<IoResult<()>> {
     use std::io::ErrorKind;
-    match fs::remove_dir_all(path) {
+    Ok(match fs::remove_dir_all(path) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
-    }
+    })
 }
 
 /// `fs::remove_file` that treats `NotFound` as success.
@@ -3561,13 +3630,13 @@ fn remove_dir_all_tolerating_missing(path: &Path) -> IoResult<()> {
 /// as `cargo-rudzio: removing .../Cargo.toml: No such file or
 /// directory` even though both invocations agree on what the post-
 /// cleanup state should be: the file is gone, both can proceed.
-fn remove_file_tolerating_missing(path: &Path) -> IoResult<()> {
+fn remove_file_tolerating_missing(path: &Path) -> Result<IoResult<()>> {
     use std::io::ErrorKind;
-    match fs::remove_file(path) {
+    Ok(match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
-    }
+    })
 }
 
 /// Append `cargo:rustc-env=<var>=<escaped-value>` directives to
@@ -3584,14 +3653,16 @@ fn remove_file_tolerating_missing(path: &Path) -> IoResult<()> {
 /// so emitting `<var>=` with no value is the correct mirror for an
 /// unset field — preserves `env!()` parity with the member's own
 /// build.
-fn emit_member_env_overrides(out: &mut String, member: &MemberPlan) {
+fn emit_member_env_overrides(out: &mut String, member: &MemberPlan) -> Result<()> {
     let manifest_dir_str = member.manifest_dir.to_string_lossy();
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let crate_name = crate_name_to_ident(&member.package_name);
     // Decisions Log [E16]: explicit `rerun-if-changed` targets the
     // REAL member directory so changes to source files reachable via
     // bridge symlinks invalidate the bridge cache reliably. Without
     // this, cargo's default file-watching scans the bridge dir, where
     // symlinks-vs-target tracking is subtle.
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let escaped_member_dir = escape_str_literal(manifest_dir_str.as_ref());
     let _rerun_emit: FmtResult = writeln!(
         out,
@@ -3621,10 +3692,12 @@ fn emit_member_env_overrides(out: &mut String, member: &MemberPlan) {
         ("CARGO_MANIFEST_LINKS", &member.links),
     ];
     for (var, val) in pairs {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let escaped = escape_str_literal(val);
         let _env_emit: FmtResult =
             writeln!(out, "    println!(\"cargo:rustc-env={var}={escaped}\");");
-    }
+    };
+    Ok(())
 }
 
 /// Synthesize the bridge's `build.rs`.
@@ -3653,7 +3726,7 @@ fn emit_member_env_overrides(out: &mut String, member: &MemberPlan) {
 /// output convention.
 #[inline]
 #[must_use]
-pub fn build_bridge_build_rs(member: &MemberPlan) -> String {
+pub fn build_bridge_build_rs(member: &MemberPlan) -> Result<String> {
     let mut out = String::new();
 
     if member.bin_targets.is_empty() {
@@ -3661,9 +3734,10 @@ pub fn build_bridge_build_rs(member: &MemberPlan) -> String {
         out.push_str("fn main() {\n");
         out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
         out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
+        // FIXME(rs-cleanup): callee returns Result, add ?
         emit_member_env_overrides(&mut out, member);
         out.push_str("}\n");
-        return out;
+        return Ok(out);
     }
 
     // Bin-bearing bridge: emit `cargo:rustc-env=CARGO_BIN_EXE_<n>=<path>`
@@ -3693,6 +3767,7 @@ pub fn build_bridge_build_rs(member: &MemberPlan) -> String {
     out.push_str("fn main() {\n");
     out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
     out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
+    // FIXME(rs-cleanup): callee returns Result, add ?
     emit_member_env_overrides(&mut out, member);
     out.push('\n');
     out.push_str("    let target_dir: PathBuf = env::var_os(\"CARGO_TARGET_DIR\")\n");
@@ -3736,7 +3811,7 @@ pub fn build_bridge_build_rs(member: &MemberPlan) -> String {
         );
     }
     out.push_str("}\n");
-    out
+    Ok(out)
 }
 
 /// Synthesize a per-bin bridge's `build.rs`.
@@ -3751,60 +3826,62 @@ pub fn build_bridge_build_rs(member: &MemberPlan) -> String {
 /// member's real metadata, not the per-bin bridge's synthetic
 /// `<bin>_rudzio_bridge_lib` / `0.0.0` placeholders.
 #[must_use]
-fn build_bin_bridge_build_rs(member: &MemberPlan) -> String {
+fn build_bin_bridge_build_rs(member: &MemberPlan) -> Result<String> {
     let mut out = String::new();
     out.push_str("fn main() {\n");
     out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
     out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
+    // FIXME(rs-cleanup): callee returns Result, add ?
     emit_member_env_overrides(&mut out, member);
     out.push_str("}\n");
-    out
+    Ok(out)
 }
 
 /// Cargo `[package] name` to use for `member`'s bridge crate.
 #[inline]
 #[must_use]
-pub fn bridge_package_name(member: &MemberPlan) -> String {
-    format!(
+pub fn bridge_package_name(member: &MemberPlan) -> Result<String> {
+    Ok(format!(
         "{}_rudzio_bridge",
         crate_name_to_ident(&member.package_name)
-    )
+    ))
 }
 
 /// Subdirectory name (under the aggregator's `members/` dir) that holds the bridge for `member`.
 #[inline]
 #[must_use]
-pub fn bridge_dir_name(member: &MemberPlan) -> String {
-    crate_name_to_ident(&member.package_name)
+pub fn bridge_dir_name(member: &MemberPlan) -> Result<String> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
+    Ok(crate_name_to_ident(&member.package_name))
 }
 
 /// Subdirectory name (under the aggregator's `members/` dir) that holds the per-bin bridge for `bin` of `member`.
 #[must_use]
-fn bin_bridge_dir_name(member: &MemberPlan, bin: &MemberBin) -> String {
-    format!(
+fn bin_bridge_dir_name(member: &MemberPlan, bin: &MemberBin) -> Result<String> {
+    Ok(format!(
         "{member_ident}__bin__{bin_ident}",
         member_ident = crate_name_to_ident(&member.package_name),
         bin_ident = crate_name_to_ident(&bin.name),
-    )
+    ))
 }
 
 /// Cargo `[lib] name` (and aggregator `extern crate` identifier) for the per-bin bridge of `bin`.
 #[must_use]
-fn bin_bridge_lib_ident(_member: &MemberPlan, bin: &MemberBin) -> String {
-    format!(
+fn bin_bridge_lib_ident(_member: &MemberPlan, bin: &MemberBin) -> Result<String> {
+    Ok(format!(
         "{bin_ident}_rudzio_bridge_lib",
         bin_ident = crate_name_to_ident(&bin.name),
-    )
+    ))
 }
 
 /// Cargo `[package] name` to use for `bin`'s per-bin bridge crate of `member`.
 #[must_use]
-fn bin_bridge_package_name(member: &MemberPlan, bin: &MemberBin) -> String {
-    format!(
+fn bin_bridge_package_name(member: &MemberPlan, bin: &MemberBin) -> Result<String> {
+    Ok(format!(
         "{member_ident}__bin__{bin_ident}_rudzio_bridge",
         member_ident = crate_name_to_ident(&member.package_name),
         bin_ident = crate_name_to_ident(&bin.name),
-    )
+    ))
 }
 
 /// Render the bridge crate's `Cargo.toml` for `member` as a TOML document string.
@@ -3829,6 +3906,7 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
     let mut doc = DocumentMut::new();
 
     let mut pkg = Table::new();
+    // FIXME(rs-cleanup): callee returns Result, add ?
     pkg.insert("name", value(bridge_package_name(member)));
     pkg.insert("version", value("0.0.0"));
     pkg.insert("edition", value(member.edition.as_str()));
@@ -3854,6 +3932,7 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
     // bin-only members it carries a stub body. Either way the
     // aggregator's uniform `extern crate <bridge>;` ([C3]) resolves.
     let mut lib = Table::new();
+    // FIXME(rs-cleanup): callee returns Result, add ?
     lib.insert("name", value(crate_name_to_ident(&member.package_name)));
     // Path is bridge-local `src/lib.rs`. `materialize_bridge_src_dir`
     // creates `<bridge>/src/` as a real dir and writes the generated
@@ -3891,6 +3970,7 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
     // own build.rs may have needed are not relevant here because
     // we don't forward that build.rs.
 
+    // FIXME(rs-cleanup): callee returns Result, add ?
     if let Some(features_tbl) = build_bridge_features(plan, member) {
         doc.insert("features", Item::Table(features_tbl));
     }
@@ -3949,6 +4029,7 @@ fn build_bin_bridge_cargo_toml(
     let mut doc = DocumentMut::new();
 
     let mut pkg = Table::new();
+    // FIXME(rs-cleanup): callee returns Result, add ?
     pkg.insert("name", value(bin_bridge_package_name(member, bin)));
     pkg.insert("version", value("0.0.0"));
     pkg.insert("edition", value(member.edition.as_str()));
@@ -3962,6 +4043,7 @@ fn build_bin_bridge_cargo_toml(
     // member bridge.
 
     let mut lib = Table::new();
+    // FIXME(rs-cleanup): callee returns Result, add ?
     lib.insert("name", value(bin_bridge_lib_ident(member, bin)));
     // Absolute path to the bin's entry file. Cargo accepts absolute
     // `[lib] path` values; using the bin's real `main.rs` makes the
@@ -3977,6 +4059,7 @@ fn build_bin_bridge_cargo_toml(
     // resolves through the MEMBER bridge (sibling-bridge path), not
     // through a second compile unit of the member. Mirrors the
     // aggregator's own member-bridge dep entry shape.
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let member_dep_key = crate_name_to_ident(&member.package_name);
     let mut member_dep = InlineTable::new();
     member_dep.insert(
@@ -3985,11 +4068,13 @@ fn build_bin_bridge_cargo_toml(
     );
     member_dep.insert(
         "package",
+        // FIXME(rs-cleanup): callee returns Result, add ?
         Value::String(Formatted::new(bridge_package_name(member))),
     );
     deps_tbl.insert(&member_dep_key, Item::Value(Value::InlineTable(member_dep)));
     doc.insert("dependencies", Item::Table(deps_tbl));
 
+    // FIXME(rs-cleanup): callee returns Result, add ?
     if let Some(features_tbl) = build_bridge_features(plan, member) {
         doc.insert("features", Item::Table(features_tbl));
     }
@@ -4034,13 +4119,14 @@ fn build_bin_bridge_cargo_toml(
 /// resolution from, and removes the need for members to carry a
 /// `[package.metadata.rudzio] features = [...]` workaround that
 /// duplicates information already present in consumer manifests.
-fn build_bridge_features(plan: &Plan, member: &MemberPlan) -> Option<Table> {
+fn build_bridge_features(plan: &Plan, member: &MemberPlan) -> Result<Option<Table>> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let consumer_requests = collect_sibling_feature_requests(plan, member);
     if member.features.is_empty()
         && member.rudzio_activated_features.is_empty()
         && consumer_requests.is_empty()
     {
-        return None;
+        return Ok(None);
     }
 
     let mut tbl = Table::new();
@@ -4074,7 +4160,7 @@ fn build_bridge_features(plan: &Plan, member: &MemberPlan) -> Option<Table> {
     }
     tbl.insert("default", value(default_arr));
 
-    Some(tbl)
+    Ok(Some(tbl))
 }
 
 /// Walk every other member's `dev_deps` (which carries both regular
@@ -4082,7 +4168,7 @@ fn build_bridge_features(plan: &Plan, member: &MemberPlan) -> Option<Table> {
 /// the features they activate on `member`. Workspace-inherited
 /// requests pull in the workspace dep's own features in addition to
 /// any per-consumer overrides.
-fn collect_sibling_feature_requests(plan: &Plan, member: &MemberPlan) -> BTreeSet<String> {
+fn collect_sibling_feature_requests(plan: &Plan, member: &MemberPlan) -> Result<BTreeSet<String>> {
     let mut features: BTreeSet<String> = BTreeSet::new();
     for sibling in &plan.members {
         if sibling.package_name == member.package_name {
@@ -4104,7 +4190,7 @@ fn collect_sibling_feature_requests(plan: &Plan, member: &MemberPlan) -> BTreeSe
             }
         }
     }
-    features
+    Ok(features)
 }
 
 /// Generate the bridge's `src/lib.rs` content.
@@ -4173,6 +4259,7 @@ fn build_bridge_lib_rs(member: &MemberPlan, proxies: &[&TestBinaryProxy]) -> Res
         return Ok(out);
     }
 
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let lib_ident = crate_name_to_ident(&member.package_name);
     out.push_str(
         "\n\n// \u{2500}\u{2500} rudzio v2: auto-generated test + helper inclusions \u{2500}\u{2500}\n\
@@ -4201,6 +4288,7 @@ fn build_bridge_lib_rs(member: &MemberPlan, proxies: &[&TestBinaryProxy]) -> Res
 
     for proxy in proxies {
         for (synth_name, proxy_path) in &proxy.helper_mods {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let path_lit = escape_rust_string_literal(&proxy_path.to_string_lossy());
             let _helper_emit: FmtResult = writeln!(
                 out,
@@ -4211,6 +4299,7 @@ fn build_bridge_lib_rs(member: &MemberPlan, proxies: &[&TestBinaryProxy]) -> Res
             );
         }
         let test_mod_name = format!("__rudzio_test_{binary_id}", binary_id = proxy.binary_id);
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let path_lit = escape_rust_string_literal(&proxy.proxy_test_root.to_string_lossy());
         let _test_emit: FmtResult = writeln!(
             out,
@@ -4242,7 +4331,7 @@ fn build_bridge_lib_rs(member: &MemberPlan, proxies: &[&TestBinaryProxy]) -> Res
 /// Filtering logic preserved verbatim from the pre-Bug-#19 mounting
 /// helper: directory-style detection (Bug #17 fix) and the
 /// standalone-bin skip.
-fn collect_bridged_bin_targets<'member>(member: &'member MemberPlan) -> Vec<&'member MemberBin> {
+fn collect_bridged_bin_targets<'member>(member: &'member MemberPlan) -> Result<Vec<&'member MemberBin>> {
     let mut out: Vec<&'member MemberBin> = Vec::new();
     // Cargo's directory-style bin convention requires BOTH:
     //   1. entry file basename == "main.rs"
@@ -4266,9 +4355,11 @@ fn collect_bridged_bin_targets<'member>(member: &'member MemberPlan) -> Vec<&'me
             && parent != lib_dir;
         let is_standalone = if is_directory_style_bin {
             // Directory-style bin: walk the bin's own subdir.
+            // FIXME(rs-cleanup): callee returns Result, add ?
             parent.is_some_and(|parent_dir| walk_dir_for_test_markers_and_main(parent_dir).1)
         } else {
             // Flat-style bin: check only the entry file.
+            // FIXME(rs-cleanup): callee returns Result, add ?
             rs_file_contains_rudzio_main(&bin.src_path)
         };
         if is_standalone {
@@ -4276,9 +4367,11 @@ fn collect_bridged_bin_targets<'member>(member: &'member MemberPlan) -> Vec<&'me
         }
         let has_test_surface = if is_directory_style_bin {
             parent.is_some_and(|parent_dir| {
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 !walk_dir_for_test_markers_and_main(parent_dir).0.is_empty()
             })
         } else {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             rs_file_contains_rudzio_test_marker(&bin.src_path)
         };
         if !has_test_surface {
@@ -4287,7 +4380,7 @@ fn collect_bridged_bin_targets<'member>(member: &'member MemberPlan) -> Vec<&'me
         }
         out.push(bin);
     }
-    out
+    Ok(out)
 }
 
 /// Merge the member's `[dependencies]` + `[dev-dependencies]` + both
@@ -4355,6 +4448,7 @@ fn build_bridge_dependencies(plan: &Plan, member: &MemberPlan) -> Result<Table> 
     // registrations at runtime. Rudzio's own src uses `crate::*` for
     // self-references; an extern `rudzio` crate isn't needed.
     if member.package_name != RUDZIO_DEP && !deps.contains_key(RUDZIO_DEP) {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let tbl = build_rudzio_inline_table(&plan.rudzio_spec);
         deps.insert(RUDZIO_DEP, Item::Value(Value::InlineTable(tbl)));
     }
@@ -4380,7 +4474,7 @@ fn build_bridge_dependencies(plan: &Plan, member: &MemberPlan) -> Result<Table> 
 /// standalone binaries inside the bridge crate.
 #[inline]
 #[must_use]
-pub fn build_main_rs(plan: &Plan, _out_dir: &Path) -> String {
+pub fn build_main_rs(plan: &Plan, _out_dir: &Path) -> Result<String> {
     let mut out = String::from(
         "#![allow(
     non_snake_case,
@@ -4399,6 +4493,7 @@ pub fn build_main_rs(plan: &Plan, _out_dir: &Path) -> String {
     let workspace_root_abs = plan.workspace_root.as_std_path();
     let mut seen: BTreeSet<String> = BTreeSet::new();
     for member in &plan.members {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         if paths_equal(&member.manifest_dir, workspace_root_abs) {
             continue;
         }
@@ -4411,6 +4506,7 @@ pub fn build_main_rs(plan: &Plan, _out_dir: &Path) -> String {
         if !bridge_applies_to(member) {
             continue;
         }
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let ident = crate_name_to_ident(&member.package_name);
         if !seen.insert(ident.clone()) {
             continue;
@@ -4423,10 +4519,13 @@ pub fn build_main_rs(plan: &Plan, _out_dir: &Path) -> String {
     // via `extern crate <bin_bridge_lib_ident>;` so link-time DCE
     // doesn't drop the rlib and lose its `TEST_TOKENS` entries.
     for member in &plan.members {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         if paths_equal(&member.manifest_dir, workspace_root_abs) {
             continue;
         }
+        // FIXME(rs-cleanup): callee returns Result, add ?
         for bin in collect_bridged_bin_targets(member) {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let ident = bin_bridge_lib_ident(member, bin);
             if !seen.insert(ident.clone()) {
                 continue;
@@ -4436,7 +4535,7 @@ pub fn build_main_rs(plan: &Plan, _out_dir: &Path) -> String {
     }
 
     out.push_str("\n#[rudzio::main]\nfn main() {}\n");
-    out
+    Ok(out)
 }
 
 /// Bug #10 collision detection: when two `[[test]]` binaries declare
@@ -4466,11 +4565,15 @@ fn detect_helper_collisions(plan: &Plan) -> Result<()> {
     let mut by_helper: BTreeMap<String, BTreeMap<PathBuf, BTreeSet<String>>> = BTreeMap::new();
     for member in &plan.members {
         for test_file in &member.test_files {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let binary_id = compute_test_binary_id(member, test_file);
+            // FIXME(rs-cleanup): callee returns Result, add ?
             for (helper_name, source_path) in discover_test_root_helpers(test_file) {
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 if file_carries_test_markers(&source_path) {
                     continue;
                 }
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 let canon = canonicalize_or_keep(&source_path);
                 let _newly_inserted: bool = by_helper
                     .entry(helper_name)
@@ -4521,11 +4624,11 @@ fn detect_helper_collisions(plan: &Plan) -> Result<()> {
 /// — defensive: an unreadable file can't be confirmed to be a test
 /// file, so the conservative answer is "treat as helper" and let
 /// the strict collision rule fire.
-fn file_carries_test_markers(path: &Path) -> bool {
+fn file_carries_test_markers(path: &Path) -> Result<bool> {
     let Ok(text) = fs::read_to_string(path) else {
-        return false;
+        return Ok(false);
     };
-    text.contains("rudzio::test") || text.contains("rudzio::suite")
+    Ok(text.contains("rudzio::test") || text.contains("rudzio::suite"))
 }
 
 /// Walk every member's `test_files`, build a [`TestBinaryProxy`] for
@@ -4547,25 +4650,28 @@ fn file_carries_test_markers(path: &Path) -> bool {
 /// `force_bridge`, without any bins, without any tests) are skipped:
 /// they contribute nothing to the aggregator and have no place to
 /// host proxy files.
-fn collect_test_binary_proxies(plan: &Plan, out_dir: &Path) -> Vec<TestBinaryProxy> {
+fn collect_test_binary_proxies(plan: &Plan, out_dir: &Path) -> Result<Vec<TestBinaryProxy>> {
     let members_dir = out_dir.join("members");
     let mut out: Vec<TestBinaryProxy> = Vec::new();
     for member in &plan.members {
         if member.test_files.is_empty() {
             continue;
         }
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let bridge_root = members_dir.join(bridge_dir_name(member));
         let proxies_root = bridge_root.join("src").join("proxies");
         for test_file in &member.test_files {
             let Some(test_root_dir) = test_file.parent() else {
                 continue;
             };
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let binary_id = compute_test_binary_id(member, test_file);
             let proxy_dir = proxies_root.join(&binary_id);
             let proxy_test_root = match test_file.file_name() {
                 Some(name) => proxy_dir.join(name),
                 None => continue,
             };
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let helpers_raw = discover_test_root_helpers(test_file);
             let mut helper_synth_lookup: BTreeMap<String, String> = BTreeMap::new();
             let mut helper_mods: Vec<(String, PathBuf)> = Vec::new();
@@ -4582,6 +4688,7 @@ fn collect_test_binary_proxies(plan: &Plan, out_dir: &Path) -> Vec<TestBinaryPro
                 binary_id,
                 helper_synth_lookup,
                 helper_mods,
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 member_lib_ident: crate_name_to_ident(&member.package_name),
                 test_root: test_file.clone(),
                 test_root_dir: test_root_dir.to_path_buf(),
@@ -4589,7 +4696,7 @@ fn collect_test_binary_proxies(plan: &Plan, out_dir: &Path) -> Vec<TestBinaryPro
             });
         }
     }
-    out
+    Ok(out)
 }
 
 /// Stable per-test-binary id: `<sanitize(member_pkg)>__<sanitize(parent_dir_name)>`.
@@ -4601,21 +4708,24 @@ fn collect_test_binary_proxies(plan: &Plan, out_dir: &Path) -> Vec<TestBinaryPro
 /// (each named `tests/integration/mod.rs`) also stays distinct.
 /// Flat single-file test files (`tests/foo.rs`, no parent dir per se
 /// — parent is `tests/`) fall back to the file stem.
-fn compute_test_binary_id(member: &MemberPlan, test_file: &Path) -> String {
+fn compute_test_binary_id(member: &MemberPlan, test_file: &Path) -> Result<String> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let member_part = sanitize_ident(&member.package_name);
     let parent_part = if test_file.file_name().and_then(|name| name.to_str()) == Some("mod.rs") {
         test_file
             .parent()
             .and_then(|parent| parent.file_name())
             .and_then(|name| name.to_str())
+            // TODO(rs-cleanup): silencing at line 4611 — review and replace with Result-propagating equivalent
             .unwrap_or("root")
     } else {
         test_file
             .file_stem()
             .and_then(|stem| stem.to_str())
+            // TODO(rs-cleanup): silencing at line 4616 — review and replace with Result-propagating equivalent
             .unwrap_or("test")
     };
-    format!("{member_part}__{}", sanitize_ident(parent_part))
+    Ok(format!("{member_part}__{}", sanitize_ident(parent_part)))
 }
 
 /// Write the per-test-binary proxy files under
@@ -4650,6 +4760,7 @@ fn write_test_binary_proxies(proxies: &[TestBinaryProxy]) -> Result<()> {
         };
         fs::create_dir_all(proxy_dir)
             .with_context(|| format!("creating {}", proxy_dir.display()))?;
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let source_files = walk_rs_files(&proxy.test_root_dir);
         let helper_names: BTreeSet<String> = proxy.helper_synth_lookup.keys().cloned().collect();
         for source_file in source_files {
@@ -4698,15 +4809,16 @@ fn write_test_binary_proxies(proxies: &[TestBinaryProxy]) -> Result<()> {
 /// transitively. Errors during traversal are dropped: a unreadable
 /// subdir yields fewer files (which surfaces later as an unresolved
 /// mod), but doesn't abort the whole proxy emission.
-fn walk_rs_files(dir: &Path) -> Vec<PathBuf> {
+fn walk_rs_files(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut out: Vec<PathBuf> = Vec::new();
     let Ok(entries) = fs::read_dir(dir) else {
-        return out;
+        return Ok(out);
     };
     for entry_result in entries {
         let Ok(entry) = entry_result else { continue };
         let path = entry.path();
         if path.is_dir() {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             out.extend(walk_rs_files(&path));
         } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
             out.push(path);
@@ -4719,7 +4831,7 @@ fn walk_rs_files(dir: &Path) -> Vec<PathBuf> {
         }
     }
     out.sort();
-    out
+    Ok(out)
 }
 
 /// Parse `source` with syn, rewrite every `crate::<helper>::...` path
@@ -4797,7 +4909,7 @@ fn strip_helper_mod_decls(source: &str, helpers: &BTreeSet<String>) -> Result<St
 /// survives the rewrite (Bug #12). The same promotion runs for each
 /// `Group` item by recursion, so `use crate::{common, other};` aliases
 /// each matching leaf independently.
-fn rewrite_first_use_tree_ident(tree: &mut syn::UseTree, helpers: &BTreeMap<String, String>) {
+fn rewrite_first_use_tree_ident(tree: &mut syn::UseTree, helpers: &BTreeMap<String, String>) -> Result<()> {
     match tree {
         syn::UseTree::Path(path) => {
             if let Some(synth) = helpers.get(&path.ident.to_string()) {
@@ -4823,17 +4935,19 @@ fn rewrite_first_use_tree_ident(tree: &mut syn::UseTree, helpers: &BTreeMap<Stri
         }
         syn::UseTree::Group(group) => {
             for item in &mut group.items {
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 rewrite_first_use_tree_ident(item, helpers);
             }
         }
         syn::UseTree::Glob(_) => {}
-    }
+    };
+    Ok(())
 }
 
 /// Normalise a Cargo package name (which allows hyphens) into the Rust
 /// identifier cargo actually uses for `extern crate` / path references.
-fn crate_name_to_ident(name: &str) -> String {
-    name.replace('-', "_")
+fn crate_name_to_ident(name: &str) -> Result<String> {
+    Ok(name.replace('-', "_"))
 }
 
 /// Parse `test_file` (the `[[test]] path = "..."` entry-point of a
@@ -4875,9 +4989,9 @@ fn crate_name_to_ident(name: &str) -> String {
 /// the aggregator root, which is the right semantics: cfg-gated
 /// helpers were already opt-in at the test-binary level, and the
 /// aggregator's `--cfg rudzio_test` activation broadens that gate).
-fn discover_test_root_helpers(test_file: &Path) -> Vec<(String, PathBuf)> {
+fn discover_test_root_helpers(test_file: &Path) -> Result<Vec<(String, PathBuf)>> {
     let Some(dir) = test_file.parent() else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let file_name = test_file.file_name().and_then(|os_name| os_name.to_str());
     // Determine cargo's mod-resolution base for `mod X;` declarations
@@ -4888,15 +5002,16 @@ fn discover_test_root_helpers(test_file: &Path) -> Vec<(String, PathBuf)> {
         dir.to_path_buf()
     } else {
         let Some(stem) = test_file.file_stem().and_then(|stem_name| stem_name.to_str()) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         dir.join(stem)
     };
     let Ok(text) = fs::read_to_string(test_file) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let mut out: Vec<(String, PathBuf)> = Vec::new();
     for raw_line in text.lines() {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let Some(name) = parse_top_level_mod_decl(raw_line) else {
             continue;
         };
@@ -4915,7 +5030,7 @@ fn discover_test_root_helpers(test_file: &Path) -> Vec<(String, PathBuf)> {
         };
         out.push((name, resolved));
     }
-    out
+    Ok(out)
 }
 
 /// Match a single source line against the `[pub(...) ] mod NAME;`
@@ -4924,15 +5039,16 @@ fn discover_test_root_helpers(test_file: &Path) -> Vec<(String, PathBuf)> {
 /// nested mods inside fns or impls — those don't introduce
 /// crate-root submodules under stock cargo either, so the
 /// re-export must skip them).
-fn parse_top_level_mod_decl(raw_line: &str) -> Option<String> {
+fn parse_top_level_mod_decl(raw_line: &str) -> Result<Option<String>> {
     let trimmed = raw_line.trim();
     if trimmed.starts_with("//") {
-        return None;
+        return Ok(None);
         }
     let after_vis = trimmed
         .strip_prefix("pub(crate) ")
         .or_else(|| trimmed.strip_prefix("pub(super) "))
         .or_else(|| trimmed.strip_prefix("pub "))
+        // TODO(rs-cleanup): silencing at line 4936 — review and replace with Result-propagating equivalent
         .unwrap_or(trimmed);
     let rest = after_vis.strip_prefix("mod ")?;
     let semi_idx = rest.find(';')?;
@@ -4941,7 +5057,7 @@ fn parse_top_level_mod_decl(raw_line: &str) -> Option<String> {
         && brace < semi_idx
     {
         // `mod NAME { ... }` — inline module, no sibling file.
-        return None;
+        return Ok(None);
     }
     let name = rest.get(..semi_idx)?.trim();
     if name.is_empty()
@@ -4949,9 +5065,9 @@ fn parse_top_level_mod_decl(raw_line: &str) -> Option<String> {
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || character == '_')
     {
-        return None;
+        return Ok(None);
     }
-    Some(name.to_owned())
+    Ok(Some(name.to_owned()))
 }
 
 /// Clone `dep` with `optional` cleared.
@@ -4966,20 +5082,20 @@ fn parse_top_level_mod_decl(raw_line: &str) -> Option<String> {
 /// files referencing the dep fail with `unresolved import`. The
 /// aggregator's contract is "every referenced dep must compile";
 /// force-enable matches that contract.
-fn force_enable(dep: &DevDepSpec) -> DevDepSpec {
+fn force_enable(dep: &DevDepSpec) -> Result<DevDepSpec> {
     let mut out = dep.clone();
     out.optional = false;
-    out
+    Ok(out)
 }
 
 /// Build the aggregator crate's `[package]` section.
-fn aggregator_package_table() -> Table {
+fn aggregator_package_table() -> Result<Table> {
     let mut pkg = Table::new();
     pkg.insert("name", value(AGGREGATOR_NAME));
     pkg.insert("version", value("0.0.0"));
     pkg.insert("edition", value("2024"));
     pkg.insert("publish", value(false));
-    pkg
+    Ok(pkg)
 }
 
 /// Build the aggregator crate's `[workspace]` section.
@@ -4987,7 +5103,7 @@ fn aggregator_package_table() -> Table {
 /// Lists every bridged member as `members/<bridge-dir>`. If no member
 /// qualifies for bridging, the `members` key is omitted so the
 /// aggregator stays a single-crate virtual workspace.
-fn aggregator_workspace_table(plan: &Plan) -> Table {
+fn aggregator_workspace_table(plan: &Plan) -> Result<Table> {
     let mut ws_tbl = Table::new();
     let mut members_arr = Array::new();
     for member in &plan.members {
@@ -5002,6 +5118,7 @@ fn aggregator_workspace_table(plan: &Plan) -> Table {
     // Bug #19 fix: per-bin bridges are also workspace members so cargo
     // picks them up alongside the member bridges.
     for member in &plan.members {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         for bin in collect_bridged_bin_targets(member) {
             members_arr.push(Value::String(Formatted::new(format!(
                 "members/{}",
@@ -5012,19 +5129,19 @@ fn aggregator_workspace_table(plan: &Plan) -> Table {
     if !members_arr.is_empty() {
         ws_tbl.insert("members", Item::Value(Value::Array(members_arr)));
     }
-    ws_tbl
+    Ok(ws_tbl)
 }
 
 /// Build the aggregator's `[[bin]]` array (always exactly one entry —
 /// the rudzio-auto-runner binary).
-fn aggregator_bin_array() -> ArrayOfTables {
+fn aggregator_bin_array() -> Result<ArrayOfTables> {
     let mut bin = Table::new();
     bin.insert("name", value(AGGREGATOR_NAME));
     bin.insert("path", value("src/main.rs"));
     bin.insert("test", value(false));
     let mut bins = ArrayOfTables::new();
     bins.push(bin);
-    bins
+    Ok(bins)
 }
 
 /// Append a `[dependencies]` entry for every per-bin bridge crate.
@@ -5042,13 +5159,16 @@ fn aggregator_bin_array() -> ArrayOfTables {
 /// skipped. The bin name collision itself is still surfaced upstream
 /// via `bin_bridge_dir_name`'s member-prefixed dir, so this dedupe
 /// only guards the `extern crate` ident namespace.
-fn add_bin_bridge_deps(deps: &mut Table, plan: &Plan, workspace_root_abs: &Path) {
+fn add_bin_bridge_deps(deps: &mut Table, plan: &Plan, workspace_root_abs: &Path) -> Result<()> {
     let mut bin_bridge_seen: BTreeSet<String> = BTreeSet::new();
     for member in &plan.members {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         if paths_equal(&member.manifest_dir, workspace_root_abs) {
             continue;
         }
+        // FIXME(rs-cleanup): callee returns Result, add ?
         for bin in collect_bridged_bin_targets(member) {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let dep_key = bin_bridge_lib_ident(member, bin);
             if !bin_bridge_seen.insert(dep_key.clone()) {
                 continue;
@@ -5063,16 +5183,19 @@ fn add_bin_bridge_deps(deps: &mut Table, plan: &Plan, workspace_root_abs: &Path)
             );
             tbl.insert(
                 "package",
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 Value::String(Formatted::new(bin_bridge_package_name(member, bin))),
             );
             deps.insert(&dep_key, Item::Value(Value::InlineTable(tbl)));
         }
-    }
+    };
+    Ok(())
 }
 
 /// Build the aggregator crate's `Cargo.toml` from the resolved `Plan`.
 fn build_cargo_toml(plan: &Plan) -> Result<String> {
     let mut doc = DocumentMut::new();
+    // FIXME(rs-cleanup): callee returns Result, add ?
     doc.insert("package", Item::Table(aggregator_package_table()));
     // `[workspace]` makes the aggregator its own workspace root so
     // cargo doesn't complain that its manifest is missing from the
@@ -5082,7 +5205,9 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
     // graph. Bridge crates live at `members/<name>/Cargo.toml`;
     // listing them as explicit workspace members makes cargo treat
     // them as part of this workspace.
+    // FIXME(rs-cleanup): callee returns Result, add ?
     doc.insert("workspace", Item::Table(aggregator_workspace_table(plan)));
+    // FIXME(rs-cleanup): callee returns Result, add ?
     doc.insert("bin", Item::ArrayOfTables(aggregator_bin_array()));
 
     let mut deps = Table::new();
@@ -5106,6 +5231,7 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
     // collection.
     deps.insert(
         "rudzio",
+        // FIXME(rs-cleanup): callee returns Result, add ?
         Item::Value(Value::InlineTable(aggregator_rudzio_inline_table(plan))),
     );
 
@@ -5129,6 +5255,7 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
     // own Cargo.toml carrying any rudzio-specific machinery.
     let workspace_root_abs = plan.workspace_root.as_std_path();
     for member in &plan.members {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         if paths_equal(&member.manifest_dir, workspace_root_abs) {
             continue;
         }
@@ -5155,6 +5282,7 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
             );
             tbl.insert(
                 "package",
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 Value::String(Formatted::new(bridge_package_name(member))),
             );
         } else {
@@ -5168,6 +5296,7 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
         deps.insert(&member.package_name, Item::Value(Value::InlineTable(tbl)));
     }
 
+    // FIXME(rs-cleanup): callee returns Result, add ?
     add_bin_bridge_deps(&mut deps, plan, workspace_root_abs);
 
     // Union of deps (normal + dev) across all members. First spec
@@ -5204,6 +5333,7 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
         }
     }
     for (entry_name, dep) in &merged {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let item = render_dev_dep(&force_enable(dep), plan)?;
         deps.insert(entry_name, item);
     }
@@ -5215,6 +5345,7 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
     // going through `rudzio::build::expose_bins`, which can't reach
     // bin-only workspace members when the aggregator is its own workspace.
 
+    // FIXME(rs-cleanup): callee returns Result, add ?
     emit_features_table(&mut doc, plan);
 
     Ok(doc.to_string())
@@ -5236,7 +5367,7 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
 /// dependency"). A feature with no surviving activations is
 /// emitted as `name = []` — still reachable via `--features X`,
 /// just doesn't activate anything (the deps are already on).
-fn emit_features_table(doc: &mut DocumentMut, plan: &Plan) {
+fn emit_features_table(doc: &mut DocumentMut, plan: &Plan) -> Result<()> {
     let mut features_table: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for member in &plan.members {
         for (name, activations) in &member.features {
@@ -5250,7 +5381,7 @@ fn emit_features_table(doc: &mut DocumentMut, plan: &Plan) {
         }
     }
     if features_table.is_empty() {
-        return;
+        return Ok(());
     }
     let mut feats = Table::new();
     for (name, activations) in features_table {
@@ -5261,6 +5392,7 @@ fn emit_features_table(doc: &mut DocumentMut, plan: &Plan) {
         feats.insert(&name, Item::Value(Value::Array(arr)));
     }
     doc.insert("features", Item::Table(feats));
+    Ok(())
 }
 
 /// Render `dep` as a sibling-bridge dependency entry when its package
@@ -5280,7 +5412,7 @@ fn emit_features_table(doc: &mut DocumentMut, plan: &Plan) {
 /// Features and `default-features` propagate using the same merge rules
 /// as the workspace-inherited / direct branches in `render_dev_dep`, so
 /// feature flags reach the bridge's mirrored `[features]` table.
-fn render_sibling_bridge_dep(dep: &DevDepSpec, plan: &Plan) -> Option<Item> {
+fn render_sibling_bridge_dep(dep: &DevDepSpec, plan: &Plan) -> Result<Option<Item>> {
     let sibling = plan
         .members
         .iter()
@@ -5293,6 +5425,7 @@ fn render_sibling_bridge_dep(dep: &DevDepSpec, plan: &Plan) -> Option<Item> {
     );
     tbl.insert(
         "package",
+        // FIXME(rs-cleanup): callee returns Result, add ?
         Value::String(Formatted::new(bridge_package_name(sibling))),
     );
 
@@ -5301,6 +5434,7 @@ fn render_sibling_bridge_dep(dep: &DevDepSpec, plan: &Plan) -> Option<Item> {
     } else {
         None
     };
+    // TODO(rs-cleanup): silencing at line 5304 — review and replace with Result-propagating equivalent
     let mut feats: Vec<String> = ws_entry.map(|ws| ws.features.clone()).unwrap_or_default();
     feats.extend(dep.features.iter().cloned());
     feats.sort();
@@ -5323,19 +5457,22 @@ fn render_sibling_bridge_dep(dep: &DevDepSpec, plan: &Plan) -> Option<Item> {
         tbl.insert("optional", Value::Boolean(Formatted::new(true)));
     }
 
-    Some(Item::Value(Value::InlineTable(tbl)))
+    Ok(Some(Item::Value(Value::InlineTable(tbl))))
 }
 
 /// Render a single `DevDepSpec` as a TOML inline table (or bare version string for trivial entries).
 fn render_dev_dep(dep: &DevDepSpec, plan: &Plan) -> Result<Item> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     if let Some(item) = render_sibling_bridge_dep(dep, plan) {
         return Ok(item);
     }
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let registry = resolve_dev_dep_registry(dep, plan);
     let mut tbl = InlineTable::new();
     if dep.workspace_inherited {
         fill_workspace_inherited_body(&mut tbl, dep, plan)?;
     } else if let Some(path_buf) = &dep.path {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         fill_path_dep_body(&mut tbl, dep, path_buf);
     } else if dep.features.is_empty()
         && dep.uses_default_features
@@ -5347,6 +5484,7 @@ fn render_dev_dep(dep: &DevDepSpec, plan: &Plan) -> Result<Item> {
             dep.version_req.clone(),
         ))));
     } else {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         fill_version_dep_body(&mut tbl, dep);
     }
     if dep.rename.is_some() {
@@ -5371,8 +5509,8 @@ fn render_dev_dep(dep: &DevDepSpec, plan: &Plan) -> Result<Item> {
 /// registry — cargo rejects `registry` alongside `path`/`git` — but
 /// we still preserve and emit the field when set so manifests that
 /// happen to carry it round-trip unchanged.
-fn resolve_dev_dep_registry(dep: &DevDepSpec, plan: &Plan) -> Option<String> {
-    if dep.workspace_inherited {
+fn resolve_dev_dep_registry(dep: &DevDepSpec, plan: &Plan) -> Result<Option<String>> {
+    Ok(if dep.workspace_inherited {
         let ws_registry = plan
             .workspace_deps
             .get(&dep.name)
@@ -5380,7 +5518,7 @@ fn resolve_dev_dep_registry(dep: &DevDepSpec, plan: &Plan) -> Option<String> {
         dep.registry.clone().or(ws_registry)
     } else {
         dep.registry.clone()
-    }
+    })
 }
 
 /// Populate `tbl` with the inline-table body for a workspace-inherited
@@ -5447,7 +5585,7 @@ fn fill_workspace_inherited_body(
 /// Populate `tbl` with the inline-table body for a direct path-based
 /// dev-dep entry — the simplest shape: just `path = "..."` plus any
 /// non-default `features` / `default-features = false`.
-fn fill_path_dep_body(tbl: &mut InlineTable, dep: &DevDepSpec, path_buf: &Path) {
+fn fill_path_dep_body(tbl: &mut InlineTable, dep: &DevDepSpec, path_buf: &Path) -> Result<()> {
     tbl.insert(
         "path",
         Value::String(Formatted::new(path_buf.to_string_lossy().into_owned())),
@@ -5461,7 +5599,8 @@ fn fill_path_dep_body(tbl: &mut InlineTable, dep: &DevDepSpec, path_buf: &Path) 
     }
     if !dep.uses_default_features {
         tbl.insert("default-features", Value::Boolean(Formatted::new(false)));
-    }
+    };
+    Ok(())
 }
 
 /// Populate `tbl` with the inline-table body for a direct version-based
@@ -5469,7 +5608,7 @@ fn fill_path_dep_body(tbl: &mut InlineTable, dep: &DevDepSpec, path_buf: &Path) 
 /// `default-features = false`. Used when the entry is non-trivial
 /// enough (features / rename / optional / registry) that the bare
 /// version-string shape won't do.
-fn fill_version_dep_body(tbl: &mut InlineTable, dep: &DevDepSpec) {
+fn fill_version_dep_body(tbl: &mut InlineTable, dep: &DevDepSpec) -> Result<()> {
     tbl.insert(
         "version",
         Value::String(Formatted::new(dep.version_req.clone())),
@@ -5483,7 +5622,8 @@ fn fill_version_dep_body(tbl: &mut InlineTable, dep: &DevDepSpec) {
     }
     if !dep.uses_default_features {
         tbl.insert("default-features", Value::Boolean(Formatted::new(false)));
-    }
+    };
+    Ok(())
 }
 
 /// Build the aggregator's `build.rs` content.
@@ -5503,13 +5643,13 @@ fn fill_version_dep_body(tbl: &mut InlineTable, dep: &DevDepSpec) {
 /// proximate cause of the `.package-cache` flock cascade) is gone.
 #[inline]
 #[must_use]
-pub fn build_build_rs(_plan: &Plan) -> String {
+pub fn build_build_rs(_plan: &Plan) -> Result<String> {
     let mut out = String::new();
     out.push_str("fn main() {\n");
     out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
     out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
     out.push_str("}\n");
-    out
+    Ok(out)
 }
 
 /// Render `value` as a complete Rust `&str` literal (`"…"` form),
@@ -5517,12 +5657,14 @@ pub fn build_build_rs(_plan: &Plan) -> String {
 /// would but without tripping the workspace-wide `clippy::use_debug`
 /// forbid. Used by the bridge-lib codegen path that splices member-side
 /// proxy paths into `#[path = …]` attributes.
-fn escape_rust_string_literal(value: &str) -> String {
+fn escape_rust_string_literal(value: &str) -> Result<String> {
+    // TODO(rs-cleanup): masking_arith at line 5521 — review and replace with Result-propagating equivalent
     let mut buf = String::with_capacity(value.len().saturating_add(2));
     buf.push('"');
+    // FIXME(rs-cleanup): callee returns Result, add ?
     buf.push_str(&escape_str_literal(value));
     buf.push('"');
-    buf
+    Ok(buf)
 }
 
 /// Escape `value` for safe inclusion inside a Rust `&str` literal whose
@@ -5530,7 +5672,7 @@ fn escape_rust_string_literal(value: &str) -> String {
 /// inner-character handling but skips the leading/trailing quotes so
 /// the result can be spliced directly into a literal that's part of a
 /// larger string.
-fn escape_str_literal(value: &str) -> String {
+fn escape_str_literal(value: &str) -> Result<String> {
     let mut buf = String::with_capacity(value.len());
     for character in value.chars() {
         match character {
@@ -5546,7 +5688,7 @@ fn escape_str_literal(value: &str) -> String {
             other => buf.push(other),
         }
     }
-    buf
+    Ok(buf)
 }
 
 /// Pick the Rust module identifier for a `#[path]`-included test
@@ -5576,24 +5718,26 @@ fn escape_str_literal(value: &str) -> String {
 ///
 /// Used by [`Plan::restrict_to_test_binaries`] to match `--test foo`
 /// against the workspace's `[[test]]` entries.
-fn test_binary_name_for(file: &Path) -> String {
+fn test_binary_name_for(file: &Path) -> Result<String> {
     let stem = file
         .file_stem()
         .and_then(|os_stem| os_stem.to_str())
+        // TODO(rs-cleanup): silencing at line 5583 — review and replace with Result-propagating equivalent
         .unwrap_or("test");
-    if matches!(stem, "mod" | "main" | "lib") {
+    Ok(if matches!(stem, "mod" | "main" | "lib") {
         file.parent()
             .and_then(|parent| parent.file_name())
             .and_then(|os_name| os_name.to_str())
+            // TODO(rs-cleanup): silencing at line 5588 — review and replace with Result-propagating equivalent
             .unwrap_or(stem)
             .to_owned()
     } else {
         stem.to_owned()
-    }
+    })
 }
 
 /// Replace any non `[a-zA-Z0-9_]` chars in `value` with `_`, prefixing a digit-starter with `_`.
-fn sanitize_ident(value: &str) -> String {
+fn sanitize_ident(value: &str) -> Result<String> {
     let mut out = String::with_capacity(value.len());
     for character in value.chars() {
         if character.is_ascii_alphanumeric() || character == '_' {
@@ -5609,19 +5753,21 @@ fn sanitize_ident(value: &str) -> String {
     {
         out.insert(0, '_');
     }
-    out
+    Ok(out)
 }
 
 /// Two paths refer to the same canonicalized location.
 ///
 /// Falls back to direct equality when canonicalization fails (the paths
 /// may not exist on disk yet — e.g. synthetic test fixtures).
-fn paths_equal(left: &Path, right: &Path) -> bool {
-    fs::canonicalize(left)
+fn paths_equal(left: &Path, right: &Path) -> Result<bool> {
+    Ok(fs::canonicalize(left)
+        // TODO(rs-cleanup): silencing at line 5621 — review and replace with Result-propagating equivalent
         .ok()
+        // TODO(rs-cleanup): silencing at line 5622 — review and replace with Result-propagating equivalent
         .zip(fs::canonicalize(right).ok())
         .is_some_and(|(canonical_left, canonical_right)| canonical_left == canonical_right)
-        || left == right
+        || left == right)
 }
 
 /// Build a `Plan` by querying `cargo metadata` from the current working directory.

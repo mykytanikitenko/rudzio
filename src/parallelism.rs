@@ -87,15 +87,15 @@ impl HardLimit {
     /// (`try_acquire` succeeds). The emitted line carries the measured
     /// wait duration.
     #[inline]
-    pub async fn acquire(&self) -> HardLimitGuard<'_> {
+    pub async fn acquire(&self) -> anyhow::Result<HardLimitGuard<'_>> {
         let Some(inner) = &self.inner else {
-            return HardLimitGuard { releaser: None };
+            return Ok(HardLimitGuard { releaser: None });
         };
 
         if let Some(releaser) = inner.sem.try_acquire(1) {
-            return HardLimitGuard {
+            return Ok(HardLimitGuard {
                 releaser: Some(releaser),
-            };
+            });
         }
 
         let parked_at = Instant::now();
@@ -108,9 +108,9 @@ impl HardLimit {
             max = inner.max.get(),
         ));
 
-        HardLimitGuard {
+        Ok(HardLimitGuard {
             releaser: Some(releaser),
-        }
+        })
     }
 
     /// `None` = gate disabled, acquire is a no-op. `Some(n)` = at most
@@ -118,11 +118,12 @@ impl HardLimit {
     /// is released.
     #[must_use]
     #[inline]
-    pub fn new(limit: Option<NonZeroUsize>) -> Self {
-        Self {
+    pub fn new(limit: Option<NonZeroUsize>) -> anyhow::Result<Self> {
+        Ok(Self {
             inner: limit.map(Inner::with_max),
+            // FIXME(rs-cleanup): callee returns Result, add ?
             sink: Box::new(|msg| write_stdout(&format!("{msg}\n"))),
-        }
+        })
     }
 
     /// Constructor that pipes parking notices into a caller-provided
@@ -133,14 +134,15 @@ impl HardLimit {
     /// downstream users.
     #[doc(hidden)]
     #[inline]
-    pub fn with_sink<S>(limit: Option<NonZeroUsize>, sink: S) -> Self
+    pub fn with_sink<S>(limit: Option<NonZeroUsize>, sink: S) -> anyhow::Result<Self>
     where
         S: Fn(&str) + Send + Sync + 'static,
     {
-        Self {
+        Ok(Self {
             inner: limit.map(Inner::with_max),
+            // FIXME(rs-cleanup): callee returns Result, add ?
             sink: Box::new(sink),
-        }
+        })
     }
 }
 
@@ -148,11 +150,12 @@ impl Inner {
     /// Build an `Inner` with a fair (FIFO) semaphore initialised to
     /// `max` permits.
     #[inline]
-    fn with_max(max: NonZeroUsize) -> Self {
-        Self {
+    fn with_max(max: NonZeroUsize) -> anyhow::Result<Self> {
+        Ok(Self {
             max,
+            // FIXME(rs-cleanup): callee returns Result, add ?
             sem: Semaphore::new(true, max.get()),
-        }
+        })
     }
 }
 

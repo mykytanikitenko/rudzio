@@ -86,18 +86,18 @@ struct RuntimeGroupOwnerImplArgs<'args> {
 /// `Option<u64>` const expression token stream. The runtime-side
 /// resolver then computes
 /// `override.map(Duration::from_secs).or(config.<phase>_timeout)`.
-fn attr_timeout_overrides(attr_args: &TestAttrArgs) -> (TokenStream, TokenStream, TokenStream) {
+fn attr_timeout_overrides(attr_args: &TestAttrArgs) -> anyhow::Result<(TokenStream, TokenStream, TokenStream)> {
     let to_quote = |secs: Option<u64>| -> TokenStream {
         secs.map_or_else(
             || quote! { ::core::option::Option::None },
             |seconds| quote! { ::core::option::Option::Some(#seconds) },
         )
     };
-    (
+    Ok((
         to_quote(attr_args.timeout_secs),
         to_quote(attr_args.setup_timeout_secs),
         to_quote(attr_args.teardown_timeout_secs),
-    )
+    ))
 }
 
 /// Token stream for a benchmarked test body dispatch: emits a
@@ -108,8 +108,8 @@ fn bench_test_outcome(
     dispatch_call: &TokenStream,
     runtime_type: &Path,
     bench_body_closure: &TokenStream,
-) -> TokenStream {
-    quote! {
+) -> anyhow::Result<TokenStream> {
+    Ok(quote! {
         match config.bench_mode {
             ::rudzio::config::BenchMode::Full => {
                 use ::rudzio::bench::Strategy as _;
@@ -156,7 +156,7 @@ fn bench_test_outcome(
                 ).await
             }
         }
-    }
+    })
 }
 
 /// Build the two dispatch-call token streams the per-test helper
@@ -171,7 +171,7 @@ fn dispatch_call_quotes(
     test_name: &Ident,
     ctx_kind: CtxKind,
     is_async: bool,
-) -> (TokenStream, TokenStream) {
+) -> anyhow::Result<(TokenStream, TokenStream)> {
     let dispatch_call_args = match ctx_kind {
         CtxKind::None => quote! {},
         CtxKind::Shared => quote! { &ctx },
@@ -207,7 +207,7 @@ fn dispatch_call_quotes(
             }
         }
     };
-    (dispatch_call, bench_body_closure)
+    Ok((dispatch_call, bench_body_closure))
 }
 
 /// Token-level entry point for the `#[rudzio::suite(...)]` proc-macro:
@@ -371,6 +371,7 @@ fn generate_per_config(
     // attribute spelling get distinct keys, preventing the cross-type
     // owner-cast UB that string-based keys allowed.
 
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let mod_camel = to_upper_camel(&mod_name.to_string());
     let owner_struct = format_ident!("__RudzioOwner{}{}", mod_camel, cfg_idx);
     let owner_static = format_ident!(
@@ -379,6 +380,7 @@ fn generate_per_config(
         cfg_idx,
     );
 
+    // FIXME(rs-cleanup): callee returns Result, add ?
     helper_items.push(runtime_group_owner_impl(&RuntimeGroupOwnerImplArgs {
         cfg_attrs,
         mod_name,
@@ -425,6 +427,7 @@ fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream
     let (ignored, ignore_reason) = extract_ignore_reason(test);
     let attr_args = extract_test_attr_args(test)?;
     let (attr_test_timeout_secs, attr_setup_timeout_secs, attr_teardown_timeout_secs) =
+        // FIXME(rs-cleanup): callee returns Result, add ?
         attr_timeout_overrides(&attr_args);
     let benchmark = attr_args.benchmark;
     let has_benchmark = benchmark.is_some();
@@ -475,11 +478,14 @@ fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream
     };
 
     let (dispatch_call, bench_body_closure) =
+        // FIXME(rs-cleanup): callee returns Result, add ?
         dispatch_call_quotes(mod_name, test_name, ctx_kind, is_async);
 
     let test_outcome_expr = benchmark.as_ref().map_or_else(
+        // FIXME(rs-cleanup): callee returns Result, add ?
         || plain_test_outcome(&dispatch_call, runtime_type),
         |bench_expr| {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             bench_test_outcome(
                 bench_expr,
                 &dispatch_call,
@@ -489,6 +495,7 @@ fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream
         },
     );
 
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let helper_item = run_test_fn_quote(&RunTestFnArgs {
         cfg_attrs,
         run_test_fn: &run_test_fn,
@@ -538,8 +545,8 @@ fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream
 /// `while let` drain that updates `summary` and refills `in_flight` as
 /// futures resolve. Tokens left in `queued` after the drain are
 /// reported as cancelled.
-fn owner_dispatch_loop_quote(suite_base: &Path, runtime_type: &Path) -> TokenStream {
-    quote! {
+fn owner_dispatch_loop_quote(suite_base: &Path, runtime_type: &Path) -> anyhow::Result<TokenStream> {
+    Ok(quote! {
         // Pointers we hand to each per-test fn pointer. The
         // pointed-to types match the token's group_key —
         // guaranteed by the macro that emits both sides.
@@ -636,7 +643,7 @@ fn owner_dispatch_loop_quote(suite_base: &Path, runtime_type: &Path) -> TokenStr
         // FuturesUnordered would otherwise still be considered
         // a live borrow.
         ::std::mem::drop(in_flight);
-    }
+    })
 }
 
 /// Token stream for the run-group preamble that runs *before*
@@ -648,8 +655,8 @@ fn owner_runtime_init_quote(
     runtime_ctor: &Path,
     runtime_type: &Path,
     mod_name: &Ident,
-) -> TokenStream {
-    quote! {
+) -> anyhow::Result<TokenStream> {
+    Ok(quote! {
         // Step 1: create the runtime as a local value. Lives until
         // the end of `run_group`; nothing leaked to `'static`.
         // The constructor takes `&Config` so runtimes can adapt
@@ -720,7 +727,7 @@ fn owner_runtime_init_quote(
         if active.is_empty() {
             return summary;
         }
-    }
+    })
 }
 
 /// Token stream that, given that `__rudzio_setup_finished_msg` has
@@ -728,8 +735,8 @@ fn owner_runtime_init_quote(
 /// matching `TestOutcome` and incrementing the corresponding
 /// `summary` counter, then returns the summary. Used as the tail of
 /// every suite-setup failure arm.
-fn owner_suite_setup_drain_quote(outcome: &TokenStream, counter_field: &Ident) -> TokenStream {
-    quote! {
+fn owner_suite_setup_drain_quote(outcome: &TokenStream, counter_field: &Ident) -> anyhow::Result<TokenStream> {
+    Ok(quote! {
         for tok in active.iter() {
             reporter.report_outcome(
                 *tok,
@@ -739,7 +746,7 @@ fn owner_suite_setup_drain_quote(outcome: &TokenStream, counter_field: &Ident) -
             summary.#counter_field += 1;
         }
         return summary;
-    }
+    })
 }
 
 /// Token stream for the suite-setup phase inside `block_on`: drives
@@ -748,13 +755,15 @@ fn owner_suite_setup_drain_quote(outcome: &TokenStream, counter_field: &Ident) -
 /// outcome reports each active token as cancelled (or hung) and
 /// returns the summary early — `let suite = match ...` succeeds only
 /// on the happy path.
-fn owner_suite_setup_quote(suite_base: &Path, runtime_type: &Path) -> TokenStream {
+fn owner_suite_setup_quote(suite_base: &Path, runtime_type: &Path) -> anyhow::Result<TokenStream> {
     let cancel_field = Ident::new("cancelled", Span::call_site());
     let hung_field = Ident::new("hung", Span::call_site());
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let drain_cancelled = owner_suite_setup_drain_quote(
         &quote! { ::rudzio::suite::TestOutcome::Cancelled },
         &cancel_field,
     );
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let drain_hung = owner_suite_setup_drain_quote(
         &quote! {
             ::rudzio::suite::TestOutcome::Hung {
@@ -763,7 +772,7 @@ fn owner_suite_setup_quote(suite_base: &Path, runtime_type: &Path) -> TokenStrea
         },
         &hung_field,
     );
-    quote! {
+    Ok(quote! {
         reporter.report_suite_setup_started(runtime_name, suite_label);
         let __rudzio_setup_start = ::std::time::Instant::now();
         // Per-phase token: child of root, so root cancellation
@@ -848,15 +857,15 @@ fn owner_suite_setup_quote(suite_base: &Path, runtime_type: &Path) -> TokenStrea
                 #drain_cancelled
             }
         };
-    }
+    })
 }
 
 /// Token stream for the suite-teardown phase inside `block_on`:
 /// drives `Suite::teardown` through the canonical phase helper with
 /// a fresh unparented token, classifies the outcome into a
 /// `TeardownResult`, and emits `report_suite_teardown_finished`.
-fn owner_suite_teardown_quote(runtime_type: &Path) -> TokenStream {
-    quote! {
+fn owner_suite_teardown_quote(runtime_type: &Path) -> anyhow::Result<TokenStream> {
+    Ok(quote! {
         reporter.report_suite_teardown_started(runtime_name, suite_label);
         let __rudzio_teardown_start = ::std::time::Instant::now();
         // Fresh, unparented phase token. Cleanup must run
@@ -916,13 +925,13 @@ fn owner_suite_teardown_quote(runtime_type: &Path) -> TokenStream {
             __rudzio_teardown_elapsed,
             __rudzio_teardown_result,
         );
-    }
+    })
 }
 
 /// Token stream for a non-benchmarked test body dispatch: a single
 /// `run_test_with_timeout_and_cancel` call wrapped in a block.
-fn plain_test_outcome(dispatch_call: &TokenStream, runtime_type: &Path) -> TokenStream {
-    quote! {
+fn plain_test_outcome(dispatch_call: &TokenStream, runtime_type: &Path) -> anyhow::Result<TokenStream> {
+    Ok(quote! {
         {
             let test_fut = async { #dispatch_call };
             ::rudzio::suite::run_test_with_timeout_and_cancel(
@@ -933,14 +942,14 @@ fn plain_test_outcome(dispatch_call: &TokenStream, runtime_type: &Path) -> Token
                 |dur| <#runtime_type as ::rudzio::runtime::Runtime<'_>>::sleep(rt, dur),
             ).await
         }
-    }
+    })
 }
 
 /// Emit the per-test `unsafe fn` HRTB run-test entry point. Pushed into
 /// `helper_items` once per test; each fn ptr is invoked by the matching
 /// `RuntimeGroupOwner::run_group` via `(tok.run_test)(...)` after the
 /// macro guarantees the pointed-to runtime + suite types match.
-fn run_test_fn_quote(args: &RunTestFnArgs<'_>) -> TokenStream {
+fn run_test_fn_quote(args: &RunTestFnArgs<'_>) -> anyhow::Result<TokenStream> {
     let &RunTestFnArgs {
         attr_setup_timeout_secs,
         attr_teardown_timeout_secs,
@@ -952,16 +961,21 @@ fn run_test_fn_quote(args: &RunTestFnArgs<'_>) -> TokenStream {
         suite_base,
         test_outcome_expr,
     } = args;
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let timeouts = run_test_timeouts_quote(
         attr_test_timeout_secs,
         attr_setup_timeout_secs,
         attr_teardown_timeout_secs,
     );
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let lifecycle_announce = run_test_lifecycle_announce_quote(runtime_type);
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let setup_phase = run_test_setup_phase_quote(ctx_binding, runtime_type);
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let teardown_phase = run_test_teardown_phase_quote(runtime_type);
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let lifecycle_complete = run_test_lifecycle_complete_quote();
-    quote! {
+    Ok(quote! {
         #(#cfg_attrs)*
         #[doc(hidden)]
         unsafe fn #run_test_fn<'s>(
@@ -1034,14 +1048,14 @@ fn run_test_fn_quote(args: &RunTestFnArgs<'_>) -> TokenStream {
                 outcome
             })
         }
-    }
+    })
 }
 
 /// Token stream for the lifecycle "test started" announcement
 /// preamble: allocates a `TestId`, parks it on the panic hook
 /// thread-local, and emits `LifecycleEvent::TestStarted`.
-fn run_test_lifecycle_announce_quote(runtime_type: &Path) -> TokenStream {
-    quote! {
+fn run_test_lifecycle_announce_quote(runtime_type: &Path) -> anyhow::Result<TokenStream> {
+    Ok(quote! {
         // Allocate a per-dispatch TestId, register it in the
         // panic hook's thread-local, and announce the test to
         // the drawer. Paired with the `TestCompleted` emit
@@ -1063,14 +1077,14 @@ fn run_test_lifecycle_announce_quote(runtime_type: &Path) -> TokenStream {
                 at: start,
             },
         );
-    }
+    })
 }
 
 /// Token stream for the lifecycle "test completed" tail: drops the
 /// hardlimit permit guard, flushes producer-side stdio, emits
 /// `LifecycleEvent::TestCompleted`, and clears the panic-hook test id.
-fn run_test_lifecycle_complete_quote() -> TokenStream {
-    quote! {
+fn run_test_lifecycle_complete_quote() -> anyhow::Result<TokenStream> {
+    Ok(quote! {
         // Release the parallel-hardlimit permit before the
         // TestCompleted emit so another parked test can wake
         // and start reporting without waiting on this test's
@@ -1093,15 +1107,15 @@ fn run_test_lifecycle_complete_quote() -> TokenStream {
         ::rudzio::output::panic_hook::set_current_test(
             ::std::option::Option::None,
         );
-    }
+    })
 }
 
 /// Token stream for the per-test setup phase: invokes
 /// `Suite::context` through the canonical phase helper and matches
 /// every `PhaseOutcome` variant, breaking the surrounding `'run:`
 /// block with the appropriate `TestOutcome` for failure paths.
-fn run_test_setup_phase_quote(ctx_binding: &TokenStream, runtime_type: &Path) -> TokenStream {
-    quote! {
+fn run_test_setup_phase_quote(ctx_binding: &TokenStream, runtime_type: &Path) -> anyhow::Result<TokenStream> {
+    Ok(quote! {
         // Per-test setup wrapped in the canonical phase
         // helper: handles cancellation propagation, panic
         // catching, and the per-test-setup timeout.
@@ -1152,15 +1166,15 @@ fn run_test_setup_phase_quote(ctx_binding: &TokenStream, runtime_type: &Path) ->
                 };
             }
         };
-    }
+    })
 }
 
 /// Token stream for the per-test teardown phase: invokes
 /// `Test::teardown` through the canonical phase helper with a fresh
 /// unparented token, classifies the result into a `TeardownResult`,
 /// and reports test-teardown failures.
-fn run_test_teardown_phase_quote(runtime_type: &Path) -> TokenStream {
-    quote! {
+fn run_test_teardown_phase_quote(runtime_type: &Path) -> anyhow::Result<TokenStream> {
+    Ok(quote! {
         // Per-test teardown wrapped in the phase helper
         // with a FRESH unparented token. Cleanup must run
         // to completion regardless of run-timeout / SIGINT
@@ -1215,7 +1229,7 @@ fn run_test_teardown_phase_quote(runtime_type: &Path) -> TokenStream {
                 __rudzio_test_teardown_result,
             );
         }
-    }
+    })
 }
 
 /// Token stream for the per-test timeout-resolution preamble:
@@ -1226,8 +1240,8 @@ fn run_test_timeouts_quote(
     attr_test_timeout_secs: &TokenStream,
     attr_setup_timeout_secs: &TokenStream,
     attr_teardown_timeout_secs: &TokenStream,
-) -> TokenStream {
-    quote! {
+) -> anyhow::Result<TokenStream> {
+    Ok(quote! {
         // Per-test attribute overrides (None when the bare
         // `#[rudzio::test]` form is used). Resolution wins
         // attr → config default → unbounded.
@@ -1249,7 +1263,7 @@ fn run_test_timeouts_quote(
             __RUDZIO_OVERRIDE_TEARDOWN_TIMEOUT_SECS
                 .map(::std::time::Duration::from_secs)
                 .or(config.test_teardown_timeout);
-    }
+    })
 }
 
 /// Emit the per-(R, S) `RuntimeGroupOwner` impl plus the anchoring ZST
@@ -1258,7 +1272,7 @@ fn run_test_timeouts_quote(
 /// Multiple suite blocks declaring the same `(runtime, suite, test)`
 /// triple emit functionally equivalent owners; the runner picks any
 /// one and ignores the rest.
-fn runtime_group_owner_impl(args: &RuntimeGroupOwnerImplArgs<'_>) -> TokenStream {
+fn runtime_group_owner_impl(args: &RuntimeGroupOwnerImplArgs<'_>) -> anyhow::Result<TokenStream> {
     let &RuntimeGroupOwnerImplArgs {
         cfg_attrs,
         mod_name,
@@ -1268,11 +1282,15 @@ fn runtime_group_owner_impl(args: &RuntimeGroupOwnerImplArgs<'_>) -> TokenStream
         runtime_type,
         suite_base,
     } = args;
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let runtime_init = owner_runtime_init_quote(runtime_ctor, runtime_type, mod_name);
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let suite_setup = owner_suite_setup_quote(suite_base, runtime_type);
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let dispatch_loop = owner_dispatch_loop_quote(suite_base, runtime_type);
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let suite_teardown = owner_suite_teardown_quote(runtime_type);
-    quote! {
+    Ok(quote! {
         #(#cfg_attrs)*
         #[doc(hidden)]
         struct #owner_struct;
@@ -1325,13 +1343,13 @@ fn runtime_group_owner_impl(args: &RuntimeGroupOwnerImplArgs<'_>) -> TokenStream
                 async_summary
             }
         }
-    }
+    })
 }
 
 /// Convert a `snake_case` identifier to `UpperCamelCase`. Splits on `_`,
 /// uppercases the first char of each segment, and drops the underscores
 /// so the result conforms to Rust's type-name convention.
-fn to_upper_camel(name: &str) -> String {
+fn to_upper_camel(name: &str) -> anyhow::Result<String> {
     let mut out = String::with_capacity(name.len());
     for segment in name.split('_').filter(|seg| !seg.is_empty()) {
         let mut chars = segment.chars();
@@ -1340,5 +1358,5 @@ fn to_upper_camel(name: &str) -> String {
             out.push_str(chars.as_str());
         }
     }
-    out
+    Ok(out)
 }

@@ -513,7 +513,7 @@ pub async fn drive_per_test_spawn<JoinFut, T, S, Sleep>(
     outer_grace: Option<Duration>,
     phase_token: CancellationToken,
     sleep: Sleep,
-) -> PhaseOutcome<T>
+) -> anyhow::Result<PhaseOutcome<T>>
 where
     JoinFut: Future<Output = Result<T, Aborted>> + Send,
     T: Send,
@@ -550,19 +550,19 @@ where
                 // abort so the spawned body doesn't outlive the
                 // dispatch loop, then report Cancelled.
                 abort_handle.abort();
-                return PhaseOutcome::Cancelled;
+                return Ok(PhaseOutcome::Cancelled);
             }
             Either::Left((Stage1Trigger::Budget, _)) => {
                 // Fall through to Stage 2.
             }
-            Either::Right((Ok(value), _)) => return PhaseOutcome::Completed(value),
+            Either::Right((Ok(value), _)) => return Ok(PhaseOutcome::Completed(value)),
             Either::Right((Err(_aborted), _)) => {
                 // Inner phase wrapper inside the spawn fired Aborted
                 // (e.g. its own per-phase timeout aborted its inner
                 // future). The body responded, the spawn finished —
                 // surface as TimedOut so the user sees "test exceeded
                 // its budget" rather than a no-info cancellation.
-                return PhaseOutcome::TimedOut;
+                return Ok(PhaseOutcome::TimedOut);
             }
         }
     } else {
@@ -575,10 +575,10 @@ where
         {
             Either::Left(_) => {
                 abort_handle.abort();
-                return PhaseOutcome::Cancelled;
+                return Ok(PhaseOutcome::Cancelled);
             }
-            Either::Right((Ok(value), _)) => return PhaseOutcome::Completed(value),
-            Either::Right((Err(_aborted), _)) => return PhaseOutcome::TimedOut,
+            Either::Right((Ok(value), _)) => return Ok(PhaseOutcome::Completed(value)),
+            Either::Right((Err(_aborted), _)) => return Ok(PhaseOutcome::TimedOut),
         }
     }
 
@@ -591,11 +591,11 @@ where
         // Layer-2 disabled: fire abort immediately so the leaked
         // spawn doesn't outlive us, return TimedOut.
         abort_handle.abort();
-        return PhaseOutcome::TimedOut;
+        return Ok(PhaseOutcome::TimedOut);
     };
 
     let grace_timer = std::pin::pin!(sleep(grace));
-    match select(join_fut_pinned, grace_timer).await {
+    Ok(match select(join_fut_pinned, grace_timer).await {
         // Body finished within the grace window — either Ok(value),
         // Aborted (inner phase wrapper aborted), or wall-cancelled
         // via the now-cancelled phase_token returned by an inner
@@ -610,7 +610,7 @@ where
             abort_handle.abort();
             PhaseOutcome::Hung
         }
-    }
+    })
 }
 
 /// Helper for the macro's Layer-2/Layer-3 spawn pipeline: extends a
@@ -642,7 +642,7 @@ where
 #[inline]
 pub unsafe fn extend_phase_future_lifetime<'fut, F, T>(
     fut: F,
-) -> Pin<Box<dyn Future<Output = T> + Send + 'static>>
+) -> anyhow::Result<Pin<Box<dyn Future<Output = T> + Send + 'static>>>
 where
     F: Future<Output = T> + Send + 'fut,
     T: Send + 'static,
@@ -650,20 +650,20 @@ where
     let pinned: Pin<Box<dyn Future<Output = T> + Send + 'fut>> = Box::pin(fut);
     // SAFETY: see fn-level docstring — caller awaits or runtime-aborts
     // before any captured borrow expires.
-    unsafe {
+    Ok(unsafe {
         mem::transmute::<
             Pin<Box<dyn Future<Output = T> + Send + 'fut>>,
             Pin<Box<dyn Future<Output = T> + Send + 'static>>,
         >(pinned)
-    }
+    })
 }
 
 /// Apply an `Instant`-based elapsed value to the outcomes that carry one.
 #[doc(hidden)]
 #[inline]
 #[must_use]
-pub fn fill_elapsed(outcome: TestOutcome, elapsed: Duration) -> TestOutcome {
-    match outcome {
+pub fn fill_elapsed(outcome: TestOutcome, elapsed: Duration) -> anyhow::Result<TestOutcome> {
+    Ok(match outcome {
         TestOutcome::Passed { .. } => TestOutcome::Passed { elapsed },
         TestOutcome::Failed { message, .. } => TestOutcome::Failed { elapsed, message },
         TestOutcome::Panicked { .. } => TestOutcome::Panicked { elapsed },
@@ -672,7 +672,7 @@ pub fn fill_elapsed(outcome: TestOutcome, elapsed: Duration) -> TestOutcome {
         other @ (TestOutcome::Cancelled
         | TestOutcome::SetupFailed { .. }
         | TestOutcome::TimedOut) => other,
-    }
+    })
 }
 
 /// Extract a human-readable message from a `catch_unwind` payload.
@@ -683,15 +683,15 @@ pub fn fill_elapsed(outcome: TestOutcome, elapsed: Duration) -> TestOutcome {
 /// panicked rather than getting nothing.
 #[must_use]
 #[inline]
-pub fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
-    payload.downcast_ref::<&'static str>().map_or_else(
+pub fn panic_payload_message(payload: &(dyn Any + Send)) -> anyhow::Result<String> {
+    Ok(payload.downcast_ref::<&'static str>().map_or_else(
         || {
             payload
                 .downcast_ref::<String>()
                 .map_or_else(|| "panic with non-string payload".to_owned(), Clone::clone)
         },
         |text| (*text).to_owned(),
-    )
+    ))
 }
 
 /// Drive a benchmark future under the per-test cancellation token and the
@@ -712,13 +712,14 @@ pub async fn run_bench_with_timeout_and_cancel<F, S, Sleep>(
     phase_hang_grace: Option<Duration>,
     per_test_token: CancellationToken,
     sleep: Sleep,
-) -> TestOutcome
+) -> anyhow::Result<TestOutcome>
 where
     F: Future<Output = Report>,
     S: Future<Output = ()>,
     Sleep: Fn(Duration) -> S,
 {
-    match run_phase_with_timeout_and_cancel(
+    // FIXME(rs-cleanup): callee returns Result, add ?
+    Ok(match run_phase_with_timeout_and_cancel(
         bench_fut,
         test_timeout,
         phase_hang_grace,
@@ -739,7 +740,7 @@ where
         PhaseOutcome::Hung => TestOutcome::Hung {
             elapsed: Duration::ZERO,
         },
-    }
+    })
 }
 
 /// Race a phase future against an optional per-phase timeout, while
@@ -766,7 +767,7 @@ pub async fn run_phase_with_timeout_and_cancel<F, T, S, Sleep>(
     phase_hang_grace: Option<Duration>,
     phase_token: CancellationToken,
     sleep: Sleep,
-) -> PhaseOutcome<T>
+) -> anyhow::Result<PhaseOutcome<T>>
 where
     F: Future<Output = T>,
     S: Future<Output = ()>,
@@ -779,20 +780,22 @@ where
     let cancellable = std::pin::pin!(phase_token.run_until_cancelled(catch_fut));
 
     let Some(dur) = phase_timeout else {
-        return match cancellable.await {
+        return Ok(match cancellable.await {
             Some(Ok(value)) => PhaseOutcome::Completed(value),
+            // FIXME(rs-cleanup): callee returns Result, add ?
             Some(Err(payload)) => PhaseOutcome::Panicked(panic_payload_message(&*payload)),
             None => PhaseOutcome::Cancelled,
-        };
+        });
     };
 
     let sleep_fut = std::pin::pin!(sleep(dur));
     let still_pending = match select(cancellable, sleep_fut).await {
-        Either::Left((Some(Ok(value)), _)) => return PhaseOutcome::Completed(value),
+        Either::Left((Some(Ok(value)), _)) => return Ok(PhaseOutcome::Completed(value)),
         Either::Left((Some(Err(payload)), _)) => {
-            return PhaseOutcome::Panicked(panic_payload_message(&*payload));
+            // FIXME(rs-cleanup): callee returns Result, add ?
+            return Ok(PhaseOutcome::Panicked(panic_payload_message(&*payload)));
         }
-        Either::Left((None, _)) => return PhaseOutcome::Cancelled,
+        Either::Left((None, _)) => return Ok(PhaseOutcome::Cancelled),
         Either::Right(((), still_pending)) => still_pending,
     };
 
@@ -803,11 +806,11 @@ where
     let Some(grace) = phase_hang_grace else {
         // Layer-2 disabled: stop here with TimedOut (the phase future is
         // dropped with the surrounding `still_pending` going out of scope).
-        return PhaseOutcome::TimedOut;
+        return Ok(PhaseOutcome::TimedOut);
     };
 
     let grace_timer = std::pin::pin!(sleep(grace));
-    match select(still_pending, grace_timer).await {
+    Ok(match select(still_pending, grace_timer).await {
         // Phase completed cooperatively within the grace window —
         // either it returned, panicked, or honoured the cancel signal.
         // All three end as `TimedOut` (the budget WAS still blown);
@@ -815,7 +818,7 @@ where
         // observed at all.
         Either::Left(_) => PhaseOutcome::TimedOut,
         Either::Right(_) => PhaseOutcome::Hung,
-    }
+    })
 }
 
 /// Runs `test_fut` under the per-test cancellation token and the optional
@@ -839,13 +842,14 @@ pub async fn run_test_with_timeout_and_cancel<F, S, Sleep>(
     phase_hang_grace: Option<Duration>,
     per_test_token: CancellationToken,
     sleep: Sleep,
-) -> TestOutcome
+) -> anyhow::Result<TestOutcome>
 where
     F: Future<Output = Result<(), BoxError>>,
     S: Future<Output = ()>,
     Sleep: Fn(Duration) -> S,
 {
-    match run_phase_with_timeout_and_cancel(
+    // FIXME(rs-cleanup): callee returns Result, add ?
+    Ok(match run_phase_with_timeout_and_cancel(
         test_fut,
         test_timeout,
         phase_hang_grace,
@@ -869,7 +873,7 @@ where
         PhaseOutcome::Hung => TestOutcome::Hung {
             elapsed: Duration::ZERO,
         },
-    }
+    })
 }
 
 /// Defense-in-depth check on the macro-generated dispatch table.

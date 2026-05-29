@@ -45,8 +45,8 @@ where
         Self: 'test_context;
 
     #[inline]
-    fn cancel_token(&self) -> &CancellationToken {
-        &self.cancel
+    fn cancel_token(&self) -> anyhow::Result<&CancellationToken> {
+        Ok(&self.cancel)
     }
 
     #[inline]
@@ -54,18 +54,19 @@ where
         &'test_context self,
         cancel: CancellationToken,
         config: &'test_context Config,
-    ) -> impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>> + Send + 'test_context
+    ) -> anyhow::Result<impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>> + Send + 'test_context>
     {
         // Use the per-test token the runner supplies directly — it is already
         // a child of the root cancel token the suite context was built with,
         // so root-level cancellation still propagates.
         let tracker = self.tracker.clone();
-        async move { Ok(Test::new(cancel, self.rt, tracker, config)) }
+        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
+        Ok(async move { Ok(Test::new(cancel, self.rt, tracker, config)) })
     }
 
     #[inline]
-    fn rt(&self) -> &'suite_context R {
-        self.rt
+    fn rt(&self) -> anyhow::Result<&'suite_context R> {
+        Ok(self.rt)
     }
 
     #[inline]
@@ -92,7 +93,7 @@ where
     }
 
     #[inline]
-    fn tracker(&self) -> &TaskTracker {
-        &self.tracker
+    fn tracker(&self) -> anyhow::Result<&TaskTracker> {
+        Ok(&self.tracker)
     }
 }

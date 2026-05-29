@@ -54,7 +54,7 @@ pub fn extract_benchmark_expr(func: &ItemFn) -> syn::Result<Option<Expr>> {
 /// `#[ignore("...")]`, `#[ignore(reason = "...")]`).
 #[inline]
 #[must_use]
-pub fn extract_ignore_reason(func: &ItemFn) -> (bool, String) {
+pub fn extract_ignore_reason(func: &ItemFn) -> anyhow::Result<(bool, String)> {
     for attr in &func.attrs {
         if !attr.path().is_ident("ignore") {
             continue;
@@ -65,11 +65,11 @@ pub fn extract_ignore_reason(func: &ItemFn) -> (bool, String) {
                 ..
             }) = &nv.value
         {
-            return (true, lit_str.value());
+            return Ok((true, lit_str.value()));
         }
         if matches!(attr.meta, syn::Meta::List(_)) {
             if let Ok(lit) = attr.parse_args::<syn::LitStr>() {
-                return (true, lit.value());
+                return Ok((true, lit.value()));
             }
             if let Ok(syn::Meta::NameValue(nv)) = attr.parse_args::<syn::Meta>()
                 && nv.path.is_ident("reason")
@@ -78,12 +78,12 @@ pub fn extract_ignore_reason(func: &ItemFn) -> (bool, String) {
                     ..
                 }) = nv.value
             {
-                return (true, lit_str.value());
+                return Ok((true, lit_str.value()));
             }
         }
-        return (true, String::new());
+        return Ok((true, String::new()));
     }
-    (false, String::new())
+    Ok((false, String::new()))
 }
 
 /// Parse every `#[rudzio::test(...)]` attribute on `func` into a single

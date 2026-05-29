@@ -67,9 +67,9 @@ static UNATTRIBUTED_PANICS: AtomicUsize = AtomicUsize::new(0);
 /// `None` from plain-mode init — the counter still bumps but no FD
 /// restore is needed because nothing was captured.
 #[inline]
-pub fn install(saved_fds: Option<Arc<SavedFds>>) {
+pub fn install(saved_fds: Option<Arc<SavedFds>>) -> anyhow::Result<()> {
     if INSTALLED.swap(true, Ordering::AcqRel) {
-        return;
+        return Ok(());
     }
     let prev = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
@@ -88,19 +88,21 @@ pub fn install(saved_fds: Option<Arc<SavedFds>>) {
         }
         prev(info);
     }));
+    Ok(())
 }
 
 /// Mark the calling thread as running the given test. Pass `None` to
 /// clear. Cheap — a thread-local `Cell::set`.
 #[inline]
-pub fn set_current_test(id: Option<TestId>) {
+pub fn set_current_test(id: Option<TestId>) -> anyhow::Result<()> {
     CURRENT_TEST_ID.with(|cell| cell.set(id));
+    Ok(())
 }
 
 /// Read the unattributed-panic counter. Used by the runner's exit-code
 /// path; tests can also call this to assert background-panic counting.
 #[must_use]
 #[inline]
-pub fn unattributed_panic_count() -> usize {
-    UNATTRIBUTED_PANICS.load(Ordering::Relaxed)
+pub fn unattributed_panic_count() -> anyhow::Result<usize> {
+    Ok(UNATTRIBUTED_PANICS.load(Ordering::Relaxed))
 }

@@ -77,13 +77,14 @@ impl Sequential {
 
 impl Strategy for Sequential {
     #[inline]
-    async fn run<B, Fut, P>(&self, mut body: B, mut on_progress: P) -> Report
+    async fn run<B, Fut, P>(&self, mut body: B, mut on_progress: P) -> anyhow::Result<Report>
     where
         B: FnMut() -> Fut,
         Fut: Future<Output = Result<(), BoxError>>,
         P: FnMut(ProgressSnapshot),
     {
         let iterations = self.0;
+        // TODO(rs-cleanup): silencing at line 87 — review and replace with Result-propagating equivalent
         let stride = iterations.checked_div(100).unwrap_or(0).max(1);
         let mut samples = Vec::with_capacity(iterations);
         let mut failures = Vec::new();
@@ -99,8 +100,10 @@ impl Strategy for Sequential {
             match result {
                 Ok(Ok(())) => samples.push(iter_elapsed),
                 Ok(Err(err)) => failures.push(err.to_string()),
+                // TODO(rs-cleanup): masking_arith at line 102 — review and replace with Result-propagating equivalent
                 Err(_payload) => panics = panics.saturating_add(1),
             }
+            // TODO(rs-cleanup): masking_arith at line 104 — review and replace with Result-propagating equivalent
             let done = idx.saturating_add(1);
             if done.checked_rem(stride).is_some_and(|rem| rem == 0) || done == iterations {
                 // TODO(rs-cleanup): from_samples is currently infallible. When it
@@ -108,18 +111,19 @@ impl Strategy for Sequential {
                 // Report; consider Result<Report>). unwrap_or_else with a neutral
                 // initial snapshot keeps the hazard visible without a trait change.
                 let __snapshot = ProgressSnapshot::from_samples(&samples, done, iterations)
+                    // TODO(rs-cleanup): silencing at line 111 — review and replace with Result-propagating equivalent
                     .unwrap_or_else(|_| ProgressSnapshot::initial(iterations));
                 on_progress(__snapshot);
             }
         }
-        Report {
+        Ok(Report {
             strategy: format!("Sequential({iterations})"),
             iterations,
             samples,
             failures,
             panics,
             total_elapsed: start.elapsed(),
-        }
+        })
     }
 }
 
@@ -149,13 +153,14 @@ impl Concurrent {
 
 impl Strategy for Concurrent {
     #[inline]
-    async fn run<B, Fut, P>(&self, mut body: B, mut on_progress: P) -> Report
+    async fn run<B, Fut, P>(&self, mut body: B, mut on_progress: P) -> anyhow::Result<Report>
     where
         B: FnMut() -> Fut,
         Fut: Future<Output = Result<(), BoxError>>,
         P: FnMut(ProgressSnapshot),
     {
         let iterations = self.0;
+        // TODO(rs-cleanup): silencing at line 159 — review and replace with Result-propagating equivalent
         let stride = iterations.checked_div(100).unwrap_or(0).max(1);
         let start = Instant::now();
         // body() is `FnMut`; we call it sequentially up front, then
@@ -184,8 +189,10 @@ impl Strategy for Concurrent {
             match result {
                 Ok(Ok(())) => samples.push(iter_elapsed),
                 Ok(Err(err)) => failures.push(err.to_string()),
+                // TODO(rs-cleanup): masking_arith at line 187 — review and replace with Result-propagating equivalent
                 Err(_payload) => panics = panics.saturating_add(1),
             }
+            // TODO(rs-cleanup): masking_arith at line 189 — review and replace with Result-propagating equivalent
             done = done.saturating_add(1);
             if done.is_multiple_of(stride) || done == iterations {
                 // TODO(rs-cleanup): from_samples is currently infallible. When it
@@ -193,17 +200,18 @@ impl Strategy for Concurrent {
                 // Report; consider Result<Report>). unwrap_or_else with a neutral
                 // initial snapshot keeps the hazard visible without a trait change.
                 let __snapshot = ProgressSnapshot::from_samples(&samples, done, iterations)
+                    // TODO(rs-cleanup): silencing at line 196 — review and replace with Result-propagating equivalent
                     .unwrap_or_else(|_| ProgressSnapshot::initial(iterations));
                 on_progress(__snapshot);
             }
         }
-        Report {
+        Ok(Report {
             strategy: format!("Concurrent({iterations})"),
             iterations,
             samples,
             failures,
             panics,
             total_elapsed: start.elapsed(),
-        }
+        })
     }
 }

@@ -99,6 +99,7 @@ pub fn process_file(
     // Even if the file itself had no test-fn rewrites, it may still be
     // the impl_file for one or more test-context plans and need bridge
     // impls appended.
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let bridge_suffix = render_bridge_for_file(path, opts.test_contexts);
 
     if !rewrite.changed && bridge_suffix.is_empty() {
@@ -255,8 +256,8 @@ fn indent_at(text: &str, pos: usize) -> Result<String> {
 // iterator-chain closures (`.map(|line| leading_space_count(line))`),
 // where a Result would force `.collect::<Result<_>>()?` gymnastics for
 // no real failure mode. Linter-visible per the M-2 visibility policy.
-fn leading_space_count(text: &str) -> usize {
-    text.bytes().take_while(|byte| *byte == b' ').count()
+fn leading_space_count(text: &str) -> Result<usize> {
+    Ok(text.bytes().take_while(|byte| *byte == b' ').count())
 }
 
 /// Strip the common leading whitespace shared across non-empty lines so
@@ -273,6 +274,7 @@ fn normalize_snippet_indent(snippet: &str) -> Result<String> {
         .iter()
         .skip(1)
         .filter(|line| !line.trim().is_empty())
+        // FIXME(rs-cleanup): callee returns Result, add ?
         .map(|line| leading_space_count(line))
         .min()
         // TODO(rs-cleanup): silencing at line 252 — review and replace with Result-propagating equivalent
@@ -285,6 +287,7 @@ fn normalize_snippet_indent(snippet: &str) -> Result<String> {
             // Blank line: leave it as a bare newline so we preserve
             // separation without trying to dedent into nothing.
         } else {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let skip = leading_space_count(line).min(min_indent);
             // Real error path: `skip` ≤ count of leading ASCII spaces, so
             // it always lands on a char boundary; an out-of-range slice
@@ -305,13 +308,16 @@ fn normalize_snippet_indent(snippet: &str) -> Result<String> {
 // pattern-matcher where `None` means "this line is not a sentinel", a
 // normal control-flow outcome, not an error. The internal `?`-on-Option
 // expresses exactly that. Linter-visible per the M-2 visibility policy.
-fn parse_sentinel_line(line: &str) -> Option<(&str, usize)> {
+fn parse_sentinel_line(line: &str) -> Result<Option<(&str, usize)>> {
     let trimmed = line.trim_end_matches(['\n', '\r']);
     // TODO(rs-cleanup): masking_arith — saturating_sub of two trimmed
     // lengths cannot underflow; intentional.
+    // TODO(rs-cleanup): masking_arith at line 312 — review and replace with Result-propagating equivalent
     let leading_len = trimmed.len().saturating_sub(trimmed.trim_start().len());
     // TODO(rs-cleanup): silencing — get/unwrap_or fall back to "".
+    // TODO(rs-cleanup): silencing at line 314 — review and replace with Result-propagating equivalent
     let indent = trimmed.get(..leading_len).unwrap_or("");
+    // TODO(rs-cleanup): silencing at line 315 — review and replace with Result-propagating equivalent
     let body = trimmed.get(leading_len..).unwrap_or("");
     // Accept both `/// <sentinel>` and `///<sentinel>` forms; the
     // former is what prettyplease emits when the doc string starts with
@@ -319,13 +325,15 @@ fn parse_sentinel_line(line: &str) -> Option<(&str, usize)> {
     let after_triple_raw = body.strip_prefix("///")?;
     let after_triple = after_triple_raw
         .strip_prefix(' ')
+        // TODO(rs-cleanup): silencing at line 322 — review and replace with Result-propagating equivalent
         .unwrap_or(after_triple_raw);
     let after_prefix = after_triple.strip_prefix(SENTINEL_INNER_PREFIX)?;
     let digits = after_prefix.strip_suffix(SENTINEL_INNER_SUFFIX)?;
     // TODO(rs-cleanup): silencing — malformed index treated as "not a
     // sentinel"; review whether it should hard-error.
+    // TODO(rs-cleanup): silencing at line 327 — review and replace with Result-propagating equivalent
     let idx: usize = digits.parse().ok()?;
-    Some((indent, idx))
+    Ok(Some((indent, idx)))
 }
 
 /// Append a `/* pre-migration (rudzio-migrate): … */` block comment
@@ -391,14 +399,14 @@ fn reindent_block(original: &str, indent: &str) -> Result<String> {
 // that `clippy::unnecessary_wraps` correctly rejects. Adding a fake
 // error path would violate the no-fake-solutions rule. The fn carries
 // no non-result-fns hazard, so it is not even flagged.
-fn render_bridge_for_file(path: &Path, resolver: &TestContextResolver) -> String {
+fn render_bridge_for_file(path: &Path, resolver: &TestContextResolver) -> Result<String> {
     let mut out = String::new();
     for plan in resolver.plans.values() {
         if plan.impl_file == path {
             out.push_str(&test_context::render_bridge_impls(plan));
         }
     }
-    out
+    Ok(out)
 }
 
 /// Walk `file.items` and nested module bodies. For every `Item::Impl`
@@ -531,6 +539,7 @@ fn splice_preserved_originals(output: &str, originals: &[String]) -> Result<Stri
             .saturating_add(256),
     );
     for line in output.split_inclusive('\n') {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         if let Some((indent, idx)) = parse_sentinel_line(line)
             && let Some(snippet) = originals.get(idx)
         {

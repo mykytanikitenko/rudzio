@@ -95,14 +95,18 @@ pub fn discover(repo_root: &Path) -> Result<Vec<Package>> {
         let Some(root) = manifest_path.parent().map(Path::to_path_buf) else {
             continue;
         };
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let src_files = collect_rs(&root.join("src"));
         // tests/ is walked recursively — crates with custom
         // `[[test]] path = "tests/<suite>/mod.rs"` layouts keep
         // source files in deeper subdirs like
         // tests/integration/db/repository/files/create.rs, and a
         // non-recursive scan would miss them and silently no-op.
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let tests_files = collect_rs(&root.join("tests"));
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let lib_modules = collect_lib_modules(&root);
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let uses_lib_aggregation = needs_lib_aggregation(&root, &lib_modules);
         let mut bin_names: Vec<String> = pkg
             .targets
@@ -135,9 +139,9 @@ pub fn discover(repo_root: &Path) -> Result<Vec<Package>> {
 /// Walk `dir` recursively (respecting `.gitignore` / `.ignore`) and
 /// return every `.rs` file path, sorted, excluding `.backup_*` files
 /// emitted by a prior run of this tool.
-fn collect_rs(dir: &Path) -> Vec<PathBuf> {
+fn collect_rs(dir: &Path) -> Result<Vec<PathBuf>> {
     if !dir.exists() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let walker = WalkBuilder::new(dir)
         .standard_filters(true)
@@ -151,26 +155,27 @@ fn collect_rs(dir: &Path) -> Vec<PathBuf> {
         .filter_map(StdResult::ok)
         .filter(|entry| entry.path().is_file())
         .map(ignore::DirEntry::into_path)
+        // FIXME(rs-cleanup): callee returns Result, add ?
         .filter(|path| path.extension().is_some_and(|ext| ext == "rs") && !is_backup_file(path))
         .collect();
     files.sort();
-    files
+    Ok(files)
 }
 
 /// Parse `src/lib.rs` if it exists and collect every top-level
 /// declaration-only `mod X;` item along with its file location
 /// (respecting any `#[path = "..."]` attribute) and its other
 /// outer attributes.
-fn collect_lib_modules(pkg_root: &Path) -> Vec<LibModuleDecl> {
+fn collect_lib_modules(pkg_root: &Path) -> Result<Vec<LibModuleDecl>> {
     let lib_rs = pkg_root.join("src/lib.rs");
     if !lib_rs.exists() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let Ok(source) = fs::read_to_string(&lib_rs) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let Ok(tree) = syn::parse_file(&source) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let mut out = Vec::new();
     for item in &tree.items {
@@ -180,6 +185,7 @@ fn collect_lib_modules(pkg_root: &Path) -> Vec<LibModuleDecl> {
             continue;
         }
         let ident = decl.ident.to_string();
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let rel_path = if let Some(custom) = extract_path_attr(&decl.attrs) {
             format!("src/{custom}")
         } else {
@@ -200,6 +206,7 @@ fn collect_lib_modules(pkg_root: &Path) -> Vec<LibModuleDecl> {
         let attrs: Vec<String> = decl
             .attrs
             .iter()
+            // FIXME(rs-cleanup): callee returns Result, add ?
             .filter(|attr| !is_path_attr(attr))
             .map(|attr| quote::ToTokens::to_token_stream(attr).to_string())
             .collect();
@@ -209,13 +216,14 @@ fn collect_lib_modules(pkg_root: &Path) -> Vec<LibModuleDecl> {
             rel_path,
         });
     }
-    out
+    Ok(out)
 }
 
 /// Pull the value of `#[path = "..."]` from a list of attributes, if
 /// any.
-fn extract_path_attr(attrs: &[syn::Attribute]) -> Option<String> {
+fn extract_path_attr(attrs: &[syn::Attribute]) -> Result<Option<String>> {
     for attr in attrs {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         if !is_path_attr(attr) {
             continue;
         }
@@ -223,22 +231,22 @@ fn extract_path_attr(attrs: &[syn::Attribute]) -> Option<String> {
             && let syn::Expr::Lit(expr_lit) = &name_value.value
             && let syn::Lit::Str(literal) = &expr_lit.lit
         {
-            return Some(literal.value());
+            return Ok(Some(literal.value()));
         }
     }
-    None
+    Ok(None)
 }
 
 /// True if `path` looks like a file this tool emitted as a backup.
-fn is_backup_file(path: &Path) -> bool {
-    path.file_name()
+fn is_backup_file(path: &Path) -> Result<bool> {
+    Ok(path.file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with(backup::SUFFIX))
+        .is_some_and(|name| name.ends_with(backup::SUFFIX)))
 }
 
 /// True if `attr` is a `#[path = "..."]` attribute.
-fn is_path_attr(attr: &syn::Attribute) -> bool {
-    attr.path().is_ident("path")
+fn is_path_attr(attr: &syn::Attribute) -> Result<bool> {
+    Ok(attr.path().is_ident("path"))
 }
 
 /// True if the lib should be aggregated as a whole (`mod __lib;`)
@@ -254,16 +262,16 @@ fn is_path_attr(attr: &syn::Attribute) -> bool {
 /// - any submodule file (the resolved path of a top-level `mod X;`)
 ///   declares its own `mod Y;` with no inline body and no
 ///   explicit `#[path]` attr — same nested-resolution problem.
-fn needs_lib_aggregation(pkg_root: &Path, lib_modules: &[LibModuleDecl]) -> bool {
+fn needs_lib_aggregation(pkg_root: &Path, lib_modules: &[LibModuleDecl]) -> Result<bool> {
     let lib_rs = pkg_root.join("src/lib.rs");
     if !lib_rs.is_file() {
-        return false;
+        return Ok(false);
     }
     let Ok(source) = fs::read_to_string(&lib_rs) else {
-        return false;
+        return Ok(false);
     };
     let Ok(tree) = syn::parse_file(&source) else {
-        return false;
+        return Ok(false);
     };
     for item in &tree.items {
         match item {
@@ -286,13 +294,13 @@ fn needs_lib_aggregation(pkg_root: &Path, lib_modules: &[LibModuleDecl]) -> bool
             | syn::Item::Type(_)
             | syn::Item::Union(_)
             | syn::Item::Verbatim(_))
-            | _other => return true,
+            | _other => return Ok(true),
         }
     }
     for decl in lib_modules {
         // Directory-form submodule (src/X/mod.rs) → nested.
         if decl.rel_path.ends_with("/mod.rs") {
-            return true;
+            return Ok(true);
         }
         // Submodule file declares its own non-`#[path]` `mod Y;`.
         let file = pkg_root.join(&decl.rel_path);
@@ -302,12 +310,13 @@ fn needs_lib_aggregation(pkg_root: &Path, lib_modules: &[LibModuleDecl]) -> bool
             for item in &submodule_tree.items {
                 if let syn::Item::Mod(sub) = item
                     && sub.content.is_none()
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     && extract_path_attr(&sub.attrs).is_none()
                 {
-                    return true;
+                    return Ok(true);
                 }
             }
         }
     }
-    false
+    Ok(false)
 }

@@ -21,8 +21,9 @@ pub(crate) static LIFECYCLE_SENDER: OnceLock<Sender<LifecycleEvent>> = OnceLock:
 ///
 /// Re-exported as [`crate::output::send_lifecycle`].
 #[inline]
-pub fn send(event: LifecycleEvent) {
+pub fn send(event: LifecycleEvent) -> anyhow::Result<()> {
     if let Some(tx) = LIFECYCLE_SENDER.get() {
         let _unused = tx.send(event);
-    }
+    };
+    Ok(())
 }

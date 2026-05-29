@@ -25,13 +25,14 @@ impl RuntimeConfig {
     /// Drop the constructor segment (`::new`) and keep just the runtime type.
     #[inline]
     #[must_use]
-    pub fn runtime_type(&self) -> Path {
+    pub fn runtime_type(&self) -> anyhow::Result<Path> {
+        // TODO(rs-cleanup): masking_arith at line 29 — review and replace with Result-propagating equivalent
         let take_n = self.runtime.segments.len().saturating_sub(1);
         let segments = self.runtime.segments.iter().take(take_n).cloned().collect();
-        Path {
+        Ok(Path {
             leading_colon: self.runtime.leading_colon,
             segments,
-        }
+        })
     }
 }
 

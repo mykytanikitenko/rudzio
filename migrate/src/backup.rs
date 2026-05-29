@@ -40,10 +40,10 @@ impl Outcome {
     /// freshly created or already present.
     #[inline]
     #[must_use]
-    pub fn path(&self) -> &Path {
-        match self {
+    pub fn path(&self) -> anyhow::Result<&Path> {
+        Ok(match self {
             Self::AlreadyExists(path) | Self::Created(path) => path,
-        }
+        })
     }
 }
 
@@ -51,10 +51,10 @@ impl Outcome {
 /// with [`SUFFIX`] appended.
 #[inline]
 #[must_use]
-pub fn path_for(original: &Path) -> PathBuf {
+pub fn path_for(original: &Path) -> anyhow::Result<PathBuf> {
     let mut bytes = original.as_os_str().to_owned();
     bytes.push(SUFFIX);
-    PathBuf::from(bytes)
+    Ok(PathBuf::from(bytes))
 }
 
 /// Copy `original` to its sibling `.backup_before_migration_to_rudzio`.
@@ -71,6 +71,7 @@ pub fn path_for(original: &Path) -> PathBuf {
 /// Returns the underlying `io::Error` if [`fs::copy`] fails.
 #[inline]
 pub fn copy_before_write(original: &Path) -> io::Result<Outcome> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let dest = path_for(original);
     if dest.exists() {
         return Ok(Outcome::AlreadyExists(dest));

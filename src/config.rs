@@ -846,8 +846,8 @@ impl Config {
     /// is `None`).
     #[doc(hidden)]
     #[inline]
-    pub async fn acquire_hardlimit_permit(&self) -> HardLimitGuard<'_> {
-        self.hardlimit.acquire().await
+    pub async fn acquire_hardlimit_permit(&self) -> anyhow::Result<HardLimitGuard<'_>> {
+        Ok(self.hardlimit.acquire().await)
     }
 
     /// Test-friendly parser. Takes argv + env explicitly so unit tests can
@@ -858,41 +858,49 @@ impl Config {
         argv: &[String],
         env: BTreeMap<String, String>,
         cargo: CargoMeta,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let parsed = parse_argv(argv);
 
         let resolved_threads = parsed
             .threads
             .or_else(|| {
                 env.get("RUST_TEST_THREADS")
+                    // TODO(rs-cleanup): silencing at line 868 — review and replace with Result-propagating equivalent
                     .and_then(|val| val.parse::<usize>().ok())
                     .filter(|count| *count > 0)
             })
+            // TODO(rs-cleanup): silencing at line 871 — review and replace with Result-propagating equivalent
             .unwrap_or_else(|| thread::available_parallelism().map_or(1, NonZeroUsize::get));
 
         // `concurrency_limit` defaults to `threads` so the single-flag
         // `--test-threads=N` invocation keeps behaving the way libtest users
         // expect: N worker threads, N tests in-flight.
+        // TODO(rs-cleanup): silencing at line 876 — review and replace with Result-propagating equivalent
         let resolved_concurrency_limit = parsed.concurrency_limit.unwrap_or(resolved_threads);
 
         // `threads` is guaranteed >= 1 by the resolution chain above
         // (available_parallelism returns NonZeroUsize); the fallback is
         // unreachable in practice but keeps us off unwrap/expect.
+        // TODO(rs-cleanup): silencing at line 881 — review and replace with Result-propagating equivalent
         let threads_nz = NonZeroUsize::new(resolved_threads).unwrap_or(NonZeroUsize::MIN);
         let parallel_hardlimit =
+            // FIXME(rs-cleanup): callee returns Result, add ?
             resolve_parallel_hardlimit(parsed.hardlimit_arg, parsed.bench_mode, threads_nz);
 
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let output_mode = OutputMode::resolve(parsed.output_mode_explicit, &env);
 
         let hardlimit = Arc::new(HardLimit::new(parallel_hardlimit));
 
-        Self {
+        Ok(Self {
             bench_mode: parsed.bench_mode,
             cancel_grace_period: parsed.cancel_grace_period,
             cargo,
             color: parsed.color,
             compat_consumed: parsed.compat_consumed,
             concurrency_limit: resolved_concurrency_limit,
+            // FIXME(rs-cleanup): callee returns Result, add ?
             ensure_time: resolve_ensure_time(parsed.ensure_time, &env),
             env,
             exact_match: parsed.exact_match,
@@ -916,7 +924,7 @@ impl Config {
             test_timeout: parsed.test_timeout,
             threads: resolved_threads,
             unparsed: parsed.unparsed,
-        }
+        })
     }
 
     /// Read from `env::args()` and the whole process environment. Unknown
@@ -926,10 +934,11 @@ impl Config {
     /// `env!(...)` expansions in the user's crate.
     #[must_use]
     #[inline]
-    pub fn parse(cargo: CargoMeta) -> Self {
+    pub fn parse(cargo: CargoMeta) -> anyhow::Result<Self> {
         let argv: Vec<String> = env::args().skip(1).collect();
         let env_snapshot: BTreeMap<String, String> = env::vars().collect();
-        Self::from_argv_and_env(&argv, env_snapshot, cargo)
+        // FIXME(rs-cleanup): callee returns Result, add ?
+        Ok(Self::from_argv_and_env(&argv, env_snapshot, cargo))
     }
 }
 
@@ -942,15 +951,15 @@ impl OutputMode {
     /// unreadable downstream).
     #[must_use]
     #[inline]
-    pub fn resolve(explicit: Option<Self>, env: &BTreeMap<String, String>) -> Self {
+    pub fn resolve(explicit: Option<Self>, env: &BTreeMap<String, String>) -> anyhow::Result<Self> {
         if let Some(mode) = explicit {
-            return mode;
+            return Ok(mode);
         }
-        if io::stdout().is_terminal() && !env.contains_key("CI") {
+        Ok(if io::stdout().is_terminal() && !env.contains_key("CI") {
             Self::Live
         } else {
             Self::Plain
-        }
+        })
     }
 }
 
@@ -961,14 +970,16 @@ impl OutputMode {
 /// (matches libtest's lenient parse: a garbage `--ensure-time=foo` is
 /// equivalent to a bare `--ensure-time`). Both halves must be unsigned
 /// millisecond counts; pure-integer parse, no fractional ms.
-fn parse_ensure_time_pair(text: &str) -> Option<EnsureTimeArg> {
+fn parse_ensure_time_pair(text: &str) -> anyhow::Result<Option<EnsureTimeArg>> {
     let (warn_text, critical_text) = text.split_once(',')?;
+    // TODO(rs-cleanup): silencing at line 966 — review and replace with Result-propagating equivalent
     let warn_ms: u64 = warn_text.parse().ok()?;
+    // TODO(rs-cleanup): silencing at line 967 — review and replace with Result-propagating equivalent
     let critical_ms: u64 = critical_text.parse().ok()?;
-    Some(EnsureTimeArg::Explicit {
+    Ok(Some(EnsureTimeArg::Explicit {
         critical: Duration::from_millis(critical_ms),
         warn: Duration::from_millis(warn_ms),
-    })
+    }))
 }
 
 /// Resolve `--ensure-time` to concrete warn/critical thresholds.
@@ -982,13 +993,14 @@ fn parse_ensure_time_pair(text: &str) -> Option<EnsureTimeArg> {
 fn resolve_ensure_time(
     arg: Option<EnsureTimeArg>,
     env: &BTreeMap<String, String>,
-) -> Option<EnsureTimes> {
+) -> anyhow::Result<Option<EnsureTimes>> {
     let resolved = arg?;
-    match resolved {
+    Ok(match resolved {
         EnsureTimeArg::Explicit { critical, warn } => Some(EnsureTimes { critical, warn }),
         EnsureTimeArg::Default => {
             let env_value = env
                 .get("RUST_TEST_TIME_INTEGRATION")
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 .and_then(|raw| parse_ensure_time_pair(raw));
             match env_value {
                 Some(EnsureTimeArg::Explicit { critical, warn }) => {
@@ -997,20 +1009,21 @@ fn resolve_ensure_time(
                 _ => Some(EnsureTimes::integration_defaults()),
             }
         }
-    }
+    })
 }
 
 /// Map a `--threads-parallel-hardlimit=<value>` string to a [`HardlimitArg`].
-fn classify_hardlimit(text: &str) -> Option<HardlimitArg> {
-    match text {
+fn classify_hardlimit(text: &str) -> anyhow::Result<Option<HardlimitArg>> {
+    Ok(match text {
         "none" => Some(HardlimitArg::Disabled),
         "threads" => Some(HardlimitArg::Threads),
         _ => text
             .parse::<usize>()
+            // TODO(rs-cleanup): silencing at line 1010 — review and replace with Result-propagating equivalent
             .ok()
             .and_then(NonZeroUsize::new)
             .map(HardlimitArg::Explicit),
-    }
+    })
 }
 
 /// Resolve the final parallel-hardlimit policy by combining a user's flag
@@ -1019,8 +1032,8 @@ fn resolve_parallel_hardlimit(
     arg: HardlimitArg,
     bench_mode: BenchMode,
     threads_nz: NonZeroUsize,
-) -> Option<NonZeroUsize> {
-    match arg {
+) -> anyhow::Result<Option<NonZeroUsize>> {
+    Ok(match arg {
         HardlimitArg::Unset => {
             if bench_mode == BenchMode::Full {
                 None
@@ -1031,7 +1044,7 @@ fn resolve_parallel_hardlimit(
         HardlimitArg::Disabled => None,
         HardlimitArg::Threads => Some(threads_nz),
         HardlimitArg::Explicit(n) => Some(n),
-    }
+    })
 }
 
 /// Read the value belonging to a long flag whose syntax is either
@@ -1047,15 +1060,16 @@ fn flag_value<'argv>(
     prefix_eq: &str,
     argv: &'argv [String],
     i: &mut usize,
-) -> Option<&'argv str> {
+) -> anyhow::Result<Option<&'argv str>> {
     if let Some(rest) = arg.strip_prefix(prefix_eq) {
-        return Some(rest);
+        return Ok(Some(rest));
     }
     if arg == flag_name {
+        // TODO(rs-cleanup): masking_arith at line 1055 — review and replace with Result-propagating equivalent
         *i = i.saturating_add(1);
-        return argv.get(*i).map(String::as_str);
+        return Ok(argv.get(*i).map(String::as_str));
     }
-    None
+    Ok(None)
 }
 
 /// Parse a positive `usize` value from one of the `--flag=<n>` /
@@ -1066,9 +1080,11 @@ fn parse_positive_usize_flag(
     prefix_eq: &str,
     argv: &[String],
     i: &mut usize,
-) -> Option<usize> {
+) -> anyhow::Result<Option<usize>> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let value = flag_value(arg, flag_name, prefix_eq, argv, i)?;
-    value.parse::<usize>().ok().filter(|&n| n > 0)
+    // TODO(rs-cleanup): silencing at line 1071 — review and replace with Result-propagating equivalent
+    Ok(value.parse::<usize>().ok().filter(|&n| n > 0))
 }
 
 /// Parse a `--flag=<secs>` / `--flag <secs>` duration flag. Returns
@@ -1081,9 +1097,11 @@ fn parse_duration_secs_flag(
     prefix_eq: &str,
     argv: &[String],
     i: &mut usize,
-) -> Option<Duration> {
+) -> anyhow::Result<Option<Duration>> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let value = flag_value(arg, flag_name, prefix_eq, argv, i)?;
-    value.parse::<u64>().ok().map(Duration::from_secs)
+    // TODO(rs-cleanup): silencing at line 1086 — review and replace with Result-propagating equivalent
+    Ok(value.parse::<u64>().ok().map(Duration::from_secs))
 }
 
 /// Parse a `--flag=<secs>` / `--flag <secs>` duration flag where `secs == 0`
@@ -1099,18 +1117,19 @@ fn parse_optional_duration_secs_flag(
     prefix_eq: &str,
     argv: &[String],
     i: &mut usize,
-) -> OptionalDurationParse {
+) -> anyhow::Result<OptionalDurationParse> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let Some(value) = flag_value(arg, flag_name, prefix_eq, argv, i) else {
-        return OptionalDurationParse::NotMatched;
+        return Ok(OptionalDurationParse::NotMatched);
     };
     let Ok(secs) = value.parse::<u64>() else {
-        return OptionalDurationParse::NotMatched;
+        return Ok(OptionalDurationParse::NotMatched);
     };
-    if secs == 0 {
+    Ok(if secs == 0 {
         OptionalDurationParse::Disabled
     } else {
         OptionalDurationParse::Set(Duration::from_secs(secs))
-    }
+    })
 }
 
 /// Try to consume a flag that selects a thread/concurrency knob. Returns
@@ -1120,17 +1139,20 @@ fn handle_concurrency_flag(
     arg: &str,
     argv: &[String],
     i: &mut usize,
-) -> bool {
+) -> anyhow::Result<bool> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     if let Some(n) = parse_positive_usize_flag(arg, "--test-threads", "--test-threads=", argv, i) {
         state.threads = Some(n);
-        return true;
+        return Ok(true);
     }
     if let Some(n) =
+        // FIXME(rs-cleanup): callee returns Result, add ?
         parse_positive_usize_flag(arg, "--concurrency-limit", "--concurrency-limit=", argv, i)
     {
         state.concurrency_limit = Some(n);
-        return true;
+        return Ok(true);
     }
+    // FIXME(rs-cleanup): callee returns Result, add ?
     if let Some(value) = flag_value(
         arg,
         "--threads-parallel-hardlimit",
@@ -1138,22 +1160,23 @@ fn handle_concurrency_flag(
         argv,
         i,
     ) {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         if let Some(parsed) = classify_hardlimit(value) {
             state.hardlimit_arg = parsed;
         }
-        return true;
+        return Ok(true);
     }
-    false
+    Ok(false)
 }
 
 /// Parse a `ColorMode` from its CLI string spelling, defaulting unknown
 /// values to [`ColorMode::Auto`].
-fn color_mode_from_str(text: &str) -> ColorMode {
-    match text {
+fn color_mode_from_str(text: &str) -> anyhow::Result<ColorMode> {
+    Ok(match text {
         "always" => ColorMode::Always,
         "never" => ColorMode::Never,
         _ => ColorMode::Auto,
-    }
+    })
 }
 
 /// Try to consume a flag that toggles a presentation knob (color, format,
@@ -1163,30 +1186,35 @@ fn handle_presentation_flag(
     arg: &str,
     argv: &[String],
     i: &mut usize,
-) -> bool {
+) -> anyhow::Result<bool> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     if let Some(value) = flag_value(arg, "--color", "--color=", argv, i) {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         state.color = color_mode_from_str(value);
-        return true;
+        return Ok(true);
     }
+    // FIXME(rs-cleanup): callee returns Result, add ?
     if let Some(value) = flag_value(arg, "--format", "--format=", argv, i) {
         state.format = if value == "terse" {
             Format::Terse
         } else {
             Format::Pretty
         };
-        return true;
+        return Ok(true);
     }
+    // FIXME(rs-cleanup): callee returns Result, add ?
     if let Some(value) = flag_value(arg, "--output", "--output=", argv, i) {
         match value {
             "live" => state.output_mode_explicit = Some(OutputMode::Live),
             "plain" => state.output_mode_explicit = Some(OutputMode::Plain),
             _ => {}
         }
-        return true;
+        return Ok(true);
     }
+    // FIXME(rs-cleanup): callee returns Result, add ?
     if let Some(value) = flag_value(arg, "--logfile", "--logfile=", argv, i) {
         state.logfile = Some(PathBuf::from(value));
-        return true;
+        return Ok(true);
     }
     // `--report-time` is libtest's per-test elapsed-time switch. Rudzio
     // already prints elapsed for every test in the default pretty
@@ -1197,7 +1225,7 @@ fn handle_presentation_flag(
     // accepted-as-default rather than acted on.
     if arg == "--report-time" {
         state.compat_consumed.push(arg.to_owned());
-        return true;
+        return Ok(true);
     }
     // `--ensure-time [=<WARN-MS>,<CRIT-MS>]` is libtest's tiered
     // wall-clock gate: tests over `warn` log a notice; tests over
@@ -1209,12 +1237,15 @@ fn handle_presentation_flag(
     // at the next argv entry here.
     if arg == "--ensure-time" {
         state.ensure_time = Some(EnsureTimeArg::Default);
-        return true;
+        return Ok(true);
     }
     if let Some(value) = arg.strip_prefix("--ensure-time=") {
+        // TODO(rs-cleanup): silencing at line 1215 — review and replace with Result-propagating equivalent
+        // FIXME(rs-cleanup): callee returns Result, add ?
         state.ensure_time = Some(parse_ensure_time_pair(value).unwrap_or(EnsureTimeArg::Default));
-        return true;
+        return Ok(true);
     }
+    // FIXME(rs-cleanup): callee returns Result, add ?
     if let Some(value) = flag_value(arg, "--shuffle-seed", "--shuffle-seed=", argv, i) {
         if let Ok(seed) = value.parse::<u64>() {
             state.shuffle_seed = Some(seed);
@@ -1222,11 +1253,11 @@ fn handle_presentation_flag(
         }
         // Garbage value: leave shuffle off, leave seed None — matches
         // how libtest treats an unparsable seed (silent fallthrough).
-        return true;
+        return Ok(true);
     }
     if arg == "--shuffle" {
         state.shuffle = true;
-        return true;
+        return Ok(true);
     }
     match arg {
         "--ignored" => state.run_ignored = RunIgnoredMode::Only,
@@ -1238,26 +1269,29 @@ fn handle_presentation_flag(
         "--plain" => state.output_mode_explicit = Some(OutputMode::Plain),
         "--list" => state.print_only = PrintOnly::List,
         "--help" | "-h" => state.print_only = PrintOnly::Help,
-        _ => return false,
+        _ => return Ok(false),
     }
-    true
+    Ok(true)
 }
 
 /// Try to consume one of the `Option<Duration>` timeout flags. Returns
 /// `true` on match.
-fn handle_timeout_flag(state: &mut ParsedArgs, arg: &str, argv: &[String], i: &mut usize) -> bool {
+fn handle_timeout_flag(state: &mut ParsedArgs, arg: &str, argv: &[String], i: &mut usize) -> anyhow::Result<bool> {
     if let Some(duration) =
+        // FIXME(rs-cleanup): callee returns Result, add ?
         parse_duration_secs_flag(arg, "--test-timeout", "--test-timeout=", argv, i)
     {
         state.test_timeout = Some(duration);
-        return true;
+        return Ok(true);
     }
     if let Some(duration) =
+        // FIXME(rs-cleanup): callee returns Result, add ?
         parse_duration_secs_flag(arg, "--run-timeout", "--run-timeout=", argv, i)
     {
         state.run_timeout = Some(duration);
-        return true;
+        return Ok(true);
     }
+    // FIXME(rs-cleanup): callee returns Result, add ?
     if let Some(duration) = parse_duration_secs_flag(
         arg,
         "--suite-setup-timeout",
@@ -1266,8 +1300,9 @@ fn handle_timeout_flag(state: &mut ParsedArgs, arg: &str, argv: &[String], i: &m
         i,
     ) {
         state.suite_setup_timeout = Some(duration);
-        return true;
+        return Ok(true);
     }
+    // FIXME(rs-cleanup): callee returns Result, add ?
     if let Some(duration) = parse_duration_secs_flag(
         arg,
         "--suite-teardown-timeout",
@@ -1276,8 +1311,9 @@ fn handle_timeout_flag(state: &mut ParsedArgs, arg: &str, argv: &[String], i: &m
         i,
     ) {
         state.suite_teardown_timeout = Some(duration);
-        return true;
+        return Ok(true);
     }
+    // FIXME(rs-cleanup): callee returns Result, add ?
     if let Some(duration) = parse_duration_secs_flag(
         arg,
         "--test-setup-timeout",
@@ -1286,8 +1322,9 @@ fn handle_timeout_flag(state: &mut ParsedArgs, arg: &str, argv: &[String], i: &m
         i,
     ) {
         state.test_setup_timeout = Some(duration);
-        return true;
+        return Ok(true);
     }
+    // FIXME(rs-cleanup): callee returns Result, add ?
     if let Some(duration) = parse_duration_secs_flag(
         arg,
         "--test-teardown-timeout",
@@ -1296,8 +1333,9 @@ fn handle_timeout_flag(state: &mut ParsedArgs, arg: &str, argv: &[String], i: &m
         i,
     ) {
         state.test_teardown_timeout = Some(duration);
-        return true;
+        return Ok(true);
     }
+    // FIXME(rs-cleanup): callee returns Result, add ?
     match parse_optional_duration_secs_flag(
         arg,
         "--phase-hang-grace",
@@ -1307,14 +1345,15 @@ fn handle_timeout_flag(state: &mut ParsedArgs, arg: &str, argv: &[String], i: &m
     ) {
         OptionalDurationParse::Set(duration) => {
             state.phase_hang_grace = Some(duration);
-            return true;
+            return Ok(true);
         }
         OptionalDurationParse::Disabled => {
             state.phase_hang_grace = None;
-            return true;
+            return Ok(true);
         }
         OptionalDurationParse::NotMatched => {}
     }
+    // FIXME(rs-cleanup): callee returns Result, add ?
     match parse_optional_duration_secs_flag(
         arg,
         "--cancel-grace-period",
@@ -1324,15 +1363,15 @@ fn handle_timeout_flag(state: &mut ParsedArgs, arg: &str, argv: &[String], i: &m
     ) {
         OptionalDurationParse::Set(duration) => {
             state.cancel_grace_period = Some(duration);
-            return true;
+            return Ok(true);
         }
         OptionalDurationParse::Disabled => {
             state.cancel_grace_period = None;
-            return true;
+            return Ok(true);
         }
         OptionalDurationParse::NotMatched => {}
     }
-    false
+    Ok(false)
 }
 
 /// Try to consume a `--skip` filter, the implicit positional filter, or
@@ -1342,30 +1381,31 @@ fn handle_filter_or_unparsed(
     arg: &str,
     argv: &[String],
     i: &mut usize,
-) -> bool {
+) -> anyhow::Result<bool> {
     if let Some(rest) = arg.strip_prefix("--skip=") {
         state.skip_filters.push(rest.to_owned());
-        return true;
+        return Ok(true);
     }
     if arg == "--skip" {
+        // TODO(rs-cleanup): masking_arith at line 1351 — review and replace with Result-propagating equivalent
         *i = i.saturating_add(1);
         if let Some(next) = argv.get(*i) {
             state.skip_filters.push(next.clone());
         }
-        return true;
+        return Ok(true);
     }
     if arg.starts_with('-') {
         state.unparsed.push(arg.to_owned());
     } else {
         state.filter = Some(arg.to_owned());
     }
-    true
+    Ok(true)
 }
 
 /// Run the full argv pass, handing each arg to the family-specific
 /// helpers in turn. Returns the populated [`ParsedArgs`] for downstream
 /// resolution.
-fn parse_argv(argv: &[String]) -> ParsedArgs {
+fn parse_argv(argv: &[String]) -> anyhow::Result<ParsedArgs> {
     // Layer-1 process-exit grace defaults to 5s; sync-blocked
     // tasks ignoring SIGINT have always-on protection from
     // `process::exit(2)` so the binary can't hang forever.
@@ -1379,13 +1419,19 @@ fn parse_argv(argv: &[String]) -> ParsedArgs {
         let Some(arg) = argv.get(i).cloned() else {
             break;
         };
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let consumed = handle_concurrency_flag(&mut state, &arg, argv, &mut i)
+            // FIXME(rs-cleanup): callee returns Result, add ?
             || handle_presentation_flag(&mut state, &arg, argv, &mut i)
+            // FIXME(rs-cleanup): callee returns Result, add ?
             || handle_timeout_flag(&mut state, &arg, argv, &mut i)
+            // FIXME(rs-cleanup): callee returns Result, add ?
             || handle_filter_or_unparsed(&mut state, &arg, argv, &mut i);
+        // TODO(rs-cleanup): panic_macros at line 1386 — review and replace with Result-propagating equivalent
         debug_assert!(consumed, "every arg should be consumed by some handler");
+        // TODO(rs-cleanup): masking_arith at line 1387 — review and replace with Result-propagating equivalent
         i = i.saturating_add(1);
     }
 
-    state
+    Ok(state)
 }

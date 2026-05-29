@@ -76,34 +76,35 @@ impl Runtime {
 
 impl<'rt> RuntimeTrait<'rt> for Runtime {
     #[inline]
-    fn block_on<F>(&self, fut: F) -> F::Output
+    fn block_on<F>(&self, fut: F) -> anyhow::Result<F::Output>
     where
         F: Future + 'rt,
         F::Output: 'static,
     {
-        self.rt.borrow_mut().block_on(fut)
+        Ok(self.rt.borrow_mut().block_on(fut))
     }
 
     #[inline]
-    fn config(&self) -> &Config {
-        &self.config
+    fn config(&self) -> anyhow::Result<&Config> {
+        Ok(&self.config)
     }
 
     #[inline]
-    fn name(&self) -> &'static str {
-        "monoio::Runtime"
+    fn name(&self) -> anyhow::Result<&'static str> {
+        Ok("monoio::Runtime")
     }
 
     #[inline]
-    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
+    fn sleep(&self, duration: Duration) -> anyhow::Result<impl Future<Output = ()> + Send + 'rt> {
         // monoio's timer is single-threaded; SendWrapper makes the future
         // Send while the runtime ensures it is always polled on the one
         // thread that owns the monoio runtime.
-        SendWrapper::new(monoio_sleep(duration))
+        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
+        Ok(SendWrapper::new(monoio_sleep(duration)))
     }
 
     #[inline]
-    fn spawn<F>(&self, fut: F) -> impl Future<Output = Result<F::Output, JoinError>> + Send + 'rt
+    fn spawn<F>(&self, fut: F) -> anyhow::Result<impl Future<Output = Result<F::Output, JoinError>> + Send + 'rt>
     where
         F: Future<Output: Send> + Send + 'static,
     {
@@ -113,19 +114,21 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
         // block_on, so CURRENT is live here. Spawning eagerly mirrors the
         // compio adapter and side-steps clippy::manual_async_fn.
         let handle = monoio_spawn(AssertUnwindSafe(fut).catch_unwind());
-        async move {
+        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
+        Ok(async move {
             match handle.await {
                 Ok(value) => Ok(value),
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 Err(payload) => Err(JoinError::panicked(panic_payload_to_io_error(&*payload))),
             }
-        }
+        })
     }
 
     #[inline]
     fn spawn_blocking<F, T>(
         &self,
         func: F,
-    ) -> impl Future<Output = Result<T, JoinError>> + Send + 'rt
+    ) -> anyhow::Result<impl Future<Output = Result<T, JoinError>> + Send + 'rt>
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
@@ -134,33 +137,38 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
         // pool. Delegate to a freshly-spawned OS thread + std mpsc, mirroring
         // the embassy adapter's pattern.
         let (tx, rx) = mpsc::channel::<thread::Result<T>>();
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let _join: thread::JoinHandle<()> = thread::spawn(move || {
             let result = panic::catch_unwind(AssertUnwindSafe(func));
             let _send: Result<(), mpsc::SendError<thread::Result<T>>> = tx.send(result);
         });
-        async move {
+        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
+        Ok(async move {
             match rx.recv() {
                 Ok(Ok(value)) => Ok(value),
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 Ok(Err(payload)) => Err(JoinError::panicked(panic_payload_to_io_error(&*payload))),
                 Err(err) => Err(JoinError::cancelled(err)),
             }
-        }
+        })
     }
 
     #[inline]
-    fn spawn_local<F>(&self, fut: F) -> impl Future<Output = Result<F::Output, JoinError>> + 'rt
+    fn spawn_local<F>(&self, fut: F) -> anyhow::Result<impl Future<Output = Result<F::Output, JoinError>> + 'rt>
     where
         F: Future + 'static,
     {
         // monoio::spawn natively accepts !Send futures. Same eager-spawn
         // rationale as `spawn` above.
         let handle = monoio_spawn(AssertUnwindSafe(fut).catch_unwind());
-        async move {
+        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
+        Ok(async move {
             match handle.await {
                 Ok(value) => Ok(value),
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 Err(payload) => Err(JoinError::panicked(panic_payload_to_io_error(&*payload))),
             }
-        }
+        })
     }
 }
 
@@ -168,7 +176,7 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
 /// [`JoinError::panicked`], preserving the original panic message when it's
 /// a string.
 #[inline]
-fn panic_payload_to_io_error(payload: &(dyn Any + Send)) -> io::Error {
+fn panic_payload_to_io_error(payload: &(dyn Any + Send)) -> anyhow::Result<io::Error> {
     let message = payload.downcast_ref::<&'static str>().map_or_else(
         || {
             payload.downcast_ref::<String>().map_or_else(
@@ -178,7 +186,7 @@ fn panic_payload_to_io_error(payload: &(dyn Any + Send)) -> io::Error {
         },
         |msg| format!("task panicked: {msg}"),
     );
-    io::Error::other(message)
+    Ok(io::Error::other(message))
 }
 
 /// Create a new monoio runtime instance.

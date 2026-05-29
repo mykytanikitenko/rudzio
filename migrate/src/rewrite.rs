@@ -152,7 +152,7 @@ impl Rewriter<'_, '_> {
     /// them in at expansion time); non-empty lists without a resolved
     /// `#[test_context]` get a verbatim warning. Non-Result, non-unit
     /// returns get wrapped.
-    fn apply_signature_rewrite(&mut self, func: &mut ItemFn, had_resolved_test_context: bool) {
+    fn apply_signature_rewrite(&mut self, func: &mut ItemFn, had_resolved_test_context: bool) -> anyhow::Result<()> {
         if func.sig.asyncness.is_none() {
             func.sig.asyncness = Some(token::Async(func.sig.fn_token.span));
         }
@@ -177,6 +177,7 @@ impl Rewriter<'_, '_> {
             // generated bridge — nothing to warn about.
         }
 
+        // FIXME(rs-cleanup): callee returns Result, add ?
         match fn_return_kind(&func.sig.output) {
             ReturnKind::UnitImplicit | ReturnKind::UnitExplicit | ReturnKind::Result => {
                 // Leave as-is. `#[rudzio::test]`'s codegen routes the
@@ -198,8 +199,9 @@ impl Rewriter<'_, '_> {
                 func.sig.output =
                     syn::parse_quote! { -> ::core::result::Result<(), ::rudzio::BoxError> };
             }
-        }
-    }
+        };
+        Ok(())
+}
 
     /// Build one of the per-ctx wrapper modules emitted by
     /// [`Self::split_module_by_ctx_groups`]. Carries the suite attr,
@@ -211,19 +213,24 @@ impl Rewriter<'_, '_> {
         ctx_key: Option<&str>,
         runtime_path: &syn::Path,
         fns: Vec<Item>,
-    ) -> ItemMod {
+    ) -> anyhow::Result<ItemMod> {
         let outer_plan = ctx_key.and_then(|key| self.test_contexts.plan_for(key));
         let (suite_path, test_path) = outer_plan.map_or_else(
             || {
                 (
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     make_static_path("::rudzio::common::context::Suite"),
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     make_static_path("::rudzio::common::context::Test"),
                 )
             },
             |plan| {
+                // TODO(rs-cleanup): silencing at line 224 — review and replace with Result-propagating equivalent
                 let base = plan.module_path.as_deref().unwrap_or("crate");
                 (
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     make_static_path(&format!("{base}::{}", plan.suite_ident)),
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     make_static_path(&format!("{base}::{}", plan.bridge_ident)),
                 )
             },
@@ -237,13 +244,16 @@ impl Rewriter<'_, '_> {
                 ),
             ])]
         };
+        // TODO(rs-cleanup): masking_arith at line 240 — review and replace with Result-propagating equivalent
         let mut child_items: Vec<Item> = Vec::with_capacity(fns.len().saturating_add(2));
         child_items.push(syn::parse_quote! {
             use super::*;
         });
         if let Some(plan) = outer_plan {
+            // TODO(rs-cleanup): silencing at line 245 — review and replace with Result-propagating equivalent
             let base = plan.module_path.as_deref().unwrap_or("crate");
             let bridge_path: syn::Path =
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 make_static_path(&format!("{base}::{}", plan.bridge_ident));
             child_items.push(syn::parse_quote! {
                 use #bridge_path;
@@ -260,23 +270,25 @@ impl Rewriter<'_, '_> {
             mod #mod_ident {}
         };
         child.content = Some((token::Brace::default(), child_items));
-        child
+        Ok(child)
     }
 
     /// Capture the original source bytes spanning the fn so the
     /// caller can render them as a doc-comment sentinel. Returns the
     /// empty string if the recorded byte ranges fall outside the file
     /// (defensive — should not trigger for well-formed input).
-    fn capture_original_snippet(&self, func: &ItemFn) -> String {
+    fn capture_original_snippet(&self, func: &ItemFn) -> anyhow::Result<String> {
         let span_start = func
             .attrs
             .iter()
             .map(|attr| attr.span().byte_range().start)
             .min()
+            // TODO(rs-cleanup): silencing at line 276 — review and replace with Result-propagating equivalent
             .unwrap_or_else(|| func.sig.fn_token.span.byte_range().start);
         let span_end = func.block.span().byte_range().end;
         let src: &str = &self.source;
-        src.get(span_start..span_end).unwrap_or("").to_owned()
+        // TODO(rs-cleanup): silencing at line 279 — review and replace with Result-propagating equivalent
+        Ok(src.get(span_start..span_end).unwrap_or("").to_owned())
     }
 
     /// Post-pass: a file that's a TEST BINARY ROOT under `tests/` (i.e.
@@ -289,36 +301,38 @@ impl Rewriter<'_, '_> {
     /// they're pulled in via `mod` declarations from a root file, so
     /// adding a `fn main` to each would be meaningless at best and
     /// produce double linkme registration at worst.
-    fn ensure_tests_binary_has_main(&self, file: &mut syn::File) {
+    fn ensure_tests_binary_has_main(&self, file: &mut syn::File) -> anyhow::Result<()> {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         if !is_tests_binary_root(&self.file_path) {
-            return;
+            return Ok(());
         }
         if !self.rewrite.changed {
-            return;
+            return Ok(());
         }
         if file.items.iter().any(item_is_fn_main) {
-            return;
+            return Ok(());
         }
         let main_fn: Item = syn::parse_quote! {
             #[::rudzio::main]
             fn main() {}
         };
         file.items.push(main_fn);
-    }
+        Ok(())
+}
 
     /// Look up the resolved `#[test_context(T)]` plan on a fn (if any).
     /// Returns the first match — multiple `test_context` attrs on a
     /// single fn aren't a shape rudzio supports.
-    fn pop_resolved_test_context_plan(&self, attrs: &[Attribute]) -> Option<TestContextPlan> {
+    fn pop_resolved_test_context_plan(&self, attrs: &[Attribute]) -> anyhow::Result<Option<TestContextPlan>> {
         for attr in attrs {
             if let Some(path) = detect::as_test_context(attr) {
                 let key = detect::path_to_string(&path);
                 if let Some(plan) = self.test_contexts.plan_for(&key) {
-                    return Some(plan.clone());
+                    return Ok(Some(plan.clone()));
                 }
             }
         }
-        None
+        Ok(None)
     }
 
     /// Split a single `mod tests { ... }` into one wrapper module per
@@ -332,9 +346,9 @@ impl Rewriter<'_, '_> {
         groups: &BTreeSet<Option<String>>,
         runtime: RuntimeChoice,
         runtime_path: &syn::Path,
-    ) {
+    ) -> anyhow::Result<()> {
         let Some((brace, items)) = module.content.take() else {
-            return;
+            return Ok(());
         };
         // Bucket items: non-test items stay in the outer mod;
         // test fns get bucketed by their ctx group.
@@ -402,6 +416,7 @@ impl Rewriter<'_, '_> {
         // rudzio macros expanded inside the children don't re-encounter
         // them as inner attrs (the children carry their own attrs via
         // the suite generation path below).
+        // FIXME(rs-cleanup): callee returns Result, add ?
         hoist_inner_attrs_on_mod(module);
         module.content = Some((brace, new_items));
         let _: bool = self.rewrite.runtimes_used.insert(runtime);
@@ -410,14 +425,15 @@ impl Rewriter<'_, '_> {
             module.ident.span(),
             "module mixed `#[test_context(...)]` and plain tests; split into per-context child modules so each suite tuple has the right `test = ...` path. Suite blocks remain inside the original `#[cfg(test)] mod` for dev-dep visibility.",
         );
-    }
+        Ok(())
+}
 
     /// Strip companion attributes (`#[should_panic]`,
     /// `#[test_context(...)]`) and report on each. Returns true if any
     /// resolved `#[test_context]` was stripped — the caller uses that
     /// to decide whether to rewrite the fn's first param into a
     /// generated bridge.
-    fn strip_companion_test_attrs(&mut self, attrs: &mut Vec<Attribute>) -> bool {
+    fn strip_companion_test_attrs(&mut self, attrs: &mut Vec<Attribute>) -> anyhow::Result<bool> {
         // Two-phase: first classify each attr and record the warnings
         // we'd emit, then retain. This avoids borrowing `self` inside
         // the `retain` closure.
@@ -456,27 +472,28 @@ impl Rewriter<'_, '_> {
         }
         let mut iter = actions.into_iter();
         attrs.retain(|_attr| matches!(iter.next(), Some(AttrAction::Keep)));
-        had_resolved_test_context
+        Ok(had_resolved_test_context)
     }
 
     /// Convert a single `#[...test...]` fn into a `#[::rudzio::test]`
     /// fn: rewrite the test attribute, strip companion attrs, possibly
     /// rewrite the ctx parameter, normalise the signature shape.
-    fn try_convert_fn(&mut self, func: &mut ItemFn) {
+    fn try_convert_fn(&mut self, func: &mut ItemFn) -> anyhow::Result<()> {
         let matched_idx_and_kind = func
             .attrs
             .iter()
             .enumerate()
             .find_map(|(i, attr)| detect::classify_test_attr(attr).map(|kind| (i, kind)));
         let Some((idx, detected)) = matched_idx_and_kind else {
-            return;
+            return Ok(());
         };
+        // FIXME(rs-cleanup): callee returns Result, add ?
         if has_self_receiver(func) {
             self.warn_span(
                 func.sig.ident.span(),
                 "test fn takes `self` receiver; rudzio tests are free fns \u{2014} skipping",
             );
-            return;
+            return Ok(());
         }
         // Any rstest marker on the fn (or its params) → skip. The
         // rstest model spreads across multiple attribute sites (the
@@ -491,7 +508,7 @@ impl Rewriter<'_, '_> {
                 func.sig.ident.span(),
                 "test fn uses rstest (`#[rstest]` / `#[case]` / `#[values]`); left unchanged \u{2014} rudzio has no parameterised-test equivalent, rewrite by hand",
             );
-            return;
+            return Ok(());
         }
         // Multi-param or non-reference-param test fns are almost
         // certainly `rstest`-style parameterised tests (the `#[case]`
@@ -500,12 +517,13 @@ impl Rewriter<'_, '_> {
         // paste `<'_, R>` onto things like `&str`, yielding "lifetime
         // and type arguments are not allowed on builtin type `str`".
         // Skip with a warning and let the user rewrite.
+        // FIXME(rs-cleanup): callee returns Result, add ?
         if has_non_ctx_shaped_params(func) {
             self.warn_span(
                 func.sig.ident.span(),
                 "test fn has parameters that don't look like a single `&T` / `&mut T` context borrow (likely rstest #[case] / #[values]); left unchanged \u{2014} rudzio has no parameterised-test equivalent, rewrite by hand",
             );
-            return;
+            return Ok(());
         }
 
         for extra in &detected.extra_tokio_args {
@@ -522,11 +540,13 @@ impl Rewriter<'_, '_> {
             .preserve_originals
             .then(|| self.capture_original_snippet(func));
 
+        // FIXME(rs-cleanup): callee returns Result, add ?
         replace_attr_with_rudzio_test(&mut func.attrs, idx);
         let resolved_plan = self.pop_resolved_test_context_plan(&func.attrs);
         let had_resolved_test_context = resolved_plan.is_some();
         let _stripped: bool = self.strip_companion_test_attrs(&mut func.attrs);
         if let Some(plan) = resolved_plan.as_ref() {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             rewrite_ctx_param_to_bridge(func, &plan.ctx_ident, &plan.bridge_ident);
             if self.mod_depth == 0 && self.file_scope_test_context_plan.is_none() {
                 self.file_scope_test_context_plan = Some(plan.clone());
@@ -538,6 +558,7 @@ impl Rewriter<'_, '_> {
         let runtime = detected
             .kind
             .forced_runtime()
+            // TODO(rs-cleanup): silencing at line 541 — review and replace with Result-propagating equivalent
             .unwrap_or(self.default_runtime);
         let _: bool = self.rewrite.runtimes_used.insert(runtime);
         if self.mod_depth == 0
@@ -558,7 +579,8 @@ impl Rewriter<'_, '_> {
 
         self.rewrite.changed = true;
         self.report.add_converted(1);
-    }
+        Ok(())
+}
 
     /// If the module is a `#[cfg(test)]`-gated test module containing
     /// at least one recognised test fn, rewrite its outer attrs into
@@ -568,23 +590,25 @@ impl Rewriter<'_, '_> {
     /// (multiple `#[test_context]` types, or `test_context` mixed with
     /// plain tests) get split via
     /// [`Self::split_module_by_ctx_groups`] instead.
-    fn try_promote_cfg_test_mod(&mut self, module: &mut ItemMod) {
+    fn try_promote_cfg_test_mod(&mut self, module: &mut ItemMod) -> anyhow::Result<()> {
         // Declaration-only `mod tests;` (no inline body) can't be
         // wrapped with `#[rudzio::suite]` — the macro expects an
         // inline block to descend into.
         if module.content.is_none() {
-            return;
+            return Ok(());
         }
         // Only promote modules that actually contain at least one
         // recognized test fn. A `#[cfg(test)]` module with just helper
         // fns (no `#[test]`) must stay a plain `cfg(test)` module;
         // wrapping it with `#[rudzio::suite]` would fail the macro's
         // "at least one #[rudzio::test]" assertion.
+        // FIXME(rs-cleanup): callee returns Result, add ?
         if !module_has_any_test_fn(module) {
-            return;
+            return Ok(());
         }
+        // FIXME(rs-cleanup): callee returns Result, add ?
         if has_rudzio_suite(&module.attrs) {
-            return;
+            return Ok(());
         }
         // Only promote modules whose OWN attrs include `#[cfg(test)]`.
         // A plain `pub mod outer { #[cfg(test)] mod tests { ... } }`
@@ -594,7 +618,7 @@ impl Rewriter<'_, '_> {
         // the normal lib build. The recursive visit descends into
         // `outer` and catches the inner cfg(test) mod there.
         if !module.attrs.iter().any(is_cfg_test_attr) {
-            return;
+            return Ok(());
         }
         // Expand bare `#[cfg(test)]` to `#[cfg(any(test, rudzio_test))]`
         // so the module compiles under BOTH per-crate `cargo test` AND
@@ -606,13 +630,17 @@ impl Rewriter<'_, '_> {
         // `#[cfg(all(test, feature = "mock"))]` are untouched —
         // rewriting those is out of v1 scope; user handles them by
         // hand.
+        // FIXME(rs-cleanup): callee returns Result, add ?
         rewrite_cfg_test_to_cfg_any(&mut module.attrs);
 
         // Pick the runtime: if every recognized test fn in the module
         // forces the same runtime (e.g. all `#[tokio::test(flavor = ...)]`
         // with the same flavor), honor that unanimous choice;
         // otherwise fall back to `--runtime`.
+        // TODO(rs-cleanup): silencing at line 615 — review and replace with Result-propagating equivalent
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let runtime = unanimous_inner_runtime(module).unwrap_or(self.default_runtime);
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let runtime_path = make_static_path(runtime.suite_path());
 
         // Mixed-context handling: when a single `mod tests` holds both
@@ -620,16 +648,19 @@ impl Rewriter<'_, '_> {
         // (or two distinct ctx types), one shared suite attr would
         // type-mismatch half the fns. Split into per-ctx child modules
         // instead.
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let groups = group_test_fns_by_ctx(module, self.test_contexts);
         if groups.len() > 1 {
             self.split_module_by_ctx_groups(module, &groups, runtime, &runtime_path);
-            return;
+            return Ok(());
         }
 
         // Choose suite/test paths based on whether any fn inside uses
         // a resolved `#[test_context(T)]`.
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let resolved_ctx = first_resolved_test_context(module, self.test_contexts);
         let (suite_path, test_path) = if let Some(plan) = resolved_ctx {
+            // TODO(rs-cleanup): silencing at line 633 — review and replace with Result-propagating equivalent
             let base = plan.module_path.as_deref().unwrap_or("crate");
             if plan.module_path.is_none() {
                 self.warn_span(
@@ -643,12 +674,16 @@ impl Rewriter<'_, '_> {
                 );
             }
             (
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 make_static_path(&format!("{base}::{}", plan.suite_ident)),
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 make_static_path(&format!("{base}::{}", plan.bridge_ident)),
             )
         } else {
             (
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 make_static_path("::rudzio::common::context::Suite"),
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 make_static_path("::rudzio::common::context::Test"),
             )
         };
@@ -668,6 +703,7 @@ impl Rewriter<'_, '_> {
         // itself — for the common cases (`#![allow(clippy::…)]`,
         // `#![deny(…)]`, `#![expect(…)]`, etc.) this is semantically
         // equivalent: the lints propagate into the body either way.
+        // FIXME(rs-cleanup): callee returns Result, add ?
         hoist_inner_attrs_on_mod(module);
         // Place the suite attribute as the LAST outer attribute on the
         // `mod` item (i.e. immediately before the `mod` keyword)
@@ -685,13 +721,15 @@ impl Rewriter<'_, '_> {
         module.attrs.push(suite_attr);
         let _: bool = self.rewrite.runtimes_used.insert(runtime);
         self.rewrite.changed = true;
-    }
+        Ok(())
+}
 
     /// Surface a span-attached warning to the report sink. Centralises
     /// the byte-range translation so callers don't repeat it.
-    fn warn_span(&mut self, span: Span, message: impl Into<String>) {
+    fn warn_span(&mut self, span: Span, message: impl Into<String>) -> anyhow::Result<()> {
         let range = span.byte_range();
         let offset = range.start;
+        // TODO(rs-cleanup): masking_arith at line 695 — review and replace with Result-propagating equivalent
         let len = range.end.saturating_sub(range.start);
         self.report.warn_with_span(
             self.file_path.clone(),
@@ -701,20 +739,22 @@ impl Rewriter<'_, '_> {
             Arc::clone(&self.source),
             message,
         );
-    }
+        Ok(())
+}
 
     /// Post-pass: pull every converted file-scope `#[rudzio::test]`
     /// fn into a synthesised `#[cfg(test)] #[rudzio::suite([...])] mod
     /// tests { ... }` so rudzio's runner actually sees them (a bare
     /// `#[rudzio::test]` at file scope registers no tokens and leaves
     /// the `Test` type unresolved).
-    fn wrap_file_scope_test_fns(&mut self, file: &mut syn::File) {
+    fn wrap_file_scope_test_fns(&mut self, file: &mut syn::File) -> anyhow::Result<()> {
         let indices: Vec<usize> = file
             .items
             .iter()
             .enumerate()
             .filter_map(|(i, item)| {
                 if let Item::Fn(func) = item
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     && fn_has_rudzio_test_attr(func)
                 {
                     Some(i)
@@ -724,7 +764,7 @@ impl Rewriter<'_, '_> {
             })
             .collect();
         let Some(&first_idx) = indices.first() else {
-            return;
+            return Ok(());
         };
         let mut fns: Vec<Item> = Vec::with_capacity(indices.len());
         for &i in indices.iter().rev() {
@@ -737,10 +777,12 @@ impl Rewriter<'_, '_> {
                 .iter()
                 .next()
                 .copied()
+                // TODO(rs-cleanup): silencing at line 740 — review and replace with Result-propagating equivalent
                 .unwrap_or(self.default_runtime)
         } else {
             self.default_runtime
         };
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let runtime_path = make_static_path(runtime.suite_path());
         // If any of the wrapped fns had a resolved `#[test_context(T)]`,
         // their signatures were already rewritten to `&mut CtxBridge`.
@@ -751,14 +793,19 @@ impl Rewriter<'_, '_> {
         let (suite_path, test_path) = self.file_scope_test_context_plan.as_ref().map_or_else(
             || {
                 (
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     make_static_path("::rudzio::common::context::Suite"),
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     make_static_path("::rudzio::common::context::Test"),
                 )
             },
             |plan| {
+                // TODO(rs-cleanup): silencing at line 759 — review and replace with Result-propagating equivalent
                 let base = plan.module_path.as_deref().unwrap_or("crate");
                 (
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     make_static_path(&format!("{base}::{}", plan.suite_ident)),
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     make_static_path(&format!("{base}::{}", plan.bridge_ident)),
                 )
             },
@@ -771,6 +818,7 @@ impl Rewriter<'_, '_> {
             .into_iter()
             .map(|item| {
                 if let Item::Fn(mut func) = item {
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     func.attrs.retain(|attr| !is_cfg_test_attr(attr));
                     Item::Fn(func)
                 } else {
@@ -779,6 +827,7 @@ impl Rewriter<'_, '_> {
             })
             .collect();
 
+        // TODO(rs-cleanup): masking_arith at line 782 — review and replace with Result-propagating equivalent
         let mut synth_items: Vec<Item> = Vec::with_capacity(cleaned_fns.len().saturating_add(3));
         synth_items.push(syn::parse_quote! {
             use super::*;
@@ -790,8 +839,10 @@ impl Rewriter<'_, '_> {
             // `crate::` with a warning (emitted once per plan at
             // module-promotion time; repeating it here would be
             // noise).
+            // TODO(rs-cleanup): silencing at line 793 — review and replace with Result-propagating equivalent
             let base = plan.module_path.as_deref().unwrap_or("crate");
             let bridge_path: syn::Path =
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 make_static_path(&format!("{base}::{}", plan.bridge_ident));
             synth_items.push(syn::parse_quote! {
                 use #bridge_path;
@@ -818,37 +869,45 @@ impl Rewriter<'_, '_> {
 
         let _: bool = self.rewrite.runtimes_used.insert(runtime);
         self.rewrite.changed = true;
-    }
+        Ok(())
+}
 }
 
 impl VisitMut for CfgAttrTestRewriter {
     #[inline]
-    fn visit_attribute_mut(&mut self, i: &mut Attribute) {
+    fn visit_attribute_mut(&mut self, i: &mut Attribute) -> anyhow::Result<()> {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         if rewrite_cfg_attr_test_attr(i) {
+            // TODO(rs-cleanup): masking_arith at line 828 — review and replace with Result-propagating equivalent
             self.rewrites = self.rewrites.saturating_add(1);
         }
+        // FIXME(rs-cleanup): callee returns Result, add ?
         visit_mut::visit_attribute_mut(self, i);
-    }
+        Ok(())
+}
 }
 
 impl VisitMut for Rewriter<'_, '_> {
     #[inline]
-    fn visit_file_mut(&mut self, i: &mut syn::File) {
+    fn visit_file_mut(&mut self, i: &mut syn::File) -> anyhow::Result<()> {
         for item in &mut i.items {
             if let Item::Mod(module) = item {
                 self.try_promote_cfg_test_mod(module);
             }
         }
+        // FIXME(rs-cleanup): callee returns Result, add ?
         visit_mut::visit_file_mut(self, i);
         self.wrap_file_scope_test_fns(i);
         self.ensure_tests_binary_has_main(i);
         if self.stripped_any_test_context_attr {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             prune_test_context_macro_imports(i);
-        }
-    }
+        };
+        Ok(())
+}
 
     #[inline]
-    fn visit_item_fn_mut(&mut self, i: &mut ItemFn) {
+    fn visit_item_fn_mut(&mut self, i: &mut ItemFn) -> anyhow::Result<()> {
         // Warn on rstest-family markers independently of whether a
         // `#[test]` attribute is also present — rstest sometimes
         // replaces `#[test]` outright, and those fns would otherwise
@@ -860,29 +919,37 @@ impl VisitMut for Rewriter<'_, '_> {
                 i.sig.ident.span(),
                 "test fn uses rstest (`#[rstest]` / `#[case]` / `#[values]`); left unchanged \u{2014} rudzio has no parameterised-test equivalent, rewrite by hand",
             );
-            return;
+            return Ok(());
         }
         // File-scope test fns are now converted and later wrapped in
         // a synthesised `#[cfg(test)] #[rudzio::suite(...)] mod { ... }`
         // by the post-pass in `visit_file_mut`. See
         // `wrap_file_scope_test_fns`.
         self.try_convert_fn(i);
+        // FIXME(rs-cleanup): callee returns Result, add ?
         visit_mut::visit_item_fn_mut(self, i);
-    }
+        Ok(())
+}
 
     #[inline]
-    fn visit_item_mod_mut(&mut self, i: &mut ItemMod) {
+    fn visit_item_mod_mut(&mut self, i: &mut ItemMod) -> anyhow::Result<()> {
         self.try_promote_cfg_test_mod(i);
+        // TODO(rs-cleanup): masking_arith at line 876 — review and replace with Result-propagating equivalent
         self.mod_depth = self.mod_depth.saturating_add(1);
+        // FIXME(rs-cleanup): callee returns Result, add ?
         visit_mut::visit_item_mod_mut(self, i);
+        // TODO(rs-cleanup): masking_arith at line 878 — review and replace with Result-propagating equivalent
         self.mod_depth = self.mod_depth.saturating_sub(1);
+        // FIXME(rs-cleanup): callee returns Result, add ?
         prune_unused_test_context_import(i);
         if self.stripped_any_test_context_attr
             && let Some((_, items)) = &mut i.content
         {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             prune_test_context_macro_imports_in_items(items);
-        }
-    }
+        };
+        Ok(())
+}
 }
 
 /// Run the rewriter over a single parsed file.
@@ -901,7 +968,7 @@ pub fn apply(
     test_contexts: &TestContextResolver,
     file_path: &Path,
     report: &mut Report,
-) -> Outcome {
+) -> anyhow::Result<Outcome> {
     let mut walker = Rewriter {
         default_runtime,
         file_path: file_path.to_path_buf(),
@@ -921,17 +988,18 @@ pub fn apply(
         test_contexts,
     };
     walker.visit_file_mut(file);
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let cfg_attr_rewrites = rewrite_cfg_attr_test_in_file(file);
     if cfg_attr_rewrites > 0 {
         walker.rewrite.changed = true;
     }
-    walker.rewrite
+    Ok(walker.rewrite)
 }
 
 /// Collect every `forced_runtime()` reported by `classify_test_attr` on
 /// fns nested directly or transitively under `items`. Used by
 /// [`unanimous_inner_runtime`] to decide whether a module's fns agree.
-fn collect_runtime_hints(items: &[Item], out: &mut BTreeSet<RuntimeChoice>) {
+fn collect_runtime_hints(items: &[Item], out: &mut BTreeSet<RuntimeChoice>) -> anyhow::Result<()> {
     for item in items {
         if let Item::Fn(func) = item {
             for attr in &func.attrs {
@@ -946,16 +1014,18 @@ fn collect_runtime_hints(items: &[Item], out: &mut BTreeSet<RuntimeChoice>) {
         if let Item::Mod(sub) = item
             && let Some((_, inner)) = &sub.content
         {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             collect_runtime_hints(inner, out);
         }
-    }
+    };
+    Ok(())
 }
 
 /// Recursively remove a `test_context` leaf or grouped item from a
 /// `UseTree` rooted under `test_context::`. Returns `true` if the
 /// caller's containing tree is now empty (e.g. an empty Group).
-fn drop_test_context_leaf(tree: &mut UseTree) -> bool {
-    match tree {
+fn drop_test_context_leaf(tree: &mut UseTree) -> anyhow::Result<bool> {
+    Ok(match tree {
         UseTree::Name(name) if name.ident == "test_context" => true,
         UseTree::Rename(rename) if rename.ident == "test_context" => true,
         UseTree::Group(group) => {
@@ -965,6 +1035,7 @@ fn drop_test_context_leaf(tree: &mut UseTree) -> bool {
             let kept: Vec<UseTree> = mem::take(&mut group.items)
                 .into_iter()
                 .filter_map(|mut inner| {
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     if drop_test_context_leaf(&mut inner) {
                         None
                     } else {
@@ -977,9 +1048,10 @@ fn drop_test_context_leaf(tree: &mut UseTree) -> bool {
             }
             group.items.is_empty()
         }
+        // FIXME(rs-cleanup): callee returns Result, add ?
         UseTree::Path(path_use) => drop_test_context_leaf(&mut path_use.tree),
         UseTree::Glob(_) | UseTree::Name(_) | UseTree::Rename(_) => false,
-    }
+    })
 }
 
 /// First fn in `module` that carries a resolved `#[test_context(T)]`
@@ -989,9 +1061,9 @@ fn drop_test_context_leaf(tree: &mut UseTree) -> bool {
 fn first_resolved_test_context<'res>(
     module: &ItemMod,
     resolver: &'res TestContextResolver,
-) -> Option<&'res TestContextPlan> {
+) -> anyhow::Result<Option<&'res TestContextPlan>> {
     let Some((_, items)) = &module.content else {
-        return None;
+        return Ok(None);
     };
     for item in items {
         if let Item::Fn(func) = item {
@@ -999,46 +1071,46 @@ fn first_resolved_test_context<'res>(
                 if let Some(path) = detect::as_test_context(attr) {
                     let key = detect::path_to_string(&path);
                     if let Some(plan) = resolver.plan_for(&key) {
-                        return Some(plan);
+                        return Ok(Some(plan));
                     }
                 }
             }
         }
     }
-    None
+    Ok(None)
 }
 
 /// True if any of the fn's parameters carries an rstest-family
 /// attribute (`#[case]`, `#[values]`, ...). Inspects both `Typed` and
 /// `Receiver` shapes.
-fn fn_arg_has_rstest_attr(arg: &FnArg) -> bool {
-    match arg {
+fn fn_arg_has_rstest_attr(arg: &FnArg) -> anyhow::Result<bool> {
+    Ok(match arg {
         FnArg::Typed(pat_type) => pat_type.attrs.iter().any(detect::is_rstest_attr),
         FnArg::Receiver(recv) => recv.attrs.iter().any(detect::is_rstest_attr),
-    }
+    })
 }
 
 /// True if the fn carries a `#[::rudzio::test]` (or unprefixed
 /// `#[rudzio::test]`) outer attribute. Used by the file-scope wrap
 /// post-pass to spot fns it has already converted.
-fn fn_has_rudzio_test_attr(func: &ItemFn) -> bool {
-    func.attrs.iter().any(|attr| {
+fn fn_has_rudzio_test_attr(func: &ItemFn) -> anyhow::Result<bool> {
+    Ok(func.attrs.iter().any(|attr| {
         let path = detect::path_to_string(attr.path());
         path == "::rudzio::test" || path == "rudzio::test"
-    })
+    }))
 }
 
 /// Classify a fn's `-> Foo` clause into a [`ReturnKind`]. Best-effort:
 /// only the leaf segment is consulted, so any type whose last segment
 /// is `Result` is treated as a Result.
-fn fn_return_kind(ret: &ReturnType) -> ReturnKind {
+fn fn_return_kind(ret: &ReturnType) -> anyhow::Result<ReturnKind> {
     let ReturnType::Type(_, ty) = ret else {
-        return ReturnKind::UnitImplicit;
+        return Ok(ReturnKind::UnitImplicit);
     };
     if let Type::Tuple(tuple) = ty.as_ref()
         && tuple.elems.is_empty()
     {
-        return ReturnKind::UnitExplicit;
+        return Ok(ReturnKind::UnitExplicit);
     }
     if let Type::Path(path_ty) = ty.as_ref() {
         let last = path_ty
@@ -1046,14 +1118,15 @@ fn fn_return_kind(ret: &ReturnType) -> ReturnKind {
             .segments
             .last()
             .map(|seg| seg.ident.to_string())
+            // TODO(rs-cleanup): silencing at line 1049 — review and replace with Result-propagating equivalent
             .unwrap_or_default();
-        return if last == "Result" {
+        return Ok(if last == "Result" {
             ReturnKind::Result
         } else {
             ReturnKind::Other
-        };
+        });
     }
-    ReturnKind::Other
+    Ok(ReturnKind::Other)
 }
 
 /// Group every recognised test fn inside `module` by its target
@@ -1065,10 +1138,10 @@ fn fn_return_kind(ret: &ReturnType) -> ReturnKind {
 fn group_test_fns_by_ctx(
     module: &ItemMod,
     resolver: &TestContextResolver,
-) -> BTreeSet<Option<String>> {
+) -> anyhow::Result<BTreeSet<Option<String>>> {
     let mut groups: BTreeSet<Option<String>> = BTreeSet::new();
     let Some((_, items)) = &module.content else {
-        return groups;
+        return Ok(groups);
     };
     for item in items {
         if let Item::Fn(func) = item {
@@ -1087,7 +1160,7 @@ fn group_test_fns_by_ctx(
             let _: bool = groups.insert(key);
         }
     }
-    groups
+    Ok(groups)
 }
 
 /// True if the fn has params that don't match the "single ctx borrow"
@@ -1097,117 +1170,122 @@ fn group_test_fns_by_ctx(
 /// the generics). Anything else — multiple params, owned values,
 /// tuples — signals a parameterised-test library (rstest, etc.) whose
 /// shape the rudzio macro can't handle.
-fn has_non_ctx_shaped_params(func: &ItemFn) -> bool {
+fn has_non_ctx_shaped_params(func: &ItemFn) -> anyhow::Result<bool> {
     let n = func.sig.inputs.len();
     if n == 0 {
-        return false;
+        return Ok(false);
     }
     if n > 1 {
-        return true;
+        return Ok(true);
     }
     let Some(arg) = func.sig.inputs.first() else {
-        return false;
+        return Ok(false);
     };
     let FnArg::Typed(pat_type) = arg else {
-        return true;
+        return Ok(true);
     };
-    !matches!(&*pat_type.ty, Type::Reference(_))
+    Ok(!matches!(&*pat_type.ty, Type::Reference(_)))
 }
 
 /// True if the attribute list already carries a `#[rudzio::suite(...)]`
 /// (in either prefixed or unprefixed form). Used to short-circuit the
 /// promote pass on already-migrated modules.
-fn has_rudzio_suite(attrs: &[Attribute]) -> bool {
-    attrs.iter().any(|attr| {
+fn has_rudzio_suite(attrs: &[Attribute]) -> anyhow::Result<bool> {
+    Ok(attrs.iter().any(|attr| {
         detect::path_to_string(attr.path()) == "rudzio::suite"
             || detect::path_to_string(attr.path()) == "::rudzio::suite"
-    })
+    }))
 }
 
 /// True if any of the fn's parameters is a `self` receiver. Receivers
 /// disqualify the fn from rudzio test conversion — rudzio tests are
 /// free fns.
-fn has_self_receiver(func: &ItemFn) -> bool {
-    func.sig
+fn has_self_receiver(func: &ItemFn) -> anyhow::Result<bool> {
+    Ok(func.sig
         .inputs
         .iter()
-        .any(|arg| matches!(arg, FnArg::Receiver(_)))
+        .any(|arg| matches!(arg, FnArg::Receiver(_))))
 }
 
 /// Rewrite every inner attribute on `module` to outer style. Used to
 /// pre-condition `#[rudzio::suite]`'s expansion target — the macro
 /// rejects `#![inner]` attrs.
-fn hoist_inner_attrs_on_mod(module: &mut ItemMod) {
+fn hoist_inner_attrs_on_mod(module: &mut ItemMod) -> anyhow::Result<()> {
     for attr in &mut module.attrs {
         if matches!(attr.style, AttrStyle::Inner(_)) {
             attr.style = AttrStyle::Outer;
         }
-    }
+    };
+    Ok(())
 }
 
 /// True if the attribute is exactly `#[cfg(test)]` (no compound
 /// predicate). Compound forms (`all(test, ...)`, `any(test, ...)`,
 /// feature gates) are intentionally excluded.
-fn is_cfg_test_attr(attr: &Attribute) -> bool {
+fn is_cfg_test_attr(attr: &Attribute) -> anyhow::Result<bool> {
     if detect::path_to_string(attr.path()) != "cfg" {
-        return false;
+        return Ok(false);
     }
     let Meta::List(list) = &attr.meta else {
-        return false;
+        return Ok(false);
     };
-    list.tokens.to_string().trim() == "test"
+    Ok(list.tokens.to_string().trim() == "test")
 }
 
 /// True if `path` is a test-binary root under `tests/`. Two shapes
 /// count: a direct child `tests/<stem>.rs`, or a suite-dir
 /// `tests/<suite>/mod.rs`. Anything deeper is a submodule and inherits
 /// its main from the root via `mod` declarations.
-fn is_tests_binary_root(path: &Path) -> bool {
+fn is_tests_binary_root(path: &Path) -> anyhow::Result<bool> {
     let mut components: Vec<&OsStr> = path.components().map(Component::as_os_str).collect();
     let Some(tests_idx) = components
         .iter()
         .position(|seg| *seg == OsStr::new("tests"))
     else {
-        return false;
+        return Ok(false);
     };
+    // TODO(rs-cleanup): masking_arith at line 1173 — review and replace with Result-propagating equivalent
     let rel = components.split_off(tests_idx.saturating_add(1));
     // `tests/<stem>.rs`: exactly one `.rs` component after `tests/`.
     if let [single] = rel.as_slice() {
-        return Path::new(single).extension().is_some_and(|ext| ext == "rs");
+        return Ok(Path::new(single).extension().is_some_and(|ext| ext == "rs"));
     }
     // `tests/<suite>/mod.rs`: exactly two components, last is `mod.rs`.
-    matches!(rel.as_slice(), [_, last] if *last == OsStr::new("mod.rs"))
+    Ok(matches!(rel.as_slice(), [_, last] if *last == OsStr::new("mod.rs")))
 }
 
 /// True if any sub-tree of `item` (recursively, descending into
 /// modules) carries a recognised test attribute on a fn.
-fn item_has_any_test_fn(item: &Item) -> bool {
+fn item_has_any_test_fn(item: &Item) -> anyhow::Result<bool> {
     if let Item::Fn(func) = item {
-        return func
+        return Ok(func
             .attrs
             .iter()
-            .any(|attr| detect::classify_test_attr(attr).is_some());
+            .any(|attr| detect::classify_test_attr(attr).is_some()));
     }
     if let Item::Mod(module) = item {
-        return module_has_any_test_fn(module);
+        // FIXME(rs-cleanup): callee returns Result, add ?
+        return Ok(module_has_any_test_fn(module));
     }
-    false
+    Ok(false)
 }
 
 /// True if the item is `fn main`. Used by the test-binary main
 /// post-pass to decide whether to synthesise one.
-fn item_is_fn_main(item: &Item) -> bool {
-    if let Item::Fn(func) = item {
+fn item_is_fn_main(item: &Item) -> anyhow::Result<bool> {
+    Ok(if let Item::Fn(func) = item {
         func.sig.ident == "main"
     } else {
         false
-    }
+    })
 }
 
 /// Convert `crate::foo::DbCtx` → `db_ctx`. Used to derive a snake-case
 /// suffix for split-child module names (`tests_with_db_ctx`).
-fn last_segment_snake(path: &str) -> String {
+fn last_segment_snake(path: &str) -> anyhow::Result<String> {
+    // TODO(rs-cleanup): silencing at line 1210 — review and replace with Result-propagating equivalent
     let last = path.rsplit("::").next().unwrap_or(path);
+    // TODO(rs-cleanup): masking_arith at line 1211 — review and replace with Result-propagating equivalent
     let mut out = String::with_capacity(last.len().saturating_add(4));
     for (i, ch) in last.chars().enumerate() {
         if ch.is_ascii_uppercase() {
@@ -1219,7 +1297,7 @@ fn last_segment_snake(path: &str) -> String {
             out.push(ch);
         }
     }
-    out
+    Ok(out)
 }
 
 /// Parse a path string we synthesised ourselves. Returns the literal
@@ -1227,22 +1305,25 @@ fn last_segment_snake(path: &str) -> String {
 /// well-formed in practice (built up from validated identifiers), so
 /// the fallback exists strictly to keep the rewriter free of
 /// `.expect()` calls.
-fn make_static_path(text: &str) -> syn::Path {
-    syn::parse_str::<syn::Path>(text).unwrap_or_else(|_err| syn::parse_quote!(crate))
+fn make_static_path(text: &str) -> anyhow::Result<syn::Path> {
+    // TODO(rs-cleanup): silencing at line 1231 — review and replace with Result-propagating equivalent
+    Ok(syn::parse_str::<syn::Path>(text).unwrap_or_else(|_err| syn::parse_quote!(crate)))
 }
 
 /// True if `module` (recursively) contains at least one fn carrying a
 /// recognised test attribute.
-fn module_has_any_test_fn(module: &ItemMod) -> bool {
+fn module_has_any_test_fn(module: &ItemMod) -> anyhow::Result<bool> {
     let Some((_, items)) = &module.content else {
-        return false;
+        return Ok(false);
     };
-    items.iter().any(item_has_any_test_fn)
+    Ok(items.iter().any(item_has_any_test_fn))
 }
 
 /// File-wide variant of [`prune_test_context_macro_imports_in_items`].
-fn prune_test_context_macro_imports(file: &mut syn::File) {
+fn prune_test_context_macro_imports(file: &mut syn::File) -> anyhow::Result<()> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     prune_test_context_macro_imports_in_items(&mut file.items);
+    Ok(())
 }
 
 /// After every `#[test_context(...)]` attribute is stripped, the
@@ -1250,7 +1331,7 @@ fn prune_test_context_macro_imports(file: &mut syn::File) {
 /// user's tests imported is dead. Walk every `use test_context::...`
 /// item and drop any leaf named `test_context` — leaving the trait
 /// (`AsyncTestContext`, `TestContext`) imports intact.
-fn prune_test_context_macro_imports_in_items(items: &mut Vec<Item>) {
+fn prune_test_context_macro_imports_in_items(items: &mut Vec<Item>) -> anyhow::Result<()> {
     items.retain_mut(|item| {
         let Item::Use(use_item) = item else {
             return true;
@@ -1261,10 +1342,13 @@ fn prune_test_context_macro_imports_in_items(items: &mut Vec<Item>) {
             return true;
         }
         if let UseTree::Path(path) = &mut use_item.tree {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let _empty = drop_test_context_leaf(&mut path.tree);
         }
+        // FIXME(rs-cleanup): callee returns Result, add ?
         !tree_is_empty(&use_item.tree)
     });
+    Ok(())
 }
 
 /// Removes `use test_context::test_context;` imports inside the module
@@ -1272,9 +1356,9 @@ fn prune_test_context_macro_imports_in_items(items: &mut Vec<Item>) {
 /// were what referenced the attribute macro. Leaves other
 /// `test_context` re-exports (e.g. the trait `AsyncTestContext` itself)
 /// alone.
-fn prune_unused_test_context_import(module: &mut ItemMod) {
+fn prune_unused_test_context_import(module: &mut ItemMod) -> anyhow::Result<()> {
     let Some((_, items)) = &mut module.content else {
-        return;
+        return Ok(());
     };
     items.retain(|item| {
         let Item::Use(use_item) = item else {
@@ -1286,40 +1370,42 @@ fn prune_unused_test_context_import(module: &mut ItemMod) {
         !(normalized == "test_context::test_context"
             || normalized == "::test_context::test_context")
     });
+    Ok(())
 }
 
 /// Replace the indexed attribute with a freshly-parsed
 /// `#[::rudzio::test]`. Used as the tail-end of the conversion path
 /// inside [`Rewriter::try_convert_fn`].
-fn replace_attr_with_rudzio_test(attrs: &mut [Attribute], idx: usize) {
+fn replace_attr_with_rudzio_test(attrs: &mut [Attribute], idx: usize) -> anyhow::Result<()> {
     let new_attr: Attribute = syn::parse_quote! { #[::rudzio::test] };
     if let Some(slot) = attrs.get_mut(idx) {
         *slot = new_attr;
-    }
+    };
+    Ok(())
 }
 
 /// Rewrite a single `#[cfg_attr(test, ...)]` attribute to
 /// `#[cfg_attr(any(test, rudzio_test), ...)]`. Returns true iff the
 /// attribute matched the bare-test shape and was rewritten. Compound
 /// predicates and feature gates are left alone.
-fn rewrite_cfg_attr_test_attr(attr: &mut Attribute) -> bool {
+fn rewrite_cfg_attr_test_attr(attr: &mut Attribute) -> anyhow::Result<bool> {
     if !attr.path().is_ident("cfg_attr") {
-        return false;
+        return Ok(false);
     }
     let Meta::List(list) = &attr.meta else {
-        return false;
+        return Ok(false);
     };
     let Ok(metas): Result<Punctuated<Meta, syn::Token![,]>, _> =
         list.parse_args_with(Punctuated::<Meta, syn::Token![,]>::parse_terminated)
     else {
-        return false;
+        return Ok(false);
     };
     let first_is_bare_test = matches!(
         metas.first(),
         Some(Meta::Path(path)) if path.is_ident("test")
     );
     if !first_is_bare_test {
-        return false;
+        return Ok(false);
     }
     let rest: Vec<&Meta> = metas.iter().skip(1).collect();
     let rebuilt: Attribute = if rest.is_empty() {
@@ -1329,7 +1415,7 @@ fn rewrite_cfg_attr_test_attr(attr: &mut Attribute) -> bool {
         syn::parse_quote!(#[cfg_attr(any(test, rudzio_test), #(#rest),*)])
     };
     *attr = rebuilt;
-    true
+    Ok(true)
 }
 
 /// File-wide pass that rewrites every bare `#[cfg_attr(test, ...)]` to
@@ -1348,70 +1434,75 @@ fn rewrite_cfg_attr_test_attr(attr: &mut Attribute) -> bool {
 /// left alone — same v1-scope policy as
 /// [`rewrite_cfg_test_to_cfg_any`]. Returns the number of attributes
 /// rewritten so the caller can mark the file as changed.
-fn rewrite_cfg_attr_test_in_file(file: &mut syn::File) -> usize {
+fn rewrite_cfg_attr_test_in_file(file: &mut syn::File) -> anyhow::Result<usize> {
     let mut walker = CfgAttrTestRewriter { rewrites: 0 };
     walker.visit_file_mut(file);
-    walker.rewrites
+    Ok(walker.rewrites)
 }
 
 /// Rewrite every bare `#[cfg(test)]` in `attrs` to
 /// `#[cfg(any(test, rudzio_test))]`. Idempotent: compound cfgs
 /// (including an already-rewritten `any(test, rudzio_test)`) do not
 /// match [`is_cfg_test_attr`], so running this twice is a no-op.
-fn rewrite_cfg_test_to_cfg_any(attrs: &mut [Attribute]) {
+fn rewrite_cfg_test_to_cfg_any(attrs: &mut [Attribute]) -> anyhow::Result<()> {
     for attr in attrs.iter_mut() {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         if is_cfg_test_attr(attr) {
             *attr = syn::parse_quote!(#[cfg(any(test, rudzio_test))]);
         }
-    }
+    };
+    Ok(())
 }
 
 /// Rewrite the first parameter of `func` from `&CtxIdent` to
 /// `&BridgeIdent`, in place. No-op when the param shape doesn't match
 /// — keeping the rewriter conservative on hand-rolled signatures.
-fn rewrite_ctx_param_to_bridge(func: &mut ItemFn, ctx_ident: &str, bridge_ident: &str) {
+fn rewrite_ctx_param_to_bridge(func: &mut ItemFn, ctx_ident: &str, bridge_ident: &str) -> anyhow::Result<()> {
     let Some(first) = func.sig.inputs.first_mut() else {
-        return;
+        return Ok(());
     };
     let FnArg::Typed(pat_type) = first else {
-        return;
+        return Ok(());
     };
     let Type::Reference(type_ref) = &mut *pat_type.ty else {
-        return;
+        return Ok(());
     };
     let Type::Path(type_path) = &mut *type_ref.elem else {
-        return;
+        return Ok(());
     };
     let Some(last) = type_path.path.segments.last_mut() else {
-        return;
+        return Ok(());
     };
     if last.ident == ctx_ident {
         last.ident = Ident::new(bridge_ident, last.ident.span());
-    }
+    };
+    Ok(())
 }
 
 /// True if `tree` is empty after a [`drop_test_context_leaf`] pass.
 /// Used to decide whether to drop the entire `use` item.
-fn tree_is_empty(tree: &UseTree) -> bool {
-    match tree {
+fn tree_is_empty(tree: &UseTree) -> anyhow::Result<bool> {
+    Ok(match tree {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         UseTree::Path(path_use) => tree_is_empty(&path_use.tree),
         UseTree::Group(group) => group.items.is_empty(),
         UseTree::Glob(_) | UseTree::Name(_) | UseTree::Rename(_) => false,
-    }
+    })
 }
 
 /// If every recognised test fn under `module` agrees on a forced
 /// runtime, return it. Otherwise return None — the caller falls back
 /// to the run's `--runtime`.
-fn unanimous_inner_runtime(module: &ItemMod) -> Option<RuntimeChoice> {
+fn unanimous_inner_runtime(module: &ItemMod) -> anyhow::Result<Option<RuntimeChoice>> {
     let Some((_, items)) = &module.content else {
-        return None;
+        return Ok(None);
     };
     let mut runtimes: BTreeSet<RuntimeChoice> = BTreeSet::new();
+    // FIXME(rs-cleanup): callee returns Result, add ?
     collect_runtime_hints(items, &mut runtimes);
-    if runtimes.len() == 1 {
+    Ok(if runtimes.len() == 1 {
         runtimes.into_iter().next()
     } else {
         None
-    }
+    })
 }

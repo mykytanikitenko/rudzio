@@ -57,15 +57,17 @@ impl Report {
     /// Record that `path` was backed up (i.e. a sibling
     /// `.backup_before_migration_to_rudzio` was created for it).
     #[inline]
-    pub fn backed_up(&mut self, path: PathBuf) {
+    pub fn backed_up(&mut self, path: PathBuf) -> anyhow::Result<()> {
         self.backups_created.push(path);
-    }
+        Ok(())
+}
 
     /// Record that `path` (a `Cargo.toml`) had edits applied.
     #[inline]
-    pub fn cargo_edit(&mut self, path: PathBuf) {
+    pub fn cargo_edit(&mut self, path: PathBuf) -> anyhow::Result<()> {
         self.cargo_toml_edits.push(path);
-    }
+        Ok(())
+}
 
     /// Construct an empty report. Named `empty` (not `new`) to
     /// dodge clippy's `new_without_default` lint without resorting
@@ -144,13 +146,14 @@ impl Report {
 
     /// Record that `path` was touched by the rewriter.
     #[inline]
-    pub fn touched(&mut self, path: PathBuf) {
+    pub fn touched(&mut self, path: PathBuf) -> anyhow::Result<()> {
         self.files_touched.push(path);
-    }
+        Ok(())
+}
 
     /// Push a location-bearing warning without a source snippet.
     #[inline]
-    pub fn warn<S: Into<String>>(&mut self, file: PathBuf, line: Option<usize>, message: S) {
+    pub fn warn<S: Into<String>>(&mut self, file: PathBuf, line: Option<usize>, message: S) -> anyhow::Result<()> {
         self.warnings.push(Warning {
             file,
             line,
@@ -158,7 +161,8 @@ impl Report {
             source: None,
             span: None,
         });
-    }
+        Ok(())
+}
 
     /// Push a warning with a source snippet so the summary can
     /// underline the offending span.
@@ -171,7 +175,7 @@ impl Report {
         byte_len: usize,
         source: Arc<str>,
         message: S,
-    ) {
+    ) -> anyhow::Result<()> {
         self.warnings.push(Warning {
             file,
             line: Some(line),
@@ -179,7 +183,8 @@ impl Report {
             source: Some(source),
             span: Some((byte_offset, byte_len)),
         });
-    }
+        Ok(())
+}
 }
 
 /// Print `msg` as a one-line progress notice on `out`.

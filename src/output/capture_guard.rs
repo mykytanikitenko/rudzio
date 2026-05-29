@@ -75,14 +75,14 @@ impl CaptureGuard {
     /// FD swapping isn't available. `SavedFds::new(-1, -1)` means the
     /// restore path (idempotent) no-ops.
     #[inline]
-    pub(crate) fn plain() -> Self {
-        Self {
+    pub(crate) fn plain() -> anyhow::Result<Self> {
+        Ok(Self {
             saved: Arc::new(pipe::SavedFds::new(-1, -1)),
             reader_stdout: None,
             reader_stderr: None,
             drawer: None,
             shutdown_tx: None,
-        }
+        })
     }
 }
 

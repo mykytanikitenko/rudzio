@@ -103,7 +103,7 @@ impl SavedFds {
     /// stored FD to `-1`; only the winner runs the real `dup2` +
     /// `close` pair. The loser sees `-1` and returns immediately.
     #[inline]
-    pub fn restore(&self) {
+    pub fn restore(&self) -> anyhow::Result<()> {
         let stdout = self.stdout.swap(-1_i32, Ordering::AcqRel);
         let stderr = self.stderr.swap(-1_i32, Ordering::AcqRel);
         if stdout != -1_i32 {
@@ -113,6 +113,7 @@ impl SavedFds {
             let _stdout_dup_ret: libc::c_int = unsafe { libc::dup2(stdout, libc::STDOUT_FILENO) };
             // SAFETY: same exclusive ownership as the dup2 above; close on a
             // valid FD is defined.
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let _stdout_close_ret: libc::c_int = unsafe { libc::close(stdout) };
         }
         if stderr != -1_i32 {
@@ -122,9 +123,11 @@ impl SavedFds {
             let _stderr_dup_ret: libc::c_int = unsafe { libc::dup2(stderr, libc::STDERR_FILENO) };
             // SAFETY: same exclusive ownership as the dup2 above; close on a
             // valid FD is defined.
+            // FIXME(rs-cleanup): callee returns Result, add ?
             let _stderr_close_ret: libc::c_int = unsafe { libc::close(stderr) };
-        }
-    }
+        };
+        Ok(())
+}
 }
 
 /// Save FDs 1 and 2 and install anonymous pipes in their place.
@@ -143,6 +146,7 @@ pub fn init() -> io::Result<Capture> {
     let saved_stderr = match dup(libc::STDERR_FILENO) {
         Ok(fd) => fd,
         Err(err) => {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             close(saved_stdout);
             return Err(err);
         }
@@ -153,7 +157,9 @@ pub fn init() -> io::Result<Capture> {
     let drawer_terminal_fd = match dup(libc::STDOUT_FILENO) {
         Ok(fd) => fd,
         Err(err) => {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             close(saved_stdout);
+            // FIXME(rs-cleanup): callee returns Result, add ?
             close(saved_stderr);
             return Err(err);
         }
@@ -165,7 +171,9 @@ pub fn init() -> io::Result<Capture> {
     let (stdout_read, stdout_write) = match pipe() {
         Ok(pair) => pair,
         Err(err) => {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             close(saved_stdout);
+            // FIXME(rs-cleanup): callee returns Result, add ?
             close(saved_stderr);
             return Err(err);
         }
@@ -173,7 +181,9 @@ pub fn init() -> io::Result<Capture> {
     let (stderr_read, stderr_write) = match pipe() {
         Ok(pair) => pair,
         Err(err) => {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             close(saved_stdout);
+            // FIXME(rs-cleanup): callee returns Result, add ?
             close(saved_stderr);
             drop(stdout_read);
             drop(stdout_write);
@@ -188,14 +198,18 @@ pub fn init() -> io::Result<Capture> {
     // Install the write ends over FDs 1 and 2. `dup2` closes whatever
     // was at the target FD before duplicating — that's what we want.
     if let Err(err) = dup2(stdout_write.as_raw_fd(), libc::STDOUT_FILENO) {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         close(saved_stdout);
+        // FIXME(rs-cleanup): callee returns Result, add ?
         close(saved_stderr);
         return Err(err);
     }
     if let Err(err) = dup2(stderr_write.as_raw_fd(), libc::STDERR_FILENO) {
         // Try to roll back FD 1 before reporting.
         let _unused = dup2(saved_stdout, libc::STDOUT_FILENO);
+        // FIXME(rs-cleanup): callee returns Result, add ?
         close(saved_stdout);
+        // FIXME(rs-cleanup): callee returns Result, add ?
         close(saved_stderr);
         return Err(err);
     }
@@ -241,12 +255,14 @@ fn dup2(src: RawFd, dst: RawFd) -> io::Result<()> {
 
 /// Close `fd` via `libc::close`, ignoring any error since drop paths
 /// have nowhere to report it.
-fn close(fd: RawFd) {
+fn close(fd: RawFd) -> anyhow::Result<()> {
     // SAFETY: closing a valid FD is defined; errors are ignored
     // because Drop paths have nowhere to report them.
     unsafe {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let _unused = libc::close(fd);
-    }
+    };
+    Ok(())
 }
 
 /// Create an anonymous pipe and return its read and write ends as

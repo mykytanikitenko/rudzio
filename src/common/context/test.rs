@@ -59,18 +59,18 @@ where
     type TeardownError = Infallible;
 
     #[inline]
-    fn cancel_token(&self) -> &CancellationToken {
-        &self.cancel
+    fn cancel_token(&self) -> anyhow::Result<&CancellationToken> {
+        Ok(&self.cancel)
     }
 
     #[inline]
-    fn config(&self) -> &Config {
-        self.config
+    fn config(&self) -> anyhow::Result<&Config> {
+        Ok(self.config)
     }
 
     #[inline]
-    fn rt(&self) -> &'test_context R {
-        self.rt
+    fn rt(&self) -> anyhow::Result<&'test_context R> {
+        Ok(self.rt)
     }
 
     #[inline]
@@ -80,7 +80,7 @@ where
     }
 
     #[inline]
-    fn tracker(&self) -> &TaskTracker {
-        &self.tracker
+    fn tracker(&self) -> anyhow::Result<&TaskTracker> {
+        Ok(&self.tracker)
     }
 }

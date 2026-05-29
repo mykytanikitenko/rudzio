@@ -228,6 +228,7 @@ impl Summary {
             benched: 0,
             cancelled: 0,
             failed: 0,
+            // FIXME(rs-cleanup): callee returns Result, add ?
             failures: Vec::new(),
             hung: 0,
             ignored: 0,
@@ -258,39 +259,45 @@ struct FailureRecord {
 impl Drawer {
     /// Erase the previously painted live region using a cursor-up + clear
     /// escape sequence so the next paint overwrites it cleanly.
-    fn clear_live_region(&mut self) {
+    fn clear_live_region(&mut self) -> Result<()> {
         if self.last_live_rows == 0 {
-            return;
+            return Ok(());
         }
         let esc = format!("\x1b[{n}A\x1b[J", n = self.last_live_rows);
         drop(self.terminal.write_all(esc.as_bytes()));
         self.last_live_rows = 0;
-    }
+        Ok(())
+}
 
     /// Drain any pending lifecycle and pipe events at shutdown so the
     /// final summary reflects every test's outcome.
-    fn drain_remaining(&mut self) {
+    fn drain_remaining(&mut self) -> Result<()> {
         while let Ok(ev) = self.lifecycle_rx.try_recv() {
             self.handle_lifecycle(ev);
         }
         while let Ok(chunk) = self.pipe_rx.try_recv() {
             self.handle_pipe(&chunk);
-        }
-    }
+        };
+        Ok(())
+}
 
     /// Print the header, failure message, and captured output for a
     /// completed test.
-    fn emit_completion_block(&mut self, state: &TestState, outcome: &TestOutcome) {
+    fn emit_completion_block(&mut self, state: &TestState, outcome: &TestOutcome) -> Result<()> {
         if matches!(self.output_mode, OutputMode::Live) {
             self.clear_live_region();
         }
         let display = qualified_test_name(state.module_path, state.test_name);
         let label = status_label_from_outcome(outcome);
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let tag_rendered = render_status_tag(label, self.color);
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let trailing = trailing_info(outcome, state.runtime_name);
         let lhs_naked = format!("{:width$} {display}", "", width = STATUS_TAG_WIDTH);
         let lhs_rendered = format!("{tag_rendered} {display}");
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let term_cols = terminal_width();
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let header = render_line(&lhs_naked, &lhs_rendered, &trailing, term_cols);
         drop(self.terminal.write_all(header.as_bytes()));
         drop(self.terminal.write_all(b"\n"));
@@ -300,6 +307,7 @@ impl Drawer {
         // scrolling to the end-of-run failures section. One line per
         // newline in the message; each indented to line up under the
         // test display, painted in the tag's color.
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let msg = outcome_message(outcome);
         if !msg.is_empty() {
             for line in msg.lines() {
@@ -325,6 +333,7 @@ impl Drawer {
         // In plain mode we already printed bytes live; in live mode
         // this is the first time captured output hits the terminal.
         if matches!(self.output_mode, OutputMode::Live) {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             emit_captured_block(&mut self.terminal, state, self.color);
         }
 
@@ -341,10 +350,11 @@ impl Drawer {
         }
         drop(self.terminal.write_all(b"\n"));
         self.last_live_rows = 0;
-    }
+        Ok(())
+}
 
     /// Emit the plain-mode `... started` line for a freshly started test.
-    fn emit_plain_started(&mut self, test_id: TestId) {
+    fn emit_plain_started(&mut self, test_id: TestId) -> Result<()> {
         if let Some(state) = self.tests.get(&test_id) {
             let line = format!(
                 "test {} ... started [{}]\n",
@@ -352,12 +362,13 @@ impl Drawer {
                 state.runtime_name,
             );
             drop(self.terminal.write_all(line.as_bytes()));
-        }
-    }
+        };
+        Ok(())
+}
 
     /// Dispatch a lifecycle event to the appropriate state-update path
     /// (start, finish, ignore, suite hooks).
-    fn handle_lifecycle(&mut self, ev: LifecycleEvent) {
+    fn handle_lifecycle(&mut self, ev: LifecycleEvent) -> Result<()> {
         match ev {
             LifecycleEvent::TestStarted {
                 test_id,
@@ -372,6 +383,7 @@ impl Drawer {
             LifecycleEvent::BenchProgress { test_id, snapshot } => {
                 if let Some(state) = self.tests.get_mut(&test_id) {
                     state.kind = TestStateKind::Bench {
+                        // FIXME(rs-cleanup): callee returns Result, add ?
                         snapshot: Box::new(snapshot),
                     };
                 }
@@ -442,12 +454,13 @@ impl Drawer {
             LifecycleEvent::TestCompleted { test_id, outcome } => {
                 self.handle_test_completed(test_id, &outcome);
             }
-        }
-    }
+        };
+        Ok(())
+}
 
     /// Attribute a captured pipe chunk to the appropriate in-flight test
     /// and either buffer or pass it through to the terminal.
-    fn handle_pipe(&mut self, chunk: &PipeChunk) {
+    fn handle_pipe(&mut self, chunk: &PipeChunk) -> Result<()> {
         // Attribution: the reader thread has no producer-thread info.
         // When exactly one test is running, attribute to it. When
         // multiple are running concurrently, attribute to the
@@ -468,10 +481,13 @@ impl Drawer {
                 StdStream::Stdout => state.stdout_buffer.extend_from_slice(&chunk.bytes),
                 StdStream::Stderr => state.stderr_buffer.extend_from_slice(&chunk.bytes),
             }
+            // FIXME(rs-cleanup): callee returns Result, add ?
             update_last_line(&mut state.last_output_line, &chunk.bytes);
+            // FIXME(rs-cleanup): callee returns Result, add ?
             append_complete_lines(&mut state.recent_output, &chunk.bytes);
             if matches!(self.output_mode, OutputMode::Plain) {
                 let display = qualified_test_name(state.module_path, state.test_name);
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 emit_plain_lines(
                     &mut self.terminal,
                     &chunk.bytes,
@@ -480,7 +496,7 @@ impl Drawer {
                     self.color,
                 );
             }
-            return;
+            return Ok(());
         }
         // Orphan bytes (no mapped test): pass through unprefixed.
         // Live mode: clear live region first; next redraw re-paints.
@@ -488,7 +504,8 @@ impl Drawer {
             self.clear_live_region();
         }
         drop(self.terminal.write_all(&chunk.bytes));
-    }
+        Ok(())
+}
 
     /// Render the result line for a suite setup or teardown that just
     /// finished, recording any failure for the final summary.
@@ -500,7 +517,7 @@ impl Drawer {
         thread: ThreadId,
         elapsed: Duration,
         failure: Option<LifecycleFailure>,
-    ) {
+    ) -> Result<()> {
         if let Some(slot) = self.slots.get_mut(&thread) {
             slot.lifecycle = None;
         }
@@ -532,12 +549,15 @@ impl Drawer {
             ) => StatusLabel::Panic,
             (LifecyclePhase::Teardown, None) => StatusLabel::Ok,
         };
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let tag_rendered = render_status_tag(label, self.color);
         let suite_disp = normalize_module_path(suite);
         let display = format!("{phase_word} {suite_disp}");
         let trailing = format!("<{runtime_name}, {elapsed:.2?}>");
         let lhs_naked = format!("{:width$} {display}", "", width = STATUS_TAG_WIDTH);
         let lhs_rendered = format!("{tag_rendered} {display}");
+        // FIXME(rs-cleanup): callee returns Result, add ?
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let header = render_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
         drop(self.terminal.write_all(header.as_bytes()));
         drop(self.terminal.write_all(b"\n"));
@@ -559,12 +579,15 @@ impl Drawer {
                     LifecyclePhase::Teardown => "SUITE TEARDOWN FAILED",
                 },
                 message: format!("{label_text}: {message}"),
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 captured_stderr: String::new(),
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 captured_stdout: String::new(),
             });
         }
         self.last_live_rows = 0;
-    }
+        Ok(())
+}
 
     /// Mark the slot owning `thread` as running a suite setup or
     /// teardown so the live region renders the lifecycle row.
@@ -575,7 +598,7 @@ impl Drawer {
         suite: &'static str,
         thread: ThreadId,
         at: Instant,
-    ) {
+    ) -> Result<()> {
         if !self.slots.contains_key(&thread) {
             self.slot_order.push(thread);
         }
@@ -598,8 +621,9 @@ impl Drawer {
             let suite_disp = normalize_module_path(suite);
             let line = format!("{phase_word:<8} {suite_disp} ... started <{runtime_name}>\n");
             drop(self.terminal.write_all(line.as_bytes()));
-        }
-    }
+        };
+        Ok(())
+}
 
     /// Translate a [`TeardownResult`] from a suite teardown into a
     /// possibly-recorded lifecycle failure and forward it to the
@@ -611,7 +635,7 @@ impl Drawer {
         thread: ThreadId,
         elapsed: Duration,
         result: TeardownResult,
-    ) {
+    ) -> Result<()> {
         let failure = match result {
             TeardownResult::Ok => None,
             TeardownResult::Err(msg) => Some(LifecycleFailure::Error(msg)),
@@ -624,6 +648,7 @@ impl Drawer {
             )),
         };
         if failure.is_some() {
+            // TODO(rs-cleanup): masking_arith at line 627 — review and replace with Result-propagating equivalent
             self.summary.teardown_failures = self.summary.teardown_failures.saturating_add(1);
         }
         self.handle_suite_lifecycle_finish(
@@ -634,11 +659,12 @@ impl Drawer {
             elapsed,
             failure,
         );
-    }
+        Ok(())
+}
 
     /// Drain late pipe bytes, record the outcome, emit the completion
     /// block, and clear the thread/slot mapping for a finished test.
-    fn handle_test_completed(&mut self, test_id: TestId, outcome: &TestOutcome) {
+    fn handle_test_completed(&mut self, test_id: TestId, outcome: &TestOutcome) -> Result<()> {
         // Drain the pipe aggressively so any bytes the test wrote
         // just before the runtime thread flushed land in the correct
         // test's buffer.
@@ -651,6 +677,7 @@ impl Drawer {
                 self.summary.failures.push(FailureRecord {
                     display_name: qualified_test_name(state.module_path, state.test_name),
                     outcome_label: outcome_label(outcome),
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     message: outcome_message(outcome),
                     captured_stderr: String::from_utf8_lossy(&state.stderr_buffer).into_owned(),
                     captured_stdout: String::from_utf8_lossy(&state.stdout_buffer).into_owned(),
@@ -666,8 +693,9 @@ impl Drawer {
             {
                 slot.current = None;
             }
-        }
-    }
+        };
+        Ok(())
+}
 
     /// Render the `[IGNORE]` status line for a test skipped via
     /// `#[ignore]` and bump the ignored counter.
@@ -677,12 +705,14 @@ impl Drawer {
         test_name: &'static str,
         runtime_name: &'static str,
         reason: &'static str,
-    ) {
+    ) -> Result<()> {
+        // TODO(rs-cleanup): masking_arith at line 681 — review and replace with Result-propagating equivalent
         self.summary.ignored = self.summary.ignored.saturating_add(1);
         let display = qualified_test_name(module_path, test_name);
         if matches!(self.output_mode, OutputMode::Live) {
             self.clear_live_region();
         }
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let tag_rendered = render_status_tag(StatusLabel::Ignore, self.color);
         let lhs_naked = format!("{:width$} {display}", "", width = STATUS_TAG_WIDTH);
         let lhs_rendered = format!("{tag_rendered} {display}");
@@ -691,11 +721,14 @@ impl Drawer {
         } else {
             format!("<{runtime_name}, {reason}>")
         };
+        // FIXME(rs-cleanup): callee returns Result, add ?
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let line = render_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
         drop(self.terminal.write_all(line.as_bytes()));
         drop(self.terminal.write_all(b"\n"));
         self.last_live_rows = 0;
-    }
+        Ok(())
+}
 
     /// Register a freshly-started test in the lifecycle maps and emit
     /// the plain-mode `... started` line if applicable.
@@ -707,7 +740,7 @@ impl Drawer {
         runtime_name: &'static str,
         thread: ThreadId,
         at: Instant,
-    ) {
+    ) -> Result<()> {
         let state = TestState {
             module_path,
             test_name,
@@ -715,9 +748,13 @@ impl Drawer {
             thread,
             started_at: at,
             kind: TestStateKind::Running,
+            // FIXME(rs-cleanup): callee returns Result, add ?
             stdout_buffer: Vec::new(),
+            // FIXME(rs-cleanup): callee returns Result, add ?
             stderr_buffer: Vec::new(),
+            // FIXME(rs-cleanup): callee returns Result, add ?
             last_output_line: String::new(),
+            // FIXME(rs-cleanup): callee returns Result, add ?
             recent_output: Vec::new(),
         };
         drop(self.tests.insert(test_id, state));
@@ -735,8 +772,9 @@ impl Drawer {
         entry.current = Some(test_id);
         if matches!(self.output_mode, OutputMode::Plain) {
             self.emit_plain_started(test_id);
-        }
-    }
+        };
+        Ok(())
+}
 
     /// Render the `teardown <name>` failure block for a per-test
     /// teardown that didn't return `Ok`, and record the failure for
@@ -747,13 +785,13 @@ impl Drawer {
         test_name: &'static str,
         runtime_name: &'static str,
         result: TeardownResult,
-    ) {
+    ) -> Result<()> {
         if matches!(self.output_mode, OutputMode::Live) {
             self.clear_live_region();
         }
         let display = qualified_test_name(module_path, test_name);
         let (label, label_text, message) = match result {
-            TeardownResult::Ok => return,
+            TeardownResult::Ok => return Ok(()),
             TeardownResult::Err(msg) => (StatusLabel::Fail, "error", msg),
             TeardownResult::Panicked(msg) => (StatusLabel::Panic, "panic", msg),
             TeardownResult::TimedOut => (
@@ -767,27 +805,34 @@ impl Drawer {
                 "teardown hung; abort signal sent".to_owned(),
             ),
         };
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let tag_rendered = render_status_tag(label, self.color);
         let lhs_display = format!("teardown {display}");
         let trailing = format!("<{runtime_name}>");
         let lhs_naked = format!("{:width$} {lhs_display}", "", width = STATUS_TAG_WIDTH);
         let lhs_rendered = format!("{tag_rendered} {lhs_display}");
+        // FIXME(rs-cleanup): callee returns Result, add ?
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let header = render_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
         drop(self.terminal.write_all(header.as_bytes()));
         drop(self.terminal.write_all(b"\n"));
         let body = format!("  {label_text}: {message}\n");
         let painted = self.color.red(&body);
         drop(self.terminal.write_all(painted.as_bytes()));
+        // TODO(rs-cleanup): masking_arith at line 781 — review and replace with Result-propagating equivalent
         self.summary.teardown_failures = self.summary.teardown_failures.saturating_add(1);
         self.summary.failures.push(FailureRecord {
             display_name: format!("teardown {display}"),
             outcome_label: "TEST TEARDOWN FAILED",
             message: format!("{label_text}: {message}"),
+            // FIXME(rs-cleanup): callee returns Result, add ?
             captured_stderr: String::new(),
+            // FIXME(rs-cleanup): callee returns Result, add ?
             captured_stdout: String::new(),
         });
         self.last_live_rows = 0;
-    }
+        Ok(())
+}
 
     /// Build a drawer. Slots are allocated lazily as `TestStarted`
     /// events come in — one per distinct `ThreadId`, in first-seen
@@ -803,8 +848,8 @@ impl Drawer {
         output_mode: OutputMode,
         format: Format,
         color: ColorPolicy,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        Ok(Self {
             lifecycle_rx,
             pipe_rx,
             shutdown_rx,
@@ -812,19 +857,23 @@ impl Drawer {
             output_mode,
             format,
             color,
+            // FIXME(rs-cleanup): callee returns Result, add ?
             slot_order: Vec::new(),
+            // FIXME(rs-cleanup): callee returns Result, add ?
             slots: HashMap::new(),
+            // FIXME(rs-cleanup): callee returns Result, add ?
             tests: HashMap::new(),
+            // FIXME(rs-cleanup): callee returns Result, add ?
             thread_to_test: HashMap::new(),
             last_live_rows: 0,
             summary: Summary::empty(),
             size_override: None,
-        }
+        })
     }
 
     /// Print the failures section followed by the one-line totals at
     /// the very end of the run.
-    fn print_final_summary(&mut self) {
+    fn print_final_summary(&mut self) -> Result<()> {
         let total_elapsed = self
             .summary
             .started_at
@@ -861,10 +910,15 @@ impl Drawer {
         let failed_total = self
             .summary
             .failed
+            // TODO(rs-cleanup): masking_arith at line 864 — review and replace with Result-propagating equivalent
             .saturating_add(self.summary.panicked)
+            // TODO(rs-cleanup): masking_arith at line 865 — review and replace with Result-propagating equivalent
             .saturating_add(self.summary.timed_out)
+            // TODO(rs-cleanup): masking_arith at line 866 — review and replace with Result-propagating equivalent
             .saturating_add(self.summary.hung)
+            // TODO(rs-cleanup): masking_arith at line 867 — review and replace with Result-propagating equivalent
             .saturating_add(self.summary.cancelled)
+            // TODO(rs-cleanup): masking_arith at line 868 — review and replace with Result-propagating equivalent
             .saturating_add(self.summary.teardown_failures);
         let overall = if failed_total == 0 {
             self.color.green("ok")
@@ -883,13 +937,14 @@ impl Drawer {
         );
         drop(self.terminal.write_all(summary_line.as_bytes()));
         drop(self.terminal.flush());
-    }
+        Ok(())
+}
 
     /// Erase and repaint the live region with the current per-slot
     /// activity; called on every redraw tick in live mode.
-    fn redraw_live_region(&mut self) {
+    fn redraw_live_region(&mut self) -> Result<()> {
         if !matches!(self.output_mode, OutputMode::Live) || matches!(self.format, Format::Terse) {
-            return;
+            return Ok(());
         }
         // Build the live region from slots that have *actual* activity
         // — an in-flight test or a suite setup/teardown. Idle slots
@@ -899,6 +954,7 @@ impl Drawer {
         // — which reads as "we're announcing 'running' while nothing
         // is running" and bloats the scrollback once the user pages
         // back through it.
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let mut buf = String::new();
         let mut rows = 0_usize;
         for thread in &self.slot_order {
@@ -908,20 +964,28 @@ impl Drawer {
             let (cols, rows_cap) = self.render_size();
             let (status_line, output_lines) = if let Some(lifecycle) = slot.lifecycle {
                 (
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     lifecycle_line(slot.runtime_name, &lifecycle, self.color, cols),
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     Vec::new(),
                 )
             } else if let Some(state) = slot.current.and_then(|id| self.tests.get(&id)) {
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 let mut output_lines = running_output_lines(state, self.color, cols, rows_cap);
                 if let TestStateKind::Bench { snapshot } = &state.kind {
+                    // TODO(rs-cleanup): masking_arith at line 917 — review and replace with Result-propagating equivalent
                     let used = output_lines.len().saturating_add(1);
                     let remaining = rows_cap
+                        // TODO(rs-cleanup): masking_arith at line 919 — review and replace with Result-propagating equivalent
                         .saturating_sub(LIVE_REGION_RESERVED_ROWS)
+                        // TODO(rs-cleanup): masking_arith at line 920 — review and replace with Result-propagating equivalent
                         .saturating_sub(used);
                     output_lines
+                        // FIXME(rs-cleanup): callee returns Result, add ?
                         .extend(bench_histogram_lines(snapshot, self.color, cols, remaining));
                 }
                 (
+                    // FIXME(rs-cleanup): callee returns Result, add ?
                     running_line(slot.runtime_name, state, self.color, cols),
                     output_lines,
                 )
@@ -930,12 +994,14 @@ impl Drawer {
             };
             buf.push_str(&status_line);
             buf.push('\n');
+            // TODO(rs-cleanup): masking_arith at line 933 — review and replace with Result-propagating equivalent
             rows = rows.saturating_add(1);
             // Stream the test's stdout/stderr live below the status
             // row, untruncated, in source order.
             for line in &output_lines {
                 buf.push_str(line);
                 buf.push('\n');
+                // TODO(rs-cleanup): masking_arith at line 939 — review and replace with Result-propagating equivalent
                 rows = rows.saturating_add(1);
             }
         }
@@ -944,25 +1010,29 @@ impl Drawer {
         // when the active-slot count drops to zero.
         self.clear_live_region();
         if rows == 0 {
-            return;
+            return Ok(());
         }
         drop(self.terminal.write_all(buf.as_bytes()));
         drop(self.terminal.flush());
         self.last_live_rows = rows;
-    }
+        Ok(())
+}
 
     /// Return the `(cols, rows)` size to render against, honouring any
     /// test-only override before falling back to the ioctl probe.
-    fn render_size(&self) -> (usize, usize) {
-        self.size_override
-            .unwrap_or_else(|| (terminal_width(), terminal_height()))
+    fn render_size(&self) -> Result<(usize, usize)> {
+        Ok(self.size_override
+            // TODO(rs-cleanup): silencing at line 958 — review and replace with Result-propagating equivalent
+            // FIXME(rs-cleanup): callee returns Result, add ?
+            // FIXME(rs-cleanup): callee returns Result, add ?
+            .unwrap_or_else(|| (terminal_width(), terminal_height())))
     }
 
     /// Main loop: `select!` over all input channels plus a redraw
     /// timer until shutdown. On exit, drain pending events, clear
     /// the live region, and print the final summary.
     #[inline]
-    pub fn run(mut self) {
+    pub fn run(mut self) -> Result<()> {
         self.summary.started_at = Some(Instant::now());
         let timer = crossbeam_channel::tick(REDRAW_INTERVAL);
         loop {
@@ -982,7 +1052,8 @@ impl Drawer {
         self.drain_remaining();
         self.clear_live_region();
         self.print_final_summary();
-    }
+        Ok(())
+}
 
     /// Force the drawer to render against a fixed terminal size,
     /// bypassing the ioctl probe. Hidden from the public API surface
@@ -1059,7 +1130,7 @@ const fn status_label_from_outcome(outcome: &TestOutcome) -> StatusLabel {
 /// Produce the coloured, padded status tag — pad to
 /// [`STATUS_TAG_WIDTH`] characters visible width so subsequent
 /// columns line up across every status kind.
-fn render_status_tag(label: StatusLabel, color: ColorPolicy) -> String {
+fn render_status_tag(label: StatusLabel, color: ColorPolicy) -> Result<String> {
     let word = match label {
         StatusLabel::Ok | StatusLabel::SetupOk => "OK",
         StatusLabel::Fail => "FAIL",
@@ -1084,18 +1155,19 @@ fn render_status_tag(label: StatusLabel, color: ColorPolicy) -> String {
         StatusLabel::Timeout | StatusLabel::Cancel | StatusLabel::Run => color.yellow(&naked),
         StatusLabel::Ignore => color.dim(&naked),
     };
+    // TODO(rs-cleanup): masking_arith at line 1087 — review and replace with Result-propagating equivalent
     let pad = STATUS_TAG_WIDTH.saturating_sub(visible);
     let mut out = painted;
     for _ in 0..pad {
         out.push(' ');
     }
-    out
+    Ok(out)
 }
 
 /// Build the trailing `<runtime, elapsed[, bench info]>` block for a
 /// finished test.
-fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
-    match outcome {
+fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> Result<String> {
+    Ok(match outcome {
         TestOutcome::Passed { elapsed }
         | TestOutcome::Failed { elapsed, .. }
         | TestOutcome::Panicked { elapsed }
@@ -1108,30 +1180,35 @@ fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
             let median = report
                 .median()
                 .map(|median| format!(", p50 {median:.2?}"))
+                // TODO(rs-cleanup): silencing at line 1111 — review and replace with Result-propagating equivalent
                 .unwrap_or_default();
             format!(
                 "<{runtime_name}, {elapsed:.2?}, {}{median}>",
                 report.strategy,
             )
         }
-    }
+    })
 }
 
 /// Right-align `trailing` to `term_cols` with at least
 /// [`MIN_TRAILING_PAD`] spaces between the left side and it. When
 /// `lhs + trailing` already overflow the line, falls back to the
 /// minimum pad (line overflows cleanly to the right).
-fn render_line(lhs_naked: &str, lhs_rendered: &str, trailing: &str, term_cols: usize) -> String {
+fn render_line(lhs_naked: &str, lhs_rendered: &str, trailing: &str, term_cols: usize) -> Result<String> {
     let lhs_visible = lhs_naked.chars().count();
     let trailing_visible = trailing.chars().count();
     let pad = term_cols
+        // TODO(rs-cleanup): masking_arith at line 1128 — review and replace with Result-propagating equivalent
         .saturating_sub(lhs_visible)
+        // TODO(rs-cleanup): masking_arith at line 1129 — review and replace with Result-propagating equivalent
         .saturating_sub(trailing_visible)
         .max(MIN_TRAILING_PAD);
     let mut out = String::with_capacity(
         lhs_rendered
             .len()
+            // TODO(rs-cleanup): masking_arith at line 1134 — review and replace with Result-propagating equivalent
             .saturating_add(pad)
+            // TODO(rs-cleanup): masking_arith at line 1135 — review and replace with Result-propagating equivalent
             .saturating_add(trailing.len()),
     );
     out.push_str(lhs_rendered);
@@ -1139,16 +1216,18 @@ fn render_line(lhs_naked: &str, lhs_rendered: &str, trailing: &str, term_cols: u
         out.push(' ');
     }
     out.push_str(trailing);
-    out
+    Ok(out)
 }
 
 /// Best-effort terminal width for right-aligning. Uses `TIOCGWINSZ`
 /// on Unix against the saved-original stdout (which the drawer's
 /// terminal File wraps), falling back to 100 columns.
 #[cfg(unix)]
-fn terminal_width() -> usize {
+fn terminal_width() -> Result<usize> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let (cols, _rows) = terminal_size_unix();
-    cols.unwrap_or(100)
+    // TODO(rs-cleanup): silencing at line 1151 — review and replace with Result-propagating equivalent
+    Ok(cols.unwrap_or(100))
 }
 
 /// Best-effort terminal height. Used to bound the live region so it
@@ -1157,15 +1236,17 @@ fn terminal_width() -> usize {
 /// erase it. Falls back to 24 rows when the ioctl can't reach a
 /// terminal FD.
 #[cfg(unix)]
-fn terminal_height() -> usize {
+fn terminal_height() -> Result<usize> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let (_cols, rows) = terminal_size_unix();
-    rows.unwrap_or(24)
+    // TODO(rs-cleanup): silencing at line 1162 — review and replace with Result-propagating equivalent
+    Ok(rows.unwrap_or(24))
 }
 
 /// Read the terminal `(cols, rows)` via `TIOCGWINSZ`, walking
 /// likely-terminal FDs and returning `(None, None)` when none answer.
 #[cfg(unix)]
-fn terminal_size_unix() -> (Option<usize>, Option<usize>) {
+fn terminal_size_unix() -> Result<(Option<usize>, Option<usize>)> {
     #[expect(
         unsafe_code,
         reason = "zero-initialised winsize for FFI; see SAFETY comment below"
@@ -1188,20 +1269,20 @@ fn terminal_size_unix() -> (Option<usize>, Option<usize>) {
         if ioctl_ret == 0_i32 && ws.ws_col > 0 {
             let cols = Some(usize::from(ws.ws_col));
             let rows = (ws.ws_row > 0).then(|| usize::from(ws.ws_row));
-            return (cols, rows);
+            return Ok((cols, rows));
         }
     }
-    (None, None)
+    Ok((None, None))
 }
 
 #[cfg(not(unix))]
-fn terminal_width() -> usize {
-    100
+fn terminal_width() -> Result<usize> {
+    Ok(100)
 }
 
 #[cfg(not(unix))]
-fn terminal_height() -> usize {
-    24
+fn terminal_height() -> Result<usize> {
+    Ok(24)
 }
 
 /// Short uppercase label for the `---- name LABEL ----` header in the
@@ -1221,8 +1302,8 @@ const fn outcome_label(outcome: &TestOutcome) -> &'static str {
 
 /// Human-readable failure message extracted from `outcome` for
 /// printing under the result header.
-fn outcome_message(outcome: &TestOutcome) -> String {
-    match outcome {
+fn outcome_message(outcome: &TestOutcome) -> Result<String> {
+    Ok(match outcome {
         TestOutcome::Failed { message, .. } => message.clone(),
         TestOutcome::SetupFailed { message, .. } => {
             format!("test setup failed: {message}")
@@ -1231,14 +1312,16 @@ fn outcome_message(outcome: &TestOutcome) -> String {
         TestOutcome::Hung { .. } => "hung; abort signal sent".to_owned(),
         TestOutcome::Cancelled => "test was cancelled before completion".to_owned(),
         TestOutcome::Panicked { .. } | TestOutcome::Passed { .. } | TestOutcome::Benched { .. } => {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             String::new()
         }
-    }
+    })
 }
 
 /// Print a test's buffered stdout/stderr underneath its completion
 /// header in live mode.
-fn emit_captured_block(terminal: &mut File, state: &TestState, color: ColorPolicy) {
+fn emit_captured_block(terminal: &mut File, state: &TestState, color: ColorPolicy) -> Result<()> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     for entry in split_lines(&state.stdout_buffer) {
         let formatted = match entry {
             Ok(line) => format!("  {line}\n"),
@@ -1246,13 +1329,15 @@ fn emit_captured_block(terminal: &mut File, state: &TestState, color: ColorPolic
         };
         drop(terminal.write_all(formatted.as_bytes()));
     }
+    // FIXME(rs-cleanup): callee returns Result, add ?
     for entry in split_lines(&state.stderr_buffer) {
         let formatted = match entry {
             Ok(line) => format!("  {line}\n"),
             Err(err) => format!("  <{err:#}>\n"),
         };
         drop(terminal.write_all(color.red(&formatted).as_bytes()));
-    }
+    };
+    Ok(())
 }
 
 /// Print captured bytes line-by-line in plain mode, colouring stderr
@@ -1263,7 +1348,8 @@ fn emit_plain_lines(
     _display: &str,
     stream: StdStream,
     color: ColorPolicy,
-) {
+) -> Result<()> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
     for entry in split_lines(bytes) {
         let formatted = match entry {
             Ok(line) => format!("  {line}\n"),
@@ -1274,7 +1360,8 @@ fn emit_plain_lines(
             StdStream::Stderr => color.red(&formatted),
         };
         drop(terminal.write_all(styled.as_bytes()));
-    }
+    };
+    Ok(())
 }
 
 /// Iterate over non-empty lines of UTF-8 in `bytes`.
@@ -1287,63 +1374,70 @@ fn emit_plain_lines(
 /// previous contract — `unwrap_or("")` swallowing non-UTF-8 — has
 /// been replaced because it concealed real test output from the
 /// operator without any visible signal.
-fn split_lines(bytes: &[u8]) -> impl Iterator<Item = Result<&str>> {
+fn split_lines(bytes: &[u8]) -> Result<impl Iterator<Item = Result<&str>>> {
     let (text, parse_err) = match str::from_utf8(bytes) {
         Ok(text) => (text, None),
         Err(err) => ("", Some(err)),
     };
     let byte_len = bytes.len();
-    parse_err
+    // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
+    Ok(parse_err
         .map(move |err| {
             Err(err).with_context(|| {
                 format!("split_lines: bytes are not valid UTF-8 ({byte_len} bytes suppressed)")
             })
         })
         .into_iter()
-        .chain(text.split('\n').filter(|line| !line.is_empty()).map(Ok))
+        .chain(text.split('\n').filter(|line| !line.is_empty()).map(Ok)))
 }
 
 /// Replace `dst` with the last complete (non-empty) line in `bytes`,
 /// truncated to [`HINT_MAX_WIDTH`] characters.
-fn update_last_line(dst: &mut String, bytes: &[u8]) {
+fn update_last_line(dst: &mut String, bytes: &[u8]) -> Result<()> {
     let Ok(text) = str::from_utf8(bytes) else {
-        return;
+        return Ok(());
     };
     for line in text.split('\n') {
         if !line.is_empty() {
             dst.clear();
             dst.extend(line.chars().take(HINT_MAX_WIDTH));
         }
-    }
+    };
+    Ok(())
 }
 
 /// Append every complete, non-empty line in `bytes` to `dst`, oldest
 /// first. Used to maintain `TestState::recent_output` for the live
 /// streaming of test stdio under the running status row.
-fn append_complete_lines(dst: &mut Vec<String>, bytes: &[u8]) {
+fn append_complete_lines(dst: &mut Vec<String>, bytes: &[u8]) -> Result<()> {
     let Ok(text) = str::from_utf8(bytes) else {
-        return;
+        return Ok(());
     };
     for line in text.split('\n') {
         if !line.is_empty() {
             dst.push(line.to_owned());
         }
-    }
+    };
+    Ok(())
 }
 
 /// Render a horizontal progress bar of `width` characters showing
 /// `done / total` filled. Solid block `█` for filled cells, light shade
 /// `░` for empty. Used by [`bench_progress_trailing`] for the inline
 /// trailing-block bar.
-fn bar_render(done: usize, total: usize, width: usize) -> String {
+fn bar_render(done: usize, total: usize, width: usize) -> Result<String> {
     if width == 0 {
-        return String::new();
+        // FIXME(rs-cleanup): callee returns Result, add ?
+        return Ok(String::new());
     }
     let filled = done
+        // TODO(rs-cleanup): masking_arith at line 1343 — review and replace with Result-propagating equivalent
         .saturating_mul(width)
         .checked_div(total)
+        // TODO(rs-cleanup): silencing at line 1345 — review and replace with Result-propagating equivalent
         .unwrap_or(0)
         .min(width);
+    // TODO(rs-cleanup): masking_arith at line 1347 — review and replace with Result-propagating equivalent
     let mut out = String::with_capacity(width.saturating_add(2));
     out.push('[');
     for _ in 0..filled {
@@ -1353,7 +1447,7 @@ fn bar_render(done: usize, total: usize, width: usize) -> String {
         out.push('\u{2591}');
     }
     out.push(']');
-    out
+    Ok(out)
 }
 
 /// Build the trailing `<…>` block that follows a `[BENCH]` running
@@ -1374,47 +1468,52 @@ fn bar_render(done: usize, total: usize, width: usize) -> String {
 #[doc(hidden)]
 #[must_use]
 #[inline]
-pub fn bench_progress_trailing(snap: &ProgressSnapshot, cols: usize, _elapsed: Duration) -> String {
+pub fn bench_progress_trailing(snap: &ProgressSnapshot, cols: usize, _elapsed: Duration) -> Result<String> {
     let pct = snap
         .done
+        // TODO(rs-cleanup): masking_arith at line 1380 — review and replace with Result-propagating equivalent
         .saturating_mul(100)
         .checked_div(snap.total)
+        // TODO(rs-cleanup): silencing at line 1382 — review and replace with Result-propagating equivalent
         .unwrap_or(0);
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let bar = bar_render(snap.done, snap.total, 10);
     if let Some(cov_permille) = snap.cov_permille.filter(|_| cols >= 100) {
         // cov_permille = cov × 1000; we render cov × 100 with one
         // decimal, i.e. cov_permille / 10 . cov_permille % 10.
+        // TODO(rs-cleanup): silencing at line 1387 — review and replace with Result-propagating equivalent
         let cov_int = cov_permille.checked_div(10_u16).unwrap_or(0);
+        // TODO(rs-cleanup): silencing at line 1388 — review and replace with Result-propagating equivalent
         let cov_frac = cov_permille.checked_rem(10_u16).unwrap_or(0);
-        return format!(
+        return Ok(format!(
             "<{bar} {pct}% {}/{}  p50={p50:.0?}  p95={p95:.0?}  cov={cov_int}.{cov_frac}%>",
             snap.done,
             snap.total,
             p50 = snap.p50,
             p95 = snap.p95,
-        );
+        ));
     }
     if cols >= 80 {
-        return format!(
+        return Ok(format!(
             "<{bar} {pct}% {}/{} p50={p50:.0?} p95={p95:.0?}>",
             snap.done,
             snap.total,
             p50 = snap.p50,
             p95 = snap.p95,
-        );
+        ));
     }
     if cols >= 60 {
-        return format!(
+        return Ok(format!(
             "<{pct}% {}/{} p50={p50:.0?}>",
             snap.done,
             snap.total,
             p50 = snap.p50,
-        );
+        ));
     }
     if cols >= 50 {
-        return format!("<{pct}% {}/{}>", snap.done, snap.total);
+        return Ok(format!("<{pct}% {}/{}>", snap.done, snap.total));
     }
-    format!("<{pct}%>")
+    Ok(format!("<{pct}%>"))
 }
 
 /// Build the live-region status row for a running test. Public for
@@ -1424,12 +1523,13 @@ pub fn bench_progress_trailing(snap: &ProgressSnapshot, cols: usize, _elapsed: D
 #[doc(hidden)]
 #[must_use]
 #[inline]
-pub fn running_line(runtime: &str, state: &TestState, color: ColorPolicy, cols: usize) -> String {
+pub fn running_line(runtime: &str, state: &TestState, color: ColorPolicy, cols: usize) -> Result<String> {
     let prefix = format!("{runtime:<RUNTIME_PREFIX_WIDTH$}");
     let label = match &state.kind {
         TestStateKind::Running => StatusLabel::Run,
         TestStateKind::Bench { .. } => StatusLabel::Bench,
     };
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let tag = render_status_tag(label, color);
     let elapsed = state.started_at.elapsed();
     let trailing = match &state.kind {
@@ -1437,6 +1537,7 @@ pub fn running_line(runtime: &str, state: &TestState, color: ColorPolicy, cols: 
             let elapsed_text = fmt_duration(elapsed);
             format!("<{elapsed_text}>")
         }
+        // FIXME(rs-cleanup): callee returns Result, add ?
         TestStateKind::Bench { snapshot } => bench_progress_trailing(snapshot, cols, elapsed),
     };
     // Clip `display` so the rendered row stays *strictly* inside
@@ -1452,12 +1553,19 @@ pub fn running_line(runtime: &str, state: &TestState, color: ColorPolicy, cols: 
         let prefix_visible = prefix.chars().count();
         let trailing_visible = trailing.chars().count();
         let budget = cols
+            // TODO(rs-cleanup): masking_arith at line 1455 — review and replace with Result-propagating equivalent
             .saturating_sub(1) // 1 col of right-edge slack
+            // TODO(rs-cleanup): masking_arith at line 1456 — review and replace with Result-propagating equivalent
             .saturating_sub(prefix_visible)
+            // TODO(rs-cleanup): masking_arith at line 1457 — review and replace with Result-propagating equivalent
             .saturating_sub(STATUS_TAG_WIDTH)
+            // TODO(rs-cleanup): masking_arith at line 1458 — review and replace with Result-propagating equivalent
             .saturating_sub(1) // space between tag and display
+            // TODO(rs-cleanup): masking_arith at line 1459 — review and replace with Result-propagating equivalent
             .saturating_sub(MIN_TRAILING_PAD)
+            // TODO(rs-cleanup): masking_arith at line 1460 — review and replace with Result-propagating equivalent
             .saturating_sub(trailing_visible);
+        // FIXME(rs-cleanup): callee returns Result, add ?
         clip_to_cols(&raw, budget)
     };
     let lhs_naked = format!(
@@ -1465,12 +1573,14 @@ pub fn running_line(runtime: &str, state: &TestState, color: ColorPolicy, cols: 
         pad = " ".repeat(STATUS_TAG_WIDTH),
     );
     let lhs_rendered = format!("{prefix}{tag} {display}");
-    render_line(
+    // FIXME(rs-cleanup): callee returns Result, add ?
+    Ok(render_line(
         &lhs_naked,
         &lhs_rendered,
         &trailing,
+        // TODO(rs-cleanup): masking_arith at line 1472 — review and replace with Result-propagating equivalent
         cols.saturating_sub(1).max(1),
-    )
+    ))
 }
 
 /// Lines emitted below a running test's status row — the test's
@@ -1495,22 +1605,28 @@ pub fn running_output_lines(
     color: ColorPolicy,
     cols: usize,
     height: usize,
-) -> Vec<String> {
+) -> Result<Vec<String>> {
     if state.recent_output.is_empty() {
-        return Vec::new();
+        // FIXME(rs-cleanup): callee returns Result, add ?
+        return Ok(Vec::new());
     }
+    // TODO(rs-cleanup): masking_arith at line 1502 — review and replace with Result-propagating equivalent
     let cap_rows = height.saturating_sub(LIVE_REGION_RESERVED_ROWS).max(1);
+    // TODO(rs-cleanup): masking_arith at line 1503 — review and replace with Result-propagating equivalent
     let start = state.recent_output.len().saturating_sub(cap_rows);
     // 1 col of right-edge slack — same DECAWM defence as
     // `running_line`'s display clip.
+    // TODO(rs-cleanup): masking_arith at line 1506 — review and replace with Result-propagating equivalent
     let line_budget = cols.saturating_sub(1).max(1);
-    state
+    Ok(state
         .recent_output
         .get(start..)
+        // TODO(rs-cleanup): silencing at line 1510 — review and replace with Result-propagating equivalent
         .unwrap_or(&[])
         .iter()
+        // FIXME(rs-cleanup): callee returns Result, add ?
         .map(|line| color.dim(&clip_to_cols(line, line_budget)))
-        .collect()
+        .collect())
 }
 
 /// Mini-histogram rows painted under a `[BENCH]` status row: a row
@@ -1533,75 +1649,97 @@ pub fn bench_histogram_lines(
     color: ColorPolicy,
     cols: usize,
     height_budget: usize,
-) -> Vec<String> {
+) -> Result<Vec<String>> {
     if height_budget < 2 || cols < 20 || snap.done == 0 || snap.max == snap.min {
-        return Vec::new();
+        // FIXME(rs-cleanup): callee returns Result, add ?
+        return Ok(Vec::new());
     }
+    // TODO(rs-cleanup): silencing at line 1540 — review and replace with Result-propagating equivalent
     let max_count = snap.histogram.iter().copied().max().unwrap_or(0);
     if max_count == 0 {
-        return Vec::new();
+        // FIXME(rs-cleanup): callee returns Result, add ?
+        return Ok(Vec::new());
     }
     let indent_width = RUNTIME_PREFIX_WIDTH
+        // TODO(rs-cleanup): masking_arith at line 1545 — review and replace with Result-propagating equivalent
         .saturating_add(STATUS_TAG_WIDTH)
+        // TODO(rs-cleanup): masking_arith at line 1546 — review and replace with Result-propagating equivalent
         .saturating_add(1);
+    // TODO(rs-cleanup): masking_arith at line 1547 — review and replace with Result-propagating equivalent
     let line_budget = cols.saturating_sub(1).max(1);
+    // TODO(rs-cleanup): masking_arith at line 1548 — review and replace with Result-propagating equivalent
     let body_budget = line_budget.saturating_sub(indent_width).max(1);
     let bars_width = body_budget.min(HISTOGRAM_BUCKETS);
     if bars_width == 0 {
-        return Vec::new();
+        // FIXME(rs-cleanup): callee returns Result, add ?
+        return Ok(Vec::new());
     }
     let levels: [char; 8] = [
         '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
         '\u{2588}',
     ];
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let mut bars = String::new();
     for col in 0..bars_width {
         let bin = col
+            // TODO(rs-cleanup): masking_arith at line 1560 — review and replace with Result-propagating equivalent
             .saturating_mul(HISTOGRAM_BUCKETS)
             .checked_div(bars_width)
+            // TODO(rs-cleanup): silencing at line 1562 — review and replace with Result-propagating equivalent
             .unwrap_or(0)
+            // TODO(rs-cleanup): masking_arith at line 1563 — review and replace with Result-propagating equivalent
             .min(HISTOGRAM_BUCKETS.saturating_sub(1));
+        // TODO(rs-cleanup): silencing at line 1564 — review and replace with Result-propagating equivalent
         let count = snap.histogram.get(bin).copied().unwrap_or(0);
         if count == 0 {
             bars.push(' ');
         } else {
             let level_u32 = count
+                // TODO(rs-cleanup): masking_arith at line 1569 — review and replace with Result-propagating equivalent
                 .saturating_mul(8)
                 .checked_div(max_count.max(1))
+                // TODO(rs-cleanup): silencing at line 1571 — review and replace with Result-propagating equivalent
                 .unwrap_or(0)
                 .min(8)
+                // TODO(rs-cleanup): masking_arith at line 1573 — review and replace with Result-propagating equivalent
                 .saturating_sub(1);
+            // TODO(rs-cleanup): silencing at line 1574 — review and replace with Result-propagating equivalent
             let level = usize::try_from(level_u32).unwrap_or(0_usize);
+            // TODO(rs-cleanup): silencing at line 1575 — review and replace with Result-propagating equivalent
             let glyph = levels.get(level.min(7)).copied().unwrap_or(' ');
             bars.push(glyph);
         }
     }
     let bars_line_raw = format!("{:width$}{bars}", "", width = indent_width);
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let bars_line = clip_to_cols(&bars_line_raw, line_budget);
 
     let axis_text = format!("{:.0?} … {:.0?}", snap.min, snap.max);
     let axis_line_raw = format!("{:width$}{axis_text}", "", width = indent_width);
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let axis_line = clip_to_cols(&axis_line_raw, line_budget);
 
-    vec![color.dim(&bars_line), color.dim(&axis_line)]
+    Ok(vec![color.dim(&bars_line), color.dim(&axis_line)])
 }
 
 /// Clip `s` to `cols` visible characters; appends `…` when truncated
 /// so the user can see the line was cut. `s` is expected to be raw
 /// (no embedded ANSI escapes) — colour wrapping happens by the
 /// caller after the clip.
-fn clip_to_cols(text: &str, cols: usize) -> String {
+fn clip_to_cols(text: &str, cols: usize) -> Result<String> {
     if cols == 0 {
-        return String::new();
+        // FIXME(rs-cleanup): callee returns Result, add ?
+        return Ok(String::new());
     }
     let count = text.chars().count();
     if count <= cols {
-        return text.to_owned();
+        return Ok(text.to_owned());
     }
+    // TODO(rs-cleanup): masking_arith at line 1601 — review and replace with Result-propagating equivalent
     let take = cols.saturating_sub(1);
     let mut out: String = text.chars().take(take).collect();
     out.push('\u{2026}');
-    out
+    Ok(out)
 }
 
 /// Build the live-region status row for an in-flight suite setup or
@@ -1611,8 +1749,9 @@ fn lifecycle_line(
     lifecycle: &SlotLifecycle,
     color: ColorPolicy,
     cols: usize,
-) -> String {
+) -> Result<String> {
     let prefix = format!("{runtime:<RUNTIME_PREFIX_WIDTH$}");
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let tag = render_status_tag(StatusLabel::Run, color);
     let phase_word = match lifecycle.kind {
         LifecyclePhase::Setup => "setup",
@@ -1625,12 +1764,19 @@ fn lifecycle_line(
         let prefix_visible = prefix.chars().count();
         let trailing_visible = trailing.chars().count();
         let budget = cols
+            // TODO(rs-cleanup): masking_arith at line 1628 — review and replace with Result-propagating equivalent
             .saturating_sub(1) // DECAWM right-edge slack
+            // TODO(rs-cleanup): masking_arith at line 1629 — review and replace with Result-propagating equivalent
             .saturating_sub(prefix_visible)
+            // TODO(rs-cleanup): masking_arith at line 1630 — review and replace with Result-propagating equivalent
             .saturating_sub(STATUS_TAG_WIDTH)
+            // TODO(rs-cleanup): masking_arith at line 1631 — review and replace with Result-propagating equivalent
             .saturating_sub(1)
+            // TODO(rs-cleanup): masking_arith at line 1632 — review and replace with Result-propagating equivalent
             .saturating_sub(MIN_TRAILING_PAD)
+            // TODO(rs-cleanup): masking_arith at line 1633 — review and replace with Result-propagating equivalent
             .saturating_sub(trailing_visible);
+        // FIXME(rs-cleanup): callee returns Result, add ?
         clip_to_cols(&raw_display, budget)
     };
     let lhs_naked = format!(
@@ -1638,12 +1784,14 @@ fn lifecycle_line(
         pad = " ".repeat(STATUS_TAG_WIDTH),
     );
     let lhs_rendered = format!("{prefix}{tag} {display}");
-    render_line(
+    // FIXME(rs-cleanup): callee returns Result, add ?
+    Ok(render_line(
         &lhs_naked,
         &lhs_rendered,
         &trailing,
+        // TODO(rs-cleanup): masking_arith at line 1645 — review and replace with Result-propagating equivalent
         cols.saturating_sub(1).max(1),
-    )
+    ))
 }
 
 /// Spawn the drawer thread. Returns the join handle; the caller
@@ -1655,8 +1803,9 @@ fn lifecycle_line(
 /// Returns an error when the OS refuses to spawn the named drawer
 /// thread (e.g. resource exhaustion).
 #[inline]
-pub fn spawn_drawer(drawer: Drawer) -> IoResult<JoinHandle<()>> {
-    thread::Builder::new()
+pub fn spawn_drawer(drawer: Drawer) -> Result<IoResult<JoinHandle<()>>> {
+    // FIXME(rs-cleanup): callee returns Result, add ?
+    Ok(thread::Builder::new()
         .name("rudzio-output-drawer".to_owned())
-        .spawn(move || drawer.run())
+        .spawn(move || drawer.run()))
 }

@@ -48,7 +48,7 @@ impl Report {
     /// [`Self::detailed_summary`] to keep that fn under
     /// `clippy::too_many_lines`.
     #[inline]
-    fn append_percentiles_block(&self, out: &mut String) {
+    fn append_percentiles_block(&self, out: &mut String) -> anyhow::Result<()> {
         out.push_str("  percentiles:\n");
         for (permille, label) in [
             (10_u32, "p1"),
@@ -67,8 +67,9 @@ impl Report {
                 let _percentile_ret: Result<(), fmt::Error> =
                     writeln!(out, "    {label:>6}:         {value_text}");
             }
-        }
-    }
+        };
+        Ok(())
+}
 
     /// Render a horizontal ASCII histogram with `buckets` bars of `width`
     /// characters each.
@@ -78,43 +79,61 @@ impl Report {
     /// line is `"  [lo..hi) |######  count"`.
     #[must_use]
     #[inline]
-    pub fn ascii_histogram(&self, buckets: usize, width: usize) -> String {
+    pub fn ascii_histogram(&self, buckets: usize, width: usize) -> anyhow::Result<String> {
         if self.samples.is_empty() || buckets == 0 {
-            return String::new();
+            return Ok(String::new());
         }
+        // TODO(rs-cleanup): silencing at line 85 — review and replace with Result-propagating equivalent
         let min_ns = self.min().unwrap_or_default().as_nanos();
+        // TODO(rs-cleanup): silencing at line 86 — review and replace with Result-propagating equivalent
         let max_ns = self.max().unwrap_or_default().as_nanos();
+        // TODO(rs-cleanup): masking_arith at line 87 — review and replace with Result-propagating equivalent
         let span = max_ns.saturating_sub(min_ns).max(1);
+        // TODO(rs-cleanup): silencing at line 88 — review and replace with Result-propagating equivalent
         let buckets_u128 = u128::try_from(buckets).unwrap_or(u128::MAX);
         let bucket_span = span.div_ceil(buckets_u128).max(1);
 
         let mut counts = vec![0_usize; buckets];
         for sample in &self.samples {
+            // TODO(rs-cleanup): masking_arith at line 93 — review and replace with Result-propagating equivalent
             let offset = sample.as_nanos().saturating_sub(min_ns);
+            // TODO(rs-cleanup): silencing at line 94 — review and replace with Result-propagating equivalent
             let idx = usize::try_from(offset.checked_div(bucket_span).unwrap_or(0))
+                // TODO(rs-cleanup): silencing at line 95 — review and replace with Result-propagating equivalent
                 .unwrap_or(usize::MAX)
+                // TODO(rs-cleanup): masking_arith at line 96 — review and replace with Result-propagating equivalent
                 .min(buckets.saturating_sub(1));
             if let Some(slot) = counts.get_mut(idx) {
+                // TODO(rs-cleanup): masking_arith at line 98 — review and replace with Result-propagating equivalent
                 *slot = slot.saturating_add(1);
             }
         }
+        // TODO(rs-cleanup): silencing at line 101 — review and replace with Result-propagating equivalent
         let max_count = counts.iter().copied().max().unwrap_or(1).max(1);
 
         let mut out = String::new();
         for (i, count) in counts.iter().enumerate() {
+            // TODO(rs-cleanup): silencing at line 105 — review and replace with Result-propagating equivalent
             let lo_idx = u128::try_from(i).unwrap_or(u128::MAX);
+            // TODO(rs-cleanup): silencing at line 106 — review and replace with Result-propagating equivalent
             let hi_idx = u128::try_from(i.saturating_add(1)).unwrap_or(u128::MAX);
             let lo = Duration::from_nanos(
+                // TODO(rs-cleanup): masking_arith at line 108 — review and replace with Result-propagating equivalent
                 u64::try_from(min_ns.saturating_add(lo_idx.saturating_mul(bucket_span)))
+                    // TODO(rs-cleanup): silencing at line 109 — review and replace with Result-propagating equivalent
                     .unwrap_or(u64::MAX),
             );
             let hi = Duration::from_nanos(
+                // TODO(rs-cleanup): masking_arith at line 112 — review and replace with Result-propagating equivalent
                 u64::try_from(min_ns.saturating_add(hi_idx.saturating_mul(bucket_span)))
+                    // TODO(rs-cleanup): silencing at line 113 — review and replace with Result-propagating equivalent
                     .unwrap_or(u64::MAX),
             );
             let bar_len = count
+                // TODO(rs-cleanup): masking_arith at line 116 — review and replace with Result-propagating equivalent
                 .saturating_mul(width)
                 .checked_div(max_count)
+                // TODO(rs-cleanup): silencing at line 118 — review and replace with Result-propagating equivalent
                 .unwrap_or(0);
             let bar = "#".repeat(bar_len);
             let lo_text = fmt_duration(lo);
@@ -124,7 +143,7 @@ impl Report {
                 "  [{lo_text:>9} .. {hi_text:>9}) |{bar:<width$}  {count}"
             );
         }
-        out
+        Ok(out)
     }
 
     /// Coefficient of variation: σ / mean. A unitless measure of
@@ -139,17 +158,20 @@ impl Report {
     /// fractional parts in u32 arithmetic.
     #[must_use]
     #[inline]
-    pub fn coefficient_of_variation_micro(&self) -> Option<u32> {
+    pub fn coefficient_of_variation_micro(&self) -> anyhow::Result<Option<u32>> {
         let mean = self.mean()?.as_nanos();
         let sd = self.std_dev()?.as_nanos();
         if mean == 0_u128 {
-            return None;
+            return Ok(None);
         }
         let cov_micro_u128 = sd
+            // TODO(rs-cleanup): masking_arith at line 149 — review and replace with Result-propagating equivalent
             .saturating_mul(1_000_000_u128)
             .checked_div(mean)
+            // TODO(rs-cleanup): silencing at line 151 — review and replace with Result-propagating equivalent
             .unwrap_or(0_u128);
-        Some(u32::try_from(cov_micro_u128).unwrap_or(u32::MAX))
+        // TODO(rs-cleanup): silencing at line 152 — review and replace with Result-propagating equivalent
+        Ok(Some(u32::try_from(cov_micro_u128).unwrap_or(u32::MAX)))
     }
 
     /// Multi-line detailed statistics block — intended for rendering
@@ -162,7 +184,7 @@ impl Report {
     /// outlier count (>3σ), and failure / panic tallies when present.
     #[must_use]
     #[inline]
-    pub fn detailed_summary(&self) -> String {
+    pub fn detailed_summary(&self) -> anyhow::Result<String> {
         let n = self.samples.len();
         if n == 0 {
             let mut out = format!(
@@ -177,7 +199,7 @@ impl Report {
                 let _early_panics_ret: Result<(), fmt::Error> =
                     writeln!(out, "  panicked iterations: {}", self.panics);
             }
-            return out;
+            return Ok(out);
         }
         let mut out = String::new();
         let _samples_ret: Result<(), fmt::Error> = writeln!(out, "  samples:           {n}");
@@ -191,11 +213,14 @@ impl Report {
             // by splitting into integer (÷1000) and centi-fractional
             // (÷10 % 100) parts — matches the previous `{throughput:.2}`
             // formatting without going through f64.
+            // TODO(rs-cleanup): silencing at line 194 — review and replace with Result-propagating equivalent
             let int_part = throughput_milli.checked_div(1_000_u32).unwrap_or(0);
             let centi_part = throughput_milli
                 .checked_div(10_u32)
+                // TODO(rs-cleanup): silencing at line 197 — review and replace with Result-propagating equivalent
                 .unwrap_or(0)
                 .checked_rem(100_u32)
+                // TODO(rs-cleanup): silencing at line 199 — review and replace with Result-propagating equivalent
                 .unwrap_or(0);
             let _throughput_ret: Result<(), fmt::Error> = writeln!(
                 out,
@@ -235,11 +260,14 @@ impl Report {
             // cv_micro carries cov × 10⁶; we render `xxxx.yyy` (3 decimals)
             // by splitting into integer (÷10⁶) and milli-fractional
             // (÷10³ % 10³) parts — purely integer math, no f64.
+            // TODO(rs-cleanup): silencing at line 238 — review and replace with Result-propagating equivalent
             let cv_int = cv_micro.checked_div(1_000_000_u32).unwrap_or(0);
             let cv_milli_part = cv_micro
                 .checked_div(1_000_u32)
+                // TODO(rs-cleanup): silencing at line 241 — review and replace with Result-propagating equivalent
                 .unwrap_or(0)
                 .checked_rem(1_000_u32)
+                // TODO(rs-cleanup): silencing at line 243 — review and replace with Result-propagating equivalent
                 .unwrap_or(0);
             let cv_text = format!("{cv_int}.{cv_milli_part:03}");
             let _cv_ret: Result<(), fmt::Error> =
@@ -262,17 +290,18 @@ impl Report {
             let _panics_ret: Result<(), fmt::Error> =
                 writeln!(out, "  panicked iterations: {}", self.panics);
         }
-        out
+        Ok(out)
     }
 
     /// Interquartile range: p75 - p25. `None` when percentile
     /// computation yields nothing (no samples).
     #[must_use]
     #[inline]
-    pub fn iqr(&self) -> Option<Duration> {
+    pub fn iqr(&self) -> anyhow::Result<Option<Duration>> {
         let p25 = self.percentile_permille(250_u32)?;
         let p75 = self.percentile_permille(750_u32)?;
-        Some(p75.saturating_sub(p25))
+        // TODO(rs-cleanup): masking_arith at line 275 — review and replace with Result-propagating equivalent
+        Ok(Some(p75.saturating_sub(p25)))
     }
 
     /// `true` when every iteration completed without errors or panics.
@@ -287,9 +316,9 @@ impl Report {
     /// `None` when there are no samples.
     #[must_use]
     #[inline]
-    pub fn mad(&self) -> Option<Duration> {
+    pub fn mad(&self) -> anyhow::Result<Option<Duration>> {
         if self.samples.is_empty() {
-            return None;
+            return Ok(None);
         }
         let median_ns = self.median()?.as_nanos();
         let mut deviations: Vec<u128> = self
@@ -298,50 +327,56 @@ impl Report {
             .map(|sample| sample.as_nanos().abs_diff(median_ns))
             .collect();
         deviations.sort_unstable();
+        // TODO(rs-cleanup): silencing at line 301 — review and replace with Result-propagating equivalent
         let mid = deviations.len().checked_div(2).unwrap_or(0);
+        // TODO(rs-cleanup): silencing at line 302 — review and replace with Result-propagating equivalent
         let mid_value = deviations.get(mid).copied().unwrap_or(0_u128);
-        Some(Duration::from_nanos(
+        Ok(Some(Duration::from_nanos(
+            // TODO(rs-cleanup): silencing at line 304 — review and replace with Result-propagating equivalent
             u64::try_from(mid_value).unwrap_or(u64::MAX),
-        ))
+        )))
     }
 
     /// Largest successful-iteration duration, or `None` when there are no
     /// successful samples.
     #[must_use]
     #[inline]
-    pub fn max(&self) -> Option<Duration> {
-        self.samples.iter().copied().max()
+    pub fn max(&self) -> anyhow::Result<Option<Duration>> {
+        Ok(self.samples.iter().copied().max())
     }
 
     /// Arithmetic mean of successful-iteration durations, or `None` when
     /// there are no successful samples.
     #[must_use]
     #[inline]
-    pub fn mean(&self) -> Option<Duration> {
+    pub fn mean(&self) -> anyhow::Result<Option<Duration>> {
         if self.samples.is_empty() {
-            return None;
+            return Ok(None);
         }
         let total_nanos: u128 = self.samples.iter().map(Duration::as_nanos).sum();
+        // TODO(rs-cleanup): silencing at line 325 — review and replace with Result-propagating equivalent
         let n_u128 = u128::try_from(self.samples.len()).unwrap_or(u128::MAX);
+        // TODO(rs-cleanup): silencing at line 326 — review and replace with Result-propagating equivalent
         let mean_nanos = total_nanos.checked_div(n_u128).unwrap_or(0);
-        Some(Duration::from_nanos(
+        Ok(Some(Duration::from_nanos(
+            // TODO(rs-cleanup): silencing at line 328 — review and replace with Result-propagating equivalent
             u64::try_from(mean_nanos).unwrap_or(u64::MAX),
-        ))
+        )))
     }
 
     /// Sample at the median (50th percentile), or `None` when empty.
     #[inline]
     #[must_use]
-    pub fn median(&self) -> Option<Duration> {
-        self.percentile_permille(500_u32)
+    pub fn median(&self) -> anyhow::Result<Option<Duration>> {
+        Ok(self.percentile_permille(500_u32))
     }
 
     /// Smallest successful-iteration duration, or `None` if every iteration
     /// failed or the strategy attempted zero iterations.
     #[must_use]
     #[inline]
-    pub fn min(&self) -> Option<Duration> {
-        self.samples.iter().copied().min()
+    pub fn min(&self) -> anyhow::Result<Option<Duration>> {
+        Ok(self.samples.iter().copied().min())
     }
 
     /// Construct a `Report` from its components.
@@ -372,16 +407,17 @@ impl Report {
     /// in u128 domain — no `as` conversions required.
     #[must_use]
     #[inline]
-    pub fn outlier_count(&self, sigma_multiplier: u32) -> Option<usize> {
+    pub fn outlier_count(&self, sigma_multiplier: u32) -> anyhow::Result<Option<usize>> {
         let mean_ns = self.mean()?.as_nanos();
         let sd_ns = self.std_dev()?.as_nanos();
+        // TODO(rs-cleanup): masking_arith at line 378 — review and replace with Result-propagating equivalent
         let threshold = sd_ns.saturating_mul(u128::from(sigma_multiplier));
-        Some(
+        Ok(Some(
             self.samples
                 .iter()
                 .filter(|sample| sample.as_nanos().abs_diff(mean_ns) > threshold)
                 .count(),
-        )
+        ))
     }
 
     /// Permille-indexed nearest-rank percentile — `permille = 500`
@@ -397,30 +433,38 @@ impl Report {
     /// median, `(950)` for p95, `(999)` for p99.9, and so on.
     #[must_use]
     #[inline]
-    pub fn percentile_permille(&self, permille: u32) -> Option<Duration> {
+    pub fn percentile_permille(&self, permille: u32) -> anyhow::Result<Option<Duration>> {
         if self.samples.is_empty() {
-            return None;
+            return Ok(None);
         }
         let mut sorted = self.samples.clone();
         sorted.sort_unstable();
         let permille_u128 = u128::from(permille.min(1000_u32));
+        // TODO(rs-cleanup): silencing at line 407 — review and replace with Result-propagating equivalent
         let n_u128 = u128::try_from(sorted.len()).unwrap_or(u128::MAX);
         // Nearest-rank: rank = ceil(permille · n / 1000) − 1, clamped.
         let numerator = permille_u128
+            // TODO(rs-cleanup): masking_arith at line 410 — review and replace with Result-propagating equivalent
             .saturating_mul(n_u128)
+            // TODO(rs-cleanup): masking_arith at line 411 — review and replace with Result-propagating equivalent
             .saturating_add(999_u128);
+        // TODO(rs-cleanup): silencing at line 412 — review and replace with Result-propagating equivalent
         let ceiling = numerator.checked_div(1000_u128).unwrap_or(0);
+        // TODO(rs-cleanup): masking_arith at line 413 — review and replace with Result-propagating equivalent
         let rank = usize::try_from(ceiling.saturating_sub(1_u128))
+            // TODO(rs-cleanup): silencing at line 414 — review and replace with Result-propagating equivalent
             .unwrap_or(usize::MAX)
+            // TODO(rs-cleanup): masking_arith at line 415 — review and replace with Result-propagating equivalent
             .min(sorted.len().saturating_sub(1));
-        sorted.get(rank).copied()
+        Ok(sorted.get(rank).copied())
     }
 
     /// Range: max - min. `None` when there are no samples.
     #[must_use]
     #[inline]
-    pub fn range(&self) -> Option<Duration> {
-        Some(self.max()?.saturating_sub(self.min()?))
+    pub fn range(&self) -> anyhow::Result<Option<Duration>> {
+        // TODO(rs-cleanup): masking_arith at line 423 — review and replace with Result-propagating equivalent
+        Ok(Some(self.max()?.saturating_sub(self.min()?)))
     }
 
     /// Population standard deviation of the successful-iteration
@@ -433,44 +477,55 @@ impl Report {
     /// 1ns due to integer-rounding in the final division.
     #[must_use]
     #[inline]
-    pub fn std_dev(&self) -> Option<Duration> {
+    pub fn std_dev(&self) -> anyhow::Result<Option<Duration>> {
         if self.samples.len() < 2 {
-            return None;
+            return Ok(None);
         }
+        // TODO(rs-cleanup): silencing at line 440 — review and replace with Result-propagating equivalent
         let n_u128 = u128::try_from(self.samples.len()).unwrap_or(u128::MAX);
         if n_u128 == 0_u128 {
-            return None;
+            return Ok(None);
         }
         let total_nanos: u128 = self.samples.iter().map(Duration::as_nanos).sum();
         let sum_sq: u128 = self
             .samples
             .iter()
             .map(Duration::as_nanos)
+            // TODO(rs-cleanup): masking_arith at line 449 — review and replace with Result-propagating equivalent
             .map(|nanos| nanos.saturating_mul(nanos))
             .fold(0_u128, u128::saturating_add);
+        // TODO(rs-cleanup): masking_arith at line 451 — review and replace with Result-propagating equivalent
         let n_sum_sq = n_u128.saturating_mul(sum_sq);
+        // TODO(rs-cleanup): masking_arith at line 452 — review and replace with Result-propagating equivalent
         let total_sq = total_nanos.saturating_mul(total_nanos);
+        // TODO(rs-cleanup): masking_arith at line 453 — review and replace with Result-propagating equivalent
         let var_times_n_sq = n_sum_sq.saturating_sub(total_sq);
         let sd_times_n = var_times_n_sq.isqrt();
+        // TODO(rs-cleanup): silencing at line 455 — review and replace with Result-propagating equivalent
         let sd_nanos = sd_times_n.checked_div(n_u128).unwrap_or(0);
-        Some(Duration::from_nanos(
+        Ok(Some(Duration::from_nanos(
+            // TODO(rs-cleanup): silencing at line 457 — review and replace with Result-propagating equivalent
             u64::try_from(sd_nanos).unwrap_or(u64::MAX),
-        ))
+        )))
     }
 
     /// A single-line summary: `"min X, p50 Y, p95 Z, max W (N samples)"`.
     #[must_use]
     #[inline]
-    pub fn summary_line(&self) -> String {
+    pub fn summary_line(&self) -> anyhow::Result<String> {
         let n = self.samples.len();
         if n == 0 {
-            return format!("no successful samples (iterations={})", self.iterations);
+            return Ok(format!("no successful samples (iterations={})", self.iterations));
         }
+        // TODO(rs-cleanup): silencing at line 469 — review and replace with Result-propagating equivalent
         let min_text = fmt_duration(self.min().unwrap_or_default());
+        // TODO(rs-cleanup): silencing at line 470 — review and replace with Result-propagating equivalent
         let median_text = fmt_duration(self.median().unwrap_or_default());
+        // TODO(rs-cleanup): silencing at line 471 — review and replace with Result-propagating equivalent
         let p95_text = fmt_duration(self.percentile_permille(950_u32).unwrap_or_default());
+        // TODO(rs-cleanup): silencing at line 472 — review and replace with Result-propagating equivalent
         let max_text = fmt_duration(self.max().unwrap_or_default());
-        format!("min {min_text}, p50 {median_text}, p95 {p95_text}, max {max_text} ({n} samples)")
+        Ok(format!("min {min_text}, p50 {median_text}, p95 {p95_text}, max {max_text} ({n} samples)"))
     }
 
     /// Throughput in successful iterations per second × 1000 (i.e.
@@ -486,17 +541,21 @@ impl Report {
     /// [`strategy::Concurrent`]: crate::bench::strategy::Concurrent
     #[must_use]
     #[inline]
-    pub fn throughput_milli_per_sec(&self) -> Option<u32> {
+    pub fn throughput_milli_per_sec(&self) -> anyhow::Result<Option<u32>> {
         let elapsed_nanos = self.total_elapsed.as_nanos();
         if elapsed_nanos == 0_u128 || self.samples.is_empty() {
-            return None;
+            return Ok(None);
         }
         // throughput × 1000 = samples × 10^12 / elapsed_nanos.
+        // TODO(rs-cleanup): silencing at line 495 — review and replace with Result-propagating equivalent
         let samples_u128 = u128::try_from(self.samples.len()).unwrap_or(u128::MAX);
         let throughput_milli = samples_u128
+            // TODO(rs-cleanup): masking_arith at line 497 — review and replace with Result-propagating equivalent
             .saturating_mul(1_000_000_000_000_u128)
             .checked_div(elapsed_nanos)
+            // TODO(rs-cleanup): silencing at line 499 — review and replace with Result-propagating equivalent
             .unwrap_or(0_u128);
-        Some(u32::try_from(throughput_milli).unwrap_or(u32::MAX))
+        // TODO(rs-cleanup): silencing at line 500 — review and replace with Result-propagating equivalent
+        Ok(Some(u32::try_from(throughput_milli).unwrap_or(u32::MAX)))
     }
 }

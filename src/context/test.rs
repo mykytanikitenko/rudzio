@@ -33,12 +33,12 @@ where
     /// Block the calling thread until `fut` completes, dispatching
     /// through [`Runtime::block_on`].
     #[inline]
-    fn block_on<F>(&self, fut: F) -> F::Output
+    fn block_on<F>(&self, fut: F) -> anyhow::Result<F::Output>
     where
         F: Future + 'test_context,
         F::Output: 'static,
     {
-        self.rt().block_on(fut)
+        Ok(self.rt().block_on(fut))
     }
 
     /// Per-test cancellation token. The runner builds it as a child of
@@ -57,8 +57,8 @@ where
     /// Stable identifier of the runtime driving this test, surfaced
     /// from [`Runtime::name`].
     #[inline]
-    fn name(&self) -> &'static str {
-        self.rt().name()
+    fn name(&self) -> anyhow::Result<&'static str> {
+        Ok(self.rt().name())
     }
 
     /// Borrow of the runtime driving this test (the same runtime the
@@ -69,8 +69,9 @@ where
     /// Sleep for `duration` using the runtime's native timer
     /// ([`Runtime::sleep`]).
     #[inline]
-    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'test_context {
-        self.rt().sleep(duration)
+    fn sleep(&self, duration: Duration) -> anyhow::Result<impl Future<Output = ()> + Send + 'test_context> {
+        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
+        Ok(self.rt().sleep(duration))
     }
 
     /// Spawn a `Send` future onto the runtime ([`Runtime::spawn`]).
@@ -78,12 +79,13 @@ where
     fn spawn<F>(
         &self,
         fut: F,
-    ) -> impl Future<Output = Result<F::Output, JoinError>> + Send + 'test_context
+    ) -> anyhow::Result<impl Future<Output = Result<F::Output, JoinError>> + Send + 'test_context>
     where
         F: Future + Send + 'static,
         F::Output: Send,
     {
-        self.rt().spawn(fut)
+        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
+        Ok(self.rt().spawn(fut))
     }
 
     /// Spawn a blocking closure onto a thread suitable for blocking I/O
@@ -92,12 +94,13 @@ where
     fn spawn_blocking<F, T>(
         &self,
         func: F,
-    ) -> impl Future<Output = Result<T, JoinError>> + Send + 'test_context
+    ) -> anyhow::Result<impl Future<Output = Result<T, JoinError>> + Send + 'test_context>
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
-        self.rt().spawn_blocking(func)
+        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
+        Ok(self.rt().spawn_blocking(func))
     }
 
     /// Spawn a `!Send` future onto a thread-local executor
@@ -106,11 +109,12 @@ where
     fn spawn_local<F>(
         &self,
         fut: F,
-    ) -> impl Future<Output = Result<F::Output, JoinError>> + 'test_context
+    ) -> anyhow::Result<impl Future<Output = Result<F::Output, JoinError>> + 'test_context>
     where
         F: Future + 'static,
     {
-        self.rt().spawn_local(fut)
+        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
+        Ok(self.rt().spawn_local(fut))
     }
 
     /// Spawn a `Send` future onto the runtime, tracked by the
@@ -121,11 +125,12 @@ where
     fn spawn_tracked<F>(
         &self,
         fut: F,
-    ) -> impl Future<Output = Result<(), JoinError>> + Send + 'test_context
+    ) -> anyhow::Result<impl Future<Output = Result<(), JoinError>> + Send + 'test_context>
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        self.rt().spawn(self.tracker().track_future(fut))
+        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
+        Ok(self.rt().spawn(self.tracker().track_future(fut)))
     }
 
     /// Tear down per-test state. Called after the test body returns.
@@ -148,7 +153,8 @@ where
     /// Yield control back to the runtime scheduler
     /// ([`Runtime::yield_now`]).
     #[inline]
-    fn yield_now(&self) -> impl Future<Output = ()> + 'test_context {
-        self.rt().yield_now()
+    fn yield_now(&self) -> anyhow::Result<impl Future<Output = ()> + 'test_context> {
+        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
+        Ok(self.rt().yield_now())
     }
 }

@@ -19,24 +19,33 @@ use std::time::Duration;
 /// is total over `Duration`.
 #[must_use]
 #[inline]
-pub fn fmt_duration(dur: Duration) -> String {
+pub fn fmt_duration(dur: Duration) -> anyhow::Result<String> {
     let nanos = dur.as_nanos();
-    if nanos >= 1_000_000_000_u128 {
+    Ok(if nanos >= 1_000_000_000_u128 {
+        // TODO(rs-cleanup): silencing at line 25 — review and replace with Result-propagating equivalent
         let centi = nanos.checked_div(10_000_000_u128).unwrap_or(0_u128);
+        // TODO(rs-cleanup): silencing at line 26 — review and replace with Result-propagating equivalent
         let int_part = centi.checked_div(100_u128).unwrap_or(0_u128);
+        // TODO(rs-cleanup): silencing at line 27 — review and replace with Result-propagating equivalent
         let frac_part = centi.checked_rem(100_u128).unwrap_or(0_u128);
         format!("{int_part}.{frac_part:02}s")
     } else if nanos >= 1_000_000_u128 {
+        // TODO(rs-cleanup): silencing at line 30 — review and replace with Result-propagating equivalent
         let centi = nanos.checked_div(10_000_u128).unwrap_or(0_u128);
+        // TODO(rs-cleanup): silencing at line 31 — review and replace with Result-propagating equivalent
         let int_part = centi.checked_div(100_u128).unwrap_or(0_u128);
+        // TODO(rs-cleanup): silencing at line 32 — review and replace with Result-propagating equivalent
         let frac_part = centi.checked_rem(100_u128).unwrap_or(0_u128);
         format!("{int_part}.{frac_part:02}ms")
     } else if nanos >= 1_000_u128 {
+        // TODO(rs-cleanup): silencing at line 35 — review and replace with Result-propagating equivalent
         let centi = nanos.checked_div(10_u128).unwrap_or(0_u128);
+        // TODO(rs-cleanup): silencing at line 36 — review and replace with Result-propagating equivalent
         let int_part = centi.checked_div(100_u128).unwrap_or(0_u128);
+        // TODO(rs-cleanup): silencing at line 37 — review and replace with Result-propagating equivalent
         let frac_part = centi.checked_rem(100_u128).unwrap_or(0_u128);
         format!("{int_part}.{frac_part:02}\u{b5}s")
     } else {
         format!("{nanos}.00ns")
-    }
+    })
 }

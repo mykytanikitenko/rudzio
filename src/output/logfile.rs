@@ -36,12 +36,14 @@ impl Writer {
     /// from the runner so a buffered tail is not lost when the process
     /// exits.
     #[inline]
-    pub fn flush(&self) {
+    pub fn flush(&self) -> anyhow::Result<()> {
         let Some(mutex) = self.inner.as_ref() else {
-            return;
+            return Ok(());
         };
+        // TODO(rs-cleanup): silencing at line 43 — review and replace with Result-propagating equivalent
         let _ignored = mutex.lock().unwrap_or_else(PoisonError::into_inner).flush();
-    }
+        Ok(())
+}
 
     /// `true` when an output file was opened and lines will be written.
     #[inline]
@@ -59,11 +61,11 @@ impl Writer {
     /// stdout — is independent of the logfile side channel.
     #[inline]
     #[must_use]
-    pub fn open(requested: Option<&Path>) -> Self {
+    pub fn open(requested: Option<&Path>) -> anyhow::Result<Self> {
         let Some(path) = requested else {
-            return Self { inner: None };
+            return Ok(Self { inner: None });
         };
-        match OpenOptions::new()
+        Ok(match OpenOptions::new()
             .create(true)
             .truncate(true)
             .write(true)
@@ -79,7 +81,7 @@ impl Writer {
                 ));
                 Self { inner: None }
             }
-        }
+        })
     }
 
     /// Append `<status> <qualified_name>\n` to the logfile. No-op when
@@ -89,13 +91,14 @@ impl Writer {
     /// (disk full mid-run, etc.) cannot promote into a test-run
     /// failure. The side-channel guarantees are best-effort by design.
     #[inline]
-    pub fn write_line(&self, status: &str, qualified_name: &str) {
+    pub fn write_line(&self, status: &str, qualified_name: &str) -> anyhow::Result<()> {
         let Some(mutex) = self.inner.as_ref() else {
-            return;
+            return Ok(());
         };
         let _ignored = writeln!(
             *mutex.lock().unwrap_or_else(PoisonError::into_inner),
             "{status} {qualified_name}",
         );
-    }
+        Ok(())
+}
 }

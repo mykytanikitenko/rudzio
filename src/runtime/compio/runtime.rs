@@ -53,83 +53,90 @@ impl Runtime {
 
 impl<'rt> RuntimeTrait<'rt> for Runtime {
     #[inline]
-    fn block_on<F>(&self, fut: F) -> F::Output
+    fn block_on<F>(&self, fut: F) -> anyhow::Result<F::Output>
     where
         F: Future + 'rt,
         F::Output: 'static,
     {
-        self.rt.block_on(fut)
+        Ok(self.rt.block_on(fut))
     }
 
     #[inline]
-    fn config(&self) -> &Config {
-        &self.config
+    fn config(&self) -> anyhow::Result<&Config> {
+        Ok(&self.config)
     }
 
     #[inline]
-    fn name(&self) -> &'static str {
-        "compio::Runtime"
+    fn name(&self) -> anyhow::Result<&'static str> {
+        Ok("compio::Runtime")
     }
 
     #[inline]
-    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
+    fn sleep(&self, duration: Duration) -> anyhow::Result<impl Future<Output = ()> + Send + 'rt> {
         // compio's timer is single-threaded; `SendWrapper` makes the future
         // `Send` while the runtime ensures it is always polled on the one
         // thread that owns the compio runtime.
-        SendWrapper::new(compio_sleep(duration))
+        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
+        Ok(SendWrapper::new(compio_sleep(duration)))
     }
 
     #[inline]
-    fn spawn<F>(&self, fut: F) -> impl Future<Output = Result<F::Output, JoinError>> + Send + 'rt
+    fn spawn<F>(&self, fut: F) -> anyhow::Result<impl Future<Output = Result<F::Output, JoinError>> + Send + 'rt>
     where
         F: Future<Output: Send> + Send + 'static,
     {
         let handle = self.rt.spawn(fut);
-        async move {
+        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
+        Ok(async move {
             match handle.await {
                 Ok(result) => Ok(result),
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 Err(payload) => Err(compio_join_error_to_join_error(payload.as_ref())),
             }
-        }
+        })
     }
 
     #[inline]
     fn spawn_blocking<F, T>(
         &self,
         func: F,
-    ) -> impl Future<Output = Result<T, JoinError>> + Send + 'rt
+    ) -> anyhow::Result<impl Future<Output = Result<T, JoinError>> + Send + 'rt>
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
         let handle = self.rt.spawn_blocking(func);
-        async move {
+        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
+        Ok(async move {
             match handle.await {
                 Ok(result) => Ok(result),
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 Err(payload) => Err(compio_join_error_to_join_error(payload.as_ref())),
             }
-        }
+        })
     }
 
     #[inline]
-    fn spawn_local<F>(&self, fut: F) -> impl Future<Output = Result<F::Output, JoinError>> + 'rt
+    fn spawn_local<F>(&self, fut: F) -> anyhow::Result<impl Future<Output = Result<F::Output, JoinError>> + 'rt>
     where
         F: Future + 'static,
     {
         // compio's `spawn` natively accepts `!Send` futures.
         let handle = self.rt.spawn(fut);
-        async move {
+        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
+        Ok(async move {
             match handle.await {
                 Ok(result) => Ok(result),
+                // FIXME(rs-cleanup): callee returns Result, add ?
                 Err(payload) => Err(compio_join_error_to_join_error(payload.as_ref())),
             }
-        }
+        })
     }
 }
 
 /// Convert a compio panic payload into a [`JoinError::Panicked`].
 #[inline]
-fn compio_join_error_to_join_error(payload: &(dyn Any + Send)) -> JoinError {
+fn compio_join_error_to_join_error(payload: &(dyn Any + Send)) -> anyhow::Result<JoinError> {
     let message = payload.downcast_ref::<&'static str>().map_or_else(
         || {
             payload.downcast_ref::<String>().map_or_else(
@@ -139,7 +146,7 @@ fn compio_join_error_to_join_error(payload: &(dyn Any + Send)) -> JoinError {
         },
         |msg| format!("task panicked: {msg}"),
     );
-    JoinError::panicked(io::Error::other(message))
+    Ok(JoinError::panicked(io::Error::other(message)))
 }
 
 /// Create a new compio runtime instance.

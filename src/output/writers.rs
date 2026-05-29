@@ -10,9 +10,10 @@ use std::io;
 /// lint doesn't fire. Stderr write failure is unrecoverable for these
 /// sites; matching `eprintln!` behavior is the right answer.
 #[inline]
-pub fn write_stderr(text: &str) {
+pub fn write_stderr(text: &str) -> anyhow::Result<()> {
     use std::io::Write as _;
     let _io_result: io::Result<()> = io::stderr().lock().write_all(text.as_bytes());
+    Ok(())
 }
 
 /// Write `text` to stdout, ignoring any I/O error.
@@ -23,7 +24,8 @@ pub fn write_stderr(text: &str) {
 /// unrecoverable for these sites; matching `println!` behavior is the
 /// right answer.
 #[inline]
-pub fn write_stdout(text: &str) {
+pub fn write_stdout(text: &str) -> anyhow::Result<()> {
     use std::io::Write as _;
     let _io_result: io::Result<()> = io::stdout().lock().write_all(text.as_bytes());
+    Ok(())
 }

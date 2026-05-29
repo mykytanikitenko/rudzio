@@ -137,24 +137,27 @@ EXAMPLES:
 ";
 
 /// Write `text` to stdout, ignoring any I/O error.
-fn write_stdout(text: &str) {
+fn write_stdout(text: &str) -> Result<()> {
     let _io_result: IoResult<()> = stdout().lock().write_all(text.as_bytes());
+    Ok(())
 }
 
 /// Write `text` to stderr, ignoring any I/O error.
-fn write_stderr(text: &str) {
+fn write_stderr(text: &str) -> Result<()> {
     let _io_result: IoResult<()> = stderr().lock().write_all(text.as_bytes());
+    Ok(())
 }
 
-fn main() -> ExitCode {
+fn main() -> Result<ExitCode> {
     let argv: Vec<String> = env::args().collect();
-    match dispatch(&argv) {
+    Ok(match dispatch(&argv) {
         Ok(code) => code,
         Err(err) => {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             write_stderr(&format!("cargo-rudzio: {err:#}\n"));
             ExitCode::from(1)
         }
-    }
+    })
 }
 
 /// Match the user-supplied argv against the command grammar and dispatch to one of the per-subcommand handlers.
@@ -168,13 +171,16 @@ fn dispatch(argv: &[String]) -> Result<ExitCode> {
     let rest: Vec<String> = walker.cloned().collect();
     match subcommand {
         None | Some("help" | "--help" | "-h") => {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             write_stdout(USAGE);
             Ok(ExitCode::SUCCESS)
         }
         Some("generate-runner") => run_generate(&rest).map(|()| ExitCode::SUCCESS),
         Some("test") => run_test(&rest),
+        // FIXME(rs-cleanup): callee returns Result, add ?
         Some("migrate") => Ok(run_migrate(&rest)),
         Some(cmd) => {
+            // FIXME(rs-cleanup): callee returns Result, add ?
             write_stderr(&format!(
                 "cargo-rudzio: unknown subcommand `{cmd}`\n\n{USAGE}"
             ));
@@ -187,9 +193,11 @@ fn dispatch(argv: &[String]) -> Result<ExitCode> {
 fn run_generate(rest: &[String]) -> Result<()> {
     let output = parse_output_flag(rest)?;
     let plan = generate::plan_from_cwd()?;
+    // FIXME(rs-cleanup): callee returns Result, add ?
     emit_diagnostic_warnings(&plan);
     let target = output.unwrap_or_else(|| plan.default_output_dir());
     generate::write_runner(&plan, &target)?;
+    // FIXME(rs-cleanup): callee returns Result, add ?
     write_stdout(&format!(
         "cargo-rudzio: generated aggregator at {}\n",
         target.display()
@@ -213,6 +221,7 @@ fn run_generate(rest: &[String]) -> Result<()> {
 fn run_test(rest: &[String]) -> Result<ExitCode> {
     let parsed = parse_test_args(rest, Path::is_dir)?;
     if let Some(warning) = format_target_flag_warning(&parsed.ignored_target_flags) {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         write_stderr(&format!("warning: {warning}\n"));
     }
     let mut plan = match parsed.manifest_path.as_deref() {
@@ -229,6 +238,7 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
     // Bug #3: `--test <name>` filters the per-binary set so unrelated
     // (potentially broken) binaries aren't compiled into the aggregator.
     plan.restrict_to_test_binaries(&parsed.filters.include_test_binaries)?;
+    // FIXME(rs-cleanup): callee returns Result, add ?
     emit_diagnostic_warnings(&plan);
     let target = plan.default_output_dir();
     generate::write_runner(&plan, &target)?;
@@ -337,6 +347,7 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
         // --no-run: same single cargo build, skip the exec step,
         // print the runner path so downstream tooling can pick it up.
         // Decisions Log [I9] USER-RATIFIED.
+        // FIXME(rs-cleanup): callee returns Result, add ?
         write_stdout(&format!("{}\n", runner_path.display()));
         return Ok(ExitCode::SUCCESS);
     }
@@ -360,24 +371,28 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
 /// aggregator build kicks off. Warnings are advisory — we don't block
 /// the build on them, because silent failure is worse than visible
 /// warnings for the rare false-positive case.
-fn emit_diagnostic_warnings(plan: &generate::Plan) {
+fn emit_diagnostic_warnings(plan: &generate::Plan) -> Result<()> {
     for warning in generate::scan_unbroadened_cfg_test_mods_in_plan(plan) {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         write_stderr(&format!("warning: {warning}\n"));
     }
     // Decisions Log [E7]: proc-macro members are skipped during
     // bridge generation; surface a per-member warning so users know
     // their proc-macro test surface is not aggregated.
     for warning in generate::scan_proc_macro_members_in_plan(plan) {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         write_stderr(&format!("warning: {warning}\n"));
-    }
+    };
+    Ok(())
 }
 
 /// Handler for `cargo rudzio migrate`: forward every arg verbatim into `rudzio_migrate::run::entry_with_args`.
-fn run_migrate(rest: &[String]) -> ExitCode {
+fn run_migrate(rest: &[String]) -> Result<ExitCode> {
+    // TODO(rs-cleanup): masking_arith at line 377 — review and replace with Result-propagating equivalent
     let mut argv: Vec<String> = Vec::with_capacity(rest.len().saturating_add(1));
     argv.push("rudzio-migrate".to_owned());
     argv.extend(rest.iter().cloned());
-    rudzio_migrate_entry(argv)
+    Ok(rudzio_migrate_entry(argv))
 }
 
 /// Parse the `--output DIR` / `-o DIR` / `--output=DIR` flag from the args list.

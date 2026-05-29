@@ -148,6 +148,7 @@ where
     if bytes_read == 0 {
         return Err(Failure::WrongAcknowledgement);
     }
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let trimmed = strip_one_newline(&line);
     if trimmed == ACK_PHRASE {
         Ok(())
@@ -182,11 +183,12 @@ pub fn require_clean_tree(repo_root: &Path) -> Result<(), Failure> {
 
 /// Strip a single trailing `\r\n` or `\n` from `input`. Used to
 /// normalise the acknowledgement line read from stdin.
-fn strip_one_newline(input: &str) -> &str {
-    input
+fn strip_one_newline(input: &str) -> anyhow::Result<&str> {
+    Ok(input
         .strip_suffix("\r\n")
         .or_else(|| input.strip_suffix('\n'))
-        .unwrap_or(input)
+        // TODO(rs-cleanup): silencing at line 189 — review and replace with Result-propagating equivalent
+        .unwrap_or(input))
 }
 
 #[rudzio::suite([

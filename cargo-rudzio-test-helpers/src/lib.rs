@@ -60,7 +60,7 @@
 //!     #[rudzio::test]
 //!     async fn spawn_under_per_test_cargo_state(
 //!         ctx: &IsolatedCargoTest<'_, _>,
-//!     ) -> anyhow::Result<()> {
+//!     ) -> Result<()> {
 //!         let fixture_workspace = ctx.suite_tempdir().join("ws-xyz");
 //!         std::fs::create_dir_all(&fixture_workspace)?;
 //!         // ...write Cargo.toml under fixture_workspace...
@@ -199,8 +199,8 @@ where
         Self: 'test_context;
 
     #[inline]
-    fn cancel_token(&self) -> &CancellationToken {
-        &self.cancel
+    fn cancel_token(&self) -> Result<&CancellationToken> {
+        Ok(&self.cancel)
     }
 
     async fn context<'test_context>(
@@ -247,6 +247,7 @@ where
                 consumer_workspace.display()
             )
         })?;
+        // FIXME(rs-cleanup): callee returns Result, add ?
         Ok(IsolatedCargoTest::new(
             IsolatedCargoTestRuntimeCtx {
                 cancel,
@@ -265,8 +266,8 @@ where
     }
 
     #[inline]
-    fn rt(&self) -> &'suite_context R {
-        self.rt
+    fn rt(&self) -> Result<&'suite_context R> {
+        Ok(self.rt)
     }
 
     async fn setup(
@@ -274,6 +275,7 @@ where
         cancel: CancellationToken,
         config: &'suite_context Config,
     ) -> Result<Self, Self::SetupError> {
+        // FIXME(rs-cleanup): callee returns Result, add ?
         let tmp_base = resolve_tmp_base(&config.unparsed);
         fs::create_dir_all(&tmp_base).with_context(|| {
             format!(
@@ -318,6 +320,7 @@ where
             rt,
             suite_tempdir_path,
             template_workspace,
+            // FIXME(rs-cleanup): callee returns Result, add ?
             tracker: TaskTracker::new(),
             _suite_tempdir: suite_tempdir,
         })
@@ -336,8 +339,8 @@ where
     }
 
     #[inline]
-    fn tracker(&self) -> &TaskTracker {
-        &self.tracker
+    fn tracker(&self) -> Result<&TaskTracker> {
+        Ok(&self.tracker)
     }
 }
 
@@ -458,7 +461,7 @@ where
     pub fn new(
         rt_ctx: IsolatedCargoTestRuntimeCtx<'test_context, R>,
         paths: IsolatedCargoTestPaths<'test_context>,
-    ) -> Self {
+    ) -> Result<Self> {
         let IsolatedCargoTestRuntimeCtx {
             cancel,
             config,
@@ -472,7 +475,7 @@ where
             consumer_workspace,
             test_tempdir,
         } = paths;
-        Self {
+        Ok(Self {
             cancel,
             cargo_home,
             cargo_target_dir,
@@ -482,7 +485,7 @@ where
             suite_tempdir,
             tracker,
             _test_tempdir: test_tempdir,
-        }
+        })
     }
 
     /// Path to the **per-test** `CARGO_HOME`. Pass as
@@ -491,8 +494,8 @@ where
     /// `.package-cache` flocks here — no inter-test serialisation.
     #[inline]
     #[must_use]
-    pub fn cargo_home(&self) -> &Path {
-        &self.cargo_home
+    pub fn cargo_home(&self) -> Result<&Path> {
+        Ok(&self.cargo_home)
     }
 
     /// Path to the **per-test** empty `CARGO_TARGET_DIR`. Pass as
@@ -502,8 +505,8 @@ where
     /// lands inside the test tempdir; teardown removes it atomically.
     #[inline]
     #[must_use]
-    pub fn cargo_target_dir(&self) -> &Path {
-        &self.cargo_target_dir
+    pub fn cargo_target_dir(&self) -> Result<&Path> {
+        Ok(&self.cargo_target_dir)
     }
 
     /// Path to the **per-test** consumer workspace materialised by
@@ -526,8 +529,8 @@ where
     /// entire copy at teardown.
     #[inline]
     #[must_use]
-    pub fn consumer_workspace(&self) -> &Path {
-        &self.consumer_workspace
+    pub fn consumer_workspace(&self) -> Result<&Path> {
+        Ok(&self.consumer_workspace)
     }
 
     /// Path to the per-suite temp directory. Kept for back-compat:
@@ -563,18 +566,18 @@ where
     type TeardownError = Infallible;
 
     #[inline]
-    fn cancel_token(&self) -> &CancellationToken {
-        &self.cancel
+    fn cancel_token(&self) -> Result<&CancellationToken> {
+        Ok(&self.cancel)
     }
 
     #[inline]
-    fn config(&self) -> &Config {
-        self.config
+    fn config(&self) -> Result<&Config> {
+        Ok(self.config)
     }
 
     #[inline]
-    fn rt(&self) -> &'test_context R {
-        self.rt
+    fn rt(&self) -> Result<&'test_context R> {
+        Ok(self.rt)
     }
 
     #[inline]
@@ -588,8 +591,8 @@ where
     }
 
     #[inline]
-    fn tracker(&self) -> &TaskTracker {
-        &self.tracker
+    fn tracker(&self) -> Result<&TaskTracker> {
+        Ok(&self.tracker)
     }
 }
 
@@ -602,15 +605,15 @@ where
 /// The flag is consumed silently from the unparsed list — rudzio's
 /// runner already warns about unrecognised flags, so the spec layer
 /// doesn't need to re-flag them.
-fn resolve_tmp_base(unparsed: &[String]) -> PathBuf {
+fn resolve_tmp_base(unparsed: &[String]) -> Result<PathBuf> {
     for arg in unparsed {
         if let Some(value) = arg.strip_prefix("--tmp-dir-base=")
             && !value.is_empty()
         {
-            return PathBuf::from(value);
+            return Ok(PathBuf::from(value));
         }
     }
-    env::temp_dir()
+    Ok(env::temp_dir())
 }
 
 /// Pre-populate `cargo_home` with the registry crates every
@@ -667,6 +670,7 @@ fn prepopulate_cargo_home(cargo_home: &Path, work_root: &Path) -> Result<()> {
     // are enabled to cover the union of features any spec's
     // synthetic fixture may activate (see
     // `bug_14_monolith_sigkill_spec::workspace_rudzio_features`).
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let rudzio_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .ok_or_else(|| {
@@ -706,6 +710,7 @@ rudzio = {{ path = "{rudzio_root}", features = ["common", "runtime-tokio-multi-t
     // with this subprocess spawn. Explicit `false` here keeps the
     // prepop's first-call cold compile reachable regardless of when
     // those sibling guards fire.
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let output = Command::new(&cargo_bin)
         .arg("check")
         .arg("--manifest-path")
@@ -773,6 +778,7 @@ rudzio = {{ path = "{rudzio_root}", features = ["common", "runtime-tokio-multi-t
 fn materialize_consumer_workspace_template(dest: &Path) -> Result<()> {
     fs::create_dir_all(dest)
         .with_context(|| format!("creating template workspace dir at {}", dest.display()))?;
+    // FIXME(rs-cleanup): callee returns Result, add ?
     let rudzio_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .ok_or_else(|| {
@@ -840,7 +846,7 @@ fn materialize_consumer_workspace_template(dest: &Path) -> Result<()> {
          \x20\x20\x20\x20#[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
          \x20\x20\x20\x20mod inner {\n\
          \x20\x20\x20\x20\x20\x20\x20\x20#[rudzio::test]\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20fn trivial_test(_t: &super::Test) -> anyhow::Result<()> {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20fn trivial_test(_t: &super::Test) -> Result<()> {\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
          \x20\x20\x20\x20\x20\x20\x20\x20}\n\
          \x20\x20\x20\x20}\n\
