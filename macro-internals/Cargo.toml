@@ -34,7 +34,12 @@ syn = { workspace = true, features = ["full", "extra-traits"] }
 # rudzio-macro -> internals) is fine because dev-deps are not part of the
 # normal dependency graph.
 [dev-dependencies]
-rudzio = { workspace = true, features = [
+# Path-only (no version) to break the publish-time dependency cycle
+# (internals -> dev -> rudzio -> macro -> internals). Dev-deps are not
+# part of the consumer dependency graph, so dropping the version from
+# the published manifest is correct; in-tree tests still resolve it
+# via the workspace path.
+rudzio = { path = "..", features = [
   "common",
   "runtime-tokio-multi-thread",
   "runtime-tokio-current-thread",
