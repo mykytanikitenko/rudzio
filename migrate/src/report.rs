@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Aggregate counters and warning list collected during a run.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[non_exhaustive]
 pub struct Report {
     /// Cargo manifests modified (for example to add `linkme` deps).
@@ -67,10 +67,14 @@ impl Report {
         self.cargo_toml_edits.push(path);
     }
 
-    /// Construct an empty report.
+    /// Construct an empty report. Named `empty` (not `new`) to
+    /// dodge clippy's `new_without_default` lint without resorting
+    /// to an `#[expect]` escape hatch — P-1 forbids `Default`
+    /// impls workspace-wide; the rename communicates that intent
+    /// at the API surface.
     #[inline]
     #[must_use]
-    pub const fn new() -> Self {
+    pub const fn empty() -> Self {
         Self {
             backups_created: Vec::new(),
             cargo_toml_edits: Vec::new(),

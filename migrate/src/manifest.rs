@@ -12,7 +12,7 @@ use crate::backup;
 use crate::cli::RuntimeChoice;
 
 /// Per-package collection of edits to apply to a `Cargo.toml`.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[non_exhaustive]
 pub struct Edits {
     /// `[[bin]]` target names from `cargo metadata`. Each one gets a
@@ -63,7 +63,7 @@ pub struct IntegrationTestEntry {
 
 /// Bool flags gating a Cargo.toml *addition* (a new dep / cfg). Split
 /// from [`Edits`] so neither trips `struct_excessive_bools`.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct Needs {
     /// True when the rewriter introduced an `anyhow::*` reference and
@@ -76,6 +76,41 @@ pub struct Needs {
     /// `[lints.rust] unexpected_cfgs = { check-cfg = ['cfg(rudzio_test)'] }`
     /// entry so Rust 1.80+'s unknown-cfg warning doesn't fire.
     pub rudzio_test_cfg: bool,
+}
+
+impl Edits {
+    /// Empty edits — every field cleared. Replaces the prior
+    /// `Default::default()` per P-1 (no `Default` impls in
+    /// workspace-internal types). Sole consumer:
+    /// `migrate::run::process_package`, which uses this in a
+    /// struct-update pattern to seed only the fields it knows
+    /// at call-time.
+    #[inline]
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            bin_names: Vec::new(),
+            had_src_conversion: false,
+            has_lib_rs: false,
+            needs: Needs::empty(),
+            runtimes: BTreeSet::new(),
+            tests_integration: Vec::new(),
+            workspace_dep_names: BTreeSet::new(),
+        }
+    }
+}
+
+impl Needs {
+    /// All-false flags. Replaces the prior `Default::default()` per
+    /// P-1 (no `Default` impls in workspace-internal types).
+    #[inline]
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            anyhow: false,
+            rudzio_test_cfg: false,
+        }
+    }
 }
 
 /// Apply `edits` to `manifest_path`, writing back when the document

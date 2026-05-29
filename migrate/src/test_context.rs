@@ -77,7 +77,7 @@ pub struct Plan {
 
 /// State the rewriter consults to decide how to emit a `#[rudzio::suite]`
 /// attribute and whether to append generated bridge impls to a file.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[non_exhaustive]
 pub struct Resolver {
     /// Resolved migrations, keyed on the ctx path string.
@@ -162,11 +162,16 @@ impl<'ast> Visit<'ast> for Scanner<'_> {
 }
 
 impl Resolver {
-    /// Construct an empty resolver.
+    /// Construct an empty resolver. Replaces the prior
+    /// `Default::default()` path per P-1 (no `Default` impls in
+    /// workspace-internal types).
     #[inline]
     #[must_use]
     pub fn empty() -> Self {
-        Self::default()
+        Self {
+            plans: BTreeMap::new(),
+            unresolved: HashSet::new(),
+        }
     }
 
     /// True if `ctx_key` was seen but no local impl could be matched.

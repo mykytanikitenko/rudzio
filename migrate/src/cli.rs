@@ -63,7 +63,7 @@ pub struct Cli {
 }
 
 /// Bool flags that govern what the generator emits.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct GenerationFlags {
     /// Don't emit a pre-migration block comment above each converted
@@ -71,6 +71,20 @@ pub struct GenerationFlags {
     pub no_preserve_originals: bool,
     /// Skip the Cargo.toml + `tests/main.rs` scaffolding prompt.
     pub no_shared_runner: bool,
+}
+
+impl GenerationFlags {
+    /// All-false generation flags. Replaces the prior
+    /// `Default::default()` per P-1 (no `Default` impls in
+    /// workspace-internal types).
+    #[inline]
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            no_preserve_originals: false,
+            no_shared_runner: false,
+        }
+    }
 }
 
 /// Reasons argv parsing may fail.
@@ -88,7 +102,7 @@ pub enum ParseError {
 }
 
 /// Bool flags that govern the run's mode and input scope.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct RunFlags {
     /// Parse and report planned changes; don't write files or create
@@ -101,6 +115,19 @@ pub struct RunFlags {
     /// prettyplease can't round-trip. The lib keeps its existing
     /// `#[cfg(test)] mod tests { ... }` harness unchanged.
     pub tests_only: bool,
+}
+
+impl RunFlags {
+    /// All-false run flags. Replaces the prior `Default::default()`
+    /// per P-1 (no `Default` impls in workspace-internal types).
+    #[inline]
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            dry_run: false,
+            tests_only: false,
+        }
+    }
 }
 
 /// Choice of runtime baked into the generated suite blocks.
@@ -177,8 +204,8 @@ impl RuntimeChoice {
 pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError> {
     let mut path: Option<PathBuf> = None;
     let mut runtime = RuntimeChoice::TokioMt;
-    let mut run = RunFlags::default();
-    let mut generation = GenerationFlags::default();
+    let mut run = RunFlags::empty();
+    let mut generation = GenerationFlags::empty();
     let mut only_package: Option<String> = None;
 
     let mut iter = args.into_iter();

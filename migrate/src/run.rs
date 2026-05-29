@@ -91,7 +91,7 @@ pub fn run(args: &cli::Cli) -> anyhow::Result<ExitCode> {
     let test_contexts = test_context::resolve(&packages)?;
     let workspace_dep_names = collect_workspace_dep_names(&args.path);
 
-    let mut report = report::Report::new();
+    let mut report = report::Report::empty();
     let emit_opts = emit::Options {
         default_runtime: args.runtime,
         preserve_originals: !args.generation.no_preserve_originals,
@@ -200,7 +200,7 @@ fn process_package(
         workspace_dep_names: workspace_dep_names.clone(),
         has_lib_rs: pkg.root.join("src/lib.rs").is_file(),
         bin_names: pkg.bin_names.clone(),
-        ..manifest::Edits::default()
+        ..manifest::Edits::empty()
     };
     // Suite roots (`tests/<suite>/mod.rs`) whose subtree had files
     // modified. The rewriter only appends `fn main` to a binary-root
