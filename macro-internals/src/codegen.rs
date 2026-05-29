@@ -9,13 +9,30 @@ use crate::transform::is_test_attr;
 /// per-test override of the matching CLI default (`--test-timeout`,
 /// `--test-setup-timeout`, `--test-teardown-timeout`); resolution is
 /// `attr.or(config_default)` at runtime.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[non_exhaustive]
 pub struct TestAttrArgs {
     pub benchmark: Option<Expr>,
     pub setup_timeout_secs: Option<u64>,
     pub teardown_timeout_secs: Option<u64>,
     pub timeout_secs: Option<u64>,
+}
+
+impl TestAttrArgs {
+    /// Empty `#[rudzio::test(...)]` arguments — every slot `None`.
+    /// Replaces `Default::default()` per P-1 (no `Default` impls in
+    /// workspace-internal types). Used as the seed for
+    /// `extract_test_attr_args`'s incremental fold.
+    #[inline]
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            benchmark: None,
+            setup_timeout_secs: None,
+            teardown_timeout_secs: None,
+            timeout_secs: None,
+        }
+    }
 }
 
 /// Back-compat thin wrapper: callers that only care about the
@@ -87,7 +104,7 @@ pub fn extract_ignore_reason(func: &ItemFn) -> (bool, String) {
 /// `*_timeout = ...` slot).
 #[inline]
 pub fn extract_test_attr_args(func: &ItemFn) -> syn::Result<TestAttrArgs> {
-    let mut args = TestAttrArgs::default();
+    let mut args = TestAttrArgs::empty();
     for attr in &func.attrs {
         if !is_test_attr(attr) {
             continue;
