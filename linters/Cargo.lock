@@ -84,6 +84,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rs-result-sig-rewrite"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "proc-macro2",
+ "syn",
+]
+
+[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -429,7 +429,7 @@ impl<'src> Planner<'src> {
         let mut return_visitor = ReturnVisitor { returns: Vec::new() };
         return_visitor.visit_block(block);
         for ret in return_visitor.returns {
-            self.rewrite_return(&ret);
+            self.rewrite_return(ret);
         }
 
         // Classify the tail. `Stmt::Expr(_, None)` is a wrappable

@@ -3,7 +3,7 @@ mod common;
 
 #[test]
 fn const_fn_skip() {
-    let outcome = common::run_case_with_exit(
+    let outcome = common::run_case(
         include_str!("fixtures/const_fn_skip_input.rs"),
         include_str!("fixtures/const_fn_skip_expected.rs"),
         3,

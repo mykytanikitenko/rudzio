@@ -6,6 +6,7 @@ fn iterator_next_skip() {
     let outcome = common::run_case(
         include_str!("fixtures/iterator_next_skip_input.rs"),
         include_str!("fixtures/iterator_next_skip_expected.rs"),
+        0,
     );
     assert_eq!(outcome.transformed, 0);
     assert!(
