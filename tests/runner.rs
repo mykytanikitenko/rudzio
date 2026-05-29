@@ -363,8 +363,8 @@ mod config_parser {
     fn shuffle_with_seed_is_deterministic(_ctx: &Test) -> anyhow::Result<()> {
         let mut first: Vec<u32> = (0..50_u32).collect();
         let mut second: Vec<u32> = (0..50_u32).collect();
-        permute_with_seed(&mut first, 12345);
-        permute_with_seed(&mut second, 12345);
+        permute_with_seed(&mut first, 12345)?;
+        permute_with_seed(&mut second, 12345)?;
         anyhow::ensure!(first == second, "same seed must yield same permutation");
         anyhow::ensure!(
             first != (0..50_u32).collect::<Vec<_>>(),
@@ -377,8 +377,8 @@ mod config_parser {
     fn shuffle_with_different_seeds_yields_different_orders(_ctx: &Test) -> anyhow::Result<()> {
         let mut first: Vec<u32> = (0..50_u32).collect();
         let mut second: Vec<u32> = (0..50_u32).collect();
-        permute_with_seed(&mut first, 1);
-        permute_with_seed(&mut second, 2);
+        permute_with_seed(&mut first, 1)?;
+        permute_with_seed(&mut second, 2)?;
         anyhow::ensure!(
             first != second,
             "different seeds should permute differently"
@@ -390,7 +390,7 @@ mod config_parser {
     fn shuffle_preserves_multiset(_ctx: &Test) -> anyhow::Result<()> {
         let original: Vec<u32> = (0..100_u32).collect();
         let mut permuted = original.clone();
-        permute_with_seed(&mut permuted, 0xDEAD_BEEF);
+        permute_with_seed(&mut permuted, 0xDEAD_BEEF)?;
         let mut sorted = permuted.clone();
         sorted.sort_unstable();
         anyhow::ensure!(sorted == original, "shuffle must be a permutation");

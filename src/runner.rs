@@ -1247,7 +1247,15 @@ fn dispatch_test_groups(
                 // runs on its own thread and its own runtime, so
                 // reordering across groups wouldn't change interleaving
                 // in any user-visible way.
-                permute_with_seed(&mut group_tokens, resolved_shuffle_seed(config));
+                // TODO(rs-cleanup): permute_with_seed is currently infallible
+                // (always Ok). Once it gains real propagated errors,
+                // dispatch_test_groups should become Result<TestSummary> and
+                // this should `?`-propagate instead of logging. Handling the
+                // Result here keeps the hazard visible without cascading the
+                // signature change through run() yet.
+                if let Err(err) = permute_with_seed(&mut group_tokens, resolved_shuffle_seed(config)) {
+                    write_stderr(&format!("shuffle failed: {err:#}\n"));
+                }
             }
             let Some(first) = group_tokens.first() else {
                 continue;
