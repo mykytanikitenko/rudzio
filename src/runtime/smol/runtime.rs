@@ -72,7 +72,6 @@ impl Runtime {
             let handle = thread::Builder::new()
                 .name(format!("rudzio-smol-worker-{index}"))
                 .spawn(move || {
-                    // FIXME(rs-cleanup): callee returns Result, add ?
                     drive_worker(&executor_for_worker, shutdown_for_worker);
                 })?;
             workers.push(Some(handle));
@@ -110,103 +109,93 @@ impl Drop for Runtime {
 
 impl<'rt> RuntimeTrait<'rt> for Runtime {
     #[inline]
-    fn block_on<F>(&self, fut: F) -> anyhow::Result<F::Output>
+    fn block_on<F>(&self, fut: F) -> F::Output
     where
         F: Future + 'rt,
         F::Output: 'static,
     {
         // `local.run(fut)` drives any pending `spawn_local` tasks alongside
         // `fut`; the global executor is driven concurrently by worker threads.
-        // FIXME(rs-cleanup): callee returns Result, add ?
-        Ok(::smol::block_on(self.local.run(fut)))
+        ::smol::block_on(self.local.run(fut))
     }
 
     #[inline]
-    fn config(&self) -> anyhow::Result<&Config> {
-        Ok(&self.config)
+    fn config(&self) -> &Config {
+        &self.config
     }
 
     #[inline]
-    fn name(&self) -> anyhow::Result<&'static str> {
-        Ok("smol::Runtime")
+    fn name(&self) -> &'static str {
+        "smol::Runtime"
     }
 
     #[inline]
-    fn sleep(&self, duration: Duration) -> anyhow::Result<impl Future<Output = ()> + Send + 'rt> {
-        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
-        Ok(Timer::after(duration).map(drop))
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
+        Timer::after(duration).map(drop)
     }
 
     #[inline]
-    fn spawn<F>(&self, fut: F) -> anyhow::Result<impl Future<Output = Result<F::Output, JoinError>> + Send + 'rt>
+    fn spawn<F>(&self, fut: F) -> impl Future<Output = Result<F::Output, JoinError>> + Send + 'rt
     where
         F: Future + Send + 'static,
         F::Output: Send,
     {
         let task = self.executor.spawn(AssertUnwindSafe(fut).catch_unwind());
-        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
-        Ok(async move {
+        async move {
             match task.await {
                 Ok(value) => Ok(value),
-                // FIXME(rs-cleanup): callee returns Result, add ?
                 Err(payload) => Err(JoinError::panicked(panic_payload_to_io_error(&*payload))),
             }
-        })
+        }
     }
 
     #[inline]
     fn spawn_blocking<F, T>(
         &self,
         func: F,
-    ) -> anyhow::Result<impl Future<Output = Result<T, JoinError>> + Send + 'rt>
+    ) -> impl Future<Output = Result<T, JoinError>> + Send + 'rt
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
         let task = unblock(move || panic::catch_unwind(AssertUnwindSafe(func)));
-        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
-        Ok(async move {
+        async move {
             match task.await {
                 Ok(value) => Ok(value),
-                // FIXME(rs-cleanup): callee returns Result, add ?
                 Err(payload) => Err(JoinError::panicked(panic_payload_to_io_error(&*payload))),
             }
-        })
+        }
     }
 
     #[inline]
-    fn spawn_local<F>(&self, fut: F) -> anyhow::Result<impl Future<Output = Result<F::Output, JoinError>> + 'rt>
+    fn spawn_local<F>(&self, fut: F) -> impl Future<Output = Result<F::Output, JoinError>> + 'rt
     where
         F: Future + 'static,
     {
         let task = self.local.spawn(AssertUnwindSafe(fut).catch_unwind());
-        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
-        Ok(async move {
+        async move {
             match task.await {
                 Ok(value) => Ok(value),
-                // FIXME(rs-cleanup): callee returns Result, add ?
                 Err(payload) => Err(JoinError::panicked(panic_payload_to_io_error(&*payload))),
             }
-        })
+        }
     }
 }
 
 /// Run a single worker thread: pump `executor` until the shutdown channel
 /// closes, then return so the OS thread exits cleanly.
-fn drive_worker(executor: &Executor<'static>, shutdown: Receiver<()>) -> anyhow::Result<()> {
-    // FIXME(rs-cleanup): callee returns Result, add ?
+fn drive_worker(executor: &Executor<'static>, shutdown: Receiver<()>) {
     ::smol::block_on(executor.run(async move {
         // `recv()` returns `Err` once the sender is dropped; either outcome
         // ends the worker future.
         let _ignored: Result<(), RecvError> = shutdown.recv().await;
     }));
-    Ok(())
 }
 
 /// Map a `catch_unwind` panic payload to [`JoinError::Panicked`]'s underlying
 /// `io::Error`, preserving the original panic message when it's a string.
 #[inline]
-fn panic_payload_to_io_error(payload: &(dyn Any + Send)) -> anyhow::Result<io::Error> {
+fn panic_payload_to_io_error(payload: &(dyn Any + Send)) -> io::Error {
     let message = payload.downcast_ref::<&'static str>().map_or_else(
         || {
             payload.downcast_ref::<String>().map_or_else(
@@ -216,5 +205,5 @@ fn panic_payload_to_io_error(payload: &(dyn Any + Send)) -> anyhow::Result<io::E
         },
         |msg| format!("task panicked: {msg}"),
     );
-    Ok(io::Error::other(message))
+    io::Error::other(message)
 }

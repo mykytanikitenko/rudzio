@@ -21,7 +21,6 @@ test = false
 doctest = false
 
 [dependencies]
-anyhow = "=1.0.102"
 # `span-locations` exposes `Span::start()` / `Span::end()` even when this
 # crate is compiled as a regular library (for tests or other consumers).
 # In proc-macro context those methods come from rustc directly; elsewhere

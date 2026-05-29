@@ -55,33 +55,31 @@ impl Local {
 
 impl<'rt> Runtime<'rt> for Local {
     #[inline]
-    fn block_on<F>(&self, fut: F) -> anyhow::Result<F::Output>
+    fn block_on<F>(&self, fut: F) -> F::Output
     where
         F: Future + 'rt,
         F::Output: 'static,
     {
-        Ok(self.rt.block_on(fut))
+        self.rt.block_on(fut)
     }
 
     #[inline]
-    fn config(&self) -> anyhow::Result<&Config> {
-        Ok(&self.config)
+    fn config(&self) -> &Config {
+        &self.config
     }
 
     #[inline]
-    fn name(&self) -> anyhow::Result<&'static str> {
-        Ok("tokio::Local")
+    fn name(&self) -> &'static str {
+        "tokio::Local"
     }
 
     #[inline]
-    fn sleep(&self, duration: Duration) -> anyhow::Result<impl Future<Output = ()> + Send + 'rt> {
-        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
-        // FIXME(rs-cleanup): callee returns Result, add ?
-        Ok(sleep(duration))
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
+        sleep(duration)
     }
 
     #[inline]
-    fn spawn<F>(&self, fut: F) -> anyhow::Result<impl Future<Output = Result<F::Output, JoinError>> + Send + 'rt>
+    fn spawn<F>(&self, fut: F) -> impl Future<Output = Result<F::Output, JoinError>> + Send + 'rt
     where
         F: Future + Send + 'static,
         F::Output: Send,
@@ -89,31 +87,28 @@ impl<'rt> Runtime<'rt> for Local {
         // `LocalRuntime` has no `spawn`; since it is single-threaded,
         // `spawn_local` is semantically equivalent and accepts `Send` futures.
         let handle = self.rt.spawn_local(fut);
-        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
-        Ok(async move { handle.await.map_err(tokio_join_error_to_join_error) })
+        async move { handle.await.map_err(tokio_join_error_to_join_error) }
     }
 
     #[inline]
     fn spawn_blocking<F, T>(
         &self,
         func: F,
-    ) -> anyhow::Result<impl Future<Output = Result<T, JoinError>> + Send + 'rt>
+    ) -> impl Future<Output = Result<T, JoinError>> + Send + 'rt
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
         let handle = self.rt.spawn_blocking(func);
-        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
-        Ok(async move { handle.await.map_err(tokio_join_error_to_join_error) })
+        async move { handle.await.map_err(tokio_join_error_to_join_error) }
     }
 
     #[inline]
-    fn spawn_local<F>(&self, fut: F) -> anyhow::Result<impl Future<Output = Result<F::Output, JoinError>> + 'rt>
+    fn spawn_local<F>(&self, fut: F) -> impl Future<Output = Result<F::Output, JoinError>> + 'rt
     where
         F: Future + 'static,
     {
         let handle = self.rt.spawn_local(fut);
-        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
-        Ok(async move { handle.await.map_err(tokio_join_error_to_join_error) })
+        async move { handle.await.map_err(tokio_join_error_to_join_error) }
     }
 }

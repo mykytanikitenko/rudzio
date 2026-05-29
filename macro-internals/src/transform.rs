@@ -27,29 +27,29 @@ pub enum CtxKind {
 /// loudly rather than silently wire up a `&ctx`.
 #[inline]
 #[must_use]
-pub fn classify_ctx_param(func: &ItemFn) -> anyhow::Result<CtxKind> {
+pub fn classify_ctx_param(func: &ItemFn) -> CtxKind {
     let Some(first) = func.sig.inputs.first() else {
-        return Ok(CtxKind::None);
+        return CtxKind::None;
     };
     let syn::FnArg::Typed(pat_type) = first else {
-        return Ok(CtxKind::None);
+        return CtxKind::None;
     };
     let syn::Type::Reference(type_ref) = &*pat_type.ty else {
-        return Ok(CtxKind::None);
+        return CtxKind::None;
     };
-    Ok(if type_ref.mutability.is_some() {
+    if type_ref.mutability.is_some() {
         CtxKind::Mutable
     } else {
         CtxKind::Shared
-    })
+    }
 }
 
 /// Returns `true` when `func` carries any attribute the suite macro
 /// recognises as a test marker (`#[test]` or `#[rudzio::test]`).
 #[inline]
 #[must_use]
-pub fn has_test_attr(func: &ItemFn) -> anyhow::Result<bool> {
-    Ok(func.attrs.iter().any(is_test_attr))
+pub fn has_test_attr(func: &ItemFn) -> bool {
+    func.attrs.iter().any(is_test_attr)
 }
 
 /// Returns `true` when `func` is declared `async fn`.
@@ -63,15 +63,15 @@ pub const fn is_async_fn(func: &ItemFn) -> bool {
 /// macro recognises (`#[test]` or `#[rudzio::test]`).
 #[inline]
 #[must_use]
-pub fn is_test_attr(attr: &Attribute) -> anyhow::Result<bool> {
-    Ok(attr.path().is_ident("test")
+pub fn is_test_attr(attr: &Attribute) -> bool {
+    attr.path().is_ident("test")
         || (attr.path().segments.len() == 2
             && {
                 let first = attr.path().segments.first();
                 let second = attr.path().segments.last();
                 matches!((first, second),
                 (Some(first_seg), Some(second_seg)) if first_seg.ident == "rudzio" && second_seg.ident == "test")
-            }))
+            })
 }
 
 /// `true` if the function's return type is `()` — either left off
@@ -83,14 +83,14 @@ pub fn is_test_attr(attr: &Attribute) -> anyhow::Result<bool> {
 /// tests without thinking about Result.
 #[inline]
 #[must_use]
-pub fn returns_unit(func: &ItemFn) -> anyhow::Result<bool> {
-    Ok(match &func.sig.output {
+pub fn returns_unit(func: &ItemFn) -> bool {
+    match &func.sig.output {
         syn::ReturnType::Default => true,
         syn::ReturnType::Type(_, ty) => matches!(
             &**ty,
             syn::Type::Tuple(tuple) if tuple.elems.is_empty()
         ),
-    })
+    }
 }
 
 /// Transform test function signature to add generic lifetimes and runtime type.
@@ -114,7 +114,7 @@ pub fn returns_unit(func: &ItemFn) -> anyhow::Result<bool> {
 /// If the context type already has generic arguments, leaves it unchanged.
 #[inline]
 #[must_use]
-pub fn apply_runtime_generics(mut func: ItemFn) -> anyhow::Result<ItemFn> {
+pub fn apply_runtime_generics(mut func: ItemFn) -> ItemFn {
     use proc_macro2::Span;
 
     let should_transform = if let Some(first_param) = func.sig.inputs.first()
@@ -150,5 +150,5 @@ pub fn apply_runtime_generics(mut func: ItemFn) -> anyhow::Result<ItemFn> {
         };
     }
 
-    Ok(func)
+    func
 }

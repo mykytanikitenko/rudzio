@@ -21,13 +21,13 @@ impl JoinError {
     /// Create a new cancelled error with the given source.
     #[inline]
     #[must_use]
-    pub fn cancelled<E>(source: E) -> anyhow::Result<Self>
+    pub fn cancelled<E>(source: E) -> Self
     where
         E: Error + Send + Sync + 'static,
     {
-        Ok(Self::Cancelled {
+        Self::Cancelled {
             source: Some(Box::new(source)),
-        })
+        }
     }
 
     /// Create a new cancelled error without a source.
@@ -40,13 +40,13 @@ impl JoinError {
     /// Create a new panicked error with the given source.
     #[inline]
     #[must_use]
-    pub fn panicked<E>(source: E) -> anyhow::Result<Self>
+    pub fn panicked<E>(source: E) -> Self
     where
         E: Error + Send + Sync + 'static,
     {
-        Ok(Self::Panicked {
+        Self::Panicked {
             source: Some(Box::new(source)),
-        })
+        }
     }
 
     /// Create a new panicked error without a source.
@@ -69,13 +69,13 @@ impl fmt::Display for JoinError {
 
 impl Error for JoinError {
     #[inline]
-    fn source(&self) -> anyhow::Result<Option<&(dyn Error + 'static)>> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
         let source = match self {
             Self::Panicked { source } | Self::Cancelled { source } => source,
         };
-        Ok(source.as_ref().map(|boxed| {
+        source.as_ref().map(|boxed| {
             let err: &(dyn Error + 'static) = boxed.as_ref();
             err
-        }))
+        })
     }
 }

@@ -68,10 +68,9 @@ pub trait Runtime<'rt>: 'rt {
     /// Default implementation is runtime-agnostic: return `Pending` once after
     /// re-scheduling the current task, then complete on the next poll.
     #[inline]
-    fn yield_now(&self) -> anyhow::Result<impl Future<Output = ()> + 'rt> {
+    fn yield_now(&self) -> impl Future<Output = ()> + 'rt {
         let mut yielded = false;
-        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
-        Ok(poll_fn(move |cx| {
+        poll_fn(move |cx| {
             if yielded {
                 Poll::Ready(())
             } else {
@@ -79,6 +78,6 @@ pub trait Runtime<'rt>: 'rt {
                 cx.waker().wake_by_ref();
                 Poll::Pending
             }
-        }))
+        })
     }
 }

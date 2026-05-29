@@ -66,34 +66,33 @@ impl ThreadPool {
 
 impl<'rt> Runtime<'rt> for ThreadPool {
     #[inline]
-    fn block_on<F>(&self, fut: F) -> anyhow::Result<F::Output>
+    fn block_on<F>(&self, fut: F) -> F::Output
     where
         F: Future + 'rt,
         F::Output: 'static,
     {
         // `run_until` drives every queued LocalPool task alongside `fut`,
         // so `spawn_local` futures make progress for free.
-        Ok(self.local.borrow_mut().run_until(fut))
+        self.local.borrow_mut().run_until(fut)
     }
 
     #[inline]
-    fn config(&self) -> anyhow::Result<&Config> {
-        Ok(&self.config)
+    fn config(&self) -> &Config {
+        &self.config
     }
 
     #[inline]
-    fn name(&self) -> anyhow::Result<&'static str> {
-        Ok("futures::ThreadPool")
+    fn name(&self) -> &'static str {
+        "futures::ThreadPool"
     }
 
     #[inline]
-    fn sleep(&self, duration: Duration) -> anyhow::Result<impl Future<Output = ()> + Send + 'rt> {
-        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
-        Ok(Delay::new(duration))
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
+        Delay::new(duration)
     }
 
     #[inline]
-    fn spawn<F>(&self, fut: F) -> anyhow::Result<impl Future<Output = Result<F::Output, JoinError>> + Send + 'rt>
+    fn spawn<F>(&self, fut: F) -> impl Future<Output = Result<F::Output, JoinError>> + Send + 'rt
     where
         F: Future + Send + 'static,
         F::Output: Send,
@@ -101,24 +100,22 @@ impl<'rt> Runtime<'rt> for ThreadPool {
         let handle = self
             .pool
             .spawn_with_handle(AssertUnwindSafe(fut).catch_unwind());
-        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
-        Ok(async move {
+        async move {
             match handle {
                 Ok(remote) => match remote.await {
                     Ok(value) => Ok(value),
-                    // FIXME(rs-cleanup): callee returns Result, add ?
                     Err(payload) => Err(JoinError::panicked(panic_payload_to_io_error(&*payload))),
                 },
                 Err(err) => Err(JoinError::cancelled(io::Error::other(err.to_string()))),
             }
-        })
+        }
     }
 
     #[inline]
     fn spawn_blocking<F, T>(
         &self,
         func: F,
-    ) -> anyhow::Result<impl Future<Output = Result<T, JoinError>> + Send + 'rt>
+    ) -> impl Future<Output = Result<T, JoinError>> + Send + 'rt
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
@@ -129,45 +126,41 @@ impl<'rt> Runtime<'rt> for ThreadPool {
         let handle = self
             .pool
             .spawn_with_handle(async move { panic::catch_unwind(AssertUnwindSafe(func)) });
-        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
-        Ok(async move {
+        async move {
             match handle {
                 Ok(remote) => match remote.await {
                     Ok(value) => Ok(value),
-                    // FIXME(rs-cleanup): callee returns Result, add ?
                     Err(payload) => Err(JoinError::panicked(panic_payload_to_io_error(&*payload))),
                 },
                 Err(err) => Err(JoinError::cancelled(io::Error::other(err.to_string()))),
             }
-        })
+        }
     }
 
     #[inline]
-    fn spawn_local<F>(&self, fut: F) -> anyhow::Result<impl Future<Output = Result<F::Output, JoinError>> + 'rt>
+    fn spawn_local<F>(&self, fut: F) -> impl Future<Output = Result<F::Output, JoinError>> + 'rt
     where
         F: Future + 'static,
     {
         let handle = self
             .local_spawner
             .spawn_local_with_handle(AssertUnwindSafe(fut).catch_unwind());
-        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
-        Ok(async move {
+        async move {
             match handle {
                 Ok(remote) => match remote.await {
                     Ok(value) => Ok(value),
-                    // FIXME(rs-cleanup): callee returns Result, add ?
                     Err(payload) => Err(JoinError::panicked(panic_payload_to_io_error(&*payload))),
                 },
                 Err(err) => Err(JoinError::cancelled(io::Error::other(err.to_string()))),
             }
-        })
+        }
     }
 }
 
 /// Map a `catch_unwind` panic payload to [`JoinError::Panicked`]'s underlying
 /// `io::Error`, preserving the original panic message when it's a string.
 #[inline]
-fn panic_payload_to_io_error(payload: &(dyn Any + Send)) -> anyhow::Result<io::Error> {
+fn panic_payload_to_io_error(payload: &(dyn Any + Send)) -> io::Error {
     let message = payload.downcast_ref::<&'static str>().map_or_else(
         || {
             payload.downcast_ref::<String>().map_or_else(
@@ -177,5 +170,5 @@ fn panic_payload_to_io_error(payload: &(dyn Any + Send)) -> anyhow::Result<io::E
         },
         |msg| format!("task panicked: {msg}"),
     );
-    Ok(io::Error::other(message))
+    io::Error::other(message)
 }

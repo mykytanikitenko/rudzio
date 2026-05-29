@@ -36,13 +36,12 @@ use crate::runtime::{JoinError, Runtime as RuntimeTrait};
 /// named `__pender`. We route the signal to the `Signaler` associated with
 /// the executor via the `context` pointer that `Executor::new` stored.
 #[unsafe(export_name = "__pender")]
-fn __pender(context: *mut ()) -> anyhow::Result<()> {
+fn __pender(context: *mut ()) {
     // SAFETY: `context` is the `&'static Signaler` pointer we passed to
     // `Executor::new` in `Runtime::new`; it lives for the rest of the
     // process.
     let signaler: &'static Signaler = unsafe { &*(context.cast::<Signaler>()) };
     signaler.signal();
-    Ok(())
 }
 
 /// Condvar-backed parking primitive that matches `embassy_executor::arch::std`.
@@ -68,31 +67,26 @@ impl Signaler {
     }
 
     /// Set the latch and wake any thread parked in [`Self::wait`].
-    fn signal(&self) -> anyhow::Result<()> {
+    fn signal(&self) {
         {
-            // TODO(rs-cleanup): silencing at line 72 — review and replace with Result-propagating equivalent
             let mut guard = self.flag.lock().unwrap_or_else(PoisonError::into_inner);
             *guard = true;
         }
         self.condvar.notify_one();
-        Ok(())
-}
+    }
 
     /// Block until [`Self::signal`] is observed, clearing the latch
     /// before returning so the next wait can be re-armed.
-    fn wait(&self) -> anyhow::Result<()> {
-        // TODO(rs-cleanup): silencing at line 81 — review and replace with Result-propagating equivalent
+    fn wait(&self) {
         let mut guard = self.flag.lock().unwrap_or_else(PoisonError::into_inner);
         while !*guard {
             guard = self
                 .condvar
                 .wait(guard)
-                // TODO(rs-cleanup): silencing at line 86 — review and replace with Result-propagating equivalent
                 .unwrap_or_else(PoisonError::into_inner);
         }
         *guard = false;
-        Ok(())
-}
+    }
 }
 
 /// Type-erased future boxed so one `TaskStorage` concrete type covers every
@@ -123,10 +117,10 @@ impl fmt::Debug for Runtime {
 
 impl Runtime {
     /// Drive the executor until `done` returns `Some`, then return its value.
-    fn drive_until<T>(&self, mut done: impl FnMut() -> Option<T>) -> anyhow::Result<T> {
-        Ok(loop {
+    fn drive_until<T>(&self, mut done: impl FnMut() -> Option<T>) -> T {
+        loop {
             if let Some(value) = done() {
-                return Ok(value);
+                return value;
             }
             // SAFETY: the executor was initialized by `Runtime::new` and we
             // never re-enter `poll` (this loop is the sole caller).
@@ -134,10 +128,10 @@ impl Runtime {
                 self.executor.poll();
             }
             if let Some(value) = done() {
-                return Ok(value);
+                return value;
             }
             self.signaler.wait();
-        })
+        }
     }
 
     /// Build an embassy runtime.
@@ -172,19 +166,17 @@ impl Runtime {
     /// so the `Err` arm is unreachable. If embassy's contract ever changes
     /// the spawn becomes a no-op and `block_on` surfaces as a `--run-timeout`
     /// — preferable to a panic.
-    fn spawn_erased(&self, task: ErasedTask) -> anyhow::Result<()> {
+    fn spawn_erased(&self, task: ErasedTask) {
         let storage: &'static TaskStorage<ErasedTask> = Box::leak(Box::new(TaskStorage::new()));
-        // FIXME(rs-cleanup): callee returns Result, add ?
         if let Ok(token) = TaskStorage::spawn(storage, || task) {
             self.spawner.spawn(token);
-        };
-        Ok(())
-}
+        }
+    }
 }
 
 impl<'rt> RuntimeTrait<'rt> for Runtime {
     #[inline]
-    fn block_on<F>(&self, fut: F) -> anyhow::Result<F::Output>
+    fn block_on<F>(&self, fut: F) -> F::Output
     where
         F: Future + 'rt,
         F::Output: 'static,
@@ -218,74 +210,65 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
             }
         }));
 
-        Ok(self.drive_until(|| slot.take()))
+        self.drive_until(|| slot.take())
     }
 
     #[inline]
-    fn config(&self) -> anyhow::Result<&Config> {
-        Ok(&self.config)
+    fn config(&self) -> &Config {
+        &self.config
     }
 
     #[inline]
-    fn name(&self) -> anyhow::Result<&'static str> {
-        Ok("embassy::Runtime")
+    fn name(&self) -> &'static str {
+        "embassy::Runtime"
     }
 
     #[inline]
-    fn sleep(&self, duration: Duration) -> anyhow::Result<impl Future<Output = ()> + Send + 'rt> {
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'rt {
         // No native timer; delegate to an OS thread. Its `tx.send` wakes the
         // pending task via the receiver's future, which in turn fires
         // `__pender` and unparks the executor loop.
         let (tx, rx) = mpsc::channel::<()>();
-        // FIXME(rs-cleanup): callee returns Result, add ?
         let _timer_handle: thread::JoinHandle<()> = thread::spawn(move || {
-            // FIXME(rs-cleanup): callee returns Result, add ?
             thread::sleep(duration);
             let _send_ret: Result<(), mpsc::SendError<()>> = tx.send(());
         });
-        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
-        Ok(async move {
+        async move {
             let _poll_ret: Result<(), JoinError> = poll_channel(rx).await;
-        })
+        }
     }
 
     #[inline]
-    fn spawn<F>(&self, fut: F) -> anyhow::Result<impl Future<Output = Result<F::Output, JoinError>> + Send + 'rt>
+    fn spawn<F>(&self, fut: F) -> impl Future<Output = Result<F::Output, JoinError>> + Send + 'rt
     where
         F: Future + Send + 'static,
         F::Output: Send,
     {
-        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
-        // FIXME(rs-cleanup): callee returns Result, add ?
-        Ok(spawn_task(&self.spawner, fut))
+        spawn_task(&self.spawner, fut)
     }
 
     #[inline]
     fn spawn_blocking<F, T>(
         &self,
         func: F,
-    ) -> anyhow::Result<impl Future<Output = Result<T, JoinError>> + Send + 'rt>
+    ) -> impl Future<Output = Result<T, JoinError>> + Send + 'rt
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
         let (tx, rx) = mpsc::channel::<T>();
-        // FIXME(rs-cleanup): callee returns Result, add ?
         let _unused = thread::spawn(move || {
             let _unused = tx.send(func());
         });
-        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
-        Ok(poll_channel(rx))
+        poll_channel(rx)
     }
 
     #[inline]
-    fn spawn_local<F>(&self, fut: F) -> anyhow::Result<impl Future<Output = Result<F::Output, JoinError>> + 'rt>
+    fn spawn_local<F>(&self, fut: F) -> impl Future<Output = Result<F::Output, JoinError>> + 'rt
     where
         F: Future + 'static,
     {
-        // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
-        // FIXME(rs-cleanup): callee returns Result, add ?
-        Ok(spawn_task_local(&self.spawner, fut))
+        spawn_task_local(&self.spawner, fut)
     }
 }
 
@@ -305,7 +288,7 @@ unsafe impl<T> Send for SlotPtr<T> {}
 fn spawn_task<F>(
     spawner: &Spawner,
     fut: F,
-) -> anyhow::Result<impl Future<Output = Result<F::Output, JoinError>> + Send + 'static>
+) -> impl Future<Output = Result<F::Output, JoinError>> + Send + 'static
 where
     F: Future + Send + 'static,
     F::Output: Send,
@@ -315,12 +298,10 @@ where
         let _unused = tx.send(fut.await);
     });
     let storage: &'static TaskStorage<ErasedTask> = Box::leak(Box::new(TaskStorage::new()));
-    // FIXME(rs-cleanup): callee returns Result, add ?
     if let Ok(token) = TaskStorage::spawn(storage, || erased) {
         spawner.spawn(token);
     }
-    // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
-    Ok(poll_channel(rx))
+    poll_channel(rx)
 }
 
 /// Spawn a `!Send` future onto the executor. Wraps the future and its output
@@ -329,7 +310,7 @@ where
 fn spawn_task_local<F>(
     spawner: &Spawner,
     fut: F,
-) -> anyhow::Result<impl Future<Output = Result<F::Output, JoinError>> + 'static>
+) -> impl Future<Output = Result<F::Output, JoinError>> + 'static
 where
     F: Future + 'static,
 {
@@ -339,12 +320,10 @@ where
         let _unused = tx.send(wrapped_fut.await);
     });
     let storage: &'static TaskStorage<ErasedTask> = Box::leak(Box::new(TaskStorage::new()));
-    // FIXME(rs-cleanup): callee returns Result, add ?
     if let Ok(token) = TaskStorage::spawn(storage, || erased) {
         spawner.spawn(token);
     }
-    // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
-    Ok(async move {
+    async move {
         rx.recv().map_or_else(
             |_| {
                 Err(JoinError::cancelled(io::Error::other(
@@ -353,7 +332,7 @@ where
             },
             |wrapped| Ok(wrapped.take()),
         )
-    })
+    }
 }
 
 /// Poll an `mpsc::Receiver` from an async context, yielding between empty
@@ -363,7 +342,6 @@ async fn poll_channel<T: Send + 'static>(rx: mpsc::Receiver<T>) -> Result<T, Joi
         match rx.try_recv() {
             Ok(val) => return Ok(val),
             Err(mpsc::TryRecvError::Empty) => {
-                // FIXME(rs-cleanup): callee returns Result, add ?
                 yield_once().await;
             }
             Err(mpsc::TryRecvError::Disconnected) => {
@@ -379,10 +357,9 @@ async fn poll_channel<T: Send + 'static>(rx: mpsc::Receiver<T>) -> Result<T, Joi
 /// don't have access to `&self` and therefore can't call the trait's default
 /// `yield_now`.
 #[inline]
-fn yield_once() -> anyhow::Result<impl Future<Output = ()> + Send + 'static> {
+fn yield_once() -> impl Future<Output = ()> + Send + 'static {
     let mut yielded = false;
-    // FIXME(rs-cleanup): tail expr returns impl Trait; verify Ok-wrap compiles
-    Ok(future::poll_fn(move |cx| {
+    future::poll_fn(move |cx| {
         if yielded {
             Poll::Ready(())
         } else {
@@ -390,5 +367,5 @@ fn yield_once() -> anyhow::Result<impl Future<Output = ()> + Send + 'static> {
             cx.waker().wake_by_ref();
             Poll::Pending
         }
-    }))
+    })
 }
