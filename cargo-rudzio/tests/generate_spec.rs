@@ -169,7 +169,7 @@ mod tests {
 
         let mut ws_deps = BTreeMap::new();
         let _prev = ws_deps.insert("rudzio".to_owned(), {
-            let mut ws = WorkspaceDepSpec::new();
+            let mut ws = WorkspaceDepSpec::empty();
             ws.git = Some("https://github.com/mykytanikitenko/rudzio".to_owned());
             ws.git_ref = Some(GitRef::Tag("v0.1.0".to_owned()));
             ws.features = vec!["common".to_owned()];

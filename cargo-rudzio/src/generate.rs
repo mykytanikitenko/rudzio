@@ -956,13 +956,15 @@ impl RudzioSpec {
 }
 
 impl WorkspaceDepSpec {
-    /// Construct a default `WorkspaceDepSpec`.
+    /// Construct an empty `WorkspaceDepSpec`.
     ///
     /// All fields default to empty; `uses_default_features` matches
-    /// cargo's own true default.
+    /// cargo's own true default. Renamed from `new` to `empty` per
+    /// P-1 so the workspace doesn't trip clippy's `new_without_default`
+    /// lint (P-1 forbids `Default` impls workspace-wide).
     #[inline]
     #[must_use]
-    pub const fn new() -> Self {
+    pub const fn empty() -> Self {
         Self {
             features: Vec::new(),
             git: None,
@@ -972,13 +974,6 @@ impl WorkspaceDepSpec {
             uses_default_features: true,
             version_req: None,
         }
-    }
-}
-
-impl Default for WorkspaceDepSpec {
-    #[inline]
-    fn default() -> Self {
-        Self::new()
     }
 }
 

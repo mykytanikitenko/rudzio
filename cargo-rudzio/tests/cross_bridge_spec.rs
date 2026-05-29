@@ -212,7 +212,7 @@ mod tests {
         consumer.dev_deps = vec![consumer_dep_on_provider];
 
         let mut workspace_deps: BTreeMap<String, WorkspaceDepSpec> = BTreeMap::new();
-        let mut provider_ws = WorkspaceDepSpec::new();
+        let mut provider_ws = WorkspaceDepSpec::empty();
         provider_ws.path = Some(root.join("B"));
         let _previous: Option<WorkspaceDepSpec> =
             workspace_deps.insert("B".to_owned(), provider_ws);
@@ -419,7 +419,7 @@ rudzio = { workspace = true, features = [\"common\"] }
         consumer.dev_deps = vec![provider_dep];
 
         let mut ws_deps: BTreeMap<String, WorkspaceDepSpec> = BTreeMap::new();
-        let mut provider_ws = WorkspaceDepSpec::new();
+        let mut provider_ws = WorkspaceDepSpec::empty();
         provider_ws.path = Some(root.join("http"));
         let _previous: Option<WorkspaceDepSpec> = ws_deps.insert("http".to_owned(), provider_ws);
 

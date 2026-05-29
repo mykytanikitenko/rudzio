@@ -16,7 +16,7 @@ use anyhow::{Result, bail};
 ///
 /// Field order encodes the application order in `run_test`: paths
 /// restrict first, packages narrow further, excludes drop last.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[non_exhaustive]
 pub struct PlanFilters {
     /// Cargo package names to drop from the workspace member set
@@ -56,7 +56,7 @@ impl PlanFilters {
 /// Splits the input into Plan filters (consumed locally to narrow the
 /// aggregator) and runner args (forwarded verbatim to the rudzio test
 /// binary after `--`).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[non_exhaustive]
 pub struct ParsedTestArgs {
     /// Cargo-test-compat flags that rudzio silently accepts because
