@@ -56,9 +56,12 @@ dependencies = [
 name = "non-result-fns"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "proc-macro2",
  "quote",
+ "serde",
  "syn",
+ "toml",
  "walkdir",
 ]
 

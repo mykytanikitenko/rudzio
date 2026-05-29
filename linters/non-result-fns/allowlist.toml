@@ -1,0 +1,21 @@
+# non-result-fns linter allowlist.
+#
+# Each `[[allow]]` entry exempts one fully-qualified fn from the
+# hazard gate. The `path` is `<crate>::<mod1>::<mod2>::<Type?>::<fn>`
+# matching `Finding.qualified_path` in `src/main.rs`.
+#
+# The `reason` is human-authored, reviewed, and surfaces in the
+# linter report so future-PP can audit allowlist rationale without
+# leaving the report file.
+#
+# Adding an entry is a deliberate human action. The campaign default
+# is to refactor the fn to return `Result` and propagate the failure;
+# allowlist exists only for cases where the fn genuinely cannot
+# return `Result` (e.g. trait method signature locked by std).
+#
+# Ships empty — every fn currently in `linters/non-result-fns-report.txt`
+# must either: (a) gain its `?` propagation under M-2, or (b) get
+# added here with a reviewed reason. Empty file is the right initial
+# state per PLAN.md (D-EXP-equivalent for this gate).
+
+# Empty list — see comments above. Activate entries during M-2.

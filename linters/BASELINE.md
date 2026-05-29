@@ -149,3 +149,61 @@ just ci                    # check-lints is now part of the ci aggregate
 Detailed sorted report regenerates at `linters/non-result-fns-report.txt`
 on every invocation. The report is grouped by hazard total
 descending so the highest-leverage fixes surface first.
+
+---
+
+## P-4 extension snapshot
+
+**Captured:** 2026-05-28 immediately after PLAN.md Row 16 lands.
+**Commit:** at HEAD on this branch (P-4 commit).
+**What changed in the linter:** trait-impl skip list (Display, Debug,
+Iterator, etc. — see `TRAIT_SKIP_LIST` in `linters/non-result-fns/src/main.rs`),
+allowlist file at `linters/non-result-fns/allowlist.toml`, new
+`TODO(rs-cleanup)` substring counter, new `#[expect(...)]` AST counter,
+new CLI flags `--gate-todos` and `--gate-expects N` (both default
+inactive), qualified-path tracking (`<crate>::<mod>::<Type?>::<fn>`)
+for stable allowlist addressing.
+
+### Headline numbers (post-P-4)
+
+```
+Total non-Result fns enumerated:  589
+  with hazard ops in body:        107  (18%)
+  with no hazard ops in body:     482
+Allowlisted fns (excluded):       0    (allowlist.toml empty)
+Total hazard ops:                 318
+TODO(rs-cleanup) markers:         0
+#[expect(...)] attrs (scan dirs): 10
+```
+
+### Drift from original baseline (`fa80fb2`)
+
+| Metric | Baseline | Post-P-4 | Δ | Note |
+|---|---:|---:|---:|---|
+| Total non-Result fns | 576 | 589 | +13 | New code in workspace since baseline; trait-skip removed 5 std-impl fns so the raw growth is +18. |
+| Hazard ops | 318 | 318 | 0 | Unchanged headline; mid-flight cleanup (`split_lines` retype removed 1 silencing) was balanced by 1 new masking-arith elsewhere. |
+| Silencing combo | 156 | 155 | −1 | `split_lines` retype dropped its `unwrap_or("")` (P-3 / row 15). |
+| Masking arithmetic | 158 | 159 | +1 | One new `saturating_*` site appeared in the interval; not tracked. |
+| `#[expect(...)]` (scan dirs) | — | 10 | new | Counter added by P-4. Cross-check: `expect-allow-ban` linter scans the full repo and counts 155 (P-0). The 10 here are the subset under `src/`/`cargo-rudzio/src/`/etc. |
+| `TODO(rs-cleanup)` | — | 0 | new | Counter added by P-4. Phase 2 sweep is the planned activator of `--gate-todos`. |
+
+### Gate state matrix
+
+| Gate | Active? | Threshold | What flips it |
+|---|---|---|---|
+| `hazard ops > 0` | YES | 0 | Always-on. Same as baseline. |
+| `--gate-todos` | NO (opt-in) | TODO count > 0 | Activated when Phase 2 marker sweep starts. |
+| `--gate-expects N` | NO (opt-in) | `#[expect]` count > N | Activated phase-by-phase during M-2 to drive the count monotonically down. |
+
+`--gate-expects` is designed so the campaign sets `N = current_count`
+on activation, then ratchets `N` downward as fns convert to
+`Result<T>`. Same monotonic-decrease discipline as the `non-result-fns`
+hazard gate.
+
+### Allowlist policy
+
+`linters/non-result-fns/allowlist.toml` ships empty. Adding an entry
+is a deliberate human action with a reviewed `reason` string. The
+intent is `M-2` use only — fns whose signature genuinely cannot
+return `Result<T>` (locked by std trait, etc.). All other hazards
+get refactored, not allowlisted.
