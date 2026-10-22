@@ -55,7 +55,6 @@ Arg forwarding:
 cargo rudzio test some_test_name_filter
 cargo rudzio test --skip slow_test --threads 1
 cargo rudzio test --bench               # switch bench-marked tests into full mode
-cargo rudzio test --format json         # machine-readable output
 ```
 
 Every `#[rudzio::test]` token across the workspace lands in one `linkme`
