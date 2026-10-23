@@ -15,6 +15,8 @@ mod cfg_test_warning_narrowing_spec;
 mod cli_spec;
 mod crate_path_under_aggregator_spec;
 mod cross_bridge_spec;
+mod edge_bin_only_e2e_spec;
+mod edge_self_named_module_e2e_spec;
 mod features_table_propagation_spec;
 mod generate_spec;
 mod main_rs_test_root_helper_spec;
