@@ -41,6 +41,7 @@ mod per_binary_helper_isolation_spec;
 mod proper_architecture_spec;
 mod registry_preservation_spec;
 mod silent_member_drop_invariant_spec;
+mod stale_binary_shared_cache_spec;
 mod strict_parse_spec;
 mod surface_visibility_invariant_spec;
 mod synth_name_leak_spec;
