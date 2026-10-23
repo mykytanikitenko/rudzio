@@ -41,7 +41,7 @@ use rudzio::runtime::tokio::Multithread;
 fn repo_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("cargo-rudzio/tests must live under the repo root")
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")))
 }
 
 /// Resolve the ambient cargo home that holds cargo-rudzio's own dep graph.
@@ -89,18 +89,19 @@ fn parse_show_env(stdout: &[u8]) -> anyhow::Result<Vec<(String, String)>> {
         let line = raw_line
             .trim_end_matches('\r')
             .strip_prefix("export ")
-            .unwrap_or(raw_line.trim_end_matches('\r'));
+            .unwrap_or_else(|| raw_line.trim_end_matches('\r'));
         if line.is_empty() {
             continue;
         }
-        let (name, raw_value) = line.split_once('=').ok_or_else(|| {
-            anyhow::anyhow!("unexpected show-env line without `=`: {line:?}")
-        })?;
+        let (name, raw_value) = line
+            .split_once('=')
+            .ok_or_else(|| anyhow::anyhow!("unexpected show-env line without `=`: {line:?}"))?;
         assignments.push((name.to_owned(), unquote(raw_value).to_owned()));
     }
     Ok(assignments)
 }
 
+/// Strip a single pair of surrounding single quotes from a show-env value.
 fn unquote(value: &str) -> &str {
     value
         .strip_prefix('\'')
@@ -171,8 +172,7 @@ fn run_llvm_cov_report(
 mod tests {
     use super::{
         IsolatedCargoTest, Path, cargo_home_with_full_graph, llvm_cov_show_env,
-        llvm_cov_version_probe, parse_show_env, repo_root, run_cargo_rudzio_test,
-        run_llvm_cov_report,
+        llvm_cov_version_probe, parse_show_env, run_cargo_rudzio_test, run_llvm_cov_report,
     };
 
     /// **Bug #3** — `cargo rudzio test` under coverage must emit `.profraw`
@@ -194,7 +194,7 @@ mod tests {
         let cargo_build_dir = ctx
             .cargo_target_dir()
             .parent()
-            .expect("cargo target dir has a parent")
+            .ok_or_else(|| anyhow::anyhow!("cargo target dir has a parent"))?
             .join("cargo-build-dir");
 
         let show_env = llvm_cov_show_env(workspace, &cargo_home, ctx.cargo_target_dir())?;
@@ -223,8 +223,12 @@ mod tests {
             String::from_utf8_lossy(&test_output.stderr),
         );
 
-        let report_output =
-            run_llvm_cov_report(workspace, &cargo_home, ctx.cargo_target_dir(), &coverage_env)?;
+        let report_output = run_llvm_cov_report(
+            workspace,
+            &cargo_home,
+            ctx.cargo_target_dir(),
+            &coverage_env,
+        )?;
         anyhow::ensure!(
             report_output.status.success(),
             "`cargo llvm-cov report` exited {:?}. Bug #3: the aggregator built into its \
@@ -235,7 +239,6 @@ mod tests {
             String::from_utf8_lossy(&report_output.stderr),
         );
 
-        let _ = repo_root();
         Ok(())
     }
 }

@@ -37,6 +37,7 @@
 //! contamination that previously made a stale binary pass as "fixed".
 
 use std::env;
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -48,11 +49,11 @@ use rudzio::runtime::tokio::Multithread;
 fn repo_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("cargo-rudzio/tests must live under the repo root")
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")))
 }
 
 /// Resolve the cargo home that already holds cargo-rudzio's own dependency
-/// set (toml_edit, cargo_metadata, clap, …). The per-test hardlinked home
+/// set (`toml_edit`, `cargo_metadata`, clap, …). The per-test hardlinked home
 /// (`IsolatedCargoTest::cargo_home`) only pre-warms anyhow/tokio/rudzio, so
 /// it cannot build cargo-rudzio itself. `cargo run -p cargo-rudzio` must run
 /// against a home that has the full graph.
@@ -104,9 +105,9 @@ fn run_cargo_rudzio_fresh(
 fn write_standalone_bin_only_crate(crate_dir: &Path, rudzio_root: &Path) -> io::Result<()> {
     let src = crate_dir.join("src");
     let tests = crate_dir.join("tests");
-    std::fs::create_dir_all(&src)?;
-    std::fs::create_dir_all(&tests)?;
-    std::fs::write(
+    fs::create_dir_all(&src)?;
+    fs::create_dir_all(&tests)?;
+    fs::write(
         crate_dir.join("Cargo.toml"),
         format!(
             "[package]\n\
@@ -125,8 +126,8 @@ fn write_standalone_bin_only_crate(crate_dir: &Path, rudzio_root: &Path) -> io::
             rudzio = rudzio_root.display(),
         ),
     )?;
-    std::fs::write(src.join("main.rs"), "fn main() {}\n")?;
-    std::fs::write(
+    fs::write(src.join("main.rs"), "fn main() {}\n")?;
+    fs::write(
         tests.join("x.rs"),
         "// rudzio_test marker\n\
          #![allow(clippy::tests_outside_test_module)]\n\
@@ -169,13 +170,10 @@ mod tests {
         let cargo_build_dir = ctx
             .cargo_target_dir()
             .parent()
-            .expect("cargo target dir has a parent")
+            .ok_or_else(|| anyhow::anyhow!("cargo target dir has a parent"))?
             .join("cargo-build-dir");
 
-        let manifest = crate_dir
-            .join("Cargo.toml")
-            .to_string_lossy()
-            .into_owned();
+        let manifest = crate_dir.join("Cargo.toml").to_string_lossy().into_owned();
         let output = run_cargo_rudzio_fresh(
             &cargo_home_with_full_graph(),
             ctx.cargo_target_dir(),

@@ -946,22 +946,32 @@ impl Plan {
     /// the member's actual `src/` files instead of the transient
     /// aggregator copies (which the default ignore-filename-regex hides
     /// because they live under the target dir).
+    ///
+    /// The `from` side is RELATIVE to the aggregator workspace root
+    /// (`members/<bridge_dir>`, not `<out>/members/<bridge_dir>`): cargo
+    /// invokes rustc from the workspace root and hands it the bridge
+    /// source as a workspace-root-relative path, so the source-based
+    /// coverage mapping records `members/<bridge_dir>/src/lib.rs` (not an
+    /// absolute path). An absolute `--remap-path-prefix` therefore never
+    /// matches the coverage mapping — it only remaps the (irrelevant)
+    /// debug-info path — and `cargo llvm-cov report` is left attributing
+    /// coverage to the transient bridge copy. The relative prefix is what
+    /// actually rewrites the coverage mapping back onto the member's real
+    /// `src/` files.
     #[inline]
     #[must_use]
-    pub fn coverage_remap_prefixes(&self, out_dir: &Path) -> Vec<(PathBuf, PathBuf)> {
+    pub fn coverage_remap_prefixes(&self) -> Vec<(PathBuf, PathBuf)> {
         let mut pairs = Vec::new();
         for member in &self.members {
             if bridge_applies_to(member) {
                 pairs.push((
-                    out_dir.join("members").join(bridge_dir_name(member)),
+                    PathBuf::from("members").join(bridge_dir_name(member)),
                     member.manifest_dir.clone(),
                 ));
             }
             for bin in collect_bridged_bin_targets(member) {
                 pairs.push((
-                    out_dir
-                        .join("members")
-                        .join(bin_bridge_dir_name(member, bin)),
+                    PathBuf::from("members").join(bin_bridge_dir_name(member, bin)),
                     member.manifest_dir.clone(),
                 ));
             }
@@ -1306,6 +1316,25 @@ fn extend_with_transitive_path_dep_members(
             // don't want to silently inherit ALL of them — only
             // the one the outer workspace explicitly path-deps.
             if canon_pkg_dir != path_dep_dir {
+                continue;
+            }
+            // The `rudzio` framework itself is never a *rudzio-using*
+            // member, so it must not be bridged when it is reached as a
+            // transitive path-dep (an outer consumer path-depending on
+            // the rudzio repo). Its in-crate dogfood self-dev-dep
+            // (`rudzio = { path = "." }` in the root manifest) would
+            // otherwise satisfy the `dep.name == RUDZIO_DEP` filter
+            // below and cause a bridge to be generated for the rudzio
+            // crate — whose `anyhow = { workspace = true }` then cannot
+            // resolve against the outer consumer's root manifest, and
+            // the whole `cargo rudzio test` run dies before any test
+            // runs. When rudzio is a *workspace member* (the rudzio
+            // repo dogfooding itself) it is already added by
+            // `build_plan`'s workspace-member loop, and
+            // `aggregator_rudzio_inline_table` routes its dep through
+            // the bridge — this guard only suppresses the transitive
+            // path-dep case.
+            if pkg.name == RUDZIO_DEP {
                 continue;
             }
             let rudzio_deps: Vec<_> = pkg
