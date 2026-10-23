@@ -686,8 +686,8 @@ edition = "2024"
 publish = false
 
 [dependencies]
-anyhow = "=1.0.102"
-tokio = {{ version = "=1.52.3", features = ["full"] }}
+anyhow = "=1.0.104"
+tokio = {{ version = "=1.54.1", features = ["full"] }}
 rudzio = {{ path = "{rudzio_root}", features = ["common", "runtime-tokio-multi-thread", "runtime-tokio-current-thread"] }}
 "#,
             rudzio_root = rudzio_root.display(),
@@ -794,7 +794,7 @@ fn materialize_consumer_workspace_template(dest: &Path) -> Result<()> {
              \n\
              [workspace.dependencies]\n\
              rudzio = {{ path = \"{rudzio}\", features = [\"common\", \"runtime-tokio-multi-thread\", \"runtime-tokio-current-thread\"] }}\n\
-             anyhow = \"=1.0.102\"\n",
+             anyhow = \"=1.0.104\"\n",
             rudzio = rudzio_root.display(),
         ),
     )
