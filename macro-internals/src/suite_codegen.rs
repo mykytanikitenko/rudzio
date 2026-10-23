@@ -1633,8 +1633,17 @@ fn generate_macro_registration_support(
             mod_name.to_string().to_ascii_uppercase(),
             cfg_idx,
         );
-        let runtime_alias = format_ident!("__RudzioRuntime{cfg_idx}");
-        let suite_alias = format_ident!("__RudzioSuite{cfg_idx}");
+        // Aliases are emitted at the OUTER scope (siblings of the suite
+        // module) and referenced from inside via `super::`. Two suites in the
+        // same file both keying off `cfg_idx` alone would emit colliding
+        // `__RudzioRuntime0` / `__RudzioSuite0` type aliases (E0428). Include
+        // the module name so each suite's aliases are namespaced, matching the
+        // `__RUDZIO_OWNER_{mod}_{cfg_idx}` owner-static convention. The name
+        // goes through `to_upper_camel` so a lowercase module name (`tests`)
+        // does not turn the alias non-camel-case.
+        let mod_camel = to_upper_camel(&mod_name.to_string());
+        let runtime_alias = format_ident!("__RudzioRuntime{}{}", mod_camel, cfg_idx);
+        let suite_alias = format_ident!("__RudzioSuite{}{}", mod_camel, cfg_idx);
 
         // The registration items land inside the module, but the user writes
         // the runtime/suite paths at the outer scope (`runtime = Multithread::new`
