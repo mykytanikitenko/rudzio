@@ -116,18 +116,18 @@ mod tests {
     }
 
     #[rudzio::test]
-    fn renamed_sibling_path_dep_must_not_emit_parent_relative_bridge_path_in_aggregator(
-    ) -> anyhow::Result<()> {
+    fn renamed_sibling_path_dep_must_not_emit_parent_relative_bridge_path_in_aggregator()
+    -> anyhow::Result<()> {
         let tmp = tempdir()?;
         let b_dir = tmp.path().join("b");
-        let a = materialise_member(
+        let member_a = materialise_member(
             tmp.path(),
             "a",
             vec![rudzio_dep(), renamed_sibling_dep(b_dir)],
         )?;
-        let b = materialise_member(tmp.path(), "b", vec![rudzio_dep()])?;
+        let member_b = materialise_member(tmp.path(), "b", vec![rudzio_dep()])?;
         let plan = plan_with_members(
-            vec![a, b],
+            vec![member_a, member_b],
             tmp.path()
                 .to_str()
                 .ok_or_else(|| anyhow::anyhow!("tempdir path is not utf-8"))?,
@@ -148,14 +148,14 @@ mod tests {
     fn plain_sibling_path_dep_is_skipped_in_aggregator_union() -> anyhow::Result<()> {
         let tmp = tempdir()?;
         let b_dir = tmp.path().join("b");
-        let a = materialise_member(
+        let member_a = materialise_member(
             tmp.path(),
             "a",
             vec![rudzio_dep(), plain_sibling_dep(b_dir)],
         )?;
-        let b = materialise_member(tmp.path(), "b", vec![rudzio_dep()])?;
+        let member_b = materialise_member(tmp.path(), "b", vec![rudzio_dep()])?;
         let plan = plan_with_members(
-            vec![a, b],
+            vec![member_a, member_b],
             tmp.path()
                 .to_str()
                 .ok_or_else(|| anyhow::anyhow!("tempdir path is not utf-8"))?,
