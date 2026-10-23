@@ -41,20 +41,20 @@ enum DepKind {
 struct Dep {
     /// The extern name the member's source imports, e.g. `b`, `b1`, `bee`.
     extern_name: String,
-    /// The real package name the dependency resolves to, e.g. `b`.
-    package: String,
     /// How the member's manifest writes the dependency.
     kind: DepKind,
+    /// The real package name the dependency resolves to, e.g. `b`.
+    package: String,
 }
 
 /// A fixture workspace member.
 struct Member {
-    /// Package name; also the `crates/<name>` directory.
-    name: String,
-    /// Intra-workspace dependencies in declaration order.
-    deps: Vec<Dep>,
     /// Whether this member carries a rudzio test (bridged) or a plain lib.
     bridged: bool,
+    /// Intra-workspace dependencies in declaration order.
+    deps: Vec<Dep>,
+    /// Package name; also the `crates/<name>` directory.
+    name: String,
 }
 
 /// An extra `[workspace.dependencies]` entry in the root manifest.
@@ -134,9 +134,9 @@ fn dep_line(dep: &Dep) -> String {
     let package = &dep.package;
     match dep.kind {
         DepKind::Direct => format!("{extern_name} = {{ path = \"../{package}\" }}\n"),
-        DepKind::Renamed => format!(
-            "{extern_name} = {{ package = \"{package}\", path = \"../{package}\" }}\n"
-        ),
+        DepKind::Renamed => {
+            format!("{extern_name} = {{ package = \"{package}\", path = \"../{package}\" }}\n")
+        }
         DepKind::Workspace => format!("{extern_name} = {{ workspace = true }}\n"),
     }
 }
@@ -187,20 +187,19 @@ mod tests {
 
 /// Render the `consume_<dep>` functions a bridged member emits for its deps.
 fn consume_fns(member: &Member) -> String {
-    member
-        .deps
-        .iter()
-        .map(|dep| {
-            let extern_name = &dep.extern_name;
-            format!(
-                "pub fn consume_{extern_name}(widget: &{extern_name}::Widget) -> u32 {{
+    let mut out = String::new();
+    for dep in &member.deps {
+        let extern_name = &dep.extern_name;
+        let block = format!(
+            "pub fn consume_{extern_name}(widget: &{extern_name}::Widget) -> u32 {{
     widget.value * 2
 }}
 
 "
-            )
-        })
-        .collect::<String>()
+        );
+        out.push_str(&block);
+    }
+    out
 }
 
 /// Render the test bodies a bridged member emits.
@@ -216,26 +215,22 @@ fn member_tests(member: &Member) -> String {
             name = member.name,
         );
     }
-    member
-        .deps
-        .iter()
-        .enumerate()
-        .map(|(index, dep)| {
-            let extern_name = &dep.extern_name;
-            let value = index + 1;
-            let doubled = value * 2;
-            format!(
-                "        #[rudzio::test]
+    let mut out = String::new();
+    for dep in &member.deps {
+        let extern_name = &dep.extern_name;
+        let block = format!(
+            "        #[rudzio::test]
         fn {name}_uses_{extern_name}(_t: &super::Test) -> anyhow::Result<()> {{
-            let widget = {extern_name}::make_widget({value});
-            anyhow::ensure!(crate::consume_{extern_name}(&widget) == {doubled});
+            let widget = {extern_name}::make_widget(21);
+            anyhow::ensure!(crate::consume_{extern_name}(&widget) == 42);
             Ok(())
         }}
 ",
-                name = member.name,
-            )
-        })
-        .collect::<String>()
+            name = member.name,
+        );
+        out.push_str(&block);
+    }
+    out
 }
 
 /// Build the `Cargo.toml` for a member.
@@ -294,10 +289,17 @@ fn rudzio_source_root() -> Option<&'static Path> {
 }
 
 /// Materialise the fixture workspace under `root`.
-fn write_fixture(root: &Path, members: &[Member], workspace_deps: &[WorkspaceDep]) -> io::Result<()> {
+fn write_fixture(
+    root: &Path,
+    members: &[Member],
+    workspace_deps: &[WorkspaceDep],
+) -> io::Result<()> {
     let rudzio_root = rudzio_source_root()
         .ok_or_else(|| io::Error::other("cargo-rudzio/tests must live under the workspace root"))?;
-    fs::write(root.join("Cargo.toml"), root_manifest(rudzio_root, workspace_deps))?;
+    fs::write(
+        root.join("Cargo.toml"),
+        root_manifest(rudzio_root, workspace_deps),
+    )?;
     for member in members {
         let dir = root.join("crates").join(&member.name);
         fs::create_dir_all(dir.join("src"))?;
@@ -396,8 +398,8 @@ fn assert_passed(output: &Output, members: &[Member]) -> anyhow::Result<()> {
 #[rudzio::suite([(runtime = TokioMultithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest)])]
 mod tests {
     use super::{
-        IsolatedCargoTest, bridged, direct, plain, renamed, run_workspace_wide, ws, ws_root,
-        CargoEnv, assert_passed,
+        CargoEnv, IsolatedCargoTest, assert_passed, bridged, direct, plain, renamed,
+        run_workspace_wide, ws, ws_root,
     };
 
     /// Run the `members` fixture against `ctx`'s isolated cargo env and
@@ -455,12 +457,19 @@ mod tests {
         check!(ctx, &members, &workspace_deps)
     }
 
+    /// A renamed sibling dep (`b1 = { package = "b", path = "../b" }`) and
+    /// a plain sibling dep (`b = { path = "../b" }`) on the same package
+    /// coexist across members. Cargo forbids two renames of one package in
+    /// a single manifest ("depends on crate `b` multiple times with
+    /// different names"), so the second rename is dropped; the remaining
+    /// rename + plain pair still exercises the `dep.name` (vs entry-name)
+    /// dedup boundary that Bug #6 fixed.
     #[rudzio::test]
     fn renamed_sibling_deps_do_not_duplicate(ctx: &IsolatedCargoTest) -> anyhow::Result<()> {
         let members = vec![
             bridged("b", vec![]),
             bridged("c", vec![direct("b")]),
-            bridged("a", vec![renamed("b1", "b"), renamed("b2", "b")]),
+            bridged("a", vec![renamed("b1", "b")]),
         ];
         check!(ctx, &members, &[])
     }
