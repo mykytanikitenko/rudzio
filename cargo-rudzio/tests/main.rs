@@ -18,6 +18,7 @@ mod cross_bridge_spec;
 mod features_table_propagation_spec;
 mod generate_spec;
 mod main_rs_test_root_helper_spec;
+mod migration_bug_03_coverage_profraw_spec;
 mod optional_dep_force_enable_spec;
 mod package_filter_transitive_spec;
 mod parallel_invocations_shared_target_dir_spec;
