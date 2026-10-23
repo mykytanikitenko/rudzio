@@ -39,6 +39,7 @@
 #![cfg(unix)]
 
 use std::env;
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -50,11 +51,11 @@ use rudzio::runtime::tokio::Multithread;
 fn repo_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("cargo-rudzio/tests must live under the repo root")
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")))
 }
 
 /// Resolve the ambient cargo home that already holds cargo-rudzio's own
-/// dependency graph (cargo_metadata, toml_edit, rudzio-migrate, …). The
+/// dependency graph (`cargo_metadata`, `toml_edit`, rudzio-migrate, …). The
 /// per-test hardlinked home only pre-warms anyhow/tokio/rudzio, so it cannot
 /// build cargo-rudzio itself.
 fn cargo_home_with_full_graph() -> PathBuf {
@@ -98,8 +99,8 @@ fn run_cargo_rudzio_fresh(
 /// `#[rudzio::test]` panics.
 fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
     let app = root.join("app");
-    std::fs::create_dir_all(app.join("src"))?;
-    std::fs::write(
+    fs::create_dir_all(app.join("src"))?;
+    fs::write(
         root.join("Cargo.toml"),
         format!(
             "[workspace]\n\
@@ -115,7 +116,7 @@ fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
             rudzio = rudzio_root.display(),
         ),
     )?;
-    std::fs::write(
+    fs::write(
         app.join("Cargo.toml"),
         "[package]\n\
          name = \"app\"\n\
@@ -130,7 +131,7 @@ fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
          rudzio = { workspace = true }\n\
          anyhow = { workspace = true }\n",
     )?;
-    std::fs::write(
+    fs::write(
         app.join("src").join("lib.rs"),
         "// rudzio_test marker\n\
          #[cfg(any(test, rudzio_test))]\n\
@@ -170,13 +171,10 @@ mod tests {
         let cargo_build_dir = ctx
             .cargo_target_dir()
             .parent()
-            .expect("cargo target dir has a parent")
+            .ok_or_else(|| anyhow::anyhow!("cargo target dir has a parent"))?
             .join("cargo-build-dir");
 
-        let manifest = workspace
-            .join("Cargo.toml")
-            .to_string_lossy()
-            .into_owned();
+        let manifest = workspace.join("Cargo.toml").to_string_lossy().into_owned();
         let output = run_cargo_rudzio_fresh(
             &cargo_home_with_full_graph(),
             ctx.cargo_target_dir(),

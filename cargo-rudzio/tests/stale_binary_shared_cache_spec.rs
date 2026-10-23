@@ -56,11 +56,10 @@ mod tests {
         anyhow::ensure!(
             shared.is_none(),
             "STALE-BINARY: CARGO_BIN_EXE_cargo-rudzio = {baked} resolves into a shared \
-             persistent cache ({:?}). A stale/foreign binary built by a prior checkout may be \
+             persistent cache ({shared:?}). A stale/foreign binary built by a prior checkout may be \
              spawned, making a red fix report green. Harden the invocation with a task-local \
              CARGO_TARGET_DIR and CARGO_BUILD_BUILD_DIR (and/or assert freshness before \
              spawning).",
-            shared
         );
         Ok(())
     }
