@@ -298,6 +298,115 @@ mod tests {
         Ok(())
     }
 
+    /// Bug #5 edge cases: every `macro_rules!`-generated shape — same body
+    /// under different names, two fns per invocation, nested macros, a
+    /// crate-level macro, `&mut Test` and no-context parameters, and a
+    /// non-test helper emitted alongside the test — must register and run.
+    #[rudzio::test]
+    fn macro_rules_edge_cases_all_register(_ctx: &Test) -> anyhow::Result<()> {
+        let out = run(env!("CARGO_BIN_EXE_macro_rules_edge_cases_tokio_mt"))?;
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(0_i32),
+            "expected exit 0, output:\n{log}"
+        );
+        for name in [
+            "same_body_a",
+            "same_body_b",
+            "same_body_c",
+            "pair_first",
+            "pair_second",
+            "nested_inner",
+            "mut_ctx_test",
+            "no_ctx_test",
+            "calls_helper",
+        ] {
+            anyhow::ensure!(
+                log.contains(name),
+                "fixture must report test `{name}`, output:\n{log}"
+            );
+        }
+        anyhow::ensure!(log.contains("9 passed"), "output:\n{log}");
+        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        Ok(())
+    }
+
+    /// Bug #5 edge case: `#[rudzio::test(...)]` attribute arguments emitted
+    /// through `macro_rules!` — `#[ignore]` reports ignored, `timeout = 1`
+    /// fires the per-test body timeout.
+    #[rudzio::test]
+    fn macro_rules_attr_args_round_trip(_ctx: &Test) -> anyhow::Result<()> {
+        let out = run(env!("CARGO_BIN_EXE_macro_rules_attr_args_tokio_mt"))?;
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(1_i32),
+            "expected exit 1 (one timed-out test), output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("attr_ignored"), "output:\n{log}");
+        anyhow::ensure!(log.contains("attr_timeout"), "output:\n{log}");
+        anyhow::ensure!(log.contains("1 ignored"), "output:\n{log}");
+        anyhow::ensure!(log.contains("1 timed out"), "output:\n{log}");
+        Ok(())
+    }
+
+    /// Bug #5 edge case: the same macro invoked in two suites with different
+    /// runtimes must register the identically-named test once per suite
+    /// config (two total runs), never cross-registering into the sibling
+    /// suite's config (which would yield four).
+    #[rudzio::test]
+    fn macro_rules_two_suites_not_cross_registered(_ctx: &Test) -> anyhow::Result<()> {
+        let out = run(env!("CARGO_BIN_EXE_macro_rules_two_suites"))?;
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(0_i32),
+            "expected exit 0, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("tokio::Multithread"), "output:\n{log}");
+        anyhow::ensure!(log.contains("tokio::CurrentThread"), "output:\n{log}");
+        anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
+        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        // `shared_test` appears exactly twice (once per suite config), not
+        // four times (cross-registration).
+        anyhow::ensure!(
+            log.matches("shared_test").count() == 2,
+            "expected `shared_test` exactly twice, output:\n{log}"
+        );
+        Ok(())
+    }
+
+    /// Bug #5 edge case: a `#[cfg(feature = "...")]`-gated macro invocation.
+    /// cfg-stripping runs before the suite attribute macro, so the gated
+    /// invocation vanishes when the feature is off (its test must not
+    /// register) and survives when on (its test registers). The unconditional
+    /// `always_on` invocation keeps the module valid in both states. The
+    /// assertion branches on `cfg!(feature = ...)` — a runtime check — so a
+    /// single (non-cfg-gated) test fn covers both feature states without the
+    /// suite macro's cfg-gated-direct-fn limitation.
+    #[rudzio::test]
+    fn macro_rules_cfg_gated_test_matches_feature_state(_ctx: &Test) -> anyhow::Result<()> {
+        let out = run(env!("CARGO_BIN_EXE_macro_rules_cfg_gated_tokio_mt"))?;
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(0_i32),
+            "expected exit 0, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("always_on"), "output:\n{log}");
+        if cfg!(feature = "edge-cfg-macro") {
+            anyhow::ensure!(
+                log.contains("cfg_gated_on"),
+                "feature on: gated test must register, output:\n{log}"
+            );
+            anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
+        } else {
+            anyhow::ensure!(
+                !log.contains("cfg_gated_on"),
+                "feature off: gated test must be absent, output:\n{log}"
+            );
+            anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
+        }
+        Ok(())
+    }
+
     #[rudzio::test]
     fn failing_tokio_mt_exits_one(_ctx: &Test) -> anyhow::Result<()> {
         let out = run(env!("CARGO_BIN_EXE_failing_tokio_mt"))?;

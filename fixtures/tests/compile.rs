@@ -199,4 +199,19 @@ mod tests {
         cases.pass("tests/fixtures/inner_attr_behavioral_allow_suppresses_outer_deny.rs");
         Ok(())
     }
+
+    /// Bug #5 edge case: a `macro_rules!`-generated `#[rudzio::test]`
+    /// OUTSIDE any `#[rudzio::suite]` must fail to compile. The
+    /// `#[rudzio::test]` attribute re-registers through the hidden per-suite
+    /// `__rudzio_register_test!` macro, which is undefined outside a suite.
+    #[rudzio::test]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "this fixture drives trybuild compile-fail assertions; the framework requires the test fn signature to return anyhow::Result<()>"
+    )]
+    fn macro_test_outside_suite_compile_fails(_ctx: &Test) -> anyhow::Result<()> {
+        let cases = trybuild::TestCases::new();
+        cases.compile_fail("tests/fixtures/macro_test_outside_suite.rs");
+        Ok(())
+    }
 }
