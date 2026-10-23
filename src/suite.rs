@@ -302,6 +302,37 @@ pub enum TestOutcome {
     TimedOut,
 }
 
+impl TestOutcome {
+    /// The elapsed duration recorded on this outcome, for the variants that
+    /// carry one. `TimedOut` and `Cancelled` are duration-less and return
+    /// `None`.
+    pub(crate) const fn elapsed(&self) -> Option<Duration> {
+        if let Self::Passed { elapsed } | Self::Panicked { elapsed } | Self::Hung { elapsed } = self
+        {
+            return Some(*elapsed);
+        }
+        if let Self::Failed {
+            elapsed,
+            message: _message,
+        }
+        | Self::SetupFailed {
+            elapsed,
+            message: _message,
+        } = self
+        {
+            return Some(*elapsed);
+        }
+        if let Self::Benched {
+            elapsed,
+            report: _report,
+        } = self
+        {
+            return Some(*elapsed);
+        }
+        None
+    }
+}
+
 /// HRTB unsafe fn pointer stored on every [`TestToken`].
 ///
 /// The owner picks `'s` (its local stack frame's lifetime), provides
@@ -668,14 +699,26 @@ where
 #[must_use]
 pub fn fill_elapsed(outcome: TestOutcome, elapsed: Duration) -> TestOutcome {
     match outcome {
-        TestOutcome::Passed { .. } => TestOutcome::Passed { elapsed },
-        TestOutcome::Failed { message, .. } => TestOutcome::Failed { elapsed, message },
-        TestOutcome::Panicked { .. } => TestOutcome::Panicked { elapsed },
-        TestOutcome::Hung { .. } => TestOutcome::Hung { elapsed },
-        TestOutcome::Benched { report, .. } => TestOutcome::Benched { elapsed, report },
-        other @ (TestOutcome::Cancelled
-        | TestOutcome::SetupFailed { .. }
-        | TestOutcome::TimedOut) => other,
+        TestOutcome::Passed { elapsed: _elapsed } => TestOutcome::Passed { elapsed },
+        TestOutcome::Failed {
+            message,
+            elapsed: _elapsed,
+        } => TestOutcome::Failed { elapsed, message },
+        TestOutcome::Panicked { elapsed: _elapsed } => TestOutcome::Panicked { elapsed },
+        TestOutcome::Hung { elapsed: _elapsed } => TestOutcome::Hung { elapsed },
+        TestOutcome::Benched {
+            report,
+            elapsed: _elapsed,
+        } => TestOutcome::Benched { elapsed, report },
+        TestOutcome::Cancelled => TestOutcome::Cancelled,
+        TestOutcome::SetupFailed {
+            elapsed: kept_elapsed,
+            message: kept_message,
+        } => TestOutcome::SetupFailed {
+            elapsed: kept_elapsed,
+            message: kept_message,
+        },
+        TestOutcome::TimedOut => TestOutcome::TimedOut,
     }
 }
 

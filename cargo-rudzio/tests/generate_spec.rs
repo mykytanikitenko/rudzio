@@ -148,7 +148,7 @@ mod tests {
                 anyhow::ensure!(url == "https://github.com/mykytanikitenko/rudzio");
                 anyhow::ensure!(matches!(reference, Some(GitRef::Rev(rev)) if rev == "deadbeef"));
             }
-            RudzioLocation::Path(_) | RudzioLocation::Version { .. } | _ => {
+            RudzioLocation::Path(_) | _ => {
                 anyhow::bail!("expected Git location, got {:?}", spec.location);
             }
         }
@@ -184,7 +184,7 @@ mod tests {
                 anyhow::ensure!(url == "https://github.com/mykytanikitenko/rudzio");
                 anyhow::ensure!(matches!(reference, Some(GitRef::Tag(tag)) if tag == "v0.1.0"));
             }
-            RudzioLocation::Path(_) | RudzioLocation::Version { .. } | _ => {
+            RudzioLocation::Path(_) | _ => {
                 anyhow::bail!("expected Git location, got {:?}", spec.location);
             }
         }
@@ -210,7 +210,7 @@ mod tests {
                 anyhow::ensure!(req == "0.1");
                 anyhow::ensure!(registry.is_none(), "expected no registry, got {registry:?}");
             }
-            RudzioLocation::Git { .. } | RudzioLocation::Path(_) | _ => {
+            RudzioLocation::Path(_) | _ => {
                 anyhow::bail!("expected Version location, got {:?}", spec.location);
             }
         }
@@ -267,12 +267,10 @@ mod tests {
     fn empty_members_falls_back_to_workspace_root_path() -> anyhow::Result<()> {
         let spec = collect_rudzio_spec(&[], &BTreeMap::new(), Path::new("/tmp/fallback"))?;
 
-        match &spec.location {
-            RudzioLocation::Path(path) => anyhow::ensure!(path == Path::new("/tmp/fallback")),
-            RudzioLocation::Git { .. } | RudzioLocation::Version { .. } | _ => {
-                anyhow::bail!("expected fallback Path, got {:?}", spec.location);
-            }
-        }
+        let RudzioLocation::Path(path) = &spec.location else {
+            anyhow::bail!("expected fallback Path, got {:?}", spec.location);
+        };
+        anyhow::ensure!(path == Path::new("/tmp/fallback"));
         Ok(())
     }
 

@@ -9,6 +9,7 @@
 
 use std::convert::Infallible;
 use std::fmt;
+use std::future::ready;
 
 use rudzio::Config;
 use rudzio::context;
@@ -61,32 +62,36 @@ where
         clippy::panic,
         reason = "this fixture exercises the catch_unwind wrapper around Suite::context (per-test setup); the body must panic to verify the runner reports the failure as TestOutcome::SetupFailed with the panic message"
     )]
-    async fn context<'test_context>(
+    fn context<'test_context>(
         &'test_context self,
         _cancel: CancellationToken,
         _config: &'test_context Config,
-    ) -> Result<Self::Test<'test_context>, Self::ContextError> {
-        panic!("test_setup_panicked_by_design")
+    ) -> impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>> + Send + 'test_context
+    {
+        Box::pin(async move { panic!("test_setup_panicked_by_design") })
     }
 
     fn rt(&self) -> &'suite_context R {
         self.rt
     }
 
-    async fn setup(
+    fn setup(
         rt: &'suite_context R,
         cancel: CancellationToken,
         _config: &'suite_context Config,
-    ) -> Result<Self, Self::SetupError> {
-        Ok(Self {
+    ) -> impl Future<Output = Result<Self, Self::SetupError>> + Send + 'suite_context {
+        ready(Ok(Self {
             cancel: cancel.child_token(),
             rt,
             tracker: TaskTracker::new(),
-        })
+        }))
     }
 
-    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
-        Ok(())
+    fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'suite_context {
+        ready(Ok(()))
     }
 
     fn tracker(&self) -> &TaskTracker {
@@ -137,8 +142,11 @@ where
         self.rt
     }
 
-    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
-        Ok(())
+    fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'test_context {
+        ready(Ok(()))
     }
 
     fn tracker(&self) -> &TaskTracker {

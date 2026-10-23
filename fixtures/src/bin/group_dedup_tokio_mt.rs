@@ -10,6 +10,7 @@
 
 use std::convert::Infallible;
 use std::fmt;
+use std::future::ready;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rudzio::Config;
@@ -88,17 +89,18 @@ where
         &self.cancel
     }
 
-    async fn context<'test_context>(
+    fn context<'test_context>(
         &'test_context self,
         cancel: CancellationToken,
         config: &'test_context Config,
-    ) -> Result<Self::Test<'test_context>, Self::ContextError> {
-        Ok(CountingTest {
+    ) -> impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>> + Send + 'test_context
+    {
+        ready(Ok(CountingTest {
             cancel,
             config,
             rt: self.rt,
             tracker: self.tracker.clone(),
-        })
+        }))
     }
 
     fn rt(&self) -> &'suite_context R {
@@ -109,34 +111,37 @@ where
         clippy::print_stdout,
         reason = "this fixture asserts duplicate suite tuples collapse into one group by emitting machine-readable COUNTING_SUITE_SETUP lines that the integration test greps; println! is the deliberate channel"
     )]
-    async fn setup(
+    fn setup(
         rt: &'suite_context R,
         cancel: CancellationToken,
         _config: &'suite_context Config,
-    ) -> Result<Self, Self::SetupError> {
+    ) -> impl Future<Output = Result<Self, Self::SetupError>> + Send + 'suite_context {
         let prev = SETUP_CALLS.fetch_add(1_usize, Ordering::SeqCst);
         println!(
             "COUNTING_SUITE_SETUP (new count: {})",
             prev.saturating_add(1_usize),
         );
-        Ok(Self {
+        ready(Ok(Self {
             cancel: cancel.child_token(),
             rt,
             tracker: TaskTracker::new(),
-        })
+        }))
     }
 
     #[expect(
         clippy::print_stdout,
         reason = "this fixture asserts duplicate suite tuples collapse into one group by emitting machine-readable COUNTING_SUITE_TEARDOWN lines that the integration test greps; println! is the deliberate channel"
     )]
-    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
+    fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'suite_context {
         let prev = TEARDOWN_CALLS.fetch_add(1_usize, Ordering::SeqCst);
         println!(
             "COUNTING_SUITE_TEARDOWN (new count: {})",
             prev.saturating_add(1_usize),
         );
-        Ok(())
+        ready(Ok(()))
     }
 
     fn tracker(&self) -> &TaskTracker {
@@ -162,8 +167,11 @@ where
         self.rt
     }
 
-    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
-        Ok(())
+    fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'test_context {
+        ready(Ok(()))
     }
 
     fn tracker(&self) -> &TaskTracker {

@@ -1,5 +1,6 @@
 use std::convert::Infallible;
 use std::fmt;
+use std::future::ready;
 
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -69,18 +70,18 @@ where
     }
 
     #[inline]
-    async fn setup(
+    fn setup(
         rt: &'suite_context R,
         cancel: CancellationToken,
         _config: &'suite_context Config,
-    ) -> Result<Self, Self::SetupError> {
+    ) -> impl Future<Output = Result<Self, Self::SetupError>> + Send + 'suite_context {
         // Root cancel is a child of the runner's token so that run-level
         // cancellation (timeout, SIGINT, SIGTERM) propagates to every test.
-        Ok(Self {
+        ready(Ok(Self {
             cancel: cancel.child_token(),
             rt,
             tracker: TaskTracker::new(),
-        })
+        }))
     }
 
     #[inline]

@@ -7,6 +7,7 @@
 
 use std::convert::Infallible;
 use std::fmt;
+use std::future::ready;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rudzio::Config;
@@ -63,24 +64,25 @@ where
         &self.cancel
     }
 
-    async fn context<'test_context>(
+    fn context<'test_context>(
         &'test_context self,
         cancel: CancellationToken,
         config: &'test_context Config,
-    ) -> Result<Self::Test<'test_context>, Self::ContextError> {
+    ) -> impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>> + Send + 'test_context
+    {
         // Each test body sees its own 1-based ordinal, and the suite's
         // counter keeps climbing across the whole group.
         let nth = self
             .tests_created
             .fetch_add(1, Ordering::SeqCst)
             .saturating_add(1);
-        Ok(CountingTest::new(
+        ready(Ok(CountingTest::new(
             cancel,
             config,
             nth,
             self.rt,
             self.tracker.clone(),
-        ))
+        )))
     }
 
     #[inline]
@@ -88,21 +90,24 @@ where
         self.rt
     }
 
-    async fn setup(
+    fn setup(
         rt: &'suite_context Rt,
         cancel: CancellationToken,
         _config: &'suite_context Config,
-    ) -> Result<Self, Self::SetupError> {
-        Ok(Self {
+    ) -> impl Future<Output = Result<Self, Self::SetupError>> + Send + 'suite_context {
+        ready(Ok(Self {
             cancel: cancel.child_token(),
             rt,
             tests_created: AtomicUsize::new(0),
             tracker: TaskTracker::new(),
-        })
+        }))
     }
 
-    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
-        Ok(())
+    fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'suite_context {
+        ready(Ok(()))
     }
 
     #[inline]
@@ -199,8 +204,11 @@ where
     }
 
     #[inline]
-    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
-        Ok(())
+    fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'test_context {
+        ready(Ok(()))
     }
 
     #[inline]

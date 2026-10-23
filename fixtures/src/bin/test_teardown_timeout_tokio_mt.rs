@@ -8,6 +8,7 @@
 
 use std::convert::Infallible;
 use std::fmt;
+use std::future::ready;
 use std::time::Duration;
 
 use rudzio::Config;
@@ -86,37 +87,41 @@ where
         &self.cancel
     }
 
-    async fn context<'test_context>(
+    fn context<'test_context>(
         &'test_context self,
         cancel: CancellationToken,
         config: &'test_context Config,
-    ) -> Result<Self::Test<'test_context>, Self::ContextError> {
-        Ok(HangingTeardownTest {
+    ) -> impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>> + Send + 'test_context
+    {
+        ready(Ok(HangingTeardownTest {
             cancel,
             config,
             rt: self.rt,
             tracker: self.tracker.clone(),
-        })
+        }))
     }
 
     fn rt(&self) -> &'suite_context R {
         self.rt
     }
 
-    async fn setup(
+    fn setup(
         rt: &'suite_context R,
         cancel: CancellationToken,
         _config: &'suite_context Config,
-    ) -> Result<Self, Self::SetupError> {
-        Ok(Self {
+    ) -> impl Future<Output = Result<Self, Self::SetupError>> + Send + 'suite_context {
+        ready(Ok(Self {
             cancel: cancel.child_token(),
             rt,
             tracker: TaskTracker::new(),
-        })
+        }))
     }
 
-    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
-        Ok(())
+    fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'suite_context {
+        ready(Ok(()))
     }
 
     fn tracker(&self) -> &TaskTracker {

@@ -9,6 +9,7 @@
 
 use std::error::Error;
 use std::fmt;
+use std::future::ready;
 use std::process::exit;
 use std::sync::{Arc, Barrier, BarrierWaitResult, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -99,38 +100,42 @@ where
         &self.cancel
     }
 
-    async fn context<'test_context>(
+    fn context<'test_context>(
         &'test_context self,
         cancel: CancellationToken,
         config: &'test_context Config,
-    ) -> Result<Self::Test<'test_context>, Self::ContextError> {
-        Ok(CrossTest {
+    ) -> impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>> + Send + 'test_context
+    {
+        ready(Ok(CrossTest {
             cancel,
             config,
             rt: self.rt,
             tracker: self.tracker.clone(),
-        })
+        }))
     }
 
     fn rt(&self) -> &'suite_context R {
         self.rt
     }
 
-    async fn setup(
+    fn setup(
         rt: &'suite_context R,
         cancel: CancellationToken,
         _config: &'suite_context Config,
-    ) -> Result<Self, Self::SetupError> {
+    ) -> impl Future<Output = Result<Self, Self::SetupError>> + Send + 'suite_context {
         start_watchdog();
-        Ok(Self {
+        ready(Ok(Self {
             cancel: cancel.child_token(),
             rt,
             tracker: TaskTracker::new(),
-        })
+        }))
     }
 
-    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
-        Ok(())
+    fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'suite_context {
+        ready(Ok(()))
     }
 
     fn tracker(&self) -> &TaskTracker {
@@ -156,8 +161,11 @@ where
         self.rt
     }
 
-    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
-        Ok(())
+    fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'test_context {
+        ready(Ok(()))
     }
 
     fn tracker(&self) -> &TaskTracker {

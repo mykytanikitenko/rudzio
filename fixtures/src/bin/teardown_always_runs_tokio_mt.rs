@@ -7,6 +7,7 @@
 
 use std::convert::Infallible;
 use std::fmt;
+use std::future::ready;
 use std::time::Duration;
 
 use rudzio::Config;
@@ -121,17 +122,18 @@ where
     }
 
     #[inline]
-    async fn context<'test_context>(
+    fn context<'test_context>(
         &'test_context self,
         cancel: CancellationToken,
         config: &'test_context Config,
-    ) -> Result<Self::Test<'test_context>, Self::ContextError> {
-        Ok(TeardownTest {
+    ) -> impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>> + Send + 'test_context
+    {
+        ready(Ok(TeardownTest {
             cancel,
             config,
             rt: self.rt,
             tracker: self.tracker.clone(),
-        })
+        }))
     }
 
     #[inline]
@@ -140,16 +142,16 @@ where
     }
 
     #[inline]
-    async fn setup(
+    fn setup(
         rt: &'suite_context R,
         cancel: CancellationToken,
         _config: &'suite_context Config,
-    ) -> Result<Self, Self::SetupError> {
-        Ok(Self {
+    ) -> impl Future<Output = Result<Self, Self::SetupError>> + Send + 'suite_context {
+        ready(Ok(Self {
             cancel: cancel.child_token(),
             rt,
             tracker: TaskTracker::new(),
-        })
+        }))
     }
 
     #[inline]
@@ -157,9 +159,12 @@ where
         clippy::print_stdout,
         reason = "this fixture verifies that suite-level teardown runs after a per-test body timeout; the marker is printed for integration tests to grep"
     )]
-    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
+    fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'suite_context {
         println!("teardown_suite_marker");
-        Ok(())
+        ready(Ok(()))
     }
 
     #[inline]
@@ -194,9 +199,12 @@ where
         clippy::print_stdout,
         reason = "this fixture verifies that per-test teardown runs after the runner's per-test watchdog fires; the marker is printed for integration tests to grep"
     )]
-    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
+    fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'test_context {
         println!("teardown_test_marker");
-        Ok(())
+        ready(Ok(()))
     }
 
     #[inline]

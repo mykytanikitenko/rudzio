@@ -13,6 +13,7 @@
 
 use std::convert::Infallible;
 use std::fmt;
+use std::future::ready;
 use std::thread;
 use std::time::Duration;
 
@@ -87,17 +88,18 @@ where
         &self.cancel
     }
 
-    async fn context<'test_context>(
+    fn context<'test_context>(
         &'test_context self,
         cancel: CancellationToken,
         config: &'test_context Config,
-    ) -> Result<Self::Test<'test_context>, Self::ContextError> {
-        Ok(TrivialTest {
+    ) -> impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>> + Send + 'test_context
+    {
+        ready(Ok(TrivialTest {
             cancel,
             config,
             rt: self.rt,
             tracker: self.tracker.clone(),
-        })
+        }))
     }
 
     fn rt(&self) -> &'suite_context R {
@@ -130,8 +132,11 @@ where
         })
     }
 
-    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
-        Ok(())
+    fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'suite_context {
+        ready(Ok(()))
     }
 
     fn tracker(&self) -> &TaskTracker {
@@ -157,8 +162,11 @@ where
         self.rt
     }
 
-    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
-        Ok(())
+    fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'test_context {
+        ready(Ok(()))
     }
 
     fn tracker(&self) -> &TaskTracker {

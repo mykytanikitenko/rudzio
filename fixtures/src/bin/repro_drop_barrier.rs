@@ -7,6 +7,7 @@
 
 use std::error::Error;
 use std::fmt;
+use std::future::ready;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -102,34 +103,35 @@ where
         &self.cancel
     }
 
-    async fn context<'test_context>(
+    fn context<'test_context>(
         &'test_context self,
         cancel: CancellationToken,
         config: &'test_context Config,
-    ) -> Result<Self::Test<'test_context>, Self::ContextError> {
-        Ok(BaseTest {
+    ) -> impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>> + Send + 'test_context
+    {
+        ready(Ok(BaseTest {
             cancel,
             config,
             rt: self.rt,
             tracker: self.tracker.clone(),
-        })
+        }))
     }
 
     fn rt(&self) -> &'suite_context R {
         self.rt
     }
 
-    async fn setup(
+    fn setup(
         rt: &'suite_context R,
         cancel: CancellationToken,
         _config: &'suite_context Config,
-    ) -> Result<Self, Self::SetupError> {
+    ) -> impl Future<Output = Result<Self, Self::SetupError>> + Send + 'suite_context {
         let _prev: usize = SETUP_CALLS.fetch_add(1_usize, Ordering::SeqCst);
-        Ok(Self {
+        ready(Ok(Self {
             cancel,
             rt,
             tracker: TaskTracker::new(),
-        })
+        }))
     }
 
     async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
@@ -162,9 +164,12 @@ where
         self.rt
     }
 
-    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
+    fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'test_context {
         self.cancel.cancel();
-        Ok(())
+        ready(Ok(()))
     }
 
     fn tracker(&self) -> &TaskTracker {

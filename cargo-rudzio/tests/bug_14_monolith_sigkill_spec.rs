@@ -832,14 +832,18 @@ pub mod shared {
 /// `opts.binaries`; includes `sigkill_repro_child` bin iff at least
 /// one binary's setup spawns it.
 fn generate_consumer_cargo_toml(opts: &FixtureOpts) -> String {
-    let needs_child_bin = opts
+    let needs_child_bin = opts.binaries.iter().any(|bin| {
+        matches!(
+            bin.setup,
+            SetupKind::SpawnChild {
+                drain: _drain,
+                pipe: _pipe
+            }
+        )
+    }) || opts
         .binaries
         .iter()
-        .any(|bin| matches!(bin.setup, SetupKind::SpawnChild { .. }))
-        || opts
-            .binaries
-            .iter()
-            .any(|bin| matches!(bin.suite_kind, SuiteKind::Shared));
+        .any(|bin| matches!(bin.suite_kind, SuiteKind::Shared));
     let mut out = String::new();
     out.push_str(
         "[package]\n\
@@ -973,14 +977,18 @@ fn write_fixture_with_opts(root: &Path, rudzio_root: &Path, opts: &FixtureOpts) 
         generate_consumer_lib_rs(opts),
     )?;
 
-    let needs_child_bin = opts
+    let needs_child_bin = opts.binaries.iter().any(|bin| {
+        matches!(
+            bin.setup,
+            SetupKind::SpawnChild {
+                drain: _drain,
+                pipe: _pipe
+            }
+        )
+    }) || opts
         .binaries
         .iter()
-        .any(|bin| matches!(bin.setup, SetupKind::SpawnChild { .. }))
-        || opts
-            .binaries
-            .iter()
-            .any(|bin| matches!(bin.suite_kind, SuiteKind::Shared));
+        .any(|bin| matches!(bin.suite_kind, SuiteKind::Shared));
     if needs_child_bin {
         fs::write(
             consumer

@@ -7,6 +7,7 @@
 
 use std::error::Error;
 use std::fmt;
+use std::future::ready;
 
 use rudzio::Config;
 use rudzio::context;
@@ -65,28 +66,32 @@ where
         &self.cancel
     }
 
-    async fn context<'test_context>(
+    fn context<'test_context>(
         &'test_context self,
         _cancel: CancellationToken,
         _config: &'test_context Config,
-    ) -> Result<Self::Test<'test_context>, Self::ContextError> {
-        Err(SetupFailed)
+    ) -> impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>> + Send + 'test_context
+    {
+        ready(Err(SetupFailed))
     }
 
     fn rt(&self) -> &'suite_context R {
         self.rt
     }
 
-    async fn setup(
+    fn setup(
         _rt: &'suite_context R,
         _cancel: CancellationToken,
         _config: &'suite_context Config,
-    ) -> Result<Self, Self::SetupError> {
-        Err(SetupFailed)
+    ) -> impl Future<Output = Result<Self, Self::SetupError>> + Send + 'suite_context {
+        ready(Err(SetupFailed))
     }
 
-    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
-        Ok(())
+    fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'suite_context {
+        ready(Ok(()))
     }
 
     fn tracker(&self) -> &TaskTracker {
@@ -137,8 +142,11 @@ where
         self.rt
     }
 
-    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
-        Ok(())
+    fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'test_context {
+        ready(Ok(()))
     }
 
     fn tracker(&self) -> &TaskTracker {

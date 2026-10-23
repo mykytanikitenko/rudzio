@@ -60,9 +60,9 @@ impl JoinError {
 impl fmt::Display for JoinError {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Self::Panicked { .. } => write!(f, "task panicked"),
-            Self::Cancelled { .. } => write!(f, "task was cancelled"),
+        match self {
+            Self::Panicked { source: _source } => write!(f, "task panicked"),
+            Self::Cancelled { source: _source } => write!(f, "task was cancelled"),
         }
     }
 }

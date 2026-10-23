@@ -17,6 +17,7 @@
 
 use std::convert::Infallible;
 use std::fmt;
+use std::future::ready;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -115,30 +116,31 @@ where
         &self.cancel
     }
 
-    async fn context<'test_context>(
+    fn context<'test_context>(
         &'test_context self,
         cancel: CancellationToken,
         config: &'test_context Config,
-    ) -> Result<Self::Test<'test_context>, Self::ContextError> {
+    ) -> impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>> + Send + 'test_context
+    {
         let _prev: usize = TEST_SETUP_CALLS.fetch_add(1, Ordering::SeqCst);
-        Ok(InvariantsTest {
+        ready(Ok(InvariantsTest {
             cancel,
             config,
             rt: self.rt,
             suite_tracker: self.suite_tracker.clone(),
             test_tracker: TaskTracker::new(),
-        })
+        }))
     }
 
     fn rt(&self) -> &'suite_context R {
         self.rt
     }
 
-    async fn setup(
+    fn setup(
         rt: &'suite_context R,
         cancel: CancellationToken,
         _config: &'suite_context Config,
-    ) -> Result<Self, Self::SetupError> {
+    ) -> impl Future<Output = Result<Self, Self::SetupError>> + Send + 'suite_context {
         let _prev: usize = SUITE_SETUP_CALLS.fetch_add(1, Ordering::SeqCst);
         let tracker = TaskTracker::new();
         // Spawn one suite-level tracked task that sleeps briefly. If
@@ -150,11 +152,11 @@ where
             sleep(Duration::from_millis(40)).await;
             let _prev_completed: usize = SUITE_TRACKER_COMPLETED.fetch_add(1, Ordering::SeqCst);
         });
-        Ok(Self {
+        ready(Ok(Self {
             cancel: cancel.child_token(),
             rt,
             suite_tracker: tracker,
-        })
+        }))
     }
 
     #[expect(
