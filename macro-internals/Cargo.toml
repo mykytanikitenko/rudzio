@@ -46,7 +46,7 @@ rudzio = { workspace = true, features = [
   "runtime-smol",
   "runtime-monoio",
 ] }
-anyhow = "=1.0.102"
+anyhow = "=1.0.104"
 
 [[test]]
 name = "main"
