@@ -13,11 +13,13 @@
 use std::env;
 use std::io::{BufReader, Result as IoResult, Write as _, stderr, stdout};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{Command, ExitCode, Stdio, abort};
 
 use anyhow::{Context as _, Result, bail};
 use cargo_metadata::{Message, TargetKind};
-use cargo_rudzio::cli::{aggregator_cargo_args, format_target_flag_warning, parse_test_args};
+use cargo_rudzio::cli::{
+    RunnerExit, aggregator_cargo_args, format_target_flag_warning, parse_test_args, runner_exit,
+};
 use cargo_rudzio::generate;
 use rudzio_migrate::run::entry_with_args as rudzio_migrate_entry;
 
@@ -350,10 +352,16 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
             runner_path = runner_path.display(),
         )
     })?;
-    Ok(runner_status.code().map_or_else(
-        || ExitCode::from(1),
-        |code| ExitCode::from(u8::try_from(code & 0xFF_i32).unwrap_or(1)),
-    ))
+    match runner_exit(runner_status.code()) {
+        RunnerExit::Code(code) => Ok(ExitCode::from(code)),
+        // Abort (signal-terminated runner) and any future [`RunnerExit`]
+        // variant: propagate the abnormal termination by aborting so the
+        // parent observes a signal-killed process instead of a clean
+        // exit 1 (Bug #4).
+        RunnerExit::Abort | _ => {
+            abort();
+        }
+    }
 }
 
 /// Print warnings from the src-scan diagnostic pass before the
