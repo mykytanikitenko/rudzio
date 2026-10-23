@@ -537,8 +537,32 @@ struct CratePathRewriter<'helpers> {
 }
 
 impl VisitMut for CratePathRewriter<'_> {
+    fn visit_item_use_mut(&mut self, i: &mut syn::ItemUse) {
+        // `use ::<member>::..` must lose its leading `::` once the head
+        // becomes `crate` (`::crate` is not valid Rust).
+        if self.rewrite_member_to_crate
+            && i.leading_colon.is_some()
+            && matches!(&i.tree, syn::UseTree::Path(path) if path.ident == self.member_lib_ident)
+        {
+            i.leading_colon = None;
+        }
+        visit_mut::visit_item_use_mut(self, i);
+    }
+
     fn visit_path_mut(&mut self, i: &mut syn::Path) {
         use syn::punctuated::Punctuated;
+        // `::<member>::..` in expression/type position: same rewrite,
+        // dropping the leading `::`.
+        if self.rewrite_member_to_crate
+            && i.leading_colon.is_some()
+            && i.segments.len() > 1
+            && let Some(head) = i.segments.first_mut()
+            && head.ident == self.member_lib_ident
+        {
+            let span = head.ident.span();
+            head.ident = syn::Ident::new("crate", span);
+            i.leading_colon = None;
+        }
         if i.leading_colon.is_none() {
             // Member-prelude rewrite: `super::<member>::*` → `<member>::*`.
             // Detection requires at least 2 segments (`super`, `<member>`);
@@ -558,7 +582,10 @@ impl VisitMut for CratePathRewriter<'_> {
             // (member crate by name + helper) first becomes
             // `crate::common::X` and then receives the helper→synth
             // substitution.
+            // Requires a second segment: a lone `<member>` is a local
+            // binding (e.g. a self-named struct literal), not a crate path.
             if self.rewrite_member_to_crate
+                && i.segments.len() > 1
                 && let Some(head) = i.segments.first_mut()
                 && head.ident == self.member_lib_ident
             {
@@ -5014,12 +5041,24 @@ fn item_binds_ident(item: &syn::Item, ident: &str) -> bool {
         syn::Item::TraitAlias(i) => i.ident == ident,
         syn::Item::Type(i) => i.ident == ident,
         syn::Item::Union(i) => i.ident == ident,
-        syn::Item::Use(i) => match &i.tree {
-            syn::UseTree::Name(name) => name.ident == ident,
-            syn::UseTree::Rename(rename) => rename.rename == ident,
-            syn::UseTree::Path(_) | syn::UseTree::Glob(_) | syn::UseTree::Group(_) => false,
-        },
+        syn::Item::Use(i) => use_tree_binds_ident(&i.tree, ident),
         syn::Item::ForeignMod(_) | syn::Item::Impl(_) | syn::Item::Verbatim(_) | _ => false,
+    }
+}
+
+/// Whether a `use` tree introduces a binding named `ident`: a leaf
+/// name, an `as` rename, or any such leaf reached through a path or
+/// group (`use other::project;` binds `project`). Globs bind no name.
+fn use_tree_binds_ident(tree: &syn::UseTree, ident: &str) -> bool {
+    match tree {
+        syn::UseTree::Name(name) => name.ident == ident,
+        syn::UseTree::Rename(rename) => rename.rename == ident,
+        syn::UseTree::Path(path) => use_tree_binds_ident(&path.tree, ident),
+        syn::UseTree::Group(group) => group
+            .items
+            .iter()
+            .any(|item| use_tree_binds_ident(item, ident)),
+        syn::UseTree::Glob(_) => false,
     }
 }
 
