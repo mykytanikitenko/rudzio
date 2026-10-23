@@ -4874,7 +4874,7 @@ pub fn build_main_rs(plan: &Plan, _out_dir: &Path) -> String {
     let workspace_root_abs = plan.workspace_root.as_std_path();
     let mut seen: BTreeSet<String> = BTreeSet::new();
     for member in &plan.members {
-        if paths_equal(&member.manifest_dir, workspace_root_abs) {
+        if is_injected_rudzio_root(member, workspace_root_abs) {
             continue;
         }
         // Decisions Log [C3]: aggregator extern-crates EVERY bridge
@@ -4898,7 +4898,7 @@ pub fn build_main_rs(plan: &Plan, _out_dir: &Path) -> String {
     // via `extern crate <bin_bridge_lib_ident>;` so link-time DCE
     // doesn't drop the rlib and lose its `TEST_TOKENS` entries.
     for member in &plan.members {
-        if paths_equal(&member.manifest_dir, workspace_root_abs) {
+        if is_injected_rudzio_root(member, workspace_root_abs) {
             continue;
         }
         for bin in collect_bridged_bin_targets(member) {
@@ -5652,7 +5652,7 @@ fn aggregator_bin_array() -> ArrayOfTables {
 fn add_bin_bridge_deps(deps: &mut Table, plan: &Plan, workspace_root_abs: &Path) {
     let mut bin_bridge_seen: BTreeSet<String> = BTreeSet::new();
     for member in &plan.members {
-        if paths_equal(&member.manifest_dir, workspace_root_abs) {
+        if is_injected_rudzio_root(member, workspace_root_abs) {
             continue;
         }
         for bin in collect_bridged_bin_targets(member) {
@@ -5717,11 +5717,11 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
     );
 
     // Every rudzio-using member as a path dep with default features.
-    // Skip the workspace root itself (already injected as
-    // `rudzio = { path = ..., features = [...] }`) and bin-only members
-    // (cargo rejects libless path deps; they participate via the
-    // aggregator's `[workspace.members]` list so `expose_bins` can see
-    // them in cargo-metadata output).
+    // Skip only the rudzio crate itself when it IS the workspace root
+    // (already injected above as `rudzio = { path = ..., features = [...] }`),
+    // and skip non-bridged bin-only members (cargo rejects libless path
+    // deps; they participate via the aggregator's `[workspace.members]`
+    // list so `expose_bins` can see them in cargo-metadata output).
     //
     // Members that carry src-embedded rudzio suites go through a
     // generated bridge crate (see `bridge_applies_to`): instead of the
@@ -5736,7 +5736,7 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
     // own Cargo.toml carrying any rudzio-specific machinery.
     let workspace_root_abs = plan.workspace_root.as_std_path();
     for member in &plan.members {
-        if paths_equal(&member.manifest_dir, workspace_root_abs) {
+        if is_injected_rudzio_root(member, workspace_root_abs) {
             continue;
         }
         // Decisions Log [C3]: aggregator depends on every bridged
@@ -6343,6 +6343,23 @@ fn paths_equal(left: &Path, right: &Path) -> bool {
         .zip(fs::canonicalize(right).ok())
         .is_some_and(|(canonical_left, canonical_right)| canonical_left == canonical_right)
         || left == right
+}
+
+/// A workspace-root member is bridged like any other member, with one
+/// exception: when it IS rudzio itself (rudzio's own repo dogfooding
+/// itself). In that shape the aggregator already injects `rudzio`
+/// directly (routed through rudzio's bridge by
+/// `aggregator_rudzio_inline_table`), so a second path-dep or
+/// `extern crate` for it would collide with that injection.
+///
+/// Every OTHER workspace-root member — a standalone crate that is its
+/// own workspace root (`manifest_dir == workspace_root`, no enclosing
+/// `[workspace]`) — must be processed normally. Unconditionally skipping
+/// the workspace-root member was Bug #8: its bridge rlib was never
+/// `extern crate`d into the runner, leaving linkme's `TEST_TOKENS` slice
+/// empty and aborting at `distributed_slice.rs` `from_raw_parts(NULL, 0)`.
+fn is_injected_rudzio_root(member: &MemberPlan, workspace_root_abs: &Path) -> bool {
+    member.package_name == RUDZIO_DEP && paths_equal(&member.manifest_dir, workspace_root_abs)
 }
 
 /// Build a `Plan` by querying `cargo metadata` from the current working directory.
