@@ -41,14 +41,8 @@ use tempfile::TempDir;
 /// as the `path` for the fixture's `rudzio` workspace dependency so the
 /// synthetic workspace builds against the rudzio code under test rather
 /// than a published version.
-#[expect(
-    clippy::expect_used,
-    reason = "CARGO_MANIFEST_DIR is always an absolute path whose parent is the workspace root"
-)]
-fn rudzio_source_root() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("cargo-rudzio/tests must live under the workspace root")
+fn rudzio_source_root() -> Option<&'static Path> {
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent()
 }
 
 /// Materialise the Bug #4 fixture under `root`: a workspace whose
@@ -56,7 +50,8 @@ fn rudzio_source_root() -> &'static Path {
 /// abort on panic, plus an `app` member whose single `#[rudzio::test]`
 /// panics.
 fn write_fixture(root: &Path) -> io::Result<()> {
-    let rudzio_root = rudzio_source_root();
+    let rudzio_root = rudzio_source_root()
+        .ok_or_else(|| io::Error::other("cargo-rudzio/tests must live under the workspace root"))?;
 
     fs::write(
         root.join("Cargo.toml"),
@@ -114,9 +109,7 @@ mod tests {
     mod inner {
         #[rudzio::test]
         fn aborting_panic(_t: &super::Test) -> anyhow::Result<()> {
-            panic!("boom");
-            #[allow(unreachable_code)]
-            Ok(())
+            panic!("boom")
         }
     }
 }

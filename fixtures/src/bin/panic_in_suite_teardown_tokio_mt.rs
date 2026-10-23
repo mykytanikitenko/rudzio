@@ -7,6 +7,7 @@
 
 use std::convert::Infallible;
 use std::fmt;
+use std::future::ready;
 
 use rudzio::Config;
 use rudzio::context;
@@ -82,41 +83,45 @@ where
         &self.cancel
     }
 
-    async fn context<'test_context>(
+    fn context<'test_context>(
         &'test_context self,
         cancel: CancellationToken,
         config: &'test_context Config,
-    ) -> Result<Self::Test<'test_context>, Self::ContextError> {
-        Ok(TrivialTest {
+    ) -> impl Future<Output = Result<Self::Test<'test_context>, Self::ContextError>> + Send + 'test_context
+    {
+        ready(Ok(TrivialTest {
             cancel,
             config,
             rt: self.rt,
             tracker: self.tracker.clone(),
-        })
+        }))
     }
 
     fn rt(&self) -> &'suite_context R {
         self.rt
     }
 
-    async fn setup(
+    fn setup(
         rt: &'suite_context R,
         cancel: CancellationToken,
         _config: &'suite_context Config,
-    ) -> Result<Self, Self::SetupError> {
-        Ok(Self {
+    ) -> impl Future<Output = Result<Self, Self::SetupError>> + Send + 'suite_context {
+        ready(Ok(Self {
             cancel: cancel.child_token(),
             rt,
             tracker: TaskTracker::new(),
-        })
+        }))
     }
 
     #[expect(
         clippy::panic,
         reason = "this fixture asserts the runner's catch_unwind wrapper turns a Suite::teardown panic into a structured [PANIC] teardown line; the panic must occur to exercise that path"
     )]
-    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
-        panic!("suite_teardown_panicked_by_design")
+    fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'suite_context {
+        Box::pin(async move { panic!("suite_teardown_panicked_by_design") })
     }
 
     fn tracker(&self) -> &TaskTracker {
@@ -142,8 +147,11 @@ where
         self.rt
     }
 
-    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
-        Ok(())
+    fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'test_context {
+        ready(Ok(()))
     }
 
     fn tracker(&self) -> &TaskTracker {

@@ -1,5 +1,6 @@
 use std::convert::Infallible;
 use std::fmt;
+use std::future::ready;
 
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -74,9 +75,12 @@ where
     }
 
     #[inline]
-    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
+    fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'test_context {
         self.cancel.cancel();
-        Ok(())
+        ready(Ok(()))
     }
 
     #[inline]

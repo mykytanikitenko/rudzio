@@ -187,21 +187,15 @@ pub struct TestSummary {
 impl ModeReporter {
     /// Map a [`TestOutcome`] to its libtest-format logfile status word.
     const fn logfile_status_for(outcome: &TestOutcome) -> &'static str {
-        match outcome {
-            TestOutcome::Passed { .. } => "ok",
-            TestOutcome::Benched { report, .. } => {
-                if report.is_success() {
-                    "ok"
-                } else {
-                    "failed"
-                }
-            }
-            TestOutcome::Failed { .. }
-            | TestOutcome::Panicked { .. }
-            | TestOutcome::SetupFailed { .. }
-            | TestOutcome::TimedOut
-            | TestOutcome::Hung { .. } => "failed",
-            TestOutcome::Cancelled => "ignored",
+        match StatusLabel::from_outcome(outcome) {
+            StatusLabel::Ok | StatusLabel::Bench => "ok",
+            StatusLabel::Cancel | StatusLabel::Ignore => "ignored",
+            StatusLabel::Fail
+            | StatusLabel::Panic
+            | StatusLabel::Setup
+            | StatusLabel::Timeout
+            | StatusLabel::Hang
+            | StatusLabel::BenchErr => "failed",
         }
     }
 
@@ -236,14 +230,23 @@ impl StatusLabel {
     /// Map a [`TestOutcome`] to the matching status label.
     const fn from_outcome(outcome: &TestOutcome) -> Self {
         match outcome {
-            TestOutcome::Passed { .. } => Self::Ok,
-            TestOutcome::Failed { .. } => Self::Fail,
-            TestOutcome::Panicked { .. } => Self::Panic,
-            TestOutcome::SetupFailed { .. } => Self::Setup,
+            TestOutcome::Passed { elapsed: _elapsed } => Self::Ok,
+            TestOutcome::Failed {
+                elapsed: _elapsed,
+                message: _message,
+            } => Self::Fail,
+            TestOutcome::Panicked { elapsed: _elapsed } => Self::Panic,
+            TestOutcome::SetupFailed {
+                elapsed: _elapsed,
+                message: _message,
+            } => Self::Setup,
             TestOutcome::TimedOut => Self::Timeout,
-            TestOutcome::Hung { .. } => Self::Hang,
+            TestOutcome::Hung { elapsed: _elapsed } => Self::Hang,
             TestOutcome::Cancelled => Self::Cancel,
-            TestOutcome::Benched { report, .. } => {
+            TestOutcome::Benched {
+                report,
+                elapsed: _elapsed,
+            } => {
                 if report.failures.is_empty() && report.panics == 0 {
                     Self::Bench
                 } else {
@@ -353,21 +356,17 @@ impl SuiteReporter for ModeReporter {
         };
         match plain.fmt {
             Format::Terse => {
-                let glyph = match &outcome {
-                    TestOutcome::Passed { .. } => ".".to_owned(),
-                    TestOutcome::Failed { .. }
-                    | TestOutcome::Panicked { .. }
-                    | TestOutcome::SetupFailed { .. }
-                    | TestOutcome::TimedOut
-                    | TestOutcome::Hung { .. } => red("F", plain.colored),
-                    TestOutcome::Cancelled => yellow("c", plain.colored),
-                    TestOutcome::Benched { report, .. } => {
-                        if report.is_success() {
-                            "b".to_owned()
-                        } else {
-                            red("B", plain.colored)
-                        }
-                    }
+                let glyph = match StatusLabel::from_outcome(&outcome) {
+                    StatusLabel::Ok => ".".to_owned(),
+                    StatusLabel::Bench => "b".to_owned(),
+                    StatusLabel::BenchErr => red("B", plain.colored),
+                    StatusLabel::Cancel => yellow("c", plain.colored),
+                    StatusLabel::Ignore => yellow("i", plain.colored),
+                    StatusLabel::Fail
+                    | StatusLabel::Panic
+                    | StatusLabel::Setup
+                    | StatusLabel::Timeout
+                    | StatusLabel::Hang => red("F", plain.colored),
                 };
                 write_stdout(&glyph);
                 let _flush = io::stdout().flush();
@@ -378,38 +377,43 @@ impl SuiteReporter for ModeReporter {
             }
         }
 
-        match outcome {
-            TestOutcome::Failed { message, .. } => {
-                plain.record_failure(FailureInfo {
-                    name: token.name,
-                    message,
-                });
-            }
-            TestOutcome::SetupFailed { message, .. } => {
-                plain.record_failure(FailureInfo {
-                    name: token.name,
-                    message: format!("test setup failed: {message}"),
-                });
-            }
-            TestOutcome::Benched { report, .. } if !report.is_success() => {
-                let message = format!(
-                    "benchmark {} reported {} failed iterations and {} panics:\n{}",
-                    report.strategy,
-                    report.failures.len(),
-                    report.panics,
-                    report.failures.join("\n"),
-                );
-                plain.record_failure(FailureInfo {
-                    name: token.name,
-                    message,
-                });
-            }
-            TestOutcome::Benched { .. }
-            | TestOutcome::Cancelled
-            | TestOutcome::Hung { .. }
-            | TestOutcome::Panicked { .. }
-            | TestOutcome::Passed { .. }
-            | TestOutcome::TimedOut => {}
+        if let TestOutcome::Failed {
+            message,
+            elapsed: _elapsed,
+        } = &outcome
+        {
+            plain.record_failure(FailureInfo {
+                name: token.name,
+                message: message.clone(),
+            });
+        }
+        if let TestOutcome::SetupFailed {
+            message,
+            elapsed: _elapsed,
+        } = &outcome
+        {
+            plain.record_failure(FailureInfo {
+                name: token.name,
+                message: format!("test setup failed: {message}"),
+            });
+        }
+        if let TestOutcome::Benched {
+            report,
+            elapsed: _elapsed,
+        } = &outcome
+            && !report.is_success()
+        {
+            let message = format!(
+                "benchmark {} reported {} failed iterations and {} panics:\n{}",
+                report.strategy,
+                report.failures.len(),
+                report.panics,
+                report.failures.join("\n"),
+            );
+            plain.record_failure(FailureInfo {
+                name: token.name,
+                message,
+            });
         }
     }
 
@@ -1007,7 +1011,11 @@ fn pretty_outcome_block(
     let lhs_rendered = format!("{tag_rendered} {display}");
     let header = render_status_line(&lhs_naked, &lhs_rendered, &trailing, terminal_width());
     let mut buf = header;
-    if let TestOutcome::Benched { report, .. } = outcome {
+    if let TestOutcome::Benched {
+        report,
+        elapsed: _elapsed,
+    } = outcome
+    {
         // Bench status line + detailed stats + histogram, emitted as
         // a single atomic write so concurrent runtime threads can't
         // interleave each other's blocks.
@@ -1053,16 +1061,30 @@ fn pretty_outcome_block(
 /// (test body error, setup error, panic payload, timeout note)
 /// is visible without scrolling to the end-of-run failures section.
 fn outcome_inline_message(outcome: &TestOutcome) -> Option<String> {
-    match outcome {
-        TestOutcome::Failed { message, .. } => Some(message.clone()),
-        TestOutcome::SetupFailed { message, .. } => Some(format!("test setup failed: {message}")),
-        TestOutcome::TimedOut => Some("test exceeded its timeout".to_owned()),
-        TestOutcome::Hung { .. } => Some("hung; abort signal sent".to_owned()),
-        TestOutcome::Cancelled => Some("test was cancelled before completion".to_owned()),
-        TestOutcome::Panicked { .. } | TestOutcome::Passed { .. } | TestOutcome::Benched { .. } => {
-            None
-        }
+    if let TestOutcome::Failed {
+        message,
+        elapsed: _elapsed,
+    } = outcome
+    {
+        return Some(message.clone());
     }
+    if let TestOutcome::SetupFailed {
+        message,
+        elapsed: _elapsed,
+    } = outcome
+    {
+        return Some(format!("test setup failed: {message}"));
+    }
+    if matches!(outcome, TestOutcome::TimedOut) {
+        return Some("test exceeded its timeout".to_owned());
+    }
+    if let TestOutcome::Hung { elapsed: _elapsed } = outcome {
+        return Some("hung; abort signal sent".to_owned());
+    }
+    if matches!(outcome, TestOutcome::Cancelled) {
+        return Some("test was cancelled before completion".to_owned());
+    }
+    None
 }
 
 /// Wrap `text` with the given ANSI SGR `code` when `colored` is true,
@@ -1670,28 +1692,22 @@ fn name_matches(qualified_name: &str, needle: &str, exact_match: bool) -> bool {
 /// Format the trailing `<...>` info block for an outcome. Runtime
 /// name comes first, then elapsed, then bench-specific details.
 fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
-    match outcome {
-        TestOutcome::Passed { elapsed }
-        | TestOutcome::Failed { elapsed, .. }
-        | TestOutcome::Panicked { elapsed }
-        | TestOutcome::Hung { elapsed }
-        | TestOutcome::SetupFailed { elapsed, .. } => {
-            format!("<{runtime_name}, {}>", format_elapsed(*elapsed))
+    if let TestOutcome::Benched { elapsed, report } = outcome {
+        let mut inner = format!(
+            "{runtime_name}, {}, {}",
+            format_elapsed(*elapsed),
+            report.strategy,
+        );
+        if let Some(p50) = report.median() {
+            let p50_text = fmt_duration(p50);
+            let _write_ret: Result<(), fmt::Error> = write!(inner, ", p50 {p50_text}");
         }
-        TestOutcome::TimedOut | TestOutcome::Cancelled => format!("<{runtime_name}>"),
-        TestOutcome::Benched { elapsed, report } => {
-            let mut inner = format!(
-                "{runtime_name}, {}, {}",
-                format_elapsed(*elapsed),
-                report.strategy,
-            );
-            if let Some(p50) = report.median() {
-                let p50_text = fmt_duration(p50);
-                let _write_ret: Result<(), fmt::Error> = write!(inner, ", p50 {p50_text}");
-            }
-            format!("<{inner}>")
-        }
+        return format!("<{inner}>");
     }
+    outcome.elapsed().map_or_else(
+        || format!("<{runtime_name}>"),
+        |elapsed| format!("<{runtime_name}, {}>", format_elapsed(elapsed)),
+    )
 }
 
 /// Decide whether ANSI colour escapes should be emitted in plain

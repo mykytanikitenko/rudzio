@@ -328,7 +328,11 @@ impl Drawer {
             emit_captured_block(&mut self.terminal, state, self.color);
         }
 
-        if let TestOutcome::Benched { report, .. } = outcome {
+        if let TestOutcome::Benched {
+            report,
+            elapsed: _elapsed,
+        } = outcome
+        {
             let detail = report.detailed_summary();
             drop(self.terminal.write_all(detail.as_bytes()));
             if report.failures.is_empty() && report.panics == 0 {
@@ -1002,15 +1006,29 @@ impl Summary {
     /// totals stay in sync with completed tests.
     const fn record_outcome(&mut self, outcome: &TestOutcome) {
         match outcome {
-            TestOutcome::Passed { .. } => self.passed = self.passed.saturating_add(1),
-            TestOutcome::Failed { .. } | TestOutcome::SetupFailed { .. } => {
+            TestOutcome::Passed { elapsed: _elapsed } => {
+                self.passed = self.passed.saturating_add(1);
+            }
+            TestOutcome::Failed {
+                elapsed: _elapsed,
+                message: _message,
+            }
+            | TestOutcome::SetupFailed {
+                elapsed: _elapsed,
+                message: _message,
+            } => {
                 self.failed = self.failed.saturating_add(1);
             }
-            TestOutcome::Panicked { .. } => self.panicked = self.panicked.saturating_add(1),
+            TestOutcome::Panicked { elapsed: _elapsed } => {
+                self.panicked = self.panicked.saturating_add(1);
+            }
             TestOutcome::TimedOut => self.timed_out = self.timed_out.saturating_add(1),
-            TestOutcome::Hung { .. } => self.hung = self.hung.saturating_add(1),
+            TestOutcome::Hung { elapsed: _elapsed } => self.hung = self.hung.saturating_add(1),
             TestOutcome::Cancelled => self.cancelled = self.cancelled.saturating_add(1),
-            TestOutcome::Benched { report, .. } => {
+            TestOutcome::Benched {
+                report,
+                elapsed: _elapsed,
+            } => {
                 self.benched = self.benched.saturating_add(1);
                 if !report.is_success() {
                     self.failed = self.failed.saturating_add(1);
@@ -1023,30 +1041,33 @@ impl Summary {
 /// Return `true` when `outcome` should be recorded in the failures
 /// list (any non-passing variant or a bench with errors).
 const fn is_failure(outcome: &TestOutcome) -> bool {
-    match outcome {
-        TestOutcome::Failed { .. }
-        | TestOutcome::Panicked { .. }
-        | TestOutcome::SetupFailed { .. }
-        | TestOutcome::TimedOut
-        | TestOutcome::Hung { .. }
-        | TestOutcome::Cancelled => true,
-        TestOutcome::Benched { report, .. } => !report.is_success(),
-        TestOutcome::Passed { .. } => false,
-    }
+    !matches!(
+        status_label_from_outcome(outcome),
+        StatusLabel::Ok | StatusLabel::Bench
+    )
 }
 
 /// Map a [`TestOutcome`] to the [`StatusLabel`] used to paint the
 /// header tag.
 const fn status_label_from_outcome(outcome: &TestOutcome) -> StatusLabel {
     match outcome {
-        TestOutcome::Passed { .. } => StatusLabel::Ok,
-        TestOutcome::Failed { .. } => StatusLabel::Fail,
-        TestOutcome::Panicked { .. } => StatusLabel::Panic,
-        TestOutcome::SetupFailed { .. } => StatusLabel::Setup,
+        TestOutcome::Passed { elapsed: _elapsed } => StatusLabel::Ok,
+        TestOutcome::Failed {
+            elapsed: _elapsed,
+            message: _message,
+        } => StatusLabel::Fail,
+        TestOutcome::Panicked { elapsed: _elapsed } => StatusLabel::Panic,
+        TestOutcome::SetupFailed {
+            elapsed: _elapsed,
+            message: _message,
+        } => StatusLabel::Setup,
         TestOutcome::TimedOut => StatusLabel::Timeout,
-        TestOutcome::Hung { .. } => StatusLabel::Hang,
+        TestOutcome::Hung { elapsed: _elapsed } => StatusLabel::Hang,
         TestOutcome::Cancelled => StatusLabel::Cancel,
-        TestOutcome::Benched { report, .. } => {
+        TestOutcome::Benched {
+            report,
+            elapsed: _elapsed,
+        } => {
             if report.failures.is_empty() && report.panics == 0 {
                 StatusLabel::Bench
             } else {
@@ -1095,26 +1116,20 @@ fn render_status_tag(label: StatusLabel, color: ColorPolicy) -> String {
 /// Build the trailing `<runtime, elapsed[, bench info]>` block for a
 /// finished test.
 fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
-    match outcome {
-        TestOutcome::Passed { elapsed }
-        | TestOutcome::Failed { elapsed, .. }
-        | TestOutcome::Panicked { elapsed }
-        | TestOutcome::Hung { elapsed }
-        | TestOutcome::SetupFailed { elapsed, .. } => {
-            format!("<{runtime_name}, {elapsed:.2?}>")
-        }
-        TestOutcome::TimedOut | TestOutcome::Cancelled => format!("<{runtime_name}>"),
-        TestOutcome::Benched { elapsed, report } => {
-            let median = report
-                .median()
-                .map(|median| format!(", p50 {median:.2?}"))
-                .unwrap_or_default();
-            format!(
-                "<{runtime_name}, {elapsed:.2?}, {}{median}>",
-                report.strategy,
-            )
-        }
+    if let TestOutcome::Benched { elapsed, report } = outcome {
+        let median = report
+            .median()
+            .map(|median| format!(", p50 {median:.2?}"))
+            .unwrap_or_default();
+        return format!(
+            "<{runtime_name}, {elapsed:.2?}, {}{median}>",
+            report.strategy,
+        );
     }
+    outcome.elapsed().map_or_else(
+        || format!("<{runtime_name}>"),
+        |elapsed| format!("<{runtime_name}, {elapsed:.2?}>"),
+    )
 }
 
 /// Right-align `trailing` to `term_cols` with at least
@@ -1208,32 +1223,53 @@ fn terminal_height() -> usize {
 /// failures section.
 const fn outcome_label(outcome: &TestOutcome) -> &'static str {
     match outcome {
-        TestOutcome::Failed { .. } => "FAILED",
-        TestOutcome::Panicked { .. } => "PANICKED",
-        TestOutcome::SetupFailed { .. } => "SETUP FAILED",
+        TestOutcome::Failed {
+            elapsed: _elapsed,
+            message: _message,
+        } => "FAILED",
+        TestOutcome::Panicked { elapsed: _elapsed } => "PANICKED",
+        TestOutcome::SetupFailed {
+            elapsed: _elapsed,
+            message: _message,
+        } => "SETUP FAILED",
         TestOutcome::TimedOut => "TIMED OUT",
-        TestOutcome::Hung { .. } => "HUNG",
+        TestOutcome::Hung { elapsed: _elapsed } => "HUNG",
         TestOutcome::Cancelled => "CANCELLED",
-        TestOutcome::Benched { .. } => "bench had errors",
-        TestOutcome::Passed { .. } => "",
+        TestOutcome::Benched {
+            elapsed: _elapsed,
+            report: _report,
+        } => "bench had errors",
+        TestOutcome::Passed { elapsed: _elapsed } => "",
     }
 }
 
 /// Human-readable failure message extracted from `outcome` for
 /// printing under the result header.
 fn outcome_message(outcome: &TestOutcome) -> String {
-    match outcome {
-        TestOutcome::Failed { message, .. } => message.clone(),
-        TestOutcome::SetupFailed { message, .. } => {
-            format!("test setup failed: {message}")
-        }
-        TestOutcome::TimedOut => "test exceeded its timeout".to_owned(),
-        TestOutcome::Hung { .. } => "hung; abort signal sent".to_owned(),
-        TestOutcome::Cancelled => "test was cancelled before completion".to_owned(),
-        TestOutcome::Panicked { .. } | TestOutcome::Passed { .. } | TestOutcome::Benched { .. } => {
-            String::new()
-        }
+    if let TestOutcome::Failed {
+        message,
+        elapsed: _elapsed,
+    } = outcome
+    {
+        return message.clone();
     }
+    if let TestOutcome::SetupFailed {
+        message,
+        elapsed: _elapsed,
+    } = outcome
+    {
+        return format!("test setup failed: {message}");
+    }
+    if matches!(outcome, TestOutcome::TimedOut) {
+        return "test exceeded its timeout".to_owned();
+    }
+    if let TestOutcome::Hung { elapsed: _elapsed } = outcome {
+        return "hung; abort signal sent".to_owned();
+    }
+    if matches!(outcome, TestOutcome::Cancelled) {
+        return "test was cancelled before completion".to_owned();
+    }
+    String::new()
 }
 
 /// Print a test's buffered stdout/stderr underneath its completion
@@ -1428,7 +1464,9 @@ pub fn running_line(runtime: &str, state: &TestState, color: ColorPolicy, cols: 
     let prefix = format!("{runtime:<RUNTIME_PREFIX_WIDTH$}");
     let label = match &state.kind {
         TestStateKind::Running => StatusLabel::Run,
-        TestStateKind::Bench { .. } => StatusLabel::Bench,
+        TestStateKind::Bench {
+            snapshot: _snapshot,
+        } => StatusLabel::Bench,
     };
     let tag = render_status_tag(label, color);
     let elapsed = state.started_at.elapsed();

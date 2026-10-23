@@ -9,6 +9,7 @@
 
 use std::convert::Infallible;
 use std::fmt;
+use std::future::ready;
 use std::time::Duration;
 
 use rudzio::Config;
@@ -115,20 +116,23 @@ where
         self.rt
     }
 
-    async fn setup(
+    fn setup(
         rt: &'suite_context R,
         cancel: CancellationToken,
         _config: &'suite_context Config,
-    ) -> Result<Self, Self::SetupError> {
-        Ok(Self {
+    ) -> impl Future<Output = Result<Self, Self::SetupError>> + Send + 'suite_context {
+        ready(Ok(Self {
             cancel: cancel.child_token(),
             rt,
             tracker: TaskTracker::new(),
-        })
+        }))
     }
 
-    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
-        Ok(())
+    fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'suite_context {
+        ready(Ok(()))
     }
 
     fn tracker(&self) -> &TaskTracker {
@@ -158,9 +162,12 @@ where
         clippy::print_stdout,
         reason = "this fixture asserts Test::teardown does not run when context() timed out (no context was constructed); the println! is the unreached marker that the integration test greps for absence"
     )]
-    async fn teardown(self, _cancel: CancellationToken) -> Result<(), Self::TeardownError> {
+    fn teardown(
+        self,
+        _cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Self::TeardownError>> + Send + 'test_context {
         println!("test_teardown_must_not_run_marker");
-        Ok(())
+        ready(Ok(()))
     }
 
     fn tracker(&self) -> &TaskTracker {
