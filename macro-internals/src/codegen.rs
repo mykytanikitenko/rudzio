@@ -60,10 +60,8 @@ pub fn extract_ignore_reason(func: &ItemFn) -> (bool, String) {
             continue;
         }
         if let syn::Meta::NameValue(nv) = &attr.meta
-            && let Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Str(lit_str),
-                ..
-            }) = &nv.value
+            && let Expr::Lit(expr_lit) = &nv.value
+            && let syn::Lit::Str(lit_str) = &expr_lit.lit
         {
             return (true, lit_str.value());
         }
@@ -73,10 +71,8 @@ pub fn extract_ignore_reason(func: &ItemFn) -> (bool, String) {
             }
             if let Ok(syn::Meta::NameValue(nv)) = attr.parse_args::<syn::Meta>()
                 && nv.path.is_ident("reason")
-                && let Expr::Lit(syn::ExprLit {
-                    lit: syn::Lit::Str(lit_str),
-                    ..
-                }) = nv.value
+                && let Expr::Lit(expr_lit) = nv.value
+                && let syn::Lit::Str(lit_str) = expr_lit.lit
             {
                 return (true, lit_str.value());
             }

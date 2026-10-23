@@ -147,9 +147,7 @@ fn extend_with_broken_helper(workspace: &Path) -> io::Result<()> {
     (runtime = Multithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
 ])]
 mod tests {
-    use super::{
-        Command, IsolatedCargoTest, Output, Path, Stdio, extend_with_broken_helper, io,
-    };
+    use super::{Command, IsolatedCargoTest, Output, Path, Stdio, extend_with_broken_helper, io};
 
     /// Spawn `cargo-rudzio test` with per-test isolated cargo state.
     fn run_cargo_rudzio_test(

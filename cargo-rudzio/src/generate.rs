@@ -2897,9 +2897,7 @@ fn rs_file_contains_rudzio_test_marker(path: &Path) -> bool {
     let Ok(text) = fs::read_to_string(path) else {
         return false;
     };
-    text.contains("rudzio::test")
-        || text.contains("rudzio::suite")
-        || text.contains("rudzio_test")
+    text.contains("rudzio::test") || text.contains("rudzio::suite") || text.contains("rudzio_test")
 }
 
 /// True iff `path` is a `.rs` file containing `rudzio::main`.
@@ -3024,8 +3022,7 @@ fn enumerate_unmounted_markers(member: &MemberPlan) -> Vec<MarkerLocation> {
     // family and gets refined when structural support for these
     // target kinds lands.
     let examples_dir = member.manifest_dir.join("examples");
-    let (example_files, examples_have_main) =
-        walk_dir_for_test_markers_and_main(&examples_dir);
+    let (example_files, examples_have_main) = walk_dir_for_test_markers_and_main(&examples_dir);
     if !examples_have_main {
         for path in example_files {
             out.push(MarkerLocation {
@@ -3036,8 +3033,7 @@ fn enumerate_unmounted_markers(member: &MemberPlan) -> Vec<MarkerLocation> {
     }
 
     let benches_dir = member.manifest_dir.join("benches");
-    let (bench_files, benches_have_main) =
-        walk_dir_for_test_markers_and_main(&benches_dir);
+    let (bench_files, benches_have_main) = walk_dir_for_test_markers_and_main(&benches_dir);
     if !benches_have_main {
         for path in bench_files {
             out.push(MarkerLocation {
@@ -3400,12 +3396,19 @@ fn write_bin_bridge_crate(
     }
     fs::create_dir_all(&bridge_dir)
         .with_context(|| format!("creating bin bridge dir {}", bridge_dir.display()))?;
-    let manifest = build_bin_bridge_cargo_toml(plan, member, bin)
-        .with_context(|| format!("rendering bin bridge Cargo.toml at {}", bridge_dir.display()))?;
+    let manifest = build_bin_bridge_cargo_toml(plan, member, bin).with_context(|| {
+        format!(
+            "rendering bin bridge Cargo.toml at {}",
+            bridge_dir.display()
+        )
+    })?;
     fs::write(bridge_dir.join("Cargo.toml"), manifest)
         .with_context(|| format!("writing bin bridge Cargo.toml at {}", bridge_dir.display()))?;
-    fs::write(bridge_dir.join("build.rs"), build_bin_bridge_build_rs(member))
-        .with_context(|| format!("writing bin bridge build.rs at {}", bridge_dir.display()))?;
+    fs::write(
+        bridge_dir.join("build.rs"),
+        build_bin_bridge_build_rs(member),
+    )
+    .with_context(|| format!("writing bin bridge build.rs at {}", bridge_dir.display()))?;
     Ok(())
 }
 
@@ -4887,7 +4890,10 @@ fn discover_test_root_helpers(test_file: &Path) -> Vec<(String, PathBuf)> {
     let resolution_base: PathBuf = if matches!(file_name, Some("mod.rs" | "main.rs" | "lib.rs")) {
         dir.to_path_buf()
     } else {
-        let Some(stem) = test_file.file_stem().and_then(|stem_name| stem_name.to_str()) else {
+        let Some(stem) = test_file
+            .file_stem()
+            .and_then(|stem_name| stem_name.to_str())
+        else {
             return Vec::new();
         };
         dir.join(stem)
@@ -4928,7 +4934,7 @@ fn parse_top_level_mod_decl(raw_line: &str) -> Option<String> {
     let trimmed = raw_line.trim();
     if trimmed.starts_with("//") {
         return None;
-        }
+    }
     let after_vis = trimmed
         .strip_prefix("pub(crate) ")
         .or_else(|| trimmed.strip_prefix("pub(super) "))

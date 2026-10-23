@@ -41,6 +41,10 @@ use tempfile::TempDir;
 /// as the `path` for the fixture's `rudzio` workspace dependency so the
 /// synthetic workspace builds against the rudzio code under test rather
 /// than a published version.
+#[expect(
+    clippy::expect_used,
+    reason = "CARGO_MANIFEST_DIR is always an absolute path whose parent is the workspace root"
+)]
 fn rudzio_source_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -124,7 +128,7 @@ mod tests {
 
 #[rudzio::suite([(runtime = TokioMultithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest)])]
 mod tests {
-    use std::os::unix::process::ExitStatusExt;
+    use std::os::unix::process::ExitStatusExt as _;
 
     use super::{Command, IsolatedCargoTest, Path, TempDir, env, write_fixture};
 
@@ -153,7 +157,8 @@ mod tests {
         // runner process: SIGABRT (signal 6), no clean exit code. Pre-fix
         // the profile is NOT inherited, so the panic unwinds, the runner
         // catches it, and exits cleanly with code Some(1).
-        let aborted = status.signal() == Some(6) || (!status.success() && status.code().is_none());
+        let aborted =
+            status.signal() == Some(6_i32) || (!status.success() && status.code().is_none());
         anyhow::ensure!(
             aborted,
             "expected the runner to abort on panic (SIGABRT / signal exit), but it exited \

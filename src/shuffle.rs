@@ -57,6 +57,6 @@ pub fn permute_with_seed<T>(items: &mut [T], seed: u64) -> anyhow::Result<()> {
         items.swap(idx, pick);
         // TODO(rs-cleanup): masking_arith at line 44 — review and replace with Result-propagating equivalent
         idx = idx.saturating_sub(1_usize);
-    };
+    }
     Ok(())
 }

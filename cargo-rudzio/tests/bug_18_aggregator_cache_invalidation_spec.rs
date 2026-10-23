@@ -129,7 +129,10 @@ mod tests {
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| {
-                anyhow::anyhow!("subdir has no valid UTF-8 name: {}", observed_path.display())
+                anyhow::anyhow!(
+                    "subdir has no valid UTF-8 name: {}",
+                    observed_path.display()
+                )
             })?;
 
         // Format: `rudzio-auto-runner-<wshash>-<stamphash>`.

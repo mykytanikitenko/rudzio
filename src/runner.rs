@@ -1253,7 +1253,9 @@ fn dispatch_test_groups(
                 // this should `?`-propagate instead of logging. Handling the
                 // Result here keeps the hazard visible without cascading the
                 // signature change through run() yet.
-                if let Err(err) = permute_with_seed(&mut group_tokens, resolved_shuffle_seed(config)) {
+                if let Err(err) =
+                    permute_with_seed(&mut group_tokens, resolved_shuffle_seed(config))
+                {
                     write_stderr(&format!("shuffle failed: {err:#}\n"));
                 }
             }

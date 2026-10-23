@@ -136,7 +136,11 @@ fn run_cargo_rudzio_test(
         .env("CARGO_TARGET_DIR", cargo_target_dir)
         .env("CARGO_NET_OFFLINE", "true")
         .env("NO_COLOR", "1")
-        .envs(coverage_env.iter().map(|(name, value)| (name.as_str(), value.as_str())))
+        .envs(
+            coverage_env
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.as_str())),
+        )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -159,7 +163,11 @@ fn run_llvm_cov_report(
         .env("CARGO_TARGET_DIR", cargo_target_dir)
         .env("CARGO_NET_OFFLINE", "true")
         .env("NO_COLOR", "1")
-        .envs(coverage_env.iter().map(|(name, value)| (name.as_str(), value.as_str())))
+        .envs(
+            coverage_env
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.as_str())),
+        )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()

@@ -20,11 +20,11 @@ mod tests {
     /// bails with `Err("no test functions found in module ...")`.
     #[rudzio::test]
     fn macro_rules_generated_test_is_registered(_ctx: &Test) -> anyhow::Result<()> {
-        let args: MainArgs = parse_quote!([
-            (runtime = rudzio::runtime::futures::ThreadPool::new,
-             suite = rudzio::common::context::Suite,
-             test = rudzio::common::context::Test),
-        ]);
+        let args: MainArgs = parse_quote!([(
+            runtime = rudzio::runtime::futures::ThreadPool::new,
+            suite = rudzio::common::context::Suite,
+            test = rudzio::common::context::Test
+        ),]);
 
         // `make_test!(a);` parses as `syn::Item::Macro` — the exact shape
         // a `macro_rules!` invocation takes in item position. There is no

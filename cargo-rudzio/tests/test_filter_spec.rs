@@ -81,7 +81,10 @@ fn customize_fixture(workspace: &Path) -> io::Result<()> {
          [dev-dependencies]\n\
          rudzio = { workspace = true }\n",
     )?;
-    fs::write(consumer.join("src").join("lib.rs"), "// rudzio_test marker\n")?;
+    fs::write(
+        consumer.join("src").join("lib.rs"),
+        "// rudzio_test marker\n",
+    )?;
     fs::write(
         consumer.join("tests").join("good").join("mod.rs"),
         "// rudzio_test marker\n#[rudzio::main]\nfn main() {}\n",

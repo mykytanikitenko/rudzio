@@ -98,7 +98,11 @@ impl RuntimeGroupKey {
     /// substitution.
     #[inline]
     #[must_use]
-    pub const fn of<R: 'static, S: 'static>() -> Self {
+    pub const fn of<R, S>() -> Self
+    where
+        R: 'static,
+        S: 'static,
+    {
         Self {
             runtime_type_id: TypeId::of::<R>(),
             suite_type_id: TypeId::of::<S>(),

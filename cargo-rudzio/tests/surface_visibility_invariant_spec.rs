@@ -614,9 +614,11 @@ mod tests {
 
         match classify(&output, marker_name, marker_path) {
             InvariantOutcome::Visible | InvariantOutcome::LoudlyRefused => Ok(()),
-            InvariantOutcome::SilentlyDisappeared => {
-                Err(silent_disappearance_failure(marker_path, marker_name, &output))
-            }
+            InvariantOutcome::SilentlyDisappeared => Err(silent_disappearance_failure(
+                marker_path,
+                marker_name,
+                &output,
+            )),
         }
     }
 
@@ -647,9 +649,11 @@ mod tests {
 
         match classify(&output, marker_name, marker_path) {
             InvariantOutcome::Visible | InvariantOutcome::LoudlyRefused => Ok(()),
-            InvariantOutcome::SilentlyDisappeared => {
-                Err(silent_disappearance_failure(marker_path, marker_name, &output))
-            }
+            InvariantOutcome::SilentlyDisappeared => Err(silent_disappearance_failure(
+                marker_path,
+                marker_name,
+                &output,
+            )),
         }
     }
 
@@ -680,9 +684,11 @@ mod tests {
 
         match classify(&output, marker_name, marker_path) {
             InvariantOutcome::Visible | InvariantOutcome::LoudlyRefused => Ok(()),
-            InvariantOutcome::SilentlyDisappeared => {
-                Err(silent_disappearance_failure(marker_path, marker_name, &output))
-            }
+            InvariantOutcome::SilentlyDisappeared => Err(silent_disappearance_failure(
+                marker_path,
+                marker_name,
+                &output,
+            )),
         }
     }
 
@@ -715,9 +721,11 @@ mod tests {
 
         match classify(&output, marker_name, marker_path) {
             InvariantOutcome::Visible | InvariantOutcome::LoudlyRefused => Ok(()),
-            InvariantOutcome::SilentlyDisappeared => {
-                Err(silent_disappearance_failure(marker_path, marker_name, &output))
-            }
+            InvariantOutcome::SilentlyDisappeared => Err(silent_disappearance_failure(
+                marker_path,
+                marker_name,
+                &output,
+            )),
         }
     }
 
@@ -752,9 +760,11 @@ mod tests {
 
         match classify(&output, marker_name, marker_path) {
             InvariantOutcome::Visible | InvariantOutcome::LoudlyRefused => Ok(()),
-            InvariantOutcome::SilentlyDisappeared => {
-                Err(silent_disappearance_failure(marker_path, marker_name, &output))
-            }
+            InvariantOutcome::SilentlyDisappeared => Err(silent_disappearance_failure(
+                marker_path,
+                marker_name,
+                &output,
+            )),
         }
     }
 
@@ -796,9 +806,11 @@ mod tests {
 
         match classify(&output, marker_name, marker_path) {
             InvariantOutcome::Visible | InvariantOutcome::LoudlyRefused => Ok(()),
-            InvariantOutcome::SilentlyDisappeared => {
-                Err(silent_disappearance_failure(marker_path, marker_name, &output))
-            }
+            InvariantOutcome::SilentlyDisappeared => Err(silent_disappearance_failure(
+                marker_path,
+                marker_name,
+                &output,
+            )),
         }
     }
 }

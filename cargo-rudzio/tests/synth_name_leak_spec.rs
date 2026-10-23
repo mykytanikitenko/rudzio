@@ -304,10 +304,10 @@ fn collect_string_literals(text: &str) -> Vec<String> {
 ])]
 mod tests {
     use super::{
-        Command, IsolatedCargoTest, Path, SYNTH_MARKER, collect_string_literals,
-        customize_fixture, env, fs, is_cargo_build_line, is_rust_backtrace_line,
-        normalize_module_path, plan_from_manifest, qualified_test_name, read_emitted_sources,
-        with_cargo_offline, write_runner,
+        Command, IsolatedCargoTest, Path, SYNTH_MARKER, collect_string_literals, customize_fixture,
+        env, fs, is_cargo_build_line, is_rust_backtrace_line, normalize_module_path,
+        plan_from_manifest, qualified_test_name, read_emitted_sources, with_cargo_offline,
+        write_runner,
     };
 
     /// Layer 1 — static: synth names must NEVER appear in string

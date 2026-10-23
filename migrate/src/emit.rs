@@ -237,15 +237,14 @@ fn capture_item_source(item: &syn::Item, source: &str) -> Result<Option<String>>
 fn indent_at(text: &str, pos: usize) -> Result<String> {
     // Real error path: `pos` is a byte offset into `text`; out-of-range
     // means a corrupted offset.
-    let prefix = text
-        .get(..pos)
-        .context("indent_at: pos past end of text")?;
+    let prefix = text.get(..pos).context("indent_at: pos past end of text")?;
     // +1 steps past the newline; map_or(0, ...) handles "no newline".
     let line_start = prefix.rfind('\n').map_or(0, |idx| idx.saturating_add(1));
     // TODO(rs-cleanup): silencing — get/unwrap_or "" if line_start>pos
     // (cannot happen: line_start derived from a newline before pos).
     let line = text.get(line_start..pos).unwrap_or("");
-    Ok(line.chars()
+    Ok(line
+        .chars()
         .take_while(|ch| *ch == ' ' || *ch == '\t')
         .collect())
 }
@@ -453,7 +452,7 @@ fn salvage_verbatim_impls_in_items(
         {
             salvage_verbatim_impls_in_items(inner, source, out)?;
         }
-    };
+    }
     Ok(())
 }
 
