@@ -114,6 +114,11 @@ pub enum RudzioLocation {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum Section {
+    /// `[build-dependencies]` only. Collected and rendered separately
+    /// from the dev/normal sections so a build script links the REAL
+    /// sibling crate (not the test-only bridge) and registry/workspace
+    /// entries keep their exact resolution rules.
+    Build,
     /// `[dev-dependencies]` only — safe to elide as a sibling-bridge
     /// dep on the bridge crate's own `[dependencies]` table.
     DevOnly,
@@ -139,7 +144,10 @@ impl Section {
     pub const fn merge(self, other: Self) -> Self {
         match (self, other) {
             (Self::DevOnly, Self::DevOnly) => Self::DevOnly,
-            (Self::Regular, _) | (_, Self::Regular) => Self::Regular,
+            (Self::Build, Self::Build) => Self::Build,
+            // Any cross-section or Regular-containing merge degrades to the
+            // conservative marker rather than silently dropping a dep.
+            _ => Self::Regular,
         }
     }
 }
@@ -301,6 +309,26 @@ pub struct MemberPlan {
     /// (replacing the legacy `expose_member_bins` shim that shelled out
     /// to a nested `cargo build --bins`).
     pub bin_targets: Vec<MemberBin>,
+    /// Build-dep entries the aggregator must re-emit into the bridge's
+    /// `[build-dependencies]` table so the member's forwarded build.rs
+    /// (see `build_rs`) can link the crates it `use`s at build time.
+    ///
+    /// Collected from `[build-dependencies]` and
+    /// `[target.'cfg(...)'.build-dependencies]`, kept separate from
+    /// `dev_deps` because the resolution rules differ: a build-dep on a
+    /// bridged sibling resolves to the REAL sibling lib (absolute path),
+    /// not the test-only bridge.
+    pub build_deps: Vec<DevDepSpec>,
+    /// Absolute path to the member's build script, when it has one.
+    ///
+    /// Populated from cargo metadata's `custom-build` target
+    /// (`kind == ["custom-build"]`, its `src_path`), which covers both
+    /// an explicit `package.build = "..."` and cargo's default
+    /// `build.rs` auto-detection; falls back to
+    /// `<manifest_dir>/build.rs` when `package.build` is absent but
+    /// that file exists. `None` means the member genuinely has no
+    /// build script (the control case — nothing is forwarded).
+    pub build_rs: Option<PathBuf>,
     /// Member's `[package].description` (empty if absent).
     pub description: String,
     /// Dev-dep entries the aggregator must re-emit so the pulled-in test sources compile.
@@ -773,6 +801,8 @@ impl MemberPlan {
         Self {
             authors: String::new(),
             bin_targets: Vec::new(),
+            build_deps: Vec::new(),
+            build_rs: None,
             description: String::new(),
             dev_deps: Vec::new(),
             edition: String::new(),
@@ -1362,6 +1392,32 @@ fn locate_src_lib_path(pkg: &Package) -> Option<PathBuf> {
         .map(|target| target.src_path.as_std_path().to_path_buf())
 }
 
+/// Absolute path to `pkg`'s build script, when it has one.
+///
+/// Primary source is cargo metadata's `custom-build` target (`kind ==
+/// ["custom-build"]`, its `src_path`), which already reflects an explicit
+/// `package.build = "..."` as well as cargo's default `build.rs`
+/// auto-detection. Falls back to `<manifest_dir>/build.rs` only when
+/// cargo metadata emitted no `custom-build` target (a defensive edge —
+/// cargo always emits one when a build script is configured). `None`
+/// means the member has no build script (the control case — nothing is
+/// forwarded), cleanly distinguished from `Some(path)` at any custom path.
+fn locate_build_rs(pkg: &Package, manifest_dir: &Path) -> Option<PathBuf> {
+    if let Some(target) = pkg.targets.iter().find(|target| {
+        target
+            .kind
+            .iter()
+            .any(|kind| matches!(kind, TargetKind::CustomBuild))
+    }) {
+        return Some(target.src_path.as_std_path().to_path_buf());
+    }
+    let default = manifest_dir.join("build.rs");
+    if default.is_file() {
+        return Some(default);
+    }
+    None
+}
+
 /// Project `pkg.features` into the owned `BTreeMap` shape the bridge
 /// `[features]` mirror expects.
 fn collect_features_map(pkg: &Package) -> BTreeMap<String, Vec<String>> {
@@ -1450,6 +1506,14 @@ fn build_member_plan(pkg: &Package) -> Result<Option<MemberPlan>> {
         )
     })?;
 
+    let build_deps = read_build_deps(pkg.manifest_path.as_std_path()).with_context(|| {
+        format!(
+            "reading build-deps from {}",
+            pkg.manifest_path.as_std_path().display()
+        )
+    })?;
+    let build_rs = locate_build_rs(pkg, &manifest_dir_std);
+
     let has_src_rudzio_suite = src_lib_path
         .as_deref()
         .and_then(|lib| lib.parent())
@@ -1502,6 +1566,8 @@ fn build_member_plan(pkg: &Package) -> Result<Option<MemberPlan>> {
     Ok(Some(MemberPlan {
         authors,
         bin_targets,
+        build_deps,
+        build_rs,
         description,
         dev_deps,
         edition,
@@ -2780,6 +2846,62 @@ fn read_dev_deps(manifest_path: &Path) -> Result<Vec<DevDepSpec>> {
     Ok(out)
 }
 
+/// Read `[build-dependencies]` and `[target.'cfg(...)'.build-dependencies]`
+/// from a member manifest into a `Vec<DevDepSpec>`.
+///
+/// Mirrors [`read_dev_deps`] but over the build-dependency sections only.
+/// Each entry's `section` is `Section::Build` so it is never merged into
+/// the dev/normal-dep stream (build-deps resolve against the REAL sibling
+/// lib, not the test-only bridge). Reuses `parse_dev_dep_entry` for the
+/// per-entry shape so the strict key set is identical to dev-deps.
+fn read_build_deps(manifest_path: &Path) -> Result<Vec<DevDepSpec>> {
+    let text = fs::read_to_string(manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?;
+    let doc: DocumentMut = text
+        .parse()
+        .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    let manifest_dir = manifest_path
+        .parent()
+        .ok_or_else(|| anyhow!("manifest path has no parent"))?;
+
+    let mut out: Vec<DevDepSpec> = Vec::new();
+    collect_dev_deps(
+        &doc,
+        &["build-dependencies"],
+        manifest_dir,
+        Section::Build,
+        &mut out,
+    )
+    .with_context(|| {
+        format!(
+            "parsing [build-dependencies] in {}",
+            manifest_path.display()
+        )
+    })?;
+
+    if let Some(target_tbl) = doc.get("target").and_then(Item::as_table) {
+        for (cfg, cfg_item) in target_tbl {
+            let Some(cfg_tbl) = cfg_item.as_table() else {
+                continue;
+            };
+            if let Some(Item::Table(deps_tbl)) = cfg_tbl.get("build-dependencies") {
+                for (name, item) in deps_tbl {
+                    let spec = parse_dev_dep_entry(name, item, manifest_dir, Section::Build)
+                        .with_context(|| {
+                            format!(
+                                "parsing [target.{cfg}.build-dependencies.{name}] in {}",
+                                manifest_path.display()
+                            )
+                        })?;
+                    out.push(spec);
+                }
+            }
+        }
+    }
+
+    Ok(out)
+}
+
 /// Walk `doc` to the table at `path` and append every entry as a `DevDepSpec` into `out`.
 ///
 /// # Errors
@@ -3517,7 +3639,7 @@ pub fn write_bridge_crate(plan: &Plan, member: &MemberPlan, out: &Path) -> Resul
     let manifest = build_bridge_cargo_toml(plan, member)?;
     fs::write(bridge_dir.join("Cargo.toml"), manifest)
         .with_context(|| format!("writing bridge Cargo.toml at {}", bridge_dir.display()))?;
-    fs::write(bridge_dir.join("build.rs"), build_bridge_build_rs(member))
+    fs::write(bridge_dir.join("build.rs"), build_bridge_build_rs(member)?)
         .with_context(|| format!("writing bridge build.rs at {}", bridge_dir.display()))?;
     symlink_member_tree_into_bridge(&member.manifest_dir, &bridge_dir)?;
     // Decisions Log [C2]: bin-only bridges still need `<bridge>/src/`
@@ -3828,9 +3950,19 @@ fn emit_member_env_overrides(out: &mut String, member: &MemberPlan) {
 /// `current_exe()` fallback catches any drift from cargo's documented
 /// output convention.
 #[inline]
-#[must_use]
-pub fn build_bridge_build_rs(member: &MemberPlan) -> String {
+pub fn build_bridge_build_rs(member: &MemberPlan) -> Result<String> {
+    // Forward the member's build.rs only when its source is forwardable
+    // (no leading inner attributes / inner doc comments, which cannot be
+    // `include!`d into a nested `mod` block).
+    if let Some(build_rs) = &member.build_rs {
+        validate_member_build_rs(member, build_rs)?;
+    }
+
     let mut out = String::new();
+
+    // Forwarded member build.rs: splice its body into a nested module at
+    // module scope; its `main()` is invoked at the tail of the synth main().
+    emit_member_build_mod(&mut out, member);
 
     if member.bin_targets.is_empty() {
         // Bin-less bridge — no path arithmetic needed.
@@ -3838,8 +3970,9 @@ pub fn build_bridge_build_rs(member: &MemberPlan) -> String {
         out.push_str("    println!(\"cargo:rustc-cfg=rudzio_test\");\n");
         out.push_str("    println!(\"cargo::rustc-check-cfg=cfg(rudzio_test)\");\n");
         emit_member_env_overrides(&mut out, member);
+        emit_member_build_invocation(&mut out, member);
         out.push_str("}\n");
-        return out;
+        return Ok(out);
     }
 
     // Bin-bearing bridge: emit `cargo:rustc-env=CARGO_BIN_EXE_<n>=<path>`
@@ -3911,8 +4044,106 @@ pub fn build_bridge_build_rs(member: &MemberPlan) -> String {
             name = bin.name
         );
     }
+    emit_member_build_invocation(&mut out, member);
     out.push_str("}\n");
-    out
+    Ok(out)
+}
+
+/// Emit the module-scope splice of the member's forwarded build.rs.
+///
+/// `include!`d into a nested `mod __member_build` so the member's
+/// `fn main()` (which is private to that module) is reachable. A
+/// `pub fn __run()` shim inside the module calls `main()` and discards
+/// its (possibly `Result`-typed) return, so the synth `fn main()` can
+/// invoke it without depending on the member's exact `main` signature.
+/// The member build.rs is compiled as part of the synth build script, so
+/// any `[build-dependencies]` re-emitted on the bridge manifest resolve
+/// for its `use` statements.
+fn emit_member_build_mod(out: &mut String, member: &MemberPlan) {
+    let Some(build_rs) = &member.build_rs else {
+        return;
+    };
+    let path_lit = escape_rust_string_literal(&build_rs.to_string_lossy());
+    let _mod_emit: FmtResult = writeln!(
+        out,
+        "mod __member_build {{\n    include!({path_lit});\n\n    pub fn __run() {{\n        let _ = main();\n    }}\n}}"
+    );
+}
+
+/// Emit one `std::env::set_var` line (4-space indented, `unsafe`-wrapped
+/// so it compiles under edition 2024 where `set_var` is `unsafe fn`).
+#[inline]
+fn emit_set_var_line(out: &mut String, var: &str, val: &str) {
+    let escaped = escape_str_literal(val);
+    let _line: FmtResult = writeln!(
+        out,
+        "    unsafe {{ std::env::set_var(\"{var}\", \"{escaped}\"); }}"
+    );
+}
+
+/// Emit the build-script runtime-env prologue + `__member_build::main()`
+/// invocation (4-space indented, inside `fn main()`).
+///
+/// The forwarded member build.rs reads its build-script env at RUNTIME
+/// (`std::env::var`), so repoint `CARGO_MANIFEST_DIR` / `CARGO_MANIFEST_PATH`
+/// / `CARGO_PKG_*` / `CARGO_CRATE_NAME` at the MEMBER's real values before
+/// invoking it. `OUT_DIR` is deliberately left untouched: the member
+/// build.rs writes into the SYNTH build script's `OUT_DIR`, which is the
+/// same dir the member's `src/env!("OUT_DIR")` reads under the bridge
+/// compile.
+fn emit_member_build_invocation(out: &mut String, member: &MemberPlan) {
+    if member.build_rs.is_none() {
+        return;
+    }
+    let crate_name = crate_name_to_ident(&member.package_name);
+    let manifest_dir = member.manifest_dir.to_string_lossy();
+    let manifest_path = member.manifest_dir.join("Cargo.toml");
+    let manifest_path_str = manifest_path.to_string_lossy();
+
+    emit_set_var_line(out, "CARGO_MANIFEST_DIR", manifest_dir.as_ref());
+    emit_set_var_line(out, "CARGO_MANIFEST_PATH", manifest_path_str.as_ref());
+    emit_set_var_line(out, "CARGO_PKG_NAME", &member.package_name);
+    emit_set_var_line(out, "CARGO_CRATE_NAME", &crate_name);
+    emit_set_var_line(out, "CARGO_PKG_VERSION", &member.version);
+    emit_set_var_line(out, "CARGO_PKG_VERSION_MAJOR", &member.version_major);
+    emit_set_var_line(out, "CARGO_PKG_VERSION_MINOR", &member.version_minor);
+    emit_set_var_line(out, "CARGO_PKG_VERSION_PATCH", &member.version_patch);
+    emit_set_var_line(out, "CARGO_PKG_VERSION_PRE", &member.version_pre);
+    emit_set_var_line(out, "CARGO_PKG_AUTHORS", &member.authors);
+    emit_set_var_line(out, "CARGO_PKG_DESCRIPTION", &member.description);
+    emit_set_var_line(out, "CARGO_PKG_LICENSE", &member.license);
+    emit_set_var_line(out, "CARGO_PKG_LICENSE_FILE", &member.license_file);
+    emit_set_var_line(out, "CARGO_PKG_HOMEPAGE", &member.homepage);
+    emit_set_var_line(out, "CARGO_PKG_REPOSITORY", &member.repository);
+    emit_set_var_line(out, "CARGO_PKG_README", &member.readme);
+    emit_set_var_line(out, "CARGO_PKG_RUST_VERSION", &member.rust_version);
+    emit_set_var_line(out, "CARGO_MANIFEST_LINKS", &member.links);
+
+    out.push_str("    __member_build::__run();\n");
+}
+
+/// Fail loudly when the member's build.rs source cannot be forwarded into
+/// the nested `mod __member_build` block (leading inner attributes or
+/// inner doc comments) rather than emitting a cryptic rustc error.
+fn validate_member_build_rs(member: &MemberPlan, build_rs: &Path) -> Result<()> {
+    let text = fs::read_to_string(build_rs)
+        .with_context(|| format!("reading member build.rs at {}", build_rs.display()))?;
+    let trimmed = text.trim_start();
+    if trimmed.starts_with("#![") {
+        bail!(
+            "member `{}` build script {} begins with an inner attribute (`#![...]`). Inner attributes cannot be spliced into the generated bridge's nested `mod __member_build` block. Hoist the attribute to outer form (`#[...]`) so the build script can be forwarded and re-run under `cargo rudzio test`.",
+            member.package_name,
+            build_rs.display()
+        );
+    }
+    if trimmed.starts_with("//!") {
+        bail!(
+            "member `{}` build script {} begins with an inner doc comment (`//!`). Inner doc comments cannot be spliced into the generated bridge's nested `mod __member_build` block. Convert them to plain `//` comments so the build script can be forwarded and re-run under `cargo rudzio test`.",
+            member.package_name,
+            build_rs.display()
+        );
+    }
+    Ok(())
 }
 
 /// Synthesize a per-bin bridge's `build.rs`.
@@ -4062,10 +4293,14 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
     let deps_tbl = build_bridge_dependencies(plan, member)?;
     doc.insert("dependencies", Item::Table(deps_tbl));
 
-    // No [build-dependencies]: the synth build.rs uses only std
-    // (PathBuf, Command, std::env). External crates the member's
-    // own build.rs may have needed are not relevant here because
-    // we don't forward that build.rs.
+    // [build-dependencies]: the member's build.rs is now forwarded into
+    // the bridge's synth build.rs (see `build_bridge_build_rs`), so any
+    // crates the member's build script `use`s must be re-declared here.
+    // A build-dep on a bridged sibling resolves to the REAL sibling lib
+    // (absolute path), not the test-only bridge.
+    if let Some(build_deps_tbl) = build_bridge_build_dependencies(plan, member)? {
+        doc.insert("build-dependencies", Item::Table(build_deps_tbl));
+    }
 
     if let Some(features_tbl) = build_bridge_features(plan, member) {
         doc.insert("features", Item::Table(features_tbl));
@@ -4577,6 +4812,29 @@ fn build_bridge_dependencies(plan: &Plan, member: &MemberPlan) -> Result<Table> 
     }
 
     Ok(deps)
+}
+
+/// Build the bridge's `[build-dependencies]` table from the member's
+/// build-dep entries.
+///
+/// Returns `Ok(None)` when the member has no build-deps (the common
+/// case), so the bridge manifest omits the table entirely. Unlike
+/// `build_bridge_dependencies`, entries are NOT merged into a single
+/// name key (build-deps are not subject to the dev/normal-section
+/// union), and `render_build_dep` — not `render_dev_dep` — drives each
+/// entry so a build-dep on a bridged sibling resolves to the REAL
+/// sibling lib rather than the test-only bridge.
+fn build_bridge_build_dependencies(plan: &Plan, member: &MemberPlan) -> Result<Option<Table>> {
+    if member.build_deps.is_empty() {
+        return Ok(None);
+    }
+    let mut deps = Table::new();
+    for dep in &member.build_deps {
+        let entry_name = dep.rename.as_deref().unwrap_or(&dep.name).to_owned();
+        let item = render_build_dep(dep, plan)?;
+        deps.insert(&entry_name, item);
+    }
+    Ok(Some(deps))
 }
 
 /// Build the aggregator's `src/main.rs`.
@@ -5710,6 +5968,74 @@ fn render_sibling_bridge_dep(dep: &DevDepSpec, plan: &Plan) -> Option<Item> {
 
     if dep.optional {
         tbl.insert("optional", Value::Boolean(Formatted::new(true)));
+    }
+
+    Some(Item::Value(Value::InlineTable(tbl)))
+}
+
+/// Render a single build-dep `DevDepSpec` as a TOML inline table (or bare
+/// version string for trivial entries).
+///
+/// Deliberately does NOT use `render_sibling_bridge_dep`: a build script
+/// must link the REAL sibling crate, not the test-only bridge (the bridge
+/// wraps the sibling's src under `cfg(rudzio_test)` and would compile the
+/// crate a second time, breaking link-time type identity). A build-dep on
+/// a bridged sibling resolves to the sibling's manifest dir (absolute); a
+/// build-dep on a non-bridged sibling keeps its own resolved path; and
+/// workspace / registry entries keep the exact dev-dep resolution rules.
+fn render_build_dep(dep: &DevDepSpec, plan: &Plan) -> Result<Item> {
+    if let Some(item) = render_build_sibling_real_dep(dep, plan) {
+        return Ok(item);
+    }
+    render_dev_dep(dep, plan)
+}
+
+/// Resolve a build-dep on a bridged sibling to the sibling's REAL manifest
+/// dir (absolute path), instead of the test-only bridge.
+///
+/// Returns `None` when `dep` is not a bridged sibling, letting the caller
+/// fall back to the normal dev-dep resolution (`render_dev_dep`), which
+/// already handles non-bridged siblings via their resolved `path`, plus
+/// workspace and registry entries.
+fn render_build_sibling_real_dep(dep: &DevDepSpec, plan: &Plan) -> Option<Item> {
+    let sibling = plan
+        .members
+        .iter()
+        .find(|member| member.package_name == dep.name && bridge_applies_to(member))?;
+
+    let mut tbl = InlineTable::new();
+    tbl.insert(
+        "path",
+        Value::String(Formatted::new(
+            sibling.manifest_dir.to_string_lossy().into_owned(),
+        )),
+    );
+
+    let ws_entry = if dep.workspace_inherited {
+        plan.workspace_deps.get(&dep.name)
+    } else {
+        None
+    };
+    let mut feats: Vec<String> = ws_entry.map(|ws| ws.features.clone()).unwrap_or_default();
+    feats.extend(dep.features.iter().cloned());
+    feats.sort();
+    feats.dedup();
+    if !feats.is_empty() {
+        let mut arr = Array::new();
+        for feat in feats {
+            arr.push(Value::String(Formatted::new(feat)));
+        }
+        tbl.insert("features", Value::Array(arr));
+    }
+
+    let uses_defaults =
+        ws_entry.is_none_or(|ws| ws.uses_default_features) && dep.uses_default_features;
+    if !uses_defaults {
+        tbl.insert("default-features", Value::Boolean(Formatted::new(false)));
+    }
+
+    if dep.rename.is_some() {
+        tbl.insert("package", Value::String(Formatted::new(dep.name.clone())));
     }
 
     Some(Item::Value(Value::InlineTable(tbl)))

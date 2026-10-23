@@ -6,12 +6,12 @@ use std::path::{Path, PathBuf};
 
 use cargo_metadata::camino::Utf8PathBuf;
 use cargo_rudzio::generate::{
-    DevDepSpec, GitRef, MemberBin, MemberPlan, Plan, RudzioLocation, RudzioSpec, WorkspaceDepSpec,
-    bridge_applies_to, bridge_dir_name, bridge_package_name, build_bridge_build_rs,
-    build_bridge_cargo_toml, build_main_rs, build_rudzio_inline_table, collect_rudzio_spec,
-    detect_src_rudzio_suite, load_rudzio_activated_features, member_under_any_root,
-    scan_unbroadened_cfg_test_mods, scan_unbroadened_cfg_test_mods_in_plan, write_bridge_crate,
-    write_runner,
+    DevDepSpec, GitRef, MemberBin, MemberPlan, Plan, RudzioLocation, RudzioSpec, Section,
+    WorkspaceDepSpec, bridge_applies_to, bridge_dir_name, bridge_package_name,
+    build_bridge_build_rs, build_bridge_cargo_toml, build_main_rs, build_rudzio_inline_table,
+    collect_rudzio_spec, detect_src_rudzio_suite, load_rudzio_activated_features,
+    member_under_any_root, scan_unbroadened_cfg_test_mods, scan_unbroadened_cfg_test_mods_in_plan,
+    write_bridge_crate, write_runner,
 };
 use rudzio::common::context::Suite;
 use rudzio::runtime::async_std::Runtime as AsyncStdRuntime;
@@ -121,7 +121,7 @@ fn materialise_member(
 ])]
 mod tests {
     use super::{
-        BTreeMap, DevDepSpec, GitRef, MemberBin, Path, RudzioLocation, RudzioSpec,
+        BTreeMap, DevDepSpec, GitRef, MemberBin, Path, RudzioLocation, RudzioSpec, Section,
         WorkspaceDepSpec, bridge_applies_to, bridge_dir_name, bridge_package_name,
         build_bridge_build_rs, build_bridge_cargo_toml, build_main_rs, build_rudzio_inline_table,
         collect_rudzio_spec, detect_src_rudzio_suite, load_rudzio_activated_features,
@@ -696,7 +696,7 @@ mod tests {
         entry.manifest_dir = PathBuf::from("/abs/alpha");
         entry.bin_targets = Vec::new();
 
-        let content = build_bridge_build_rs(&entry);
+        let content = build_bridge_build_rs(&entry)?;
         anyhow::ensure!(
             content.contains("cargo:rustc-cfg=rudzio_test"),
             "bin-less bridge build.rs must emit the cfg:\n{content}"
@@ -713,7 +713,7 @@ mod tests {
             PathBuf::from("/abs/alpha/src/bin/alpha-server.rs"),
         )];
 
-        let content = build_bridge_build_rs(&entry);
+        let content = build_bridge_build_rs(&entry)?;
 
         anyhow::ensure!(
             content.contains("cargo:rustc-cfg=rudzio_test"),
@@ -722,6 +722,96 @@ mod tests {
         anyhow::ensure!(
             content.contains("cargo:rustc-env=CARGO_BIN_EXE_alpha-server"),
             "bin-member bridge build.rs must emit CARGO_BIN_EXE_<bin> env var:\n{content}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn bridge_cargo_toml_renders_build_dependencies_table() -> anyhow::Result<()> {
+        let mut sibling = member("b", Vec::new());
+        sibling.manifest_dir = PathBuf::from("/abs/b");
+        sibling.has_src_rudzio_suite = true;
+
+        let mut dep_on_b = DevDepSpec::new("b".to_owned());
+        dep_on_b.path = Some(PathBuf::from("/abs/a/../b"));
+        dep_on_b.section = Section::Build;
+
+        let mut consumer = member("a", Vec::new());
+        consumer.manifest_dir = PathBuf::from("/abs/a");
+        consumer.build_deps = vec![dep_on_b];
+
+        let plan = plan_with_members(vec![consumer.clone(), sibling], "/tmp");
+        let toml = build_bridge_cargo_toml(&plan, &consumer)?;
+
+        anyhow::ensure!(
+            toml.contains("[build-dependencies]"),
+            "bridge Cargo.toml must contain [build-dependencies]:\n{toml}"
+        );
+        anyhow::ensure!(
+            toml.contains("b = { path = \"/abs/b\" }"),
+            "build-dep on a bridged sibling must resolve to the REAL sibling dir:\n{toml}"
+        );
+        anyhow::ensure!(
+            !toml.contains("b_rudzio_bridge"),
+            "build-dep must not resolve to the test-only bridge package:\n{toml}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn bridge_build_rs_forwards_member_build_script() -> anyhow::Result<()> {
+        let tmp = tempdir()?;
+        let build_rs_path = tmp.path().join("build.rs");
+        fs::write(
+            &build_rs_path,
+            "fn main() { println!(\"cargo:rustc-env=GEN=7\"); }\n",
+        )?;
+
+        let mut entry = member("alpha", Vec::new());
+        entry.manifest_dir = PathBuf::from("/abs/alpha");
+        entry.build_rs = Some(build_rs_path);
+
+        let content = build_bridge_build_rs(&entry)?;
+
+        anyhow::ensure!(
+            content.contains("mod __member_build {") && content.contains("include!("),
+            "forwarded build.rs must be include!d into __member_build:\n{content}"
+        );
+        anyhow::ensure!(
+            content.contains("__member_build::__run();"),
+            "forwarded build.rs main() must be invoked:\n{content}"
+        );
+        anyhow::ensure!(
+            content.contains("std::env::set_var(\"CARGO_MANIFEST_DIR\""),
+            "build-script env prologue must set CARGO_MANIFEST_DIR:\n{content}"
+        );
+        anyhow::ensure!(
+            content.contains("std::env::set_var(\"CARGO_PKG_NAME\""),
+            "build-script env prologue must set CARGO_PKG_NAME:\n{content}"
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn bridge_build_rs_rejects_inner_attribute() -> anyhow::Result<()> {
+        let tmp = tempdir()?;
+        let build_rs_path = tmp.path().join("build.rs");
+        fs::write(&build_rs_path, "#![allow(dead_code)]\nfn main() {}\n")?;
+
+        let mut entry = member("alpha", Vec::new());
+        entry.manifest_dir = PathBuf::from("/abs/alpha");
+        entry.build_rs = Some(build_rs_path);
+
+        let err = match build_bridge_build_rs(&entry) {
+            Ok(content) => anyhow::bail!(
+                "inner-attribute build.rs must fail loudly, but succeeded:\n{content}"
+            ),
+            Err(err) => err,
+        };
+        let msg = format!("{err:#}");
+        anyhow::ensure!(
+            msg.contains("inner attribute"),
+            "error must name the inner-attribute problem:\n{msg}"
         );
         Ok(())
     }
@@ -1862,7 +1952,7 @@ opt-level = 0
             let mut entry = member("alpha", Vec::new());
             entry.manifest_dir = PathBuf::from("/abs/alpha");
             entry.bin_targets.clone_from(&bins);
-            let content = build_bridge_build_rs(&entry);
+            let content = build_bridge_build_rs(&entry)?;
             anyhow::ensure!(
                 content.contains("cargo::rustc-check-cfg=cfg(rudzio_test)"),
                 "bridge build.rs must emit check-cfg for rudzio_test (bins={bins:?}):\n{content}"

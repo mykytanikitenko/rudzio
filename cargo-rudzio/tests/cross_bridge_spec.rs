@@ -472,7 +472,7 @@ rudzio = { workspace = true, features = [\"common\"] }
         let alpha = bridged_member("alpha", &root);
         let alpha_dir = alpha.manifest_dir.to_string_lossy().into_owned();
 
-        let build_rs = build_bridge_build_rs(&alpha);
+        let build_rs = build_bridge_build_rs(&alpha)?;
 
         anyhow::ensure!(
             build_rs.contains(&format!("cargo:rustc-env=CARGO_MANIFEST_DIR={alpha_dir}")),

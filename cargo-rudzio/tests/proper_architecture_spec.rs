@@ -164,7 +164,7 @@ mod tests {
     fn bridge_build_rs_does_not_spawn_cargo() -> anyhow::Result<()> {
         let root = synthetic_root();
         let member = bridged_member_with_bins("alpha", &root, &["alpha-server", "alpha-cli"]);
-        let content = build_bridge_build_rs(&member);
+        let content = build_bridge_build_rs(&member)?;
 
         anyhow::ensure!(
             !content.contains("Command::new(\"cargo\")"),
@@ -286,7 +286,7 @@ mod tests {
     fn bridge_build_rs_emits_cargo_bin_exe_per_bin() -> anyhow::Result<()> {
         let root = synthetic_root();
         let member = bridged_member_with_bins("alpha", &root, &["alpha-server", "alpha-cli"]);
-        let content = build_bridge_build_rs(&member);
+        let content = build_bridge_build_rs(&member)?;
 
         anyhow::ensure!(
             content.contains("CARGO_BIN_EXE_alpha-server")
@@ -312,7 +312,7 @@ mod tests {
     fn bridge_build_rs_emits_cargo_pkg_name_override() -> anyhow::Result<()> {
         let root = synthetic_root();
         let member = bridged_member("my-special-crate", &root);
-        let content = build_bridge_build_rs(&member);
+        let content = build_bridge_build_rs(&member)?;
 
         anyhow::ensure!(
             content.contains("cargo:rustc-env=CARGO_PKG_NAME=my-special-crate"),
@@ -521,7 +521,7 @@ mod tests {
         "https://github.com/example/alpha-crate".clone_into(&mut member.repository);
         "1.75".clone_into(&mut member.rust_version);
         "native-lib".clone_into(&mut member.links);
-        let content = build_bridge_build_rs(&member);
+        let content = build_bridge_build_rs(&member)?;
 
         let required = [
             "cargo:rustc-env=CARGO_PKG_VERSION=1.2.3-beta.4",
@@ -559,7 +559,7 @@ mod tests {
     fn bridge_build_rs_preserves_hyphens_in_cargo_bin_exe_name() -> anyhow::Result<()> {
         let root = synthetic_root();
         let member = bridged_member_with_bins("alpha", &root, &["alpha-cli", "beta-server"]);
-        let content = build_bridge_build_rs(&member);
+        let content = build_bridge_build_rs(&member)?;
 
         anyhow::ensure!(
             content.contains("CARGO_BIN_EXE_alpha-cli"),
@@ -590,7 +590,7 @@ mod tests {
     fn bridge_build_rs_rerun_if_changed_uses_real_member_paths() -> anyhow::Result<()> {
         let root = synthetic_root();
         let member = bridged_member("alpha", &root);
-        let content = build_bridge_build_rs(&member);
+        let content = build_bridge_build_rs(&member)?;
 
         let member_dir_str = member.manifest_dir.to_string_lossy().into_owned();
         let expected = format!("cargo:rerun-if-changed={member_dir_str}");
