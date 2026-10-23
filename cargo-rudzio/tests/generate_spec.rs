@@ -821,6 +821,74 @@ mod tests {
     }
 
     #[rudzio::test]
+    fn aggregator_manifest_inherits_workspace_profile_table() -> anyhow::Result<()> {
+        // Bug #4: the aggregator is its own workspace root, so cargo
+        // ignores the consumer workspace's `[profile.*]` unless the
+        // generator re-emits it. A rich profile table (dev + release +
+        // custom `inherits` profile + per-package override +
+        // build-override) must survive verbatim into the generated
+        // `Cargo.toml`.
+        let tmp = tempdir()?;
+        let entry = materialise_member(tmp.path(), "alpha", vec![rudzio_dep()], &[], true)?;
+        let mut plan = plan_with_members(
+            vec![entry],
+            tmp.path()
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("tempdir path is not utf-8"))?,
+        );
+        let profile_src = r#"[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = true
+
+[profile.ci]
+inherits = "release"
+opt-level = 3
+
+[profile.dev.package.serde]
+opt-level = 3
+
+[profile.release.build-override]
+opt-level = 0
+"#;
+        let profile_doc: toml_edit::DocumentMut = profile_src.parse()?;
+        plan.profile = Some(
+            profile_doc
+                .get("profile")
+                .and_then(toml_edit::Item::as_table)
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("fixture profile string must hold a [profile] table")
+                })?,
+        );
+
+        let out = tmp.path().join("aggregator");
+        write_runner(&plan, &out)?;
+        let generated = fs::read_to_string(out.join("Cargo.toml"))?;
+
+        for needle in [
+            "[profile.dev]",
+            "[profile.release]",
+            "[profile.ci]",
+            "[profile.dev.package.serde]",
+            "[profile.release.build-override]",
+            "panic = \"abort\"",
+            "lto = true",
+            "inherits = \"release\"",
+            "opt-level = 3",
+            "opt-level = 0",
+        ] {
+            anyhow::ensure!(
+                generated.contains(needle),
+                "generated aggregator Cargo.toml missing {needle:?}:\n{generated}",
+            );
+        }
+        Ok(())
+    }
+
+    #[rudzio::test]
     fn write_bridge_crate_writes_build_rs_for_binless_member() -> anyhow::Result<()> {
         // Every bridge — bin-less ones included — must get a build.rs
         // written so the cfg emission lands in the right compile unit.

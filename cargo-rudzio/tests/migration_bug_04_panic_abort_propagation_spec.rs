@@ -31,7 +31,7 @@ use std::env;
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
 
 use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
 use rudzio::runtime::tokio::Multithread as TokioMultithread;
@@ -45,11 +45,12 @@ fn rudzio_source_root() -> Option<&'static Path> {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent()
 }
 
-/// Materialise the Bug #4 fixture under `root`: a workspace whose
-/// `[profile.dev] panic = "abort"` should force every test binary to
-/// abort on panic, plus an `app` member whose single `#[rudzio::test]`
-/// panics.
-fn write_fixture(root: &Path) -> io::Result<()> {
+/// Materialise the Bug #4 fixture under `root`: a workspace with one
+/// `app` member whose single `#[rudzio::test]` panics. `profile` is the
+/// raw `[profile.*]` TOML section embedded in the root manifest (empty
+/// string to omit profiles entirely), which forces the chosen profile to
+/// `panic = "abort"`.
+fn write_fixture(root: &Path, profile: &str) -> io::Result<()> {
     let rudzio_root = rudzio_source_root()
         .ok_or_else(|| io::Error::other("cargo-rudzio/tests must live under the workspace root"))?;
 
@@ -60,13 +61,11 @@ fn write_fixture(root: &Path) -> io::Result<()> {
 members = ["app"]
 resolver = "3"
 
-[profile.dev]
-panic = "abort"
-
-[workspace.dependencies]
+{profile}[workspace.dependencies]
 rudzio = {{ path = "{rudzio}", features = ["runtime-tokio-multi-thread", "common"] }}
-anyhow = "=1.0.102"
+anyhow = "=1.0.104"
 "#,
+            profile = profile,
             rudzio = rudzio_root.display(),
         ),
     )?;
@@ -123,7 +122,30 @@ mod tests {
 mod tests {
     use std::os::unix::process::ExitStatusExt as _;
 
-    use super::{Command, IsolatedCargoTest, Path, TempDir, env, write_fixture};
+    use super::io;
+    use super::{Command, IsolatedCargoTest, Output, Path, TempDir, env, write_fixture};
+
+    /// Spawn `cargo rudzio test` against the fixture at `root` with the
+    /// isolated cargo env, forwarding `extra_args` (e.g. `--release`).
+    fn run_cargo_rudzio(
+        cargo_home: &Path,
+        cargo_target_dir: &Path,
+        root: &Path,
+        extra_args: &[&str],
+    ) -> io::Result<Output> {
+        Command::new(env!("CARGO_BIN_EXE_cargo-rudzio"))
+            .arg("test")
+            .args(extra_args)
+            .current_dir(root)
+            .env(
+                "CARGO",
+                env::var_os("CARGO").unwrap_or_else(|| "cargo".into()),
+            )
+            .env("CARGO_HOME", cargo_home)
+            .env("CARGO_TARGET_DIR", cargo_target_dir)
+            .env("CARGO_NET_OFFLINE", "true")
+            .output()
+    }
 
     #[rudzio::test]
     fn panic_abort_profile_aborts_the_runner_process(
@@ -131,19 +153,9 @@ mod tests {
     ) -> anyhow::Result<()> {
         let workspace = TempDir::new_in(ctx.suite_tempdir())?;
         let root: &Path = workspace.path();
-        write_fixture(root)?;
+        write_fixture(root, "[profile.dev]\npanic = \"abort\"\n")?;
 
-        let output = Command::new(env!("CARGO_BIN_EXE_cargo-rudzio"))
-            .arg("test")
-            .current_dir(root)
-            .env(
-                "CARGO",
-                env::var_os("CARGO").unwrap_or_else(|| "cargo".into()),
-            )
-            .env("CARGO_HOME", ctx.cargo_home())
-            .env("CARGO_TARGET_DIR", ctx.cargo_target_dir())
-            .env("CARGO_NET_OFFLINE", "true")
-            .output()?;
+        let output = run_cargo_rudzio(ctx.cargo_home(), ctx.cargo_target_dir(), root, &[])?;
 
         let status = output.status;
         // With `panic = "abort"` the panicking test must abort the whole
@@ -162,6 +174,71 @@ mod tests {
             status.signal(),
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn release_panic_abort_aborts_the_runner_process(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        // `--release` must forward to the aggregator build, selecting
+        // `[profile.release]`, whose `panic = "abort"` then aborts the
+        // runner exactly like the dev-profile case.
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
+        let root: &Path = workspace.path();
+        write_fixture(root, "[profile.release]\npanic = \"abort\"\n")?;
+
+        let output = run_cargo_rudzio(
+            ctx.cargo_home(),
+            ctx.cargo_target_dir(),
+            root,
+            &["--release"],
+        )?;
+
+        let status = output.status;
+        let aborted =
+            status.signal() == Some(6_i32) || (!status.success() && status.code().is_none());
+        anyhow::ensure!(
+            aborted,
+            "expected `--release` to abort on panic via [profile.release] panic = \"abort\", but \
+             the runner exited {:?} (code={:?}, signal={:?}).\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            status,
+            status.code(),
+            status.signal(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn no_panic_abort_reports_failed_and_exits_one(ctx: &IsolatedCargoTest) -> anyhow::Result<()> {
+        // Negative control: without `panic = "abort"`, the panicking test
+        // unwinds to the runner's catch layer, which reports the panic and
+        // exits cleanly with code 1 — NOT a signal exit.
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
+        let root: &Path = workspace.path();
+        write_fixture(root, "")?;
+
+        let output = run_cargo_rudzio(ctx.cargo_home(), ctx.cargo_target_dir(), root, &[])?;
+
+        let status = output.status;
+        anyhow::ensure!(
+            status.code() == Some(1_i32),
+            "expected a clean exit 1 for an unwinding panic (no panic=abort), but got \
+             {status:?} (code={:?}, signal={:?})",
+            status.code(),
+            status.signal(),
+        );
+        let combined = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        anyhow::ensure!(
+            combined.contains("panicked"),
+            "expected the runner to report the panicking test, but saw:\n{combined}",
         );
         Ok(())
     }

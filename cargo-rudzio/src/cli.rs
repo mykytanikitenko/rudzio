@@ -109,6 +109,32 @@ impl ParsedTestArgs {
     }
 }
 
+/// How `cargo rudzio test` should terminate after the runner exits.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum RunnerExit {
+    /// The runner was terminated by a signal (e.g. SIGABRT from
+    /// `[profile.*] panic = "abort"`); propagate the abnormal
+    /// termination by aborting rather than reporting a clean exit.
+    Abort,
+    /// Exit cleanly with this exit code.
+    Code(u8),
+}
+
+/// Translate a runner's raw `ExitStatus::code()` into a [`RunnerExit`].
+///
+/// `None` means the runner was terminated by a signal (Unix) — the
+/// caller must abort rather than mask that as a clean `exit 1` (Bug #4).
+/// A `Some` code is reduced to its low byte, matching what the OS
+/// reports for exit codes ≥ 256.
+#[inline]
+#[must_use]
+pub fn runner_exit(code: Option<i32>) -> RunnerExit {
+    code.map_or(RunnerExit::Abort, |exit_code| {
+        RunnerExit::Code(u8::try_from(exit_code & 0xFF_i32).unwrap_or(1))
+    })
+}
+
 /// Build the argv we hand to `cargo` for the aggregator invocation.
 ///
 /// Under v2 (Option B-json, per PLAN.md Decisions Log [C1]), there is

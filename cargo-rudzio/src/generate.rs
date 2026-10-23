@@ -400,6 +400,19 @@ pub struct Plan {
     /// Members of the workspace that actually depend on rudzio AND
     /// contribute at least one integration-test source file.
     pub members: Vec<MemberPlan>,
+    /// Verbatim `[profile]` table copied from the workspace root's
+    /// manifest, or `None` when the root declares no profile section.
+    ///
+    /// Cargo honors `[profile.*]` only at the workspace root, and the
+    /// aggregator is its own workspace (generated under
+    /// `<target>/rudzio-auto-runner-<hash>/`). Re-emitting the user's
+    /// profile table verbatim is what lets settings like
+    /// `[profile.dev] panic = "abort"` reach the compiled aggregator
+    /// binary — otherwise a panicking test unwinds to the runner's
+    /// catch layer and reports a clean "test FAILED" exit instead of
+    /// aborting (Bug #4). Bridge crates are workspace members of the
+    /// aggregator, so they inherit these profiles automatically.
+    pub profile: Option<Table>,
     /// Resolved `rudzio` dependency to emit in the aggregator's `[dependencies]` table.
     ///
     /// Derived from how the workspace's own members declare rudzio
@@ -840,6 +853,7 @@ impl Plan {
             rudzio_spec,
             target_directory,
             workspace_deps: BTreeMap::new(),
+            profile: None,
             workspace_root,
         }
     }
@@ -999,6 +1013,8 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
     let workspace_root_std = metadata.workspace_root.as_std_path();
     let workspace_deps =
         read_workspace_deps(workspace_root_std).context("reading workspace root Cargo.toml")?;
+    let profile =
+        read_workspace_profiles(workspace_root_std).context("reading workspace root Cargo.toml")?;
 
     let mut members: Vec<MemberPlan> = Vec::new();
     let mut runtime_features: BTreeSet<String> = BTreeSet::new();
@@ -1062,6 +1078,7 @@ fn build_plan(metadata: &Metadata) -> Result<Plan> {
         members,
         rudzio_spec,
         workspace_deps,
+        profile,
     })
 }
 
@@ -2431,6 +2448,23 @@ fn read_workspace_deps(workspace_root: &Path) -> Result<BTreeMap<String, Workspa
         drop(out.insert(name.to_owned(), spec));
     }
     Ok(out)
+}
+
+/// Read the workspace root manifest's `[profile]` table verbatim.
+///
+/// Returns `None` when the root manifest has no `[profile]` section.
+/// The returned [`Table`] is cloned out of the parsed document so its
+/// sub-tables (per-profile settings, `[profile.<p>.package.<name>]`
+/// overrides, and `[profile.<p>.build-override]` subtables) round-trip
+/// through re-serialization with their key order and content intact.
+fn read_workspace_profiles(workspace_root: &Path) -> Result<Option<Table>> {
+    let manifest_path = workspace_root.join("Cargo.toml");
+    let text = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?;
+    let doc: DocumentMut = text
+        .parse()
+        .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    Ok(doc.get("profile").and_then(Item::as_table).cloned())
 }
 
 /// Extract a `WorkspaceDepSpec` from a single `[workspace.dependencies]` entry value.
@@ -5222,6 +5256,17 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
     // bin-only workspace members when the aggregator is its own workspace.
 
     emit_features_table(&mut doc, plan);
+
+    // Re-emit the user's `[profile]` table verbatim so cargo applies the
+    // workspace-root profile settings (e.g. `panic = "abort"`) to the
+    // aggregator binary. Cargo honors `[profile.*]` only at the workspace
+    // root; the aggregator is its own root, so without this copy those
+    // settings silently vanish and the compiled runner keeps the default
+    // unwind-on-panic behavior (Bug #4). Bridge crates are workspace
+    // members, so they inherit the table automatically.
+    if let Some(profile) = &plan.profile {
+        doc.insert("profile", Item::Table(profile.clone()));
+    }
 
     Ok(doc.to_string())
 }
