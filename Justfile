@@ -86,6 +86,25 @@ check-lints:
 test:
     cargo run -p cargo-rudzio -- test -- --threads-parallel-hardlimit=none
 
+# Run the full rudzio suite under LLVM source-based coverage.
+#
+# Three-step flow (mirrors the Bug #3 repro): `cargo llvm-cov show-env`
+# emits the RUSTC_WRAPPER / LLVM_PROFILE_FILE environment that
+# instruments the build and run; `cargo rudzio test` then builds and
+# runs the single aggregator binary; `cargo llvm-cov report` merges the
+# `.profraw` files and prints the line/region summary. A second report
+# pass also emits an lcov trace at `target/lcov.info` for CI/ingestion.
+#
+# Requires the `llvm-tools` rustup component (rust-toolchain.toml) and
+# `cargo-llvm-cov` (flake.nix devShell).
+coverage:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    eval "$(cargo llvm-cov show-env)"
+    cargo run -p cargo-rudzio -- test -- --threads-parallel-hardlimit=none
+    cargo llvm-cov report
+    cargo llvm-cov report --lcov --output-path target/lcov.info
+
 # --- Security & policy ---
 
 # Check for security advisories in the dep graph (RustSec)
