@@ -20,6 +20,7 @@ use cargo_metadata::{Message, TargetKind};
 use cargo_rudzio::cli::{
     RunnerExit, aggregator_cargo_args, format_target_flag_warning, parse_test_args, runner_exit,
 };
+use cargo_rudzio::coverage;
 use cargo_rudzio::generate;
 use rudzio_migrate::run::entry_with_args as rudzio_migrate_entry;
 
@@ -277,8 +278,22 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
     // The aggregator subdir name itself encodes a consumer-workspace
     // hash (see `Plan::aggregator_subdir_name`), so distinct
     // consumers land in distinct top-level dirs.
-    cmd.env("CARGO_TARGET_DIR", target.join("target"));
-    cmd.env("CARGO_BUILD_BUILD_DIR", target.join("build-dir"));
+    //
+    // Coverage carve-out: under `cargo llvm-cov`'s `show-env` contract the
+    // instrumented objects and the runner's `.profraw` dump must land where
+    // `cargo llvm-cov report` searches (`CARGO_LLVM_COV_TARGET_DIR`), so the
+    // inner build anchors there instead of the per-aggregator subdir. Fails
+    // loudly on a partial coverage environment (marker set, target dir unset).
+    let dirs = coverage::resolve_aggregator_dirs(
+        coverage::is_active(),
+        env::var_os(coverage::COVERAGE_TARGET_DIR_ENV).as_deref(),
+        env::var_os(coverage::COVERAGE_BUILD_DIR_ENV).as_deref(),
+        &target,
+    )?;
+    cmd.env("CARGO_TARGET_DIR", &dirs.target_dir);
+    if let Some(build_dir) = &dirs.build_dir {
+        cmd.env("CARGO_BUILD_BUILD_DIR", build_dir);
+    }
     cmd.args(&argv);
     // Capture stdout so we can parse the cargo JSON message stream.
     // stderr stays inherited so cargo's rendered human-friendly

@@ -3,4 +3,5 @@
 //! against synthetic inputs.
 
 pub mod cli;
+pub mod coverage;
 pub mod generate;

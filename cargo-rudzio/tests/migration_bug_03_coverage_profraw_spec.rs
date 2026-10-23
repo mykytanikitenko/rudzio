@@ -32,13 +32,14 @@
 //! Under the current code the report step fails, so this test is red until
 //! the fix lands.
 //!
-//! # Graceful skip
+//! # Missing toolchain fails loudly
 //!
-//! The coverage toolchain is optional. The test returns `Ok(())` without
-//! performing any coverage work when `cargo llvm-cov` is not installed
-//! (`cargo llvm-cov --version` fails) or when its `show-env` probe fails
-//! (e.g. `llvm-tools-preview` is missing from the active toolchain), so a
-//! machine without the coverage toolchain stays green.
+//! The coverage toolchain is required for this spec. If `cargo llvm-cov` is
+//! not installed (`cargo llvm-cov --version` fails) or its `show-env` probe
+//! fails (the `llvm-tools` rustup component is missing from the active
+//! toolchain), the test fails with a message naming the missing tool and the
+//! fix: enter `nix develop`, which provides cargo-llvm-cov and the
+//! llvm-tools rustup component. There is no silent skip.
 
 use std::io;
 use std::path::Path;
@@ -188,24 +189,38 @@ mod tests {
     async fn cargo_rudzio_test_emits_profraw_into_llvm_cov_search_dir(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {
-        // Skip when the coverage toolchain is absent: `cargo llvm-cov` does
-        // not resolve on this machine.
+        // Fail loudly when the coverage toolchain is absent: `cargo llvm-cov`
+        // does not resolve on this machine.
         let version = llvm_cov_version_probe()?;
         if !version.status.success() {
-            return Ok(());
+            anyhow::bail!(
+                "`cargo llvm-cov` is not installed: `cargo llvm-cov --version` failed with \
+                 {:?}. Enter `nix develop`, which provides cargo-llvm-cov and the \
+                 llvm-tools rustup component.\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                version.status.code(),
+                String::from_utf8_lossy(&version.stdout),
+                String::from_utf8_lossy(&version.stderr),
+            );
         }
 
         // The per-test consumer workspace already ships one trivial
         // `#[rudzio::test]`, which is all the aggregator build needs.
         let workspace: &Path = ctx.consumer_workspace();
 
-        // Skip when `cargo llvm-cov` is present but its backing
-        // `llvm-tools-preview` (llvm-cov / llvm-profdata) is not installed
-        // for the active toolchain: `show-env` cannot run and `report`
-        // would fail for an unrelated reason, not the bug under test.
+        // Fail loudly when `cargo llvm-cov` is present but its backing
+        // `llvm-tools` rustup component (llvm-cov / llvm-profdata) is not
+        // installed for the active toolchain: `show-env` cannot run and
+        // `report` would fail for an unrelated reason, not the bug under test.
         let show_env = llvm_cov_show_env(workspace, ctx.cargo_home(), ctx.cargo_target_dir())?;
         if !show_env.status.success() {
-            return Ok(());
+            anyhow::bail!(
+                "`cargo llvm-cov show-env` failed (is the `llvm-tools` rustup component \
+                 missing?): exited {:?}. Enter `nix develop`, which provides cargo-llvm-cov \
+                 and the llvm-tools rustup component.\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                show_env.status.code(),
+                String::from_utf8_lossy(&show_env.stdout),
+                String::from_utf8_lossy(&show_env.stderr),
+            );
         }
         let coverage_env = parse_show_env(&show_env.stdout)?;
 

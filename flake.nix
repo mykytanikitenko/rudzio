@@ -45,6 +45,11 @@
             # Rust build cache
             pkgs.sccache
 
+            # LLVM source-based coverage (`just coverage`); the backing
+            # llvm-cov/llvm-profdata binaries come from the rustup-managed
+            # `llvm-tools` component pinned via rust-toolchain.toml.
+            pkgs.cargo-llvm-cov
+
             # Shell environment (fish 4.6.0, starship 1.24.2, atuin 18.13.6)
             pkgs.fish
             pkgs.starship
