@@ -5377,7 +5377,20 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
             if entry_name == RUDZIO_DEP || entry_name == AGGREGATOR_NAME {
                 continue;
             }
-            if member_names.contains(&entry_name) {
+            // Skip intra-workspace sibling deps by their REAL package
+            // name, not the entry name. A renamed dep
+            // (`alias = { package = "b", path = "../b" }`) has
+            // `entry_name == "alias"` but `dep.name == "b"`; matching on
+            // the entry name lets it slip past this guard and reach
+            // `render_dev_dep` → `render_sibling_bridge_dep`, which emits
+            // a `../`-prefixed bridge path into the AGGREGATOR manifest.
+            // `../` is only valid from a bridge manifest
+            // (`members/<x>/Cargo.toml`); from the aggregator root it
+            // escapes the tree and cargo compiles the sibling bridge at
+            // two paths (Bug #6). Matching the real package name routes
+            // every reference — renamed or not — through the `./members/...`
+            // path dep emitted by the member loop above.
+            if member_names.contains(&dep.name) {
                 continue;
             }
             merged
