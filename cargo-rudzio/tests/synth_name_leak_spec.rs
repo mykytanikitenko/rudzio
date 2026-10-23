@@ -376,7 +376,8 @@ mod tests {
         let workspace: &Path = ctx.consumer_workspace();
         customize_fixture(workspace)?;
         let manifest = workspace.join("Cargo.toml");
-        let cargo_rudzio = env!("CARGO_BIN_EXE_cargo-rudzio");
+        let cargo_rudzio =
+            cargo_rudzio_test_helpers::assert_fresh_binary(env!("CARGO_BIN_EXE_cargo-rudzio"))?;
         // Per-test cargo state (hardlinked from suite pre-warm) +
         // offline mode = no flock contention, no host-target
         // accumulation. Aggregator subtree lives in
@@ -578,9 +579,10 @@ mod tests {
             consumer_toml.matches("[[test]]").count() == 1,
             "fixture must declare exactly one `[[test]]` binary (multi-binary fixtures trigger Bug #10 collision detection)",
         );
-        // No-op `Path` use so the top-of-file import isn't flagged
-        // as unused when the inner module is the only consumer.
-        let _: &Path = Path::new(env!("CARGO_BIN_EXE_cargo-rudzio"));
+        // The fixture targets the freshly-built binary; prove it before
+        // any sibling test spawns it (also keeps the `Path` import used).
+        let _: &Path =
+            &cargo_rudzio_test_helpers::assert_fresh_binary(env!("CARGO_BIN_EXE_cargo-rudzio"))?;
         Ok(())
     }
 }

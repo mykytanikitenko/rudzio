@@ -18,6 +18,7 @@ use std::process::{Command, ExitCode, Stdio, abort};
 
 use anyhow::{Context as _, Result, bail};
 use cargo_metadata::{Message, TargetKind};
+use cargo_rudzio::build_id;
 use cargo_rudzio::cli::{
     RunnerExit, aggregator_cargo_args, format_target_flag_warning, parse_test_args, runner_exit,
 };
@@ -123,6 +124,9 @@ COMMANDS:
     generate-runner [--output DIR]   Generate the aggregator crate at DIR
                                      without running it (default:
                                      <target-dir>/rudzio-auto-runner).
+    --build-id                       Print the binary build identity
+                                     (git HEAD, dirty state, version,
+                                     stamp, profile) and exit.
     help, --help, -h                 Print this message.
 
 EXAMPLES:
@@ -178,6 +182,10 @@ fn dispatch(argv: &[String]) -> Result<ExitCode> {
         Some("generate-runner") => run_generate(&rest).map(|()| ExitCode::SUCCESS),
         Some("test") => run_test(&rest),
         Some("migrate") => Ok(run_migrate(&rest)),
+        Some("--build-id" | "build-id") => {
+            write_stdout(&format!("{}\n", build_id::line()));
+            Ok(ExitCode::SUCCESS)
+        }
         Some(cmd) => {
             write_stderr(&format!(
                 "cargo-rudzio: unknown subcommand `{cmd}`\n\n{USAGE}"

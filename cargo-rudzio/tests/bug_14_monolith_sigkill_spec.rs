@@ -1220,7 +1220,9 @@ mod tests {
         cargo_target_dir: &Path,
         extra_args: &[&str],
     ) -> io::Result<(mpsc::Receiver<io::Result<Output>>, libc::pid_t)> {
-        let cargo_rudzio_bin: &str = env!("CARGO_BIN_EXE_cargo-rudzio");
+        let cargo_rudzio_bin =
+            cargo_rudzio_test_helpers::assert_fresh_binary(env!("CARGO_BIN_EXE_cargo-rudzio"))
+                .map_err(io::Error::other)?;
         // `cargo_home` is per-test (hardlinked from the suite's
         // pre-warmed shared registry by
         // [`IsolatedCargoSuite::context`]) and `cargo_target_dir` is

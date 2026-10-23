@@ -130,21 +130,24 @@ fn run_cargo_rudzio_test(
     cargo_target_dir: &Path,
     coverage_env: &[(String, String)],
 ) -> io::Result<Output> {
-    Command::new(env!("CARGO_BIN_EXE_cargo-rudzio"))
-        .arg("test")
-        .current_dir(workspace)
-        .env("CARGO_HOME", cargo_home)
-        .env("CARGO_TARGET_DIR", cargo_target_dir)
-        .env("CARGO_NET_OFFLINE", "true")
-        .env("NO_COLOR", "1")
-        .envs(
-            coverage_env
-                .iter()
-                .map(|(name, value)| (name.as_str(), value.as_str())),
-        )
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
+    Command::new(
+        cargo_rudzio_test_helpers::assert_fresh_binary(env!("CARGO_BIN_EXE_cargo-rudzio"))
+            .map_err(io::Error::other)?,
+    )
+    .arg("test")
+    .current_dir(workspace)
+    .env("CARGO_HOME", cargo_home)
+    .env("CARGO_TARGET_DIR", cargo_target_dir)
+    .env("CARGO_NET_OFFLINE", "true")
+    .env("NO_COLOR", "1")
+    .envs(
+        coverage_env
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str())),
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .output()
 }
 
 /// Spawn `cargo llvm-cov report` against `workspace` under the per-test

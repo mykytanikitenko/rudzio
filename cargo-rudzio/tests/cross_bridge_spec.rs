@@ -10,7 +10,9 @@
 //! elision; `force_bridge` opt-in for non-rudzio-test consumers) are
 //! observable only end-to-end, after `read_dev_deps` and member-plan
 //! construction. The end-to-end tests invoke the `cargo-rudzio` binary
-//! as a subprocess via `env!("CARGO_BIN_EXE_cargo-rudzio")` so they
+//! as a subprocess via a freshness-checked accessor (the path is
+//! `env!("CARGO_BIN_EXE_cargo-rudzio")`, verified against the live git
+//! HEAD by `cargo-rudzio-test-helpers::assert_fresh_binary`) so they
 //! exercise the same code path a downstream user hits.
 
 use std::collections::BTreeMap;
@@ -142,7 +144,8 @@ fn write_synthetic_workspace(root: &Path, members: &[(&str, &str, &str)]) -> any
 /// Run `cargo-rudzio generate-runner --output <out>` from `cwd`,
 /// surfacing captured stdout/stderr in the failure message when the
 /// subprocess returns non-zero. The binary path comes from
-/// `env!("CARGO_BIN_EXE_cargo-rudzio")`, which is set both by cargo's
+/// `env!("CARGO_BIN_EXE_cargo-rudzio")`, freshness-checked by
+/// `assert_fresh_binary` before the spawn; the path is set both by cargo's
 /// own integration-test machinery and by the rudzio aggregator's
 /// `expose_member_bins` build script.
 ///
@@ -157,15 +160,17 @@ fn generate_runner(
     cargo_home: &Path,
     cargo_target_dir: &Path,
 ) -> anyhow::Result<()> {
-    let output = Command::new(env!("CARGO_BIN_EXE_cargo-rudzio"))
-        .current_dir(cwd)
-        .env("CARGO_HOME", cargo_home)
-        .env("CARGO_TARGET_DIR", cargo_target_dir)
-        .env("CARGO_NET_OFFLINE", "true")
-        .arg("generate-runner")
-        .arg("--output")
-        .arg(out)
-        .output()?;
+    let output = Command::new(cargo_rudzio_test_helpers::assert_fresh_binary(env!(
+        "CARGO_BIN_EXE_cargo-rudzio"
+    ))?)
+    .current_dir(cwd)
+    .env("CARGO_HOME", cargo_home)
+    .env("CARGO_TARGET_DIR", cargo_target_dir)
+    .env("CARGO_NET_OFFLINE", "true")
+    .arg("generate-runner")
+    .arg("--output")
+    .arg(out)
+    .output()?;
     anyhow::ensure!(
         output.status.success(),
         "cargo-rudzio generate-runner failed (status {}):\n--- stdout ---\n{}\n--- stderr ---\n{}",

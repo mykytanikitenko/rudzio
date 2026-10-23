@@ -1,8 +1,11 @@
-//! Captures a build-time stamp into `CARGO_RUDZIO_BUILD_STAMP` so the
-//! generated aggregator's subdir name encodes which `cargo-rudzio`
-//! binary built it.
+//! Captures two build-time stamps so the produced binary can prove what
+//! it is and when it was built.
 //!
-//! # Why
+//! 1. `CARGO_RUDZIO_BUILD_STAMP` — `<CARGO_PKG_VERSION>-<unix_epoch_seconds>`.
+//! 2. `CARGO_RUDZIO_BUILD_GIT_HEAD` / `CARGO_RUDZIO_BUILD_GIT_DIRTY` —
+//!    the git identity of the checkout that produced the binary.
+//!
+//! # Why the version+epoch stamp
 //!
 //! Bug #18: `<aggregator>/target/` is preserved across `cargo rudzio
 //! test` invocations. Cargo's fingerprinter keys on source content
@@ -17,23 +20,44 @@
 //! `src/generate.rs`). Different stamps → different subdir → fresh
 //! `target/` → fresh compile → fresh binary.
 //!
-//! # Stamp shape
+//! # Why the git identity
 //!
-//! `<CARGO_PKG_VERSION>-<unix_epoch_seconds>`. Version pins the
-//! published-release axis; epoch distinguishes dev-iteration builds
-//! within the same version.
+//! `env!("CARGO_BIN_EXE_cargo-rudzio")` resolves a path against the
+//! ambient `CARGO_TARGET_DIR`. A shared target dir can hand the e2e
+//! suite a binary built from a different HEAD than the test source. The
+//! suite re-checks this identity before every spawn (see
+//! `cargo-rudzio-test-helpers::assert_fresh_binary`): a binary whose
+//! reported HEAD differs from the live checkout HEAD fails loudly
+//! instead of silently running the wrong code.
 //!
-//! # No `cargo:rerun-if-changed`
+//! # git resolution
 //!
-//! Cargo's default behaviour reruns `build.rs` whenever any source
-//! file in the package changes. That is exactly what we want — every
-//! meaningful `cargo-rudzio` change produces a fresh stamp. Adding
-//! `cargo::rerun-if-changed=build.rs` would OVERRIDE the default and
-//! lock the stamp to `build.rs` changes only, defeating the fix on
-//! dev iteration against unchanged `build.rs`.
+//! HEAD and dirty-state come from the `git` binary scoped to
+//! `CARGO_MANIFEST_DIR` so worktrees, packed refs, and detached HEAD all
+//! resolve correctly. When `git` is unavailable (or the crate is built
+//! from a published tarball with no `.git`), both fields fall back to
+//! `"unknown"` — the build still succeeds, it just carries no identity.
+//!
+//! # rerun-if-changed
+//!
+//! Once any `rerun-if-changed` is emitted, cargo drops its implicit
+//! "rerun on any package file change" behaviour, so the source inputs
+//! are re-listed explicitly (`src`, `build.rs`, `Cargo.toml`) to keep
+//! the version+epoch stamp fresh on every source-touching edit. The git
+//! files (`HEAD`, `refs`, `packed-refs`) are watched in addition so a
+//! commit or pull refreshes the identity even when no `cargo-rudzio`
+//! source file changed — otherwise the identity would lag the checkout
+//! and the freshness guard would flag a false stale.
 
+use std::env;
 use std::error::Error;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Sentinel for "no git identity resolvable".
+const UNKNOWN: &str = "unknown";
 
 fn main() -> Result<(), Box<dyn Error>> {
     let version = env!("CARGO_PKG_VERSION");
@@ -43,5 +67,68 @@ fn main() -> Result<(), Box<dyn Error>> {
         .as_secs();
     let stamp = format!("{version}-{epoch}");
     println!("cargo::rustc-env=CARGO_RUDZIO_BUILD_STAMP={stamp}");
+
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let (head, dirty) = git_identity(manifest_dir);
+    println!("cargo::rustc-env=CARGO_RUDZIO_BUILD_GIT_HEAD={head}");
+    println!("cargo::rustc-env=CARGO_RUDZIO_BUILD_GIT_DIRTY={dirty}");
+    let profile = env::var("PROFILE").unwrap_or_else(|_| UNKNOWN.to_owned());
+    println!("cargo::rustc-env=CARGO_RUDZIO_BUILD_PROFILE={profile}");
+
+    // Keep the stamp fresh on source edits (Bug #18) and the identity
+    // fresh on commit/pull. See the module doc's `rerun-if-changed`.
+    for path in ["src", "build.rs", "Cargo.toml"] {
+        println!("cargo::rerun-if-changed={path}");
+    }
+    if let Some(git_dir) = git_dir(manifest_dir) {
+        for watch in ["HEAD", "refs", "packed-refs"] {
+            let path = git_dir.join(watch);
+            if path.exists() {
+                println!("cargo::rerun-if-changed={}", path.display());
+            }
+        }
+    }
+
     Ok(())
+}
+
+/// Resolve the repository's `.git` directory for `dir`, handling the
+/// git-worktree case where `.git` is a file (`gitdir: <path>`) rather
+/// than a directory.
+fn git_dir(dir: &Path) -> Option<PathBuf> {
+    let dot_git = dir.join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+    let contents = fs::read_to_string(&dot_git).ok()?;
+    let gitdir = contents.strip_prefix("gitdir:")?.trim();
+    Some(PathBuf::from(gitdir))
+}
+
+/// Best-effort `(head_sha, dirty)` from the `git` binary scoped to
+/// `dir`. Falls back to `("unknown", "unknown")` when `git` is
+/// unavailable or `dir` is not inside a repository.
+fn git_identity(dir: &Path) -> (String, String) {
+    let head = git_cmd(dir, &["rev-parse", "HEAD"]).unwrap_or_else(|| UNKNOWN.to_owned());
+    let dirty = match git_cmd(dir, &["status", "--porcelain", "--untracked-files=no"]) {
+        None => UNKNOWN.to_owned(),
+        Some(out) if out.is_empty() => "clean".to_owned(),
+        Some(_) => "dirty".to_owned(),
+    };
+    (head, dirty)
+}
+
+/// Run `git -C <dir> <args>`, returning trimmed stdout, or `None` when
+/// the command cannot run or exits non-zero (git missing / not a repo).
+fn git_cmd(dir: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8(output.stdout).ok()?.trim().to_owned())
 }

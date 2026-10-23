@@ -114,7 +114,8 @@ mod tests {
         let workspace: &Path = ctx.consumer_workspace();
         customize_fixture(workspace)?;
         let manifest = workspace.join("Cargo.toml");
-        let cargo_rudzio = env!("CARGO_BIN_EXE_cargo-rudzio");
+        let cargo_rudzio =
+            cargo_rudzio_test_helpers::assert_fresh_binary(env!("CARGO_BIN_EXE_cargo-rudzio"))?;
         // Per-test cargo state (hardlinked from suite's pre-warmed
         // registry) + offline mode = sibling tests do not contend on
         // the `.package-cache` flock and the aggregator dir lives
