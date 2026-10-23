@@ -21,6 +21,7 @@ mod main_rs_test_root_helper_spec;
 mod migration_bug_02_lib_harness_false_clippy_spec;
 mod migration_bug_03_coverage_profraw_spec;
 mod migration_bug_04_panic_abort_propagation_spec;
+mod migration_bug_06_workspace_path_dep_duplicates_spec;
 mod migration_bug_07_extern_crate_self_collision_spec;
 mod migration_bug_07_self_named_module_e2e_spec;
 mod migration_bug_08_bin_only_crates_spec;
