@@ -296,6 +296,7 @@ dependencies = [
  "proc-macro2",
  "rudzio",
  "rudzio-migrate",
+ "serde_json",
  "syn 2.0.119",
  "tempfile",
  "toml_edit",

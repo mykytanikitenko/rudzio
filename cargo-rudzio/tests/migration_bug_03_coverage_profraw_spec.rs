@@ -174,13 +174,88 @@ fn run_llvm_cov_report(
         .output()
 }
 
+/// Spawn `cargo llvm-cov report --json` against `workspace` under the
+/// per-test isolated cargo state, plus the same coverage environment the
+/// build ran with. The JSON (`llvm.coverage.json.export`) shape is what
+/// lets the test assert *which* file carries line coverage instead of
+/// trusting a bare exit-0 report.
+fn run_llvm_cov_report_json(
+    workspace: &Path,
+    cargo_home: &Path,
+    cargo_target_dir: &Path,
+    coverage_env: &[(String, String)],
+) -> io::Result<Output> {
+    Command::new("cargo")
+        .arg("llvm-cov")
+        .arg("report")
+        .arg("--json")
+        .current_dir(workspace)
+        .env("CARGO_HOME", cargo_home)
+        .env("CARGO_TARGET_DIR", cargo_target_dir)
+        .env("CARGO_NET_OFFLINE", "true")
+        .env("NO_COLOR", "1")
+        .envs(
+            coverage_env
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.as_str())),
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+}
+
+/// Assert that the `cargo llvm-cov report --json` payload attributes
+/// **non-zero line coverage** to the consumer's real `src/lib.rs`.
+///
+/// The root cause under test is that the aggregator compiles the member's
+/// source from a bridge-local copy (and symlinked sibling modules), so
+/// coverage points at the transient aggregator path unless the fix remaps
+/// it back to the member's real directory. A report that exits 0 but shows
+/// the consumer's `src/lib.rs` at 0 covered lines (or omits it entirely) is
+/// the same bug in disguise, so this assert pins the real-file attribution.
+fn assert_consumer_src_line_coverage(report_json: &str) -> anyhow::Result<()> {
+    let report: serde_json::Value = serde_json::from_str(report_json)
+        .map_err(|err| anyhow::anyhow!("failed to parse `cargo llvm-cov report --json`: {err}"))?;
+    let files = report
+        .pointer("/data/0/files")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            anyhow::anyhow!("unexpected `--json` shape (no /data/0/files array): {report_json}")
+        })?;
+    let consumer_lib = files.iter().find(|file| {
+        file.get("filename")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|filename| filename.ends_with("consumer/src/lib.rs"))
+    });
+    let covered = consumer_lib
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "`cargo llvm-cov report --json` did not list consumer/src/lib.rs; \
+                 coverage was not attributed to the member's real source. Files:\n\
+                 {report_json}"
+            )
+        })?
+        .pointer("/summary/lines/covered")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            anyhow::anyhow!("consumer/src/lib.rs entry had no /summary/lines/covered")
+        })?;
+    anyhow::ensure!(
+        covered > 0,
+        "consumer/src/lib.rs reported 0 covered lines; the trivial test should have \
+         executed at least its own body"
+    );
+    Ok(())
+}
+
 #[rudzio::suite([
     (runtime = Multithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
 ])]
 mod tests {
     use super::{
-        IsolatedCargoTest, Path, llvm_cov_show_env, llvm_cov_version_probe, parse_show_env,
-        run_cargo_rudzio_test, run_llvm_cov_report,
+        IsolatedCargoTest, Path, assert_consumer_src_line_coverage, llvm_cov_show_env,
+        llvm_cov_version_probe, parse_show_env, run_cargo_rudzio_test, run_llvm_cov_report,
+        run_llvm_cov_report_json,
     };
 
     /// **Migration Bug #3** — `cargo rudzio test` must emit `.profraw`
@@ -256,6 +331,24 @@ mod tests {
             String::from_utf8_lossy(&report_output.stdout),
             String::from_utf8_lossy(&report_output.stderr),
         );
+
+        // Bare exit 0 is not enough: the report must attribute non-zero line
+        // coverage to the consumer's REAL `src/lib.rs`, not the transient
+        // aggregator copy (which the default ignore-filename-regex hides).
+        let json_output = run_llvm_cov_report_json(
+            workspace,
+            ctx.cargo_home(),
+            ctx.cargo_target_dir(),
+            &coverage_env,
+        )?;
+        anyhow::ensure!(
+            json_output.status.success(),
+            "`cargo llvm-cov report --json` exited {:?}.\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            json_output.status.code(),
+            String::from_utf8_lossy(&json_output.stdout),
+            String::from_utf8_lossy(&json_output.stderr),
+        );
+        assert_consumer_src_line_coverage(&String::from_utf8_lossy(&json_output.stdout))?;
 
         Ok(())
     }

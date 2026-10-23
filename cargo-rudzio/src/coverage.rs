@@ -33,6 +33,12 @@ pub const COVERAGE_TARGET_DIR_ENV: &str = "CARGO_LLVM_COV_TARGET_DIR";
 /// `show-env`-emitted build-script directory. Set only when `build.build-dir`
 /// is configured; otherwise absent.
 pub const COVERAGE_BUILD_DIR_ENV: &str = "CARGO_LLVM_COV_BUILD_DIR";
+/// `show-env`-emitted comma-separated crate-name list the rustc wrapper
+/// matches against `--crate-name` to decide what to instrument.
+pub const WRAPPER_CRATE_NAMES_ENV: &str = "__CARGO_LLVM_COV_RUSTC_WRAPPER_CRATE_NAMES";
+/// Cargo environment variable carrying `--remap-path-prefix` rustflags for
+/// the inner aggregator build.
+pub const RUSTFLAGS_ENV: &str = "RUSTFLAGS";
 
 /// Resolved target/build directories for the inner aggregator cargo build.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,15 +50,69 @@ pub struct AggregatorDirs {
     pub target_dir: PathBuf,
 }
 
+/// Append generated crate names to `__CARGO_LLVM_COV_RUSTC_WRAPPER_CRATE_NAMES`.
+///
+/// `generated` holds the crate names the aggregator build produces but
+/// `cargo llvm-cov show-env` cannot know (the runner bin and per-bin bridge
+/// libs). The cargo-llvm-cov rustc wrapper instruments a crate only when its
+/// `--crate-name` appears in the list, so without the runner name the final
+/// binary links no profiler runtime and emits no `.profraw`. Existing entries
+/// are preserved verbatim and already-present names are not duplicated, so
+/// the augmentation is idempotent across re-runs.
+#[must_use]
+#[inline]
+pub fn augment_crate_names(existing: &str, generated: &[String]) -> String {
+    let mut names: Vec<&str> = Vec::new();
+    for name in existing
+        .split(',')
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+    {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    for name in generated {
+        if !names.contains(&name.as_str()) {
+            names.push(name.as_str());
+        }
+    }
+    names.join(",")
+}
+
 /// Whether coverage instrumentation is active in the current process.
 ///
 /// `cargo llvm-cov show-env` sets [`COVERAGE_ENV`] so a child process can
 /// recognise that it must build into [`COVERAGE_TARGET_DIR_ENV`] rather than
 /// its private per-aggregator subdir.
-#[inline]
 #[must_use]
+#[inline]
 pub fn is_active() -> bool {
     env::var_os(COVERAGE_ENV).is_some()
+}
+
+/// Build a single `--remap-path-prefix=<from>=<to>` rustflag.
+///
+/// Rendered as one whitespace-free token so it survives the space-split
+/// cargo applies to the `RUSTFLAGS` environment variable. `--remap-path-prefix`
+/// maps a bridge-local compiled source path (the copy/symlink under the
+/// generated aggregator) back to the member's real source path, so coverage
+/// hits attribute to the member's actual `src/` files.
+///
+/// # Errors
+///
+/// Fails when either path is not valid UTF-8: the flag carries plain string
+/// arguments and a lossy conversion would silently point coverage at the
+/// wrong file.
+#[inline]
+pub fn remap_prefix_flag(from: &Path, to: &Path) -> Result<String> {
+    let from_str = from.to_str().ok_or_else(|| {
+        anyhow::anyhow!("remap source path is not valid UTF-8: {}", from.display())
+    })?;
+    let to_str = to
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("remap target path is not valid UTF-8: {}", to.display()))?;
+    Ok(format!("--remap-path-prefix={from_str}={to_str}"))
 }
 
 /// Resolve the inner aggregator cargo build's target/build directories.
@@ -82,8 +142,8 @@ pub fn resolve_aggregator_dirs(
 ) -> Result<AggregatorDirs> {
     if !coverage_active {
         return Ok(AggregatorDirs {
-            target_dir: base_output_dir.join("target"),
             build_dir: Some(base_output_dir.join("build-dir")),
+            target_dir: base_output_dir.join("target"),
         });
     }
     let target_dir = coverage_target_dir.ok_or_else(|| {
@@ -94,16 +154,18 @@ pub fn resolve_aggregator_dirs(
         )
     })?;
     Ok(AggregatorDirs {
-        target_dir: PathBuf::from(target_dir),
         build_dir: coverage_build_dir.map(PathBuf::from),
+        target_dir: PathBuf::from(target_dir),
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{COVERAGE_TARGET_DIR_ENV, resolve_aggregator_dirs};
-    use std::ffi::OsStr;
-    use std::path::Path;
+    use super::{
+        COVERAGE_TARGET_DIR_ENV, augment_crate_names, remap_prefix_flag, resolve_aggregator_dirs,
+    };
+    use std::ffi::{OsStr, OsString};
+    use std::path::{Path, PathBuf};
 
     const BASE: &str = "/outer/target/rudzio-auto-runner-0123456789abcdef-0123456789abcdef";
 
@@ -157,9 +219,8 @@ mod tests {
 
     #[test]
     fn coverage_without_target_dir_fails_loudly() -> anyhow::Result<()> {
-        let err = match resolve_aggregator_dirs(true, None, None, Path::new(BASE)) {
-            Ok(dirs) => anyhow::bail!("expected failure, got {dirs:?}"),
-            Err(err) => err,
+        let Err(err) = resolve_aggregator_dirs(true, None, None, Path::new(BASE)) else {
+            anyhow::bail!("expected coverage dir resolution to fail when target dir is unset");
         };
         let msg = format!("{err:#}");
         assert!(
@@ -170,6 +231,71 @@ mod tests {
             msg.contains("incomplete"),
             "error should say the env is incomplete: {msg}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn augment_appends_generated_names_not_already_present() {
+        let existing = "consumer,consumer_tests,consumer,main";
+        let generated = vec!["rudzio_auto_runner".to_owned()];
+        let augmented = augment_crate_names(existing, &generated);
+        assert_eq!(
+            augmented, "consumer,consumer_tests,main,rudzio_auto_runner",
+            "existing duplicates collapsed, generated runner name appended"
+        );
+    }
+
+    #[test]
+    fn augment_is_idempotent_when_generated_already_present() {
+        let existing = "consumer,rudzio_auto_runner";
+        let generated = vec!["rudzio_auto_runner".to_owned()];
+        assert_eq!(
+            augment_crate_names(existing, &generated),
+            "consumer,rudzio_auto_runner"
+        );
+    }
+
+    #[test]
+    fn augment_tolerates_empty_existing_and_trims() {
+        let generated = vec![
+            "rudzio_auto_runner".to_owned(),
+            "a_bin_rudzio_bridge_lib".to_owned(),
+        ];
+        assert_eq!(
+            augment_crate_names("", &generated),
+            "rudzio_auto_runner,a_bin_rudzio_bridge_lib"
+        );
+        assert_eq!(
+            augment_crate_names("  consumer ,, consumer ", &generated),
+            "consumer,rudzio_auto_runner,a_bin_rudzio_bridge_lib"
+        );
+    }
+
+    #[test]
+    fn remap_flag_is_one_whitespace_free_token() -> anyhow::Result<()> {
+        let flag = remap_prefix_flag(
+            Path::new("/out/members/consumer"),
+            Path::new("/ws/consumer"),
+        )?;
+        assert_eq!(
+            flag,
+            "--remap-path-prefix=/out/members/consumer=/ws/consumer"
+        );
+        assert!(
+            !flag.contains(' '),
+            "must survive RUSTFLAGS whitespace split: {flag}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn remap_flag_errors_on_non_utf8_source() -> anyhow::Result<()> {
+        use std::os::unix::ffi::OsStringExt as _;
+        let bad = PathBuf::from(OsString::from_vec(vec![0xff, 0xfe]));
+        let Err(err) = remap_prefix_flag(&bad, Path::new("/ws/consumer")) else {
+            anyhow::bail!("expected remap flag construction to fail on non-UTF-8 source");
+        };
+        assert!(format!("{err:#}").contains("not valid UTF-8"));
         Ok(())
     }
 }
