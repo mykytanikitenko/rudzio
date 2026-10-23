@@ -44,6 +44,16 @@ pub fn classify_ctx_param(func: &ItemFn) -> CtxKind {
     }
 }
 
+/// Strip the test-marker attributes (`#[test]`, `#[rudzio::test]`) from
+/// `func`, leaving `#[ignore]` and other attributes untouched.
+///
+/// Used by both the direct suite path and the `macro_rules!`-generated
+/// path so a test fn never carries a marker that would double-register it.
+#[inline]
+pub fn strip_test_attrs(func: &mut ItemFn) {
+    func.attrs.retain(|attr| !is_test_attr(attr));
+}
+
 /// Returns `true` when `func` carries any attribute the suite macro
 /// recognises as a test marker (`#[test]` or `#[rudzio::test]`).
 #[inline]

@@ -29,8 +29,11 @@ pub fn suite(args: TokenStream, input: TokenStream) -> TokenStream {
 
 #[inline]
 #[proc_macro_attribute]
-pub fn test(_args: TokenStream, input: TokenStream) -> TokenStream {
-    input
+pub fn test(args: TokenStream, input: TokenStream) -> TokenStream {
+    let args_ts = args.into();
+    suite_codegen::expand_test_attr(&args_ts, input.into())
+        .unwrap_or_else(Error::into_compile_error)
+        .into()
 }
 
 /// Internal helper: reads the env var named by `input` (a string
@@ -47,6 +50,20 @@ pub fn test(_args: TokenStream, input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn __proc_macro_env(input: TokenStream) -> TokenStream {
     proc_macro_env_codegen::expand(input.into())
+        .unwrap_or_else(Error::into_compile_error)
+        .into()
+}
+
+/// Internal function-like macro invoked by the hidden
+/// `__rudzio_register_test!` macro that `#[rudzio::suite]` emits inside a
+/// module with `macro_rules!`-generated tests. Registers one concrete
+/// `#[rudzio::test]` fn against one `(runtime, suite)` configuration.
+/// `#[doc(hidden)]` and underscore-prefixed; not a stability guarantee.
+#[doc(hidden)]
+#[inline]
+#[proc_macro]
+pub fn __register_test(input: TokenStream) -> TokenStream {
+    suite_codegen::expand_register_test(input.into())
         .unwrap_or_else(Error::into_compile_error)
         .into()
 }
