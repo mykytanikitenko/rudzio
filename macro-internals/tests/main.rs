@@ -4,6 +4,7 @@
 
 mod codegen;
 mod parse;
+mod suite_codegen;
 mod test_attr_args;
 mod transform;
 
