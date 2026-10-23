@@ -78,7 +78,7 @@ fn write_fixture_with_unknown_dep_key(root: &Path, rudzio_root: &Path) -> io::Re
          \n\
          [dev-dependencies]\n\
          rudzio = { workspace = true }\n\
-         anyhow = \"=1.0.102\"\n",
+         anyhow = \"=1.0.104\"\n",
     )?;
     fs::write(
         root.join("consumer").join("src").join("lib.rs"),
@@ -118,7 +118,7 @@ fn write_fixture_with_unknown_ws_key(root: &Path, rudzio_root: &Path) -> io::Res
          \n\
          [dev-dependencies]\n\
          rudzio = { workspace = true }\n\
-         anyhow = \"=1.0.102\"\n",
+         anyhow = \"=1.0.104\"\n",
     )?;
     fs::write(
         root.join("consumer").join("src").join("lib.rs"),
@@ -160,7 +160,7 @@ fn write_fixture_with_type_mismatch(root: &Path, rudzio_root: &Path) -> io::Resu
          \n\
          [dev-dependencies]\n\
          rudzio = { workspace = true }\n\
-         anyhow = \"=1.0.102\"\n",
+         anyhow = \"=1.0.104\"\n",
     )?;
     fs::write(
         root.join("consumer").join("src").join("lib.rs"),

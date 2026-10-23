@@ -955,8 +955,8 @@ fn write_fixture_with_opts(root: &Path, rudzio_root: &Path, opts: &FixtureOpts) 
              \n\
              [workspace.dependencies]\n\
              rudzio = {{ path = \"{rudzio}\", features = [{features}] }}\n\
-             tokio = {{ version = \"=1.52.3\", features = [\"full\"] }}\n\
-             anyhow = \"=1.0.102\"\n",
+             tokio = {{ version = \"=1.54.1\", features = [\"full\"] }}\n\
+             anyhow = \"=1.0.104\"\n",
             rudzio = rudzio_root.display(),
             features = workspace_rudzio_features(opts),
         ),
