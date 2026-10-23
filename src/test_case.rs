@@ -92,6 +92,9 @@ impl TestCase {
 
 /// Convert any `Display` error into a [`BoxError`].
 #[inline]
-pub fn box_error<E: fmt::Display>(err: E) -> BoxError {
+pub fn box_error<E>(err: E) -> BoxError
+where
+    E: fmt::Display,
+{
     Box::new(DisplayError(format!("{err:#}")))
 }

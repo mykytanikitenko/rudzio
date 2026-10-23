@@ -438,7 +438,23 @@ pub_with_shorthand = { level = "allow", priority = 1 }
 question_mark_used = { level = "allow", priority = 1 }
 redundant_pub_crate = { level = "allow", priority = 1 }
 redundant_type_annotations = { level = "allow", priority = 1 }
+# `rest_pattern_accessible_field` (new in clippy 1.99) is mutually
+# contradictory with `unneeded_field_pattern` (forbidden above): its
+# suggested fix (`field: _`) is exactly what `unneeded_field_pattern`
+# rejects, and the only code form that satisfies both (`field: _field`)
+# fails to compile on OR-patterns with heterogeneous variants (E0408)
+# and on patterns behind a shared reference (E0507). `..` stays the
+# idiomatic ignore-the-rest form.
+rest_pattern_accessible_field = { level = "allow", priority = 1 }
 semicolon_outside_block = { level = "allow", priority = 1 }
+# `unused_async_trait_impl` (new in clippy 1.99) flags trait-impl methods
+# whose `async` is dictated by the trait signature (e.g. `Suite::setup`,
+# `Test::teardown`). Its fix rewrites an `async fn` into a
+# `fn -> impl Future` returning `ready(..)` — strictly less readable, and
+# non-compiling for lifetime-generic trait methods (`fn context<'a>(...)`
+# whose `impl Future` return type cannot name the borrowed lifetime).
+# The `async fn` form is the idiomatic contract; the lint is allowed.
+unused_async_trait_impl = { level = "allow", priority = 1 }
 std_instead_of_alloc = { level = "allow", priority = 1 }
 std_instead_of_core = { level = "allow", priority = 1 }
 separated_literal_suffix = { level = "allow", priority = 1 }

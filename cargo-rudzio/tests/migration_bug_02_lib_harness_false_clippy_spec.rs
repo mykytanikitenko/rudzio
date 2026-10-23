@@ -74,7 +74,7 @@ anyhow = "=1.0.102"
     )?;
     fs::write(
         root.join("src").join("lib.rs"),
-        r#"pub fn add(a: i32, b: i32) -> i32 { a + b }
+        "pub fn add(a: i32, b: i32) -> i32 { a + b }
 
 #[cfg(test)]
 #[rudzio::suite([
@@ -97,7 +97,7 @@ mod tests {
 #[cfg(test)]
 #[rudzio::main]
 fn main() {}
-"#,
+",
     )?;
     Ok(())
 }

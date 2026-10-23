@@ -91,7 +91,10 @@ impl Report {
     /// Returns the underlying [`io::Error`] if any of the writes or the
     /// final flush fails.
     #[inline]
-    pub fn print_summary<W: Write>(&self, mut out: W) -> io::Result<()> {
+    pub fn print_summary<W>(&self, mut out: W) -> io::Result<()>
+    where
+        W: Write,
+    {
         writeln!(out)?;
         writeln!(out, "== rudzio-migrate summary ==")?;
         writeln!(out, "Files touched:       {}", self.files_touched.len())?;
@@ -150,7 +153,10 @@ impl Report {
 
     /// Push a location-bearing warning without a source snippet.
     #[inline]
-    pub fn warn<S: Into<String>>(&mut self, file: PathBuf, line: Option<usize>, message: S) {
+    pub fn warn<S>(&mut self, file: PathBuf, line: Option<usize>, message: S)
+    where
+        S: Into<String>,
+    {
         self.warnings.push(Warning {
             file,
             line,
@@ -163,7 +169,7 @@ impl Report {
     /// Push a warning with a source snippet so the summary can
     /// underline the offending span.
     #[inline]
-    pub fn warn_with_span<S: Into<String>>(
+    pub fn warn_with_span<S>(
         &mut self,
         file: PathBuf,
         line: usize,
@@ -171,7 +177,9 @@ impl Report {
         byte_len: usize,
         source: Arc<str>,
         message: S,
-    ) {
+    ) where
+        S: Into<String>,
+    {
         self.warnings.push(Warning {
             file,
             line: Some(line),
@@ -188,14 +196,20 @@ impl Report {
 ///
 /// Returns the underlying [`io::Error`] from the write or flush.
 #[inline]
-pub fn progress<W: Write>(mut out: W, msg: &str) -> io::Result<()> {
+pub fn progress<W>(mut out: W, msg: &str) -> io::Result<()>
+where
+    W: Write,
+{
     writeln!(out, "{msg}")?;
     out.flush()
 }
 
 /// Render a single warning entry: header line plus an optional
 /// snippet-with-caret block when a source span was captured.
-fn render_warning<W: Write>(mut out: W, warning: &Warning) -> io::Result<()> {
+fn render_warning<W>(mut out: W, warning: &Warning) -> io::Result<()>
+where
+    W: Write,
+{
     // Header line: `path:line: message` (or `path: message` when location-less).
     match warning.line {
         Some(line) => writeln!(

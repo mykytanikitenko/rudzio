@@ -201,7 +201,10 @@ impl RuntimeChoice {
 /// none, and [`ParseError::UnknownRuntime`] when `--runtime <NAME>`
 /// gets an unknown name.
 #[inline]
-pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError> {
+pub fn parse<I>(args: I) -> Result<Cli, ParseError>
+where
+    I: IntoIterator<Item = String>,
+{
     let mut path: Option<PathBuf> = None;
     let mut runtime = RuntimeChoice::TokioMt;
     let mut run = RunFlags::empty();
