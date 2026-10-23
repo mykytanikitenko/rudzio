@@ -25,12 +25,20 @@ use rudzio_macro_internals::codegen::extract_ignore_reason;
 mod tests {
     use super::{ItemFn, Test, extract_ignore_reason, parse_quote};
 
+    /// `extract_ignore_reason` returns `(ignored, reason)` token streams;
+    /// assert on their string forms.
+    fn assert_ignore(func: &ItemFn, ignored: &str, reason: &str) {
+        let (ignored_tokens, reason_tokens) = extract_ignore_reason(func);
+        assert_eq!(ignored_tokens.to_string(), ignored, "ignored tokens");
+        assert_eq!(reason_tokens.to_string(), reason, "reason tokens");
+    }
+
     #[rudzio::test]
     fn ignore_reason_none_for_fn_without_attr(_ctx: &Test) -> anyhow::Result<()> {
         let func: ItemFn = parse_quote! {
             async fn t() -> anyhow::Result<()> { Ok(()) }
         };
-        anyhow::ensure!(extract_ignore_reason(&func) == (false, String::new()));
+        assert_ignore(&func, "false", "\"\"");
         Ok(())
     }
 
@@ -40,7 +48,7 @@ mod tests {
             #[ignore]
             async fn t() -> anyhow::Result<()> { Ok(()) }
         };
-        anyhow::ensure!(extract_ignore_reason(&func) == (true, String::new()));
+        assert_ignore(&func, "true", "\"\"");
         Ok(())
     }
 
@@ -50,7 +58,7 @@ mod tests {
             #[ignore = "because"]
             async fn t() -> anyhow::Result<()> { Ok(()) }
         };
-        anyhow::ensure!(extract_ignore_reason(&func) == (true, "because".to_owned()));
+        assert_ignore(&func, "true", "\"because\"");
         Ok(())
     }
 
@@ -60,7 +68,7 @@ mod tests {
             #[ignore("because")]
             async fn t() -> anyhow::Result<()> { Ok(()) }
         };
-        anyhow::ensure!(extract_ignore_reason(&func) == (true, "because".to_owned()));
+        assert_ignore(&func, "true", "\"because\"");
         Ok(())
     }
 
@@ -70,7 +78,57 @@ mod tests {
             #[ignore(reason = "because")]
             async fn t() -> anyhow::Result<()> { Ok(()) }
         };
-        anyhow::ensure!(extract_ignore_reason(&func) == (true, "because".to_owned()));
+        assert_ignore(&func, "true", "\"because\"");
+        Ok(())
+    }
+
+    /// A `#[cfg_attr(cond, ignore)]` must be detected: the ignored flag is
+    /// emitted as `cfg!(cond)` and the reason (when present) is conditional.
+    #[rudzio::test]
+    fn cfg_attr_ignore_is_emitted_as_cfg_predicate(_ctx: &Test) -> anyhow::Result<()> {
+        let func: ItemFn = parse_quote! {
+            #[cfg_attr(all(), ignore)]
+            async fn t() -> anyhow::Result<()> { Ok(()) }
+        };
+        let (ignored, reason) = extract_ignore_reason(&func);
+        let ignored_str = ignored.to_string();
+        anyhow::ensure!(
+            ignored_str.contains("cfg"),
+            "expected cfg! predicate: {ignored_str}"
+        );
+        anyhow::ensure!(
+            ignored_str.contains("all"),
+            "expected all() predicate: {ignored_str}"
+        );
+        anyhow::ensure!(
+            reason.to_string() == "\"\"",
+            "expected empty reason: {reason}"
+        );
+        Ok(())
+    }
+
+    /// A `#[cfg_attr(cond, ignore = "…")]` emits a conditional reason.
+    #[rudzio::test]
+    fn cfg_attr_ignore_reason_is_conditional(_ctx: &Test) -> anyhow::Result<()> {
+        let func: ItemFn = parse_quote! {
+            #[cfg_attr(all(), ignore = "because")]
+            async fn t() -> anyhow::Result<()> { Ok(()) }
+        };
+        let (ignored, reason) = extract_ignore_reason(&func);
+        let ignored_str = ignored.to_string();
+        let reason_str = reason.to_string();
+        anyhow::ensure!(
+            ignored_str.contains("cfg"),
+            "expected cfg! predicate: {ignored_str}"
+        );
+        anyhow::ensure!(
+            reason_str.contains("because"),
+            "expected reason in {reason_str}"
+        );
+        anyhow::ensure!(
+            reason_str.contains("cfg"),
+            "expected conditional in {reason_str}"
+        );
         Ok(())
     }
 }

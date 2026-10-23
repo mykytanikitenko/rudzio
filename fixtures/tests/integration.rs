@@ -407,6 +407,68 @@ mod tests {
         Ok(())
     }
 
+    /// A direct `#[rudzio::test]` fn carrying its own `#[cfg(feature =
+    /// "never-enabled")]` (off) is stripped; only the cfg-true and ungated
+    /// fns remain registered. `never-enabled` is never enabled, so the
+    /// assertion is deterministic.
+    #[rudzio::test]
+    fn direct_cfg_gated_tests_run_only_cfg_true_and_ungated(_ctx: &Test) -> anyhow::Result<()> {
+        let out = run(env!("CARGO_BIN_EXE_direct_cfg_gated_tokio_mt"))?;
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(0_i32),
+            "expected exit 0, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("cfg_true_test"), "output:\n{log}");
+        anyhow::ensure!(log.contains("ungated_test"), "output:\n{log}");
+        anyhow::ensure!(
+            !log.contains("cfg_false_test"),
+            "cfg-false test must be absent, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
+        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        Ok(())
+    }
+
+    /// A `macro_rules!`-generated test fn carrying `#[cfg(feature =
+    /// "never-enabled")]` (off) directly on the fn is stripped; its
+    /// `__register_test!` registration items must carry the cfg too.
+    #[rudzio::test]
+    fn macro_rules_fn_cfg_gated_test_is_stripped(_ctx: &Test) -> anyhow::Result<()> {
+        let out = run(env!("CARGO_BIN_EXE_macro_rules_fn_cfg_gated_tokio_mt"))?;
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(0_i32),
+            "expected exit 0, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("always_on"), "output:\n{log}");
+        anyhow::ensure!(
+            !log.contains("cfg_gated_off"),
+            "cfg-gated fn must be absent, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
+        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        Ok(())
+    }
+
+    /// `#[cfg_attr(cond, ignore)]` must be respected: `all()` (always true)
+    /// ignores the test; `any()` (always false) leaves it running.
+    #[rudzio::test]
+    fn cfg_attr_ignore_is_respected(_ctx: &Test) -> anyhow::Result<()> {
+        let out = run(env!("CARGO_BIN_EXE_cfg_attr_ignore_tokio_mt"))?;
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(0_i32),
+            "expected exit 0, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("cfg_attr_ignored"), "output:\n{log}");
+        anyhow::ensure!(log.contains("cfg_attr_runs"), "output:\n{log}");
+        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
+        anyhow::ensure!(log.contains("1 ignored"), "output:\n{log}");
+        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        Ok(())
+    }
+
     #[rudzio::test]
     fn failing_tokio_mt_exits_one(_ctx: &Test) -> anyhow::Result<()> {
         let out = run(env!("CARGO_BIN_EXE_failing_tokio_mt"))?;
