@@ -3,15 +3,17 @@
 //! binding) cannot take the bridge's `extern crate self as <name>;`
 //! prelude entry — it collides (E0260).
 //!
-//! # Fix shape (on main)
+//! # Fix shape
 //!
-//! `crate_root_declares_ident` detects the self-named binding, the bridge
-//! skips the self-alias, and `CratePathRewriter` rewrites `<name>::` paths
-//! in the proxied test sources to `crate::`. The cases below probe the
-//! breadth of that detection: every `syn::Item` variant that binds a name,
-//! hyphenated crate names, the alias-preserving control, and two forms the
-//! `syn`-driven rewriter cannot reach (paths inside macro tokens, and a
-//! leading-`::` `use`).
+//! `crate_root_declares_ident` detects the self-named binding, and the
+//! bridge replaces the self-alias with a `__rudzio_self_alias` module
+//! holding `pub(crate) use crate as <name>;`. Every proxied test module
+//! glob-imports it, so `<name>::` resolves by name lookup, including
+//! inside macro bodies and macro invocation arguments. The cases below
+//! probe the breadth of that detection (every `syn::Item` variant that
+//! binds a name, hyphenated crate names), the alias-preserving control,
+//! macro-token paths, a leading-`::` `use`, and a test module whose own
+//! local `mod <name>` must shadow the alias.
 //!
 //! # Assertion strategy
 //!
@@ -303,8 +305,7 @@ mod tests {
             "pub fn answer() -> u32 {\n    42\n}\n",
         )?;
         // The `use project::project::answer;` lives inside a `macro_rules!`
-        // body. The `syn`-driven rewriter cannot reach paths inside macro
-        // tokens, so the `<project>::` → `crate::` rewrite does not apply.
+        // body, so it resolves at the expansion site by name lookup.
         fs::write(
             project.join("tests").join("integration").join("mod.rs"),
             "// rudzio_test marker\n\
@@ -410,5 +411,145 @@ mod tests {
 
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
         assert_exact_passed(&output, &["leading_colon_answer"])
+    }
+
+    #[rudzio::test]
+    fn self_named_macro_argument_resolves(ctx: &IsolatedCargoTest) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
+        let root: &Path = workspace.path();
+        write_workspace_manifest(root, &["project"])?;
+
+        let project = root.join("project");
+        fs::create_dir_all(project.join("src"))?;
+        fs::create_dir_all(project.join("tests").join("integration"))?;
+        write_lib_member_manifest(&project, "project", "project")?;
+        fs::write(project.join("src").join("lib.rs"), "pub mod project;\n")?;
+        fs::write(
+            project.join("src").join("project.rs"),
+            "pub fn answer() -> u32 {\n    42\n}\n",
+        )?;
+        fs::write(
+            project.join("tests").join("integration").join("mod.rs"),
+            "// rudzio_test marker\n\
+             #![allow(clippy::tests_outside_test_module)]\n\
+             \n\
+             use rudzio::common::context::{Suite, Test};\n\
+             use rudzio::runtime::tokio::Multithread as TokioMultithread;\n\
+             \n\
+             #[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
+             mod tests {\n\
+             \x20\x20\x20\x20#[rudzio::test]\n\
+             \x20\x20\x20\x20fn macro_argument_answer_resolves() -> anyhow::Result<()> {\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20assert_eq!(project::project::answer(), 42);\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
+             \x20\x20\x20\x20}\n\
+             }\n\
+             \n\
+             #[rudzio::main]\n\
+             fn main() {}\n",
+        )?;
+
+        let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
+        assert_exact_passed(&output, &["macro_argument_answer_resolves"])
+    }
+
+    #[rudzio::test]
+    fn self_named_helper_macro_resolves(ctx: &IsolatedCargoTest) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
+        let root: &Path = workspace.path();
+        write_workspace_manifest(root, &["project"])?;
+
+        let project = root.join("project");
+        let integration = project.join("tests").join("integration");
+        fs::create_dir_all(project.join("src"))?;
+        fs::create_dir_all(integration.join("x"))?;
+        write_lib_member_manifest(&project, "project", "project")?;
+        fs::write(project.join("src").join("lib.rs"), "pub mod project;\n")?;
+        fs::write(
+            project.join("src").join("project.rs"),
+            "pub fn answer() -> u32 {\n    42\n}\n",
+        )?;
+        // The macro is defined in a helper file and expands inside the
+        // test module, so `project::` in its body resolves there.
+        fs::write(integration.join("x").join("mod.rs"), "pub mod helper;\n")?;
+        fs::write(
+            integration.join("x").join("helper.rs"),
+            "#[macro_export]\n\
+             macro_rules! helper_answer {\n\
+             \x20\x20\x20\x20() => { project::project::answer() };\n\
+             }\n",
+        )?;
+        fs::write(
+            integration.join("mod.rs"),
+            "// rudzio_test marker\n\
+             #![allow(clippy::tests_outside_test_module)]\n\
+             \n\
+             mod x;\n\
+             \n\
+             use rudzio::common::context::{Suite, Test};\n\
+             use rudzio::runtime::tokio::Multithread as TokioMultithread;\n\
+             \n\
+             #[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
+             mod tests {\n\
+             \x20\x20\x20\x20#[rudzio::test]\n\
+             \x20\x20\x20\x20fn helper_macro_answer_resolves() -> anyhow::Result<()> {\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20anyhow::ensure!(crate::helper_answer!() == 42, \"expected 42\");\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
+             \x20\x20\x20\x20}\n\
+             }\n\
+             \n\
+             #[rudzio::main]\n\
+             fn main() {}\n",
+        )?;
+
+        let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
+        assert_exact_passed(&output, &["helper_macro_answer_resolves"])
+    }
+
+    #[rudzio::test]
+    fn self_named_local_module_shadows_alias(ctx: &IsolatedCargoTest) -> anyhow::Result<()> {
+        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
+        let root: &Path = workspace.path();
+        write_workspace_manifest(root, &["project"])?;
+
+        let project = root.join("project");
+        fs::create_dir_all(project.join("src"))?;
+        fs::create_dir_all(project.join("tests").join("integration"))?;
+        write_lib_member_manifest(&project, "project", "project")?;
+        fs::write(project.join("src").join("lib.rs"), "pub mod project;\n")?;
+        fs::write(
+            project.join("src").join("project.rs"),
+            "pub fn answer() -> u32 {\n    42\n}\n",
+        )?;
+        fs::write(
+            project.join("tests").join("integration").join("mod.rs"),
+            "// rudzio_test marker\n\
+             #![allow(clippy::tests_outside_test_module)]\n\
+             \n\
+             use rudzio::common::context::{Suite, Test};\n\
+             use rudzio::runtime::tokio::Multithread as TokioMultithread;\n\
+             \n\
+             #[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
+             mod tests {\n\
+             \x20\x20\x20\x20mod project {\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20pub fn answer() -> u32 {\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x207\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20}\n\
+             \x20\x20\x20\x20}\n\
+             \n\
+             \x20\x20\x20\x20#[rudzio::test]\n\
+             \x20\x20\x20\x20fn local_module_shadows_alias() -> anyhow::Result<()> {\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20anyhow::ensure!(self::project::answer() == 7, \"expected local 7\");\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20anyhow::ensure!(project::answer() == 7, \"expected local 7\");\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
+             \x20\x20\x20\x20}\n\
+             }\n\
+             \n\
+             #[rudzio::main]\n\
+             fn main() {}\n",
+        )?;
+
+        let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
+        assert_exact_passed(&output, &["local_module_shadows_alias"])
     }
 }
