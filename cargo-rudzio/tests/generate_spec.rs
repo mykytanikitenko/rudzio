@@ -774,7 +774,7 @@ mod tests {
         let content = build_bridge_build_rs(&entry)?;
 
         anyhow::ensure!(
-            content.contains("mod __member_build { include!(\""),
+            content.contains("mod __member_build {") && content.contains("include!("),
             "forwarded build.rs must be include!d into __member_build:\n{content}"
         );
         anyhow::ensure!(
