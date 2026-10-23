@@ -20,6 +20,7 @@ mod generate_spec;
 mod main_rs_test_root_helper_spec;
 mod migration_bug_02_lib_harness_false_clippy_spec;
 mod migration_bug_03_coverage_profraw_spec;
+mod migration_bug_04_panic_abort_propagation_spec;
 mod migration_bug_07_extern_crate_self_collision_spec;
 mod migration_bug_08_bin_only_crates_spec;
 mod optional_dep_force_enable_spec;
