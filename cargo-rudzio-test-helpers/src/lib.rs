@@ -801,12 +801,8 @@ fn materialize_consumer_workspace_template(dest: &Path) -> Result<()> {
     .with_context(|| format!("writing template workspace Cargo.toml under {}", dest.display()))?;
     let consumer_dir = dest.join("consumer");
     let consumer_src = consumer_dir.join("src");
-    fs::create_dir_all(&consumer_src).with_context(|| {
-        format!(
-            "creating consumer src dir at {}",
-            consumer_src.display()
-        )
-    })?;
+    fs::create_dir_all(&consumer_src)
+        .with_context(|| format!("creating consumer src dir at {}", consumer_src.display()))?;
     fs::write(
         consumer_dir.join("Cargo.toml"),
         "[package]\n\
@@ -894,11 +890,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else if file_type.is_file() {
             fs::copy(&src_path, &dst_path).with_context(|| {
-                format!(
-                    "copying {} -> {}",
-                    src_path.display(),
-                    dst_path.display()
-                )
+                format!("copying {} -> {}", src_path.display(), dst_path.display())
             })?;
         } else {
             anyhow::bail!(

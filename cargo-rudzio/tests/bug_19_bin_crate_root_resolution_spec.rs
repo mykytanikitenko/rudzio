@@ -134,7 +134,11 @@ fn customize_test_1_crate_api_helper(workspace: &Path) -> io::Result<()> {
     fs::write(consumer.join("src").join("lib.rs"), "// stub lib\n")?;
 
     fs::write(
-        consumer.join("src").join("bin").join("server").join("main.rs"),
+        consumer
+            .join("src")
+            .join("bin")
+            .join("server")
+            .join("main.rs"),
         "mod api;\n\
          \n\
          fn main() {\n\
@@ -561,9 +565,7 @@ mod tests {
     /// `consumer = { path = "..", package = "consumer_rudzio_bridge" }`
     /// so the resolution works.
     #[rudzio::test]
-    async fn bin_using_member_lib_via_use_resolves(
-        ctx: &IsolatedCargoTest,
-    ) -> anyhow::Result<()> {
+    async fn bin_using_member_lib_via_use_resolves(ctx: &IsolatedCargoTest) -> anyhow::Result<()> {
         let workspace: &Path = ctx.consumer_workspace();
         customize_test_4_bin_uses_member_lib(workspace)
             .with_context(|| "test4 step1: customize_test_4_bin_uses_member_lib")?;
@@ -642,9 +644,7 @@ mod tests {
     /// production bin trees (~hundreds of `crate::` refs across
     /// many handler files) compile under `cargo rudzio test`.
     #[rudzio::test]
-    async fn deeply_nested_bin_crate_paths_resolve(
-        ctx: &IsolatedCargoTest,
-    ) -> anyhow::Result<()> {
+    async fn deeply_nested_bin_crate_paths_resolve(ctx: &IsolatedCargoTest) -> anyhow::Result<()> {
         let workspace: &Path = ctx.consumer_workspace();
         customize_test_3_deep_crate_paths(workspace)
             .with_context(|| "test3 step1: customize_test_3_deep_crate_paths")?;
