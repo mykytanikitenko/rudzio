@@ -44,7 +44,7 @@ pub use linkme;
     any(target_os = "linux", target_os = "macos"),
 ))]
 pub use monoio;
-pub use rudzio_macro::{__proc_macro_env, main, suite, test};
+pub use rudzio_macro::{__proc_macro_env, __register_test, main, suite, test};
 pub use runner::{
     TestSummary, normalize_module_path, qualified_test_name, run, token_passes_filters,
 };

@@ -1,13 +1,29 @@
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
+use syn::parse::{Parse, ParseStream};
 use syn::token::{Paren, Pub};
-use syn::{AttrStyle, Attribute, Expr, Ident, Item, ItemFn, ItemMod, Path};
+use syn::{AttrStyle, Attribute, Expr, Ident, Item, ItemFn, ItemMod, LitInt, Path, Token};
 
 use crate::codegen::{TestAttrArgs, extract_ignore_reason, extract_test_attr_args};
 use crate::parse::{MainArgs, RuntimeConfig};
 use crate::transform::{
     CtxKind, apply_runtime_generics, classify_ctx_param, has_test_attr, is_async_fn, is_test_attr,
+    strip_test_attrs,
 };
+
+/// Where a test fn's registration items (`run_test_fn` + token static)
+/// are emitted. Direct `#[rudzio::test]` fns are processed by the suite
+/// macro and registered at the suite's *outer* scope (siblings of the
+/// `mod tests` block); `macro_rules!`-generated fns are registered by the
+/// `#[rudzio::test]` attribute *inside* the module. The two sites differ
+/// in how they name the test fn, the owner static, and the module path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RegistrationSite {
+    /// Items emitted inside the suite module. `macro_rules!`-generated fns.
+    Inner,
+    /// Items emitted outside the suite module. Direct test fns.
+    Outer,
+}
 
 /// Bundle of inputs for [`generate_per_test`]; gathered into a struct so
 /// the helper does not exceed clippy's `too_many_arguments` threshold.
@@ -24,6 +40,14 @@ struct GeneratePerTestArgs<'args> {
     owner_static: &'args Ident,
     /// Concrete runtime type for this group.
     runtime_type: &'args Path,
+    /// Whether the registration items land outside or inside the suite
+    /// module (direct fns vs `macro_rules!`-generated fns).
+    site: RegistrationSite,
+    /// Source line of the test fn's identifier, for panic-hook attribution.
+    /// Computed by the caller from the compiler span (the `#[rudzio::test]`
+    /// attribute has the reliable span; re-parsed fns forwarded through
+    /// `macro_rules!` may have re-synthesised spans).
+    source_line: u32,
     /// Concrete suite type for this group.
     suite_base: &'args Path,
     /// The user's `#[rudzio::test]` fn item.
@@ -79,6 +103,58 @@ struct RuntimeGroupOwnerImplArgs<'args> {
     runtime_type: &'args Path,
     /// Concrete suite type for this group.
     suite_base: &'args Path,
+}
+
+/// Input parsed by [`expand_register_test`]: one `(runtime, suite)`
+/// configuration plus a concrete test fn, forwarded by the hidden
+/// `__rudzio_register_test!` macro.
+struct RegisterTestInput {
+    /// Index of this configuration within the suite's config list.
+    cfg_idx: usize,
+    /// Identifier of the wrapping `mod tests` block (drives generated idents).
+    mod_name: Ident,
+    /// Per-config `RuntimeGroupOwner` static ident (referenced as `super::`).
+    owner: Ident,
+    /// Concrete runtime type for this group.
+    runtime_type: Path,
+    /// Source line of the test fn identifier (passed explicitly; the fn has
+    /// round-tripped through `macro_rules!` and may carry re-synthesised spans).
+    source_line: u32,
+    /// Concrete suite type for this group.
+    suite_base: Path,
+    /// The user's `#[rudzio::test]` fn, with the marker re-attached so the
+    /// shared per-test codegen can read `#[ignore]` / `#[rudzio::test(..)]`.
+    test: ItemFn,
+}
+
+impl Parse for RegisterTestInput {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let mod_name = parse_named_ident(input, "mod_name")?;
+        let source_line = parse_named_u32(input, "source_line")?;
+        let cfg_idx = parse_named_usize(input, "cfg_idx")?;
+        let runtime_type = parse_named_path(input, "runtime")?;
+        let suite_base = parse_named_path(input, "suite")?;
+        let owner = parse_named_ident(input, "owner")?;
+        let test = parse_named_item_fn(input, "test")?;
+        Ok(Self {
+            cfg_idx,
+            mod_name,
+            owner,
+            runtime_type,
+            source_line,
+            suite_base,
+            test,
+        })
+    }
+}
+
+/// The two token streams `expand_suite` splices to arm a module for
+/// `macro_rules!`-generated test registration.
+struct MacroRegistrationSupport {
+    /// `macro_rules! __rudzio_register_test! { ... }` placed inside the mod.
+    inner_macro_rules: TokenStream,
+    /// Per-config type aliases + the module-path const, placed at outer scope.
+    outer_items: TokenStream,
 }
 
 /// Convert each per-test attribute timeout (`timeout_secs`,
@@ -167,8 +243,7 @@ fn bench_test_outcome(
 /// site so no intermediate let-binding extends the borrow past the
 /// `.await`.
 fn dispatch_call_quotes(
-    mod_name: &Ident,
-    test_name: &Ident,
+    test_fn_path: &TokenStream,
     ctx_kind: CtxKind,
     is_async: bool,
 ) -> (TokenStream, TokenStream) {
@@ -181,14 +256,14 @@ fn dispatch_call_quotes(
         quote! {
             {
                 use ::rudzio::IntoRudzioResult as _;
-                #mod_name::#test_name(#dispatch_call_args).await.into_rudzio_result()
+                #test_fn_path(#dispatch_call_args).await.into_rudzio_result()
             }
         }
     } else {
         quote! {
             {
                 use ::rudzio::IntoRudzioResult as _;
-                #mod_name::#test_name(#dispatch_call_args).into_rudzio_result()
+                #test_fn_path(#dispatch_call_args).into_rudzio_result()
             }
         }
     };
@@ -196,14 +271,14 @@ fn dispatch_call_quotes(
         quote! {
             || async {
                 use ::rudzio::IntoRudzioResult as _;
-                #mod_name::#test_name(#dispatch_call_args).await.into_rudzio_result()
+                #test_fn_path(#dispatch_call_args).await.into_rudzio_result()
             }
         }
     } else {
         quote! {
             || async {
                 use ::rudzio::IntoRudzioResult as _;
-                #mod_name::#test_name(#dispatch_call_args).into_rudzio_result()
+                #test_fn_path(#dispatch_call_args).into_rudzio_result()
             }
         }
     };
@@ -308,7 +383,13 @@ pub fn expand_suite(args: &MainArgs, input_mod: ItemMod) -> syn::Result<TokenStr
         })
         .collect();
 
-    if test_functions.is_empty() {
+    // A `macro_rules!` invocation in item position (`make_test!(a);`) is an
+    // opaque `Item::Macro` pre-expansion: it may expand into `#[rudzio::test]`
+    // fns the suite macro cannot see. Its presence keeps the module valid even
+    // when `test_functions` is empty — those fns are registered later by the
+    // `#[rudzio::test]` attribute.
+    let has_macro_items = items.iter().any(|item| matches!(item, Item::Macro(_)));
+    if test_functions.is_empty() && !has_macro_items {
         return Err(syn::Error::new_spanned(
             input_mod,
             "no test functions found in module - add functions with #[rudzio::test] attribute",
@@ -329,12 +410,26 @@ pub fn expand_suite(args: &MainArgs, input_mod: ItemMod) -> syn::Result<TokenStr
         )?;
     }
 
+    // When the module body contains `macro_rules!` invocations, arm the
+    // module with the hidden forwarding macro + outer module-path const so
+    // the `#[rudzio::test]` attribute (running post-expansion on the
+    // generated fns) can register them against this suite's configs.
+    let (inner_macro_rules, outer_items) = if has_macro_items {
+        let support = generate_macro_registration_support(mod_name, args)?;
+        (support.inner_macro_rules, support.outer_items)
+    } else {
+        (TokenStream::new(), TokenStream::new())
+    };
+
     let expanded = quote! {
         #(#mod_outer_attrs)*
         #mod_vis mod #mod_name {
             #(#mod_inner_attrs)*
+            #inner_macro_rules
             #(#processed_items)*
         }
+
+        #outer_items
 
         #(#helper_items)*
 
@@ -390,6 +485,7 @@ fn generate_per_config(
     }));
 
     for test in tests {
+        let source_line = source_line_of(test)?;
         let (helper, token_static) = generate_per_test(&GeneratePerTestArgs {
             cfg_attrs,
             cfg_idx,
@@ -397,6 +493,8 @@ fn generate_per_config(
             owner_static: &owner_static,
             runtime_type: &runtime_type,
             suite_base,
+            site: RegistrationSite::Outer,
+            source_line,
             test,
         })?;
         helper_items.push(helper);
@@ -417,6 +515,8 @@ fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream
         owner_static,
         runtime_type,
         suite_base,
+        site,
+        source_line,
         test,
     } = args;
 
@@ -428,17 +528,6 @@ fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream
         attr_timeout_overrides(&attr_args);
     let benchmark = attr_args.benchmark;
     let has_benchmark = benchmark.is_some();
-    // `proc_macro2::Span::start().line` returns line tracking from the
-    // compiler in proc-macro context and from proc-macro2's own
-    // tracking (e.g. `syn::parse_str`) in regular contexts. Any file
-    // with >2^32 lines is pathological; we surface overflow as a hard
-    // `syn::Error` rather than silently truncating.
-    let source_line = u32::try_from(test.sig.ident.span().start().line).map_err(|err| {
-        syn::Error::new(
-            test.sig.ident.span(),
-            format!("source line exceeds u32::MAX: {err}"),
-        )
-    })?;
     let is_async = is_async_fn(test);
     let ctx_kind = classify_ctx_param(test);
 
@@ -474,8 +563,11 @@ fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream
         CtxKind::Shared | CtxKind::None => quote! { let ctx },
     };
 
+    let (test_fn_path, owner_ref, module_path_expr) =
+        registration_paths(site, mod_name, test_name, owner_static);
+
     let (dispatch_call, bench_body_closure) =
-        dispatch_call_quotes(mod_name, test_name, ctx_kind, is_async);
+        dispatch_call_quotes(&test_fn_path, ctx_kind, is_async);
 
     let test_outcome_expr = benchmark.as_ref().map_or_else(
         || plain_test_outcome(&dispatch_call, runtime_type),
@@ -510,7 +602,7 @@ fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream
             ::rudzio::token::Source::new(
                 ::std::file!(),
                 #source_line,
-                ::core::module_path!(),
+                #module_path_expr,
                 #test_name_str,
             ),
             ::rudzio::token::Attrs::new(
@@ -524,7 +616,7 @@ fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream
                     #runtime_type,
                     #suite_base::<'static, #runtime_type>,
                 >(),
-                &#owner_static,
+                &#owner_ref,
             ),
         );
     };
@@ -1341,4 +1433,257 @@ fn to_upper_camel(name: &str) -> String {
         }
     }
     out
+}
+
+/// Hidden const name holding the suite module's outer `module_path!()`.
+/// Emitted once per suite at the outer scope so macro-generated test fns
+/// (whose token statics live inside the module) can reference
+/// `super::<this>` and report the same module path as direct fns.
+fn suite_module_path_const(mod_name: &Ident) -> Ident {
+    format_ident!(
+        "__RUDZIO_SUITE_PATH_{}",
+        mod_name.to_string().to_ascii_uppercase()
+    )
+}
+
+/// Best-effort source line of a test fn's identifier for panic-hook
+/// attribution. `proc_macro2::Span::start().line` returns compiler line
+/// tracking in proc-macro context; a file with >2^32 lines is
+/// pathological and surfaced as a hard `syn::Error` rather than silently
+/// truncated.
+fn source_line_of(test: &ItemFn) -> syn::Result<u32> {
+    u32::try_from(test.sig.ident.span().start().line).map_err(|err| {
+        syn::Error::new(
+            test.sig.ident.span(),
+            format!("source line exceeds u32::MAX: {err}"),
+        )
+    })
+}
+
+/// Site-dependent naming triple for a test fn: how the dispatch call reaches
+/// the fn, how the token static references the owner, and how it derives the
+/// module path for display.
+fn registration_paths(
+    site: RegistrationSite,
+    mod_name: &Ident,
+    test_name: &Ident,
+    owner_static: &Ident,
+) -> (TokenStream, TokenStream, TokenStream) {
+    match site {
+        RegistrationSite::Inner => {
+            let suite_path_const = suite_module_path_const(mod_name);
+            (
+                quote! { #test_name },
+                quote! { super::#owner_static },
+                quote! { super::#suite_path_const },
+            )
+        }
+        RegistrationSite::Outer => (
+            quote! { #mod_name::#test_name },
+            quote! { #owner_static },
+            quote! { ::core::module_path!() },
+        ),
+    }
+}
+
+/// Parse a `name = <ident>,` field and return the identifier.
+fn parse_named_ident(input: ParseStream<'_>, name: &str) -> syn::Result<Ident> {
+    let key: Ident = input.parse()?;
+    if key != name {
+        return Err(syn::Error::new_spanned(key, format!("expected `{name}`")));
+    }
+    let _: Token![=] = input.parse()?;
+    let value: Ident = input.parse()?;
+    let _: Token![,] = input.parse()?;
+    Ok(value)
+}
+
+/// Parse a `name = <integer>,` field and return the `u32` value.
+fn parse_named_u32(input: ParseStream<'_>, name: &str) -> syn::Result<u32> {
+    let key: Ident = input.parse()?;
+    if key != name {
+        return Err(syn::Error::new_spanned(key, format!("expected `{name}`")));
+    }
+    let _: Token![=] = input.parse()?;
+    let value: LitInt = input.parse()?;
+    let _: Token![,] = input.parse()?;
+    value.base10_parse()
+}
+
+/// Parse a `name = <integer>,` field and return the `usize` value.
+fn parse_named_usize(input: ParseStream<'_>, name: &str) -> syn::Result<usize> {
+    let key: Ident = input.parse()?;
+    if key != name {
+        return Err(syn::Error::new_spanned(key, format!("expected `{name}`")));
+    }
+    let _: Token![=] = input.parse()?;
+    let value: LitInt = input.parse()?;
+    let _: Token![,] = input.parse()?;
+    value.base10_parse()
+}
+
+/// Parse a `name = <path>,` field and return the path.
+fn parse_named_path(input: ParseStream<'_>, name: &str) -> syn::Result<Path> {
+    let key: Ident = input.parse()?;
+    if key != name {
+        return Err(syn::Error::new_spanned(key, format!("expected `{name}`")));
+    }
+    let _: Token![=] = input.parse()?;
+    let value: Path = input.parse()?;
+    let _: Token![,] = input.parse()?;
+    Ok(value)
+}
+
+/// Parse a `name = <fn item>,` field and return the item (consuming the
+/// trailing comma).
+fn parse_named_item_fn(input: ParseStream<'_>, name: &str) -> syn::Result<ItemFn> {
+    let key: Ident = input.parse()?;
+    if key != name {
+        return Err(syn::Error::new_spanned(key, format!("expected `{name}`")));
+    }
+    let _: Token![=] = input.parse()?;
+    let value: ItemFn = input.parse()?;
+    let _: Token![,] = input.parse()?;
+    Ok(value)
+}
+
+/// Token-level entry point for the `#[rudzio::test]` attribute macro.
+///
+/// Runs *after* `macro_rules!` expansion on the concrete fn, so it sees test
+/// fns the `#[rudzio::suite]` macro never does (opaque `Item::Macro` bodies).
+/// It emits:
+///   1. the fn with runtime generics applied and the test marker stripped, and
+///   2. an invocation of the hidden `__rudzio_register_test!` macro the suite
+///      emitted inside the module, forwarding the fn (marker re-attached) so
+///      the per-config registration codegen can read `#[ignore]` /
+///      `#[rudzio::test(..)]` arguments.
+///
+/// # Errors
+///
+/// `input` does not parse as an [`ItemFn`].
+#[inline]
+pub fn expand_test_attr(args: &TokenStream, input: TokenStream) -> syn::Result<TokenStream> {
+    let func: ItemFn = syn::parse2(input)?;
+    let source_line = source_line_of(&func)?;
+
+    // The attribute macro receives `input` with `#[rudzio::test]` (and its
+    // argument tokens) already removed; re-attach the marker so the forwarded
+    // fn retains the args the shared per-test codegen reads.
+    let test_attr = if args.is_empty() {
+        quote! { #[rudzio::test] }
+    } else {
+        quote! { #[rudzio::test(#args)] }
+    };
+
+    let mut emitted_fn = apply_runtime_generics(func.clone());
+    strip_test_attrs(&mut emitted_fn);
+
+    Ok(quote! {
+        #emitted_fn
+
+        __rudzio_register_test! { #source_line, #test_attr #func }
+    })
+}
+
+/// Token-level entry point for the hidden `__register_test!` proc macro.
+///
+/// Given one `(runtime, suite)` config plus a concrete test fn, emits the
+/// per-config `run_test_fn` + token static inside the module. The fn itself
+/// is emitted once by `#[rudzio::test]`, so it never duplicates across configs.
+#[inline]
+pub fn expand_register_test(input: TokenStream) -> syn::Result<TokenStream> {
+    let reg: RegisterTestInput = syn::parse2(input)?;
+
+    let (helper, token_static) = generate_per_test(&GeneratePerTestArgs {
+        cfg_attrs: &[],
+        cfg_idx: reg.cfg_idx,
+        mod_name: &reg.mod_name,
+        owner_static: &reg.owner,
+        runtime_type: &reg.runtime_type,
+        suite_base: &reg.suite_base,
+        site: RegistrationSite::Inner,
+        source_line: reg.source_line,
+        test: &reg.test,
+    })?;
+
+    Ok(quote! {
+        #helper
+        #token_static
+    })
+}
+
+/// Build the hidden forwarding macro + module-path const for a suite whose
+/// module body contains `macro_rules!` invocations. Each config becomes a
+/// `#[cfg]`-gated `__register_test!` invocation so non-matching targets elide
+/// that config's registration.
+fn generate_macro_registration_support(
+    mod_name: &Ident,
+    args: &MainArgs,
+) -> syn::Result<MacroRegistrationSupport> {
+    let suite_path_const_ident = suite_module_path_const(mod_name);
+
+    let mut config_arms = Vec::new();
+    let mut type_aliases = Vec::new();
+    for (cfg_idx, cfg) in args.configs.iter().enumerate() {
+        let cfg_attrs = &cfg.attrs;
+        let runtime_type = cfg.runtime_type();
+        let suite_base = &cfg.suite;
+        let owner_static = format_ident!(
+            "__RUDZIO_OWNER_{}_{}",
+            mod_name.to_string().to_ascii_uppercase(),
+            cfg_idx,
+        );
+        let runtime_alias = format_ident!("__RudzioRuntime{cfg_idx}");
+        let suite_alias = format_ident!("__RudzioSuite{cfg_idx}");
+
+        // The registration items land inside the module, but the user writes
+        // the runtime/suite paths at the outer scope (`runtime = Multithread::new`
+        // with a crate-root `use`). Aliasing each type at the outer scope and
+        // referencing `super::<alias>` from inside the module keeps both the
+        // qualified and unqualified spellings resolving correctly. The suite
+        // type is generic over `<'a, R>` (matching how the codegen applies it).
+        type_aliases.push(quote! {
+            #(#cfg_attrs)*
+            #[doc(hidden)]
+            type #runtime_alias = #runtime_type;
+            #(#cfg_attrs)*
+            #[doc(hidden)]
+            type #suite_alias<'a, R> = #suite_base<'a, R>;
+        });
+
+        config_arms.push(quote! {
+            #(#cfg_attrs)*
+            ::rudzio::__register_test! {
+                mod_name = #mod_name,
+                source_line = $source_line,
+                cfg_idx = #cfg_idx,
+                runtime = super::#runtime_alias,
+                suite = super::#suite_alias,
+                owner = #owner_static,
+                test = $($test)*,
+            }
+        });
+    }
+
+    let inner_macro_rules = quote! {
+        #[allow(unused_macros)]
+        #[doc(hidden)]
+        macro_rules! __rudzio_register_test {
+            ($source_line:literal, $($test:tt)*) => {
+                #(#config_arms)*
+            };
+        }
+    };
+
+    let outer_items = quote! {
+        #(#type_aliases)*
+        #[doc(hidden)]
+        #[allow(dead_code)]
+        const #suite_path_const_ident: &'static str = ::core::module_path!();
+    };
+
+    Ok(MacroRegistrationSupport {
+        inner_macro_rules,
+        outer_items,
+    })
 }

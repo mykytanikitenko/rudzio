@@ -489,6 +489,37 @@ The runner spawns one OS thread per `(runtime, suite)` pair. Multiple
 into one thread / one runtime / one suite instance — keyed by a
 compile-time hash of the `(runtime_path, suite_path)` token strings.
 
+### `macro_rules!`-generated tests
+
+A `#[rudzio::suite]` module can register tests produced by `macro_rules!`.
+The suite macro cannot see inside an unexpanded invocation, so generated
+tests are registered by `#[rudzio::test]` itself, which runs after the
+module body is macro-expanded:
+
+```rust
+macro_rules! make_test {
+    ($name:ident) => {
+        #[rudzio::test]
+        async fn $name(_ctx: &rudzio::common::context::Test) -> anyhow::Result<()> {
+            Ok(())
+        }
+    };
+}
+
+#[rudzio::suite([
+    (runtime = rudzio::runtime::futures::ThreadPool::new, suite = rudzio::common::context::Suite, test = rudzio::common::context::Test),
+])]
+mod tests {
+    make_test!(a);
+    make_test!(b);
+}
+```
+
+Generated tests must carry the `#[rudzio::test]` marker — not bare
+`#[test]`, which the suite macro only strips from direct fns. They mix
+freely with direct `#[rudzio::test]` fns in the same module, and
+`#[ignore]` / `#[rudzio::test(...)]` arguments flow through unchanged.
+
 ## Runtimes
 
 Behind feature flags. Default: none.
