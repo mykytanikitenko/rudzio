@@ -113,17 +113,20 @@ mod tests {
         cargo_target_dir: &Path,
         root: &Path,
     ) -> io::Result<Output> {
-        Command::new(env!("CARGO_BIN_EXE_cargo-rudzio"))
-            .arg("test")
-            .current_dir(root)
-            .env(
-                "CARGO",
-                env::var_os("CARGO").unwrap_or_else(|| "cargo".into()),
-            )
-            .env("CARGO_HOME", cargo_home)
-            .env("CARGO_TARGET_DIR", cargo_target_dir)
-            .env("CARGO_NET_OFFLINE", "true")
-            .output()
+        Command::new(
+            cargo_rudzio_test_helpers::assert_fresh_binary(env!("CARGO_BIN_EXE_cargo-rudzio"))
+                .map_err(io::Error::other)?,
+        )
+        .arg("test")
+        .current_dir(root)
+        .env(
+            "CARGO",
+            env::var_os("CARGO").unwrap_or_else(|| "cargo".into()),
+        )
+        .env("CARGO_HOME", cargo_home)
+        .env("CARGO_TARGET_DIR", cargo_target_dir)
+        .env("CARGO_NET_OFFLINE", "true")
+        .output()
     }
 
     #[rudzio::test]

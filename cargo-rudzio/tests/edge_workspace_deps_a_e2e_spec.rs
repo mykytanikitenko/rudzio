@@ -317,7 +317,10 @@ fn run_workspace_wide(
 ) -> anyhow::Result<Output> {
     let workspace = TempDir::new_in(cargo.tempdir)?;
     write_fixture(workspace.path(), members, workspace_deps)?;
-    Ok(Command::new(env!("CARGO_BIN_EXE_cargo-rudzio"))
+    Ok(
+        Command::new(cargo_rudzio_test_helpers::assert_fresh_binary(env!(
+            "CARGO_BIN_EXE_cargo-rudzio"
+        ))?)
         .arg("test")
         .current_dir(workspace.path())
         .env(
@@ -327,7 +330,8 @@ fn run_workspace_wide(
         .env("CARGO_HOME", cargo.home)
         .env("CARGO_TARGET_DIR", cargo.target_dir)
         .env("CARGO_NET_OFFLINE", "true")
-        .output()?)
+        .output()?,
+    )
 }
 
 /// Parse the passed leaf names and the `N passed` count from plain-mode

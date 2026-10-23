@@ -327,7 +327,10 @@ fn write_member(root: &Path, rel: &str, manifest: &str, lib_rs: &str) -> io::Res
 /// Spawn `cargo-rudzio test` (no `-p` unless `extra` supplies it) from
 /// `root` against the isolated cargo env.
 fn run(cargo: &CargoEnv<'_>, root: &Path, extra: &[&str]) -> anyhow::Result<Output> {
-    Ok(Command::new(env!("CARGO_BIN_EXE_cargo-rudzio"))
+    Ok(
+        Command::new(cargo_rudzio_test_helpers::assert_fresh_binary(env!(
+            "CARGO_BIN_EXE_cargo-rudzio"
+        ))?)
         .arg("test")
         .args(extra)
         .current_dir(root)
@@ -338,7 +341,8 @@ fn run(cargo: &CargoEnv<'_>, root: &Path, extra: &[&str]) -> anyhow::Result<Outp
         .env("CARGO_HOME", cargo.home)
         .env("CARGO_TARGET_DIR", cargo.target_dir)
         .env("CARGO_NET_OFFLINE", "true")
-        .output()?)
+        .output()?,
+    )
 }
 
 /// Parse the leaf names (after the last `::`) of every `[OK] <name> ...`

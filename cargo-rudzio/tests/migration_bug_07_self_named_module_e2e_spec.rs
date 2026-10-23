@@ -129,19 +129,21 @@ mod tests {
         let root: &Path = workspace.path();
         write_fixture(root)?;
 
-        let output = Command::new(env!("CARGO_BIN_EXE_cargo-rudzio"))
-            .arg("test")
-            .arg("-p")
-            .arg("project")
-            .current_dir(root)
-            .env(
-                "CARGO",
-                env::var_os("CARGO").unwrap_or_else(|| "cargo".into()),
-            )
-            .env("CARGO_HOME", ctx.cargo_home())
-            .env("CARGO_TARGET_DIR", ctx.cargo_target_dir())
-            .env("CARGO_NET_OFFLINE", "true")
-            .output()?;
+        let output = Command::new(cargo_rudzio_test_helpers::assert_fresh_binary(env!(
+            "CARGO_BIN_EXE_cargo-rudzio"
+        ))?)
+        .arg("test")
+        .arg("-p")
+        .arg("project")
+        .current_dir(root)
+        .env(
+            "CARGO",
+            env::var_os("CARGO").unwrap_or_else(|| "cargo".into()),
+        )
+        .env("CARGO_HOME", ctx.cargo_home())
+        .env("CARGO_TARGET_DIR", ctx.cargo_target_dir())
+        .env("CARGO_NET_OFFLINE", "true")
+        .output()?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);

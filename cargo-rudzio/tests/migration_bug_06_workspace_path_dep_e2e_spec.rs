@@ -193,7 +193,10 @@ fn run_workspace_wide(cargo: &CargoEnv<'_>, wiring: Wiring) -> anyhow::Result<Ou
     let workspace = TempDir::new_in(cargo.tempdir)?;
     let root = workspace.path();
     write_fixture(root, wiring)?;
-    Ok(Command::new(env!("CARGO_BIN_EXE_cargo-rudzio"))
+    Ok(
+        Command::new(cargo_rudzio_test_helpers::assert_fresh_binary(env!(
+            "CARGO_BIN_EXE_cargo-rudzio"
+        ))?)
         .arg("test")
         .current_dir(root)
         .env(
@@ -203,7 +206,8 @@ fn run_workspace_wide(cargo: &CargoEnv<'_>, wiring: Wiring) -> anyhow::Result<Ou
         .env("CARGO_HOME", cargo.home)
         .env("CARGO_TARGET_DIR", cargo.target_dir)
         .env("CARGO_NET_OFFLINE", "true")
-        .output()?)
+        .output()?,
+    )
 }
 
 /// Materialise the Bug #6 fixture for `wiring` under `root`.

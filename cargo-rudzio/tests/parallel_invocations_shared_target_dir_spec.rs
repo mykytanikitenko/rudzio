@@ -140,7 +140,9 @@ mod tests {
         shared: &Path,
         cargo_home: &Path,
     ) -> io::Result<Output> {
-        let cargo_rudzio_bin: &str = env!("CARGO_BIN_EXE_cargo-rudzio");
+        let cargo_rudzio_bin =
+            cargo_rudzio_test_helpers::assert_fresh_binary(env!("CARGO_BIN_EXE_cargo-rudzio"))
+                .map_err(io::Error::other)?;
         Command::new(cargo_rudzio_bin)
             .arg("test")
             .current_dir(root)
