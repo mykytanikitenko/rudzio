@@ -794,7 +794,7 @@ fn materialize_consumer_workspace_template(dest: &Path) -> Result<()> {
              \n\
              [workspace.dependencies]\n\
              rudzio = {{ path = \"{rudzio}\", features = [\"common\", \"runtime-tokio-multi-thread\", \"runtime-tokio-current-thread\"] }}\n\
-             anyhow = \"=1.0.102\"\n",
+             anyhow = \"=1.0.104\"\n",
             rudzio = rudzio_root.display(),
         ),
     )

@@ -13,10 +13,10 @@
 use std::path::Path;
 
 use cargo_rudzio::cli::{
-    aggregator_cargo_args, format_target_flag_warning, parse_build_forwarder_flags,
+    RunnerExit, aggregator_cargo_args, format_target_flag_warning, parse_build_forwarder_flags,
     parse_capture_flags, parse_exclude_filters, parse_manifest_path_flag, parse_no_fail_fast_flag,
     parse_no_run_flag, parse_package_filters, parse_target_selection_flags, parse_test_args,
-    parse_workspace_flag,
+    parse_workspace_flag, runner_exit,
 };
 use rudzio::common::context::Suite;
 use rudzio::runtime::futures::ThreadPool;
@@ -39,10 +39,11 @@ use rudzio::runtime::{async_std, compio, embassy, smol};
 ])]
 mod tests {
     use super::{
-        Path, aggregator_cargo_args, format_target_flag_warning, parse_build_forwarder_flags,
-        parse_capture_flags, parse_exclude_filters, parse_manifest_path_flag,
-        parse_no_fail_fast_flag, parse_no_run_flag, parse_package_filters,
-        parse_target_selection_flags, parse_test_args, parse_workspace_flag,
+        Path, RunnerExit, aggregator_cargo_args, format_target_flag_warning,
+        parse_build_forwarder_flags, parse_capture_flags, parse_exclude_filters,
+        parse_manifest_path_flag, parse_no_fail_fast_flag, parse_no_run_flag,
+        parse_package_filters, parse_target_selection_flags, parse_test_args, parse_workspace_flag,
+        runner_exit,
     };
 
     /// Convenience: build a `Vec<String>` from a slice of `&str` in
@@ -260,6 +261,20 @@ mod tests {
             err.to_string().contains("non-empty package name"),
             "got {err}",
         );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    async fn runner_exit_maps_codes_and_signals() -> anyhow::Result<()> {
+        // A clean exit code maps to its low byte; a `None` code (the
+        // runner was terminated by a signal, e.g. SIGABRT from
+        // `[profile.*] panic = "abort"`) maps to `Abort`, signalling the
+        // caller to abort rather than report a clean exit 1 (Bug #4).
+        anyhow::ensure!(runner_exit(Some(0_i32)) == RunnerExit::Code(0));
+        anyhow::ensure!(runner_exit(Some(1_i32)) == RunnerExit::Code(1));
+        anyhow::ensure!(runner_exit(Some(255_i32)) == RunnerExit::Code(255));
+        anyhow::ensure!(runner_exit(Some(256_i32)) == RunnerExit::Code(0));
+        anyhow::ensure!(runner_exit(None) == RunnerExit::Abort);
         Ok(())
     }
 
