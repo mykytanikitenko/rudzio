@@ -43,6 +43,7 @@ toml_edit = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
+serde_json = "=1.0.154"
 # `cargo-rudzio-test-helpers` carries the shared rudzio Suite/Test
 # scaffolding the integration tests use to provision a per-suite
 # tempdir + pre-warmed CARGO_HOME. It lives in a sibling crate so the

@@ -863,6 +863,82 @@ impl Plan {
     /// resulting per-consumer-workspace path keeps parallel
     /// invocations against distinct workspaces isolated even when the
     /// user has a single shared `CARGO_TARGET_DIR` set.
+    /// Crate names (rustc `--crate-name` values) the aggregator build
+    /// produces that `cargo llvm-cov show-env` cannot know about.
+    ///
+    /// `show-env` computes `__CARGO_LLVM_COV_RUSTC_WRAPPER_CRATE_NAMES`
+    /// from the *user* workspace's members and their targets. The
+    /// aggregator's runner binary (`rudzio-auto-runner`) and every
+    /// per-bin bridge lib (`<bin>_rudzio_bridge_lib`) do not exist in
+    /// that workspace, so the coverage rustc wrapper never instruments
+    /// them. Without the runner being instrumented no `-lprofiler-rt` is
+    /// linked into the final binary and no `.profraw` is ever emitted.
+    /// Callers append these names to the wrapper crate list before
+    /// spawning the inner aggregator cargo build.
+    #[inline]
+    #[must_use]
+    pub fn coverage_crate_names(&self) -> Vec<String> {
+        let mut names = vec![crate_name_to_ident(AGGREGATOR_NAME)];
+        for member in &self.members {
+            for bin in collect_bridged_bin_targets(member) {
+                names.push(bin_bridge_lib_ident(member, bin));
+            }
+        }
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    /// File stem (crate-name form) under which the aggregator runner binary
+    /// should be exposed so `cargo llvm-cov report` collects it as an object.
+    ///
+    /// The report's object collector matches stems against workspace member
+    /// names; the runner (`rudzio_auto_runner`) is not one, so it copies
+    /// itself next to itself under the first member's underscored package
+    /// name. `None` only when the plan has no members (nothing to cover).
+    #[inline]
+    #[must_use]
+    pub fn coverage_object_name(&self) -> Option<String> {
+        self.members
+            .first()
+            .map(|member| crate_name_to_ident(&member.package_name))
+    }
+
+    /// `(from, to)` pairs for `--remap-path-prefix` flags mapping each
+    /// generated bridge directory back to its member's real manifest
+    /// directory.
+    ///
+    /// A bridge compiles the member's source under the bridge's own
+    /// directory (`<out>/members/<member>/src/lib.rs` is a copy, sibling
+    /// modules are symlinked), so the coverage data records the
+    /// bridge-local paths. Remapping them to the member's real directory
+    /// is what makes `cargo llvm-cov report` attribute line coverage to
+    /// the member's actual `src/` files instead of the transient
+    /// aggregator copies (which the default ignore-filename-regex hides
+    /// because they live under the target dir).
+    #[inline]
+    #[must_use]
+    pub fn coverage_remap_prefixes(&self, out_dir: &Path) -> Vec<(PathBuf, PathBuf)> {
+        let mut pairs = Vec::new();
+        for member in &self.members {
+            if bridge_applies_to(member) {
+                pairs.push((
+                    out_dir.join("members").join(bridge_dir_name(member)),
+                    member.manifest_dir.clone(),
+                ));
+            }
+            for bin in collect_bridged_bin_targets(member) {
+                pairs.push((
+                    out_dir
+                        .join("members")
+                        .join(bin_bridge_dir_name(member, bin)),
+                    member.manifest_dir.clone(),
+                ));
+            }
+        }
+        pairs
+    }
+
     #[inline]
     #[must_use]
     pub fn default_output_dir(&self) -> PathBuf {
