@@ -1,0 +1,10 @@
+error: cannot find macro `__rudzio_register_test` in this scope
+  --> tests/fixtures/macro_test_outside_suite.rs:11:9
+   |
+11 |         #[rudzio::test]
+   |         ^^^^^^^^^^^^^^^
+...
+18 | make_test!(outside_suite);
+   | ------------------------- in this macro invocation
+   |
+   = note: this error originates in the attribute macro `rudzio::test` which comes from the expansion of the macro `make_test` (in Nightly builds, run with -Z macro-backtrace for more info)

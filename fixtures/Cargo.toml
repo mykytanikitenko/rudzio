@@ -37,6 +37,13 @@ tokio-util = { workspace = true }
 [dev-dependencies]
 trybuild = { workspace = true }
 
+# Opt-in feature toggling the `#[cfg(feature = "edge-cfg-macro")]`-gated
+# macro-generated test in `macro_rules_cfg_gated_tokio_mt.rs`. Off by
+# default; the fixture's integration assertions branch on the same cfg so
+# both the disabled and enabled states are exercised deterministically.
+[features]
+edge-cfg-macro = []
+
 # Integration tests drive child processes and deliver Unix signals to them
 # to exercise the runner's SIGINT/SIGTERM handling.
 [target.'cfg(unix)'.dev-dependencies]
@@ -245,6 +252,22 @@ test = false
 
 [[bin]]
 name = "tracker_drain_tokio_mt"
+test = false
+
+[[bin]]
+name = "macro_rules_edge_cases_tokio_mt"
+test = false
+
+[[bin]]
+name = "macro_rules_attr_args_tokio_mt"
+test = false
+
+[[bin]]
+name = "macro_rules_two_suites"
+test = false
+
+[[bin]]
+name = "macro_rules_cfg_gated_tokio_mt"
 test = false
 
 [lints]

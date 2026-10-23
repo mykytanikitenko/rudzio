@@ -61,4 +61,36 @@ mod tests {
         );
         Ok(())
     }
+
+    /// Two suites in one file, each holding a `macro_rules!` invocation,
+    /// emit their outer-scope type aliases at the same scope. The aliases
+    /// must be namespaced per module or rustc rejects the file with E0428.
+    #[rudzio::test]
+    fn two_macro_suites_emit_distinct_outer_aliases(_ctx: &Test) -> anyhow::Result<()> {
+        let args: MainArgs = parse_quote!([(
+            runtime = rudzio::runtime::futures::ThreadPool::new,
+            suite = rudzio::common::context::Suite,
+            test = rudzio::common::context::Test
+        ),]);
+        let first: ItemMod = parse_quote! { mod first { make_test!(a); } };
+        let second: ItemMod = parse_quote! { mod second { make_test!(a); } };
+
+        let first_tokens = expand_suite(&args, first)?.to_string();
+        let second_tokens = expand_suite(&args, second)?.to_string();
+
+        anyhow::ensure!(
+            first_tokens.contains("__RudzioRuntimeFirst0"),
+            "first suite alias must carry its module name:\n{first_tokens}",
+        );
+        anyhow::ensure!(
+            second_tokens.contains("__RudzioRuntimeSecond0"),
+            "second suite alias must carry its module name:\n{second_tokens}",
+        );
+        anyhow::ensure!(
+            !first_tokens.contains("__RudzioRuntimeSecond0")
+                && !second_tokens.contains("__RudzioRuntimeFirst0"),
+            "aliases must not leak across suites",
+        );
+        Ok(())
+    }
 }
