@@ -1,4 +1,5 @@
-use syn::{Attribute, ItemFn};
+use syn::punctuated::Punctuated;
+use syn::{Attribute, ItemFn, Token, WherePredicate};
 
 /// How a `#[rudzio::test]` fn relates to its per-test context.
 ///
@@ -106,7 +107,7 @@ pub fn returns_unit(func: &ItemFn) -> bool {
 /// Transform test function signature to add generic lifetimes and runtime type.
 ///
 /// Converts: `async fn test(ctx: &BaseTestContext) -> Result<()>`
-/// To:       `async fn test<'test_context, 'suite_context: 'test_context, R: Runtime<'suite_context> + Sync>(ctx: &'test_context BaseTestContext<'suite_context, R>) -> Result<()>`.
+/// To:       `async fn test<'test_context, 'suite_context, R>(ctx: &'test_context BaseTestContext<'suite_context, R>) -> Result<()> where 'suite_context: 'test_context, R: Runtime<'suite_context> + Sync`.
 ///
 /// Two distinct lifetimes are emitted on purpose:
 ///   - `'suite_context` is the lifetime parameter on the user's context type (the
@@ -155,9 +156,32 @@ pub fn apply_runtime_generics(mut func: ItemFn) -> ItemFn {
             });
         }
 
-        func.sig.generics = syn::parse_quote! {
-            <'test_context, 'suite_context: 'test_context, R: ::rudzio::runtime::Runtime<'suite_context> + ::std::marker::Sync>
+        // The runtime/context bounds are emitted as a `where` clause rather
+        // than inline on the generic params. `clippy::inline_trait_bounds`
+        // (denied workspace-wide via `restriction = "deny"`) flags inline
+        // bounds on both lifetime and type params. Direct `#[rudzio::test]`
+        // fns are skipped because clippy treats their signature span as
+        // `in_external_macro`, but fns produced by the user's own
+        // `macro_rules!` are not external, so the lint reaches them and fails
+        // the gate. A `where` clause is lint-clean in both cases.
+        let new_predicates: Punctuated<WherePredicate, Token![,]> = syn::parse_quote! {
+            'suite_context: 'test_context,
+            R: ::rudzio::runtime::Runtime<'suite_context> + ::std::marker::Sync
         };
+
+        func.sig.generics.params = syn::parse_quote! { 'test_context, 'suite_context, R };
+        match func.sig.generics.where_clause.take() {
+            Some(mut existing) => {
+                existing.predicates.extend(new_predicates);
+                func.sig.generics.where_clause = Some(existing);
+            }
+            None => {
+                func.sig.generics.where_clause = Some(syn::parse_quote! {
+                    where 'suite_context: 'test_context,
+                        R: ::rudzio::runtime::Runtime<'suite_context> + ::std::marker::Sync
+                });
+            }
+        }
     }
 
     func

@@ -17,7 +17,7 @@ mod tests {
     use super::Test;
 
     // `all()` is always true → this test is always ignored.
-    #[cfg_attr(all(), ignore)]
+    #[cfg_attr(all(), ignore = "always ignored via cfg_attr(all())")]
     #[rudzio::test]
     async fn cfg_attr_ignored(_ctx: &Test) -> anyhow::Result<()> {
         Ok(())
