@@ -306,7 +306,7 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
     // Coverage part 2 (Bug #3): instrument the runner and remap the
     // bridge-local source copies (see `apply_coverage_build_env`).
     if coverage::is_active() {
-        apply_coverage_build_env(&mut cmd, &plan, &target)?;
+        apply_coverage_build_env(&mut cmd, &plan)?;
     }
     cmd.args(&argv);
     // Capture stdout so we can parse the cargo JSON message stream.
@@ -413,7 +413,7 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
 /// Fails loudly when the crate-names variable is missing (a partial coverage
 /// environment), rather than silently building an uninstrumented runner that
 /// would emit no `.profraw`.
-fn apply_coverage_build_env(cmd: &mut Command, plan: &generate::Plan, target: &Path) -> Result<()> {
+fn apply_coverage_build_env(cmd: &mut Command, plan: &generate::Plan) -> Result<()> {
     let existing_names = match env::var(coverage::WRAPPER_CRATE_NAMES_ENV) {
         Ok(names) => names,
         Err(source) => {
@@ -431,18 +431,18 @@ fn apply_coverage_build_env(cmd: &mut Command, plan: &generate::Plan, target: &P
         coverage::augment_crate_names(&existing_names, &plan.coverage_crate_names()),
     );
     let remap_flags: Vec<String> = plan
-        .coverage_remap_prefixes(target)
+        .coverage_remap_prefixes()
         .iter()
         .map(|(from, to)| coverage::remap_prefix_flag(from, to))
         .collect::<Result<_>>()?;
+    let mut rustflags = env::var(coverage::RUSTFLAGS_ENV).unwrap_or_default();
     if !remap_flags.is_empty() {
-        let mut rustflags = env::var(coverage::RUSTFLAGS_ENV).unwrap_or_default();
         if !rustflags.is_empty() {
             rustflags.push(' ');
         }
         rustflags.push_str(&remap_flags.join(" "));
-        cmd.env(coverage::RUSTFLAGS_ENV, rustflags);
     }
+    cmd.env(coverage::RUSTFLAGS_ENV, &rustflags);
     Ok(())
 }
 
