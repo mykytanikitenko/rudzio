@@ -477,6 +477,9 @@ pub struct WorkspaceDepSpec {
     pub git: Option<String>,
     /// Optional rev/branch/tag pin associated with `git`.
     pub git_ref: Option<GitRef>,
+    /// Real package name when the workspace dep is renamed via
+    /// `package = "..."`. `None` means the entry name is the package name.
+    pub package: Option<String>,
     /// Filesystem path when the workspace dep is local.
     pub path: Option<PathBuf>,
     /// Optional named alternative registry (`registry = "<name>"`).
@@ -1039,6 +1042,7 @@ impl WorkspaceDepSpec {
             git: None,
             git_ref: None,
             path: None,
+            package: None,
             registry: None,
             uses_default_features: true,
             version_req: None,
@@ -2539,6 +2543,7 @@ fn extract_workspace_dep_spec(
     let mut spec = WorkspaceDepSpec {
         version_req: None,
         path: None,
+        package: None,
         git: None,
         git_ref: None,
         features: Vec::new(),
@@ -2631,6 +2636,9 @@ fn apply_ws_dep_field(
         }
         "registry" => {
             spec.registry = Some(require_string(val, dep_name, "registry")?.to_owned());
+        }
+        "package" => {
+            spec.package = Some(require_string(val, dep_name, "package")?.to_owned());
         }
         other => {
             bail!(
@@ -5465,7 +5473,7 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
             // two paths (Bug #6). Matching the real package name routes
             // every reference — renamed or not — through the `./members/...`
             // path dep emitted by the member loop above.
-            if member_names.contains(&dep.name) {
+            if member_names.contains(real_package_name(dep, plan)) {
                 continue;
             }
             merged
@@ -5552,6 +5560,21 @@ fn emit_features_table(doc: &mut DocumentMut, plan: &Plan) {
     doc.insert("features", Item::Table(feats));
 }
 
+/// The real package name `dep` refers to, resolving a workspace-level
+/// rename (`[workspace.dependencies] bee = { package = "b", ... }`) back
+/// to the concrete package. Non-inherited deps already carry the
+/// post-rename name in `dep.name`.
+fn real_package_name<'spec>(dep: &'spec DevDepSpec, plan: &'spec Plan) -> &'spec str {
+    if dep.workspace_inherited {
+        plan.workspace_deps
+            .get(&dep.name)
+            .and_then(|ws| ws.package.as_deref())
+            .unwrap_or(&dep.name)
+    } else {
+        &dep.name
+    }
+}
+
 /// Render `dep` as a sibling-bridge dependency entry when its package
 /// name matches another bridged member of `plan`.
 ///
@@ -5570,10 +5593,11 @@ fn emit_features_table(doc: &mut DocumentMut, plan: &Plan) {
 /// as the workspace-inherited / direct branches in `render_dev_dep`, so
 /// feature flags reach the bridge's mirrored `[features]` table.
 fn render_sibling_bridge_dep(dep: &DevDepSpec, plan: &Plan) -> Option<Item> {
+    let real_name = real_package_name(dep, plan);
     let sibling = plan
         .members
         .iter()
-        .find(|member| member.package_name == dep.name && bridge_applies_to(member))?;
+        .find(|member| member.package_name == real_name && bridge_applies_to(member))?;
 
     let mut tbl = InlineTable::new();
     tbl.insert(
@@ -5688,6 +5712,12 @@ fn fill_workspace_inherited_body(
             dep.name
         )
     })?;
+    if let Some(real_package) = &ws.package {
+        tbl.insert(
+            "package",
+            Value::String(Formatted::new(real_package.clone())),
+        );
+    }
     if let Some(path_buf) = &ws.path {
         tbl.insert(
             "path",
