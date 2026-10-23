@@ -1,6 +1,6 @@
 [package]
 name = "cargo-rudzio"
-version = "0.1.1"
+version = "0.1.3"
 edition = { workspace = true }
 description = "Cargo subcommand: `cargo rudzio test` auto-generates a single-binary aggregator that runs every rudzio test in the workspace under one `#[rudzio::main]`."
 license = "MIT OR Apache-2.0"

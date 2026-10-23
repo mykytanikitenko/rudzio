@@ -1,6 +1,6 @@
 [package]
 name = "rudzio-migrate"
-version = "0.1.1"
+version = "0.1.3"
 edition = { workspace = true }
 description = "Best-effort converter of stock cargo-style Rust tests into rudzio tests. Runs on a clean git tree, rewrites sources in place, keeps backups and pre-migration copies as block comments, and asks before wiring a shared runner."
 license = "MIT OR Apache-2.0"
