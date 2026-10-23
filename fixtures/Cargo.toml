@@ -44,6 +44,11 @@ trybuild = { workspace = true }
 [features]
 edge-cfg-macro = []
 
+# Opt-in feature that stays OFF by default; `#[cfg(feature = "never-enabled")]`
+# on direct/macro-generated test fns is therefore always false, exercising the
+# cfg-stripped registration path deterministically.
+never-enabled = []
+
 # Integration tests drive child processes and deliver Unix signals to them
 # to exercise the runner's SIGINT/SIGTERM handling.
 [target.'cfg(unix)'.dev-dependencies]
@@ -268,6 +273,18 @@ test = false
 
 [[bin]]
 name = "macro_rules_cfg_gated_tokio_mt"
+test = false
+
+[[bin]]
+name = "direct_cfg_gated_tokio_mt"
+test = false
+
+[[bin]]
+name = "macro_rules_fn_cfg_gated_tokio_mt"
+test = false
+
+[[bin]]
+name = "cfg_attr_ignore_tokio_mt"
 test = false
 
 [lints]
