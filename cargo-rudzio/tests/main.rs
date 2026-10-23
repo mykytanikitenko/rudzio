@@ -23,6 +23,7 @@ mod features_table_propagation_spec;
 mod generate_spec;
 mod macro_rules_generated_e2e_spec;
 mod main_rs_test_root_helper_spec;
+mod member_build_script_e2e_spec;
 mod migration_bug_02_lib_harness_false_clippy_spec;
 mod migration_bug_03_coverage_profraw_spec;
 mod migration_bug_04_panic_abort_propagation_spec;

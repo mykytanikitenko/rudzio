@@ -34,23 +34,25 @@ pub const COVERAGE_TARGET_DIR_ENV: &str = "CARGO_LLVM_COV_TARGET_DIR";
 /// is configured; otherwise absent.
 pub const COVERAGE_BUILD_DIR_ENV: &str = "CARGO_LLVM_COV_BUILD_DIR";
 
+/// Resolved target/build directories for the inner aggregator cargo build.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AggregatorDirs {
+    /// `None` means "do not override `CARGO_BUILD_BUILD_DIR`".
+    pub build_dir: Option<PathBuf>,
+    /// Directory cargo places the linked aggregator binary and objects in.
+    pub target_dir: PathBuf,
+}
+
 /// Whether coverage instrumentation is active in the current process.
 ///
 /// `cargo llvm-cov show-env` sets [`COVERAGE_ENV`] so a child process can
 /// recognise that it must build into [`COVERAGE_TARGET_DIR_ENV`] rather than
 /// its private per-aggregator subdir.
+#[inline]
 #[must_use]
 pub fn is_active() -> bool {
     env::var_os(COVERAGE_ENV).is_some()
-}
-
-/// Resolved target/build directories for the inner aggregator cargo build.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AggregatorDirs {
-    /// Directory cargo places the linked aggregator binary and objects in.
-    pub target_dir: PathBuf,
-    /// `None` means "do not override `CARGO_BUILD_BUILD_DIR`".
-    pub build_dir: Option<PathBuf>,
 }
 
 /// Resolve the inner aggregator cargo build's target/build directories.
@@ -71,6 +73,7 @@ pub struct AggregatorDirs {
 /// Fails loudly when coverage is active but `CARGO_LLVM_COV_TARGET_DIR` is
 /// unset: that is a partial coverage environment, and falling back to the
 /// per-aggregator subdir would silently yield an empty coverage report.
+#[inline]
 pub fn resolve_aggregator_dirs(
     coverage_active: bool,
     coverage_target_dir: Option<&OsStr>,
@@ -105,9 +108,8 @@ mod tests {
     const BASE: &str = "/outer/target/rudzio-auto-runner-0123456789abcdef-0123456789abcdef";
 
     #[test]
-    fn non_coverage_anchors_under_base_output_dir() {
-        let dirs =
-            resolve_aggregator_dirs(false, None, None, Path::new(BASE)).expect("resolve dirs");
+    fn non_coverage_anchors_under_base_output_dir() -> anyhow::Result<()> {
+        let dirs = resolve_aggregator_dirs(false, None, None, Path::new(BASE))?;
         assert_eq!(
             dirs.target_dir,
             Path::new("/outer/target/rudzio-auto-runner-0123456789abcdef-0123456789abcdef/target")
@@ -118,10 +120,11 @@ mod tests {
                 "/outer/target/rudzio-auto-runner-0123456789abcdef-0123456789abcdef/build-dir"
             ))
         );
+        Ok(())
     }
 
     #[test]
-    fn coverage_uses_llvm_cov_target_dir_even_when_it_conflicts_with_base() {
+    fn coverage_uses_llvm_cov_target_dir_even_when_it_conflicts_with_base() -> anyhow::Result<()> {
         // The coverage target dir is the directory `cargo llvm-cov report`
         // searches; it has no relationship to `base_output_dir`. This is the
         // "conflicting CARGO_TARGET_DIR" case: the outer target dir (BASE's
@@ -131,33 +134,42 @@ mod tests {
             Some(OsStr::new("/var/mnt/data-cache/cargo-target")),
             Some(OsStr::new("/var/mnt/data-cache/cargo/build-dir")),
             Path::new(BASE),
-        )
-        .expect("resolve dirs");
-        assert_eq!(dirs.target_dir, Path::new("/var/mnt/data-cache/cargo-target"));
+        )?;
+        assert_eq!(
+            dirs.target_dir,
+            Path::new("/var/mnt/data-cache/cargo-target")
+        );
         assert_eq!(
             dirs.build_dir.as_deref(),
             Some(Path::new("/var/mnt/data-cache/cargo/build-dir"))
         );
+        Ok(())
     }
 
     #[test]
-    fn coverage_without_build_dir_does_not_override_build_dir_env() {
-        let dirs = resolve_aggregator_dirs(
-            true,
-            Some(OsStr::new("/cov-target")),
-            None,
-            Path::new(BASE),
-        )
-        .expect("resolve dirs");
+    fn coverage_without_build_dir_does_not_override_build_dir_env() -> anyhow::Result<()> {
+        let dirs =
+            resolve_aggregator_dirs(true, Some(OsStr::new("/cov-target")), None, Path::new(BASE))?;
         assert_eq!(dirs.target_dir, Path::new("/cov-target"));
         assert_eq!(dirs.build_dir, None);
+        Ok(())
     }
 
     #[test]
-    fn coverage_without_target_dir_fails_loudly() {
-        let err = resolve_aggregator_dirs(true, None, None, Path::new(BASE)).unwrap_err();
+    fn coverage_without_target_dir_fails_loudly() -> anyhow::Result<()> {
+        let err = match resolve_aggregator_dirs(true, None, None, Path::new(BASE)) {
+            Ok(dirs) => anyhow::bail!("expected failure, got {dirs:?}"),
+            Err(err) => err,
+        };
         let msg = format!("{err:#}");
-        assert!(msg.contains(COVERAGE_TARGET_DIR_ENV), "error should name the missing env var: {msg}");
-        assert!(msg.contains("incomplete"), "error should say the env is incomplete: {msg}");
+        assert!(
+            msg.contains(COVERAGE_TARGET_DIR_ENV),
+            "error should name the missing env var: {msg}"
+        );
+        assert!(
+            msg.contains("incomplete"),
+            "error should say the env is incomplete: {msg}"
+        );
+        Ok(())
     }
 }
