@@ -389,6 +389,11 @@ pub fn expand_suite(args: &MainArgs, input_mod: ItemMod) -> syn::Result<TokenStr
     // when `test_functions` is empty — those fns are registered later by the
     // `#[rudzio::test]` attribute.
     let has_macro_items = items.iter().any(|item| matches!(item, Item::Macro(_)));
+    // This "no test functions found" check runs BEFORE cfg evaluation: a suite
+    // whose every direct test is `#[cfg]`-gated off (down to zero active
+    // tests) is still valid, since the runtime short-circuits on an empty
+    // `active` list (see `owner_runtime_init_quote`). It is therefore not a
+    // macro-time error.
     if test_functions.is_empty() && !has_macro_items {
         return Err(syn::Error::new_spanned(
             input_mod,
@@ -504,6 +509,23 @@ fn generate_per_config(
     Ok(())
 }
 
+/// Collect a test fn's own `#[cfg(...)]` attributes — the only attribute
+/// form that can conditionally *remove* the fn during cfg-stripping. The
+/// generated `run_test_fn` helper and token static must carry the same
+/// predicates so a cfg-stripped test does not leave dangling registration
+/// items naming it (E0425). `#[cfg_attr(...)]` is deliberately NOT
+/// propagated: it only adds (never removes) attributes, so it cannot strip
+/// the fn, and re-emitting it verbatim on the token `static` would hard-error
+/// when it wraps `ignore` (rustc rejects `#[ignore]` on a `static`). That case
+/// is handled separately through the token's `ignored` flag.
+fn test_cfg_attrs(test: &ItemFn) -> Vec<Attribute> {
+    test.attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("cfg"))
+        .cloned()
+        .collect()
+}
+
 /// Emit the `(helper_item, token_static)` pair for a single
 /// `#[rudzio::test]` fn. Pulled out of [`generate_per_config`]'s loop body
 /// to keep that fn readable and within clippy's per-fn line budget.
@@ -522,6 +544,17 @@ fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream
 
     let test_name = &test.sig.ident;
     let test_name_str = test_name.to_string();
+
+    // The test fn's own `#[cfg(...)]` predicates gate its existence; the
+    // generated helper fn and token static must carry the same predicates so
+    // cfg-stripping removes them together with the fn (E0425). The
+    // runtime-config `cfg_attrs` are prepended so both gate sources apply.
+    let combined_cfg_attrs: Vec<Attribute> = cfg_attrs
+        .iter()
+        .cloned()
+        .chain(test_cfg_attrs(test))
+        .collect();
+
     let (ignored, ignore_reason) = extract_ignore_reason(test);
     let attr_args = extract_test_attr_args(test)?;
     let (attr_test_timeout_secs, attr_setup_timeout_secs, attr_teardown_timeout_secs) =
@@ -582,7 +615,7 @@ fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream
     );
 
     let helper_item = run_test_fn_quote(&RunTestFnArgs {
-        cfg_attrs,
+        cfg_attrs: combined_cfg_attrs.as_slice(),
         run_test_fn: &run_test_fn,
         runtime_type,
         suite_base,
@@ -594,7 +627,7 @@ fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream
     });
 
     let token_static = quote! {
-        #(#cfg_attrs)*
+        #(#combined_cfg_attrs)*
         #[::rudzio::linkme::distributed_slice(::rudzio::token::TEST_TOKENS)]
         #[linkme(crate = ::rudzio::linkme)]
         #[doc(hidden)]
