@@ -85,7 +85,7 @@ fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
          \n\
          [dev-dependencies]\n\
          rudzio = { workspace = true }\n\
-         anyhow = \"=1.0.102\"\n",
+         anyhow = \"=1.0.104\"\n",
     )?;
     fs::write(
         consumer.join("src").join("lib.rs"),

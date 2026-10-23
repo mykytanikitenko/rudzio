@@ -123,7 +123,7 @@ fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
          \n\
          [dev-dependencies]\n\
          dev_dep_via_registry = { version = \"=4.0.0\", registry = \"fthm\" }\n\
-         anyhow = \"=1.0.102\"\n\
+         anyhow = \"=1.0.104\"\n\
          \n\
          [target.'cfg(unix)'.dependencies]\n\
          target_cfg_dep_via_registry = { version = \"=5.0.0\", registry = \"fthm\" }\n",
@@ -186,7 +186,7 @@ fn write_fixture_with_rudzio_on_registry(root: &Path) -> io::Result<()> {
          \n\
          [dev-dependencies]\n\
          rudzio = { version = \"=0.1.0\", registry = \"fthm\", features = [\"common\", \"runtime-tokio-multi-thread\"] }\n\
-         anyhow = \"=1.0.102\"\n",
+         anyhow = \"=1.0.104\"\n",
     )?;
     fs::write(
         root.join("consumer").join("src").join("lib.rs"),
