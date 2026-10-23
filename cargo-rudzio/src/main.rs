@@ -250,6 +250,15 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
     })?;
     let argv = aggregator_cargo_args(&parsed, manifest_str);
     let mut cmd = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    // Anchor the spawned cargo at the consumer's workspace root so cargo
+    // resolves `.cargo/config.toml` from the same place a plain
+    // `cargo test` in that workspace would. Config files are discovered
+    // by walking up from the process CWD (independent of
+    // `--manifest-path`); anchoring at the consumer's root keeps the
+    // consumer's own `[profile]` (e.g. `[profile.dev] panic = "abort"`)
+    // authoritative instead of letting a `[profile]` from cargo-rudzio's
+    // own process directory override the re-emitted table (Bug #4).
+    cmd.current_dir(plan.workspace_root.as_std_path());
     // Pin the spawned cargo's `CARGO_TARGET_DIR` AND
     // `CARGO_BUILD_BUILD_DIR` to per-aggregator subdirs under the
     // resolved target dir. Three reasons:
