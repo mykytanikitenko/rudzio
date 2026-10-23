@@ -497,6 +497,14 @@ pub struct WorkspaceDepSpec {
 ///    too: at the integration-test binary's crate root,
 ///    `<member>::X` works directly via cargo's implicit extern
 ///    crate, so dropping `super::` is semantically neutral.
+/// 3. **`<member>::*` → `crate::*`** (only when
+///    `rewrite_member_to_crate` is set) — a member whose own
+///    `src/lib.rs` already declares a root-level item named
+///    `<member>` cannot take the bridge's
+///    `extern crate self as <member>;` prelude entry (it collides,
+///    E0260). Rewriting the leading `<member>::` to `crate::`
+///    resolves the path against the bridge's crate root, which IS
+///    the member's lib root, so the reference stays equivalent.
 struct CratePathRewriter<'helpers> {
     /// `helper_name -> synth_name` substitution table.
     helpers: &'helpers BTreeMap<String, String>,
@@ -506,12 +514,44 @@ struct CratePathRewriter<'helpers> {
     /// `super::` prefix so the path resolves via the bridge's
     /// `extern crate self as <member>` prelude entry.
     member_lib_ident: &'helpers str,
+    /// When `true`, rewrite a leading `<member>::*` path/use to
+    /// `crate::*` instead of relying on the bridge's
+    /// `extern crate self as <member>;` prelude entry. Set when the
+    /// member's own `src/lib.rs` already declares a root-level item
+    /// named `<member>` (Bug #7), which makes the prelude entry
+    /// collide (E0260).
+    rewrite_member_to_crate: bool,
 }
 
 impl VisitMut for CratePathRewriter<'_> {
     fn visit_path_mut(&mut self, i: &mut syn::Path) {
         use syn::punctuated::Punctuated;
         if i.leading_colon.is_none() {
+            // Member-prelude rewrite: `super::<member>::*` → `<member>::*`.
+            // Detection requires at least 2 segments (`super`, `<member>`);
+            // any tail (`::shared::SharedTest`) is preserved verbatim.
+            // Runs FIRST so the `<member>` head it produces is then
+            // eligible for the member→crate rewrite below.
+            if let (Some(head), Some(second)) = (i.segments.first(), i.segments.get(1))
+                && head.ident == "super"
+                && second.ident == self.member_lib_ident
+            {
+                let tail: Punctuated<syn::PathSegment, syn::Token![::]> =
+                    i.segments.iter().skip(1).cloned().collect();
+                i.segments = tail;
+            }
+            // Member-crate rewrite (Bug #7): `<member>::*` → `crate::*`.
+            // Runs before the helper rewrite so `project::common::X`
+            // (member crate by name + helper) first becomes
+            // `crate::common::X` and then receives the helper→synth
+            // substitution.
+            if self.rewrite_member_to_crate
+                && let Some(head) = i.segments.first_mut()
+                && head.ident == self.member_lib_ident
+            {
+                let span = head.ident.span();
+                head.ident = syn::Ident::new("crate", span);
+            }
             // Helper-name rewrite: `crate::<helper>::*` → `crate::<synth>::*`.
             // Match the first two segments via `get(...)` so the indexing
             // is clippy-clean even without `.len()` guards.
@@ -526,31 +566,34 @@ impl VisitMut for CratePathRewriter<'_> {
                     }
                 }
             }
-            // Member-prelude rewrite: `super::<member>::*` → `<member>::*`.
-            // Detection requires at least 2 segments (`super`, `<member>`);
-            // any tail (`::shared::SharedTest`) is preserved verbatim.
-            if let (Some(head), Some(second)) = (i.segments.first(), i.segments.get(1))
-                && head.ident == "super"
-                && second.ident == self.member_lib_ident
-            {
-                let tail: Punctuated<syn::PathSegment, syn::Token![::]> =
-                    i.segments.iter().skip(1).cloned().collect();
-                i.segments = tail;
-            }
         }
         visit_mut::visit_path_mut(self, i);
     }
 
     fn visit_use_tree_mut(&mut self, i: &mut syn::UseTree) {
-        if let syn::UseTree::Path(use_path) = i
-            && use_path.ident == "crate"
-        {
-            // The `use crate::*` head — rewrite the first ident of
-            // the sub-tree (which is the helper name we care about)
-            // when it appears in our substitution table. Glob (`*`)
-            // and bare group (`{...}`) variants are handled by
-            // recursing into nested entries via the default walker.
-            rewrite_first_use_tree_ident(&mut use_path.tree, self.helpers);
+        if let syn::UseTree::Path(use_path) = i {
+            if use_path.ident == "crate" {
+                // The `use crate::*` head — rewrite the first ident of
+                // the sub-tree (which is the helper name we care about)
+                // when it appears in our substitution table. Glob (`*`)
+                // and bare group (`{...}`) variants are handled by
+                // recursing into nested entries via the default walker.
+                rewrite_first_use_tree_ident(&mut use_path.tree, self.helpers);
+            }
+            // Member-crate rewrite (Bug #7): `use <member>::...` →
+            // `use crate::...`. Rewrite only the OUTER head, then recurse
+            // into the remaining tree with the rewrite disabled: a
+            // self-named member may legitimately carry a nested `<member>`
+            // module segment (e.g. `use project::project::X`), which must
+            // not become `crate::crate::X`.
+            if self.rewrite_member_to_crate && use_path.ident == self.member_lib_ident {
+                let span = use_path.ident.span();
+                use_path.ident = syn::Ident::new("crate", span);
+                self.rewrite_member_to_crate = false;
+                visit_mut::visit_use_tree_mut(self, &mut use_path.tree);
+                self.rewrite_member_to_crate = true;
+                return;
+            }
         }
         visit_mut::visit_use_tree_mut(self, i);
     }
@@ -617,6 +660,16 @@ struct TestBinaryProxy {
     /// detect-and-redirect `crate::<helper>` paths inside source
     /// files belonging to this binary.
     helper_synth_lookup: BTreeMap<String, String>,
+    /// `true` when the member's own `src/lib.rs` already declares a
+    /// root-level item named `member_lib_ident` (e.g. a crate named
+    /// `project` whose lib.rs says `mod project;`). Such a member
+    /// cannot take the bridge's
+    /// `#[cfg(rudzio_test)] extern crate self as <name>;` prelude
+    /// entry because it collides with that item (E0260). When set,
+    /// the bridge skips the self-alias and `rewrite_crate_paths`
+    /// rewrites `<member_lib_ident>::` → `crate::` in this binary's
+    /// proxy sources.
+    member_has_self_named_root: bool,
     /// Member's lib identifier (= `crate_name_to_ident(member.package_name)`).
     ///
     /// Used by the syn rewriter to strip `super::<member>::` prefixes
@@ -3204,7 +3257,7 @@ pub fn write_runner(plan: &Plan, out_dir: &Path) -> Result<()> {
     // `<bridge>/src/proxies/` BEFORE writing bridge `src/lib.rs` —
     // the lib.rs references proxy file paths via `#[path = ...]` and
     // cargo will fail at compile time if the files don't yet exist.
-    let proxies = collect_test_binary_proxies(plan, out_dir);
+    let proxies = collect_test_binary_proxies(plan, out_dir)?;
     write_test_binary_proxies(&proxies)
         .with_context(|| format!("writing test-binary proxies under {}", out_dir.display()))?;
 
@@ -4197,10 +4250,20 @@ fn build_bridge_lib_rs(member: &MemberPlan, proxies: &[&TestBinaryProxy]) -> Res
     // what makes those resolve when the proxies compile inside the
     // bridge's compile unit instead of as standalone integration-test
     // binaries.
-    let _alias_emit: FmtResult = writeln!(
-        out,
-        "#[cfg(rudzio_test)]\nextern crate self as {lib_ident};\n"
-    );
+    //
+    // Bug #7: when the member's own lib.rs already declares a root
+    // item named `<member>` (e.g. `mod project;` in a crate named
+    // `project`), this prelude entry would collide with it (E0260).
+    // Skip the alias in that case — `rewrite_crate_paths` instead
+    // rewrites the proxies' `<member>::` paths to `crate::`, which
+    // resolves identically against the bridge's crate root.
+    let self_named_root = proxies.iter().any(|proxy| proxy.member_has_self_named_root);
+    if !self_named_root {
+        let _alias_emit: FmtResult = writeln!(
+            out,
+            "#[cfg(rudzio_test)]\nextern crate self as {lib_ident};\n"
+        );
+    }
 
     for proxy in proxies {
         for (synth_name, proxy_path) in &proxy.helper_mods {
@@ -4550,7 +4613,7 @@ fn file_carries_test_markers(path: &Path) -> bool {
 /// `force_bridge`, without any bins, without any tests) are skipped:
 /// they contribute nothing to the aggregator and have no place to
 /// host proxy files.
-fn collect_test_binary_proxies(plan: &Plan, out_dir: &Path) -> Vec<TestBinaryProxy> {
+fn collect_test_binary_proxies(plan: &Plan, out_dir: &Path) -> Result<Vec<TestBinaryProxy>> {
     let members_dir = out_dir.join("members");
     let mut out: Vec<TestBinaryProxy> = Vec::new();
     for member in &plan.members {
@@ -4559,6 +4622,23 @@ fn collect_test_binary_proxies(plan: &Plan, out_dir: &Path) -> Vec<TestBinaryPro
         }
         let bridge_root = members_dir.join(bridge_dir_name(member));
         let proxies_root = bridge_root.join("src").join("proxies");
+        // Bug #7: a member whose own lib.rs declares a root-level item
+        // named after itself (e.g. `mod project;` in a crate named
+        // `project`) cannot take the bridge's
+        // `extern crate self as <name>;` prelude entry. Detect that
+        // once per member (not per test file) and stamp the flag onto
+        // every proxy so the alias skip in `build_bridge_lib_rs` and
+        // the `<name>::` → `crate::` rewrite in `rewrite_crate_paths`
+        // agree. Bin-only members have no lib root to collide with, so
+        // they default to `false`.
+        let member_has_self_named_root = match &member.src_lib_path {
+            Some(lib_path) => {
+                let source = fs::read_to_string(lib_path)
+                    .with_context(|| format!("reading member lib.rs at {}", lib_path.display()))?;
+                crate_root_declares_ident(&source, &crate_name_to_ident(&member.package_name))
+            }
+            None => false,
+        };
         for test_file in &member.test_files {
             let Some(test_root_dir) = test_file.parent() else {
                 continue;
@@ -4586,13 +4666,14 @@ fn collect_test_binary_proxies(plan: &Plan, out_dir: &Path) -> Vec<TestBinaryPro
                 helper_synth_lookup,
                 helper_mods,
                 member_lib_ident: crate_name_to_ident(&member.package_name),
+                member_has_self_named_root,
                 test_root: test_file.clone(),
                 test_root_dir: test_root_dir.to_path_buf(),
                 proxy_test_root,
             });
         }
     }
-    out
+    Ok(out)
 }
 
 /// Stable per-test-binary id: `<sanitize(member_pkg)>__<sanitize(parent_dir_name)>`.
@@ -4679,6 +4760,7 @@ fn write_test_binary_proxies(proxies: &[TestBinaryProxy]) -> Result<()> {
                     &stripped,
                     &proxy.helper_synth_lookup,
                     &proxy.member_lib_ident,
+                    proxy.member_has_self_named_root,
                 )
                 .with_context(|| format!("rewriting crate paths in {}", source_file.display()))?
             } else {
@@ -4686,6 +4768,7 @@ fn write_test_binary_proxies(proxies: &[TestBinaryProxy]) -> Result<()> {
                     &original,
                     &proxy.helper_synth_lookup,
                     &proxy.member_lib_ident,
+                    proxy.member_has_self_named_root,
                 )
                 .with_context(|| format!("rewriting crate paths in {}", source_file.display()))?
             };
@@ -4739,14 +4822,16 @@ fn rewrite_crate_paths(
     source: &str,
     helpers: &BTreeMap<String, String>,
     member_lib_ident: &str,
+    rewrite_member_to_crate: bool,
 ) -> Result<String> {
-    if helpers.is_empty() && member_lib_ident.is_empty() {
+    if helpers.is_empty() && member_lib_ident.is_empty() && !rewrite_member_to_crate {
         return Ok(source.to_owned());
     }
     let mut file: syn::File = syn::parse_str(source).context("parsing test-binary source file")?;
     let mut rewriter = CratePathRewriter {
         helpers,
         member_lib_ident,
+        rewrite_member_to_crate,
     };
     rewriter.visit_file_mut(&mut file);
     Ok(prettyplease::unparse(&file))
@@ -4837,6 +4922,53 @@ fn rewrite_first_use_tree_ident(tree: &mut syn::UseTree, helpers: &BTreeMap<Stri
 /// identifier cargo actually uses for `extern crate` / path references.
 fn crate_name_to_ident(name: &str) -> String {
     name.replace('-', "_")
+}
+
+/// Detect whether a member's `src/lib.rs` (`lib_source`) declares a
+/// root-level item whose name is `ident`. Used to decide whether the
+/// bridge can emit `extern crate self as <ident>;` without colliding
+/// (E0260) with an item the member already owns at its crate root.
+///
+/// Parses with syn (not a substring scan) so a `mod project;` that only
+/// appears inside a doc comment, string literal, or a nested module does
+/// not false-positive. A source that fails to parse returns `false`: the
+/// member's lib.rs is copied into the bridge verbatim, so the alias is
+/// emitted unchanged (the pre-fix behaviour) rather than silently
+/// dropped on an input syn cannot inspect.
+fn crate_root_declares_ident(lib_source: &str, ident: &str) -> bool {
+    let Ok(file) = syn::parse_str::<syn::File>(lib_source) else {
+        return false;
+    };
+    file.items.iter().any(|item| item_binds_ident(item, ident))
+}
+
+/// Whether an [`syn::Item`] introduces a crate-root binding named
+/// `ident`. Covers every `Item` variant that names a binding (mod,
+/// struct, enum, union, trait, trait-alias, type, const, static, fn,
+/// macro, extern-crate, and a `use` whose top-level tree is a bare name
+/// or an `as` rename). `use x::y;` (a qualified path) binds `y`, not
+/// `x`, so it is excluded.
+fn item_binds_ident(item: &syn::Item, ident: &str) -> bool {
+    match item {
+        syn::Item::Const(i) => i.ident == ident,
+        syn::Item::Enum(i) => i.ident == ident,
+        syn::Item::ExternCrate(i) => i.ident == ident,
+        syn::Item::Fn(i) => i.sig.ident == ident,
+        syn::Item::Macro(i) => i.ident.as_ref().is_some_and(|n| *n == ident),
+        syn::Item::Mod(i) => i.ident == ident,
+        syn::Item::Static(i) => i.ident == ident,
+        syn::Item::Struct(i) => i.ident == ident,
+        syn::Item::Trait(i) => i.ident == ident,
+        syn::Item::TraitAlias(i) => i.ident == ident,
+        syn::Item::Type(i) => i.ident == ident,
+        syn::Item::Union(i) => i.ident == ident,
+        syn::Item::Use(i) => match &i.tree {
+            syn::UseTree::Name(name) => name.ident == ident,
+            syn::UseTree::Rename(rename) => rename.rename == ident,
+            syn::UseTree::Path(_) | syn::UseTree::Glob(_) | syn::UseTree::Group(_) => false,
+        },
+        syn::Item::ForeignMod(_) | syn::Item::Impl(_) | syn::Item::Verbatim(_) | _ => false,
+    }
 }
 
 /// Parse `test_file` (the `[[test]] path = "..."` entry-point of a
