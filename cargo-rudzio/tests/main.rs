@@ -23,6 +23,7 @@ mod edge_workspace_deps_a_e2e_spec;
 mod edge_workspace_deps_b_e2e_spec;
 mod features_table_propagation_spec;
 mod generate_spec;
+mod git_dependency_e2e_spec;
 mod ground_truth_bug_03_coverage_e2e_spec;
 mod ground_truth_bug_04_panic_abort_e2e_spec;
 mod ground_truth_bug_08_bin_only_standalone_e2e_spec;

@@ -6092,6 +6092,8 @@ fn render_dev_dep(dep: &DevDepSpec, plan: &Plan) -> Result<Item> {
         fill_workspace_inherited_body(&mut tbl, dep, plan)?;
     } else if let Some(path_buf) = &dep.path {
         fill_path_dep_body(&mut tbl, dep, path_buf);
+    } else if let Some(url) = &dep.git {
+        fill_git_dep_body(&mut tbl, dep, url);
     } else if dep.features.is_empty()
         && dep.uses_default_features
         && dep.rename.is_none()
@@ -6213,6 +6215,40 @@ fn fill_path_dep_body(tbl: &mut InlineTable, dep: &DevDepSpec, path_buf: &Path) 
         "path",
         Value::String(Formatted::new(path_buf.to_string_lossy().into_owned())),
     );
+    if !dep.features.is_empty() {
+        let mut arr = Array::new();
+        for feat in &dep.features {
+            arr.push(Value::String(Formatted::new(feat.clone())));
+        }
+        tbl.insert("features", Value::Array(arr));
+    }
+    if !dep.uses_default_features {
+        tbl.insert("default-features", Value::Boolean(Formatted::new(false)));
+    }
+}
+
+/// Populate `tbl` with the inline-table body for a direct git-based
+/// dev-dep entry — `git = "..."` plus the `rev`/`branch`/`tag` pin and
+/// any non-default `features` / `default-features = false`.
+///
+/// Mirrors the git branch of [`build_rudzio_inline_table`] and
+/// [`fill_workspace_inherited_body`] so a DIRECT git declaration
+/// round-trips through the bridge the same way the aggregator's own
+/// `rudzio` entry and workspace-inherited entries already do.
+fn fill_git_dep_body(tbl: &mut InlineTable, dep: &DevDepSpec, url: &str) {
+    tbl.insert("git", Value::String(Formatted::new(url.to_owned())));
+    match &dep.git_ref {
+        Some(GitRef::Rev(rev)) => {
+            tbl.insert("rev", Value::String(Formatted::new(rev.clone())));
+        }
+        Some(GitRef::Branch(branch)) => {
+            tbl.insert("branch", Value::String(Formatted::new(branch.clone())));
+        }
+        Some(GitRef::Tag(tag)) => {
+            tbl.insert("tag", Value::String(Formatted::new(tag.clone())));
+        }
+        None => {}
+    }
     if !dep.features.is_empty() {
         let mut arr = Array::new();
         for feat in &dep.features {
