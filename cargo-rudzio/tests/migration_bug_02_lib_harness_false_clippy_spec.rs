@@ -260,13 +260,168 @@ fn main() {}
     Ok(())
 }
 
+/// Shape D — the operator's lib + `[[bin]]` `token` shape, with the
+/// CORRECT recipe. The lib uses `[lib] harness = false` plus a
+/// crate-root `#[cfg(test)] #[rudzio::main] fn main() {}` (shape A).
+/// The `token` bin keeps a real, un-gated `fn main`: `clippy
+/// --all-targets` compiles every `[[bin]]` target without `cfg(test)`,
+/// so a gated (or missing) `fn main` yields E0601. `[[bin]] test =
+/// false` (NOT `harness = false`) suppresses the bin's libtest pass.
+fn write_fixture_lib_bin_token(root: &Path, rudzio_root: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(root.join("src/bin"))?;
+    fs::write(
+        root.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "lib_token_bin"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+harness = false
+
+[[bin]]
+name = "token"
+test = false
+
+[dev-dependencies]
+rudzio = {{ path = "{rudzio}", features = ["runtime-tokio-multi-thread", "common"] }}
+anyhow = "=1.0.104"
+"#,
+            rudzio = rudzio_root.display(),
+        ),
+    )?;
+    fs::write(
+        root.join("src").join("lib.rs"),
+        "pub fn add(a: i32, b: i32) -> i32 { a + b }
+
+#[cfg(test)]
+#[rudzio::suite([
+    (
+        runtime = rudzio::runtime::tokio::Multithread::new,
+        suite = rudzio::common::context::Suite,
+        test = rudzio::common::context::Test,
+    ),
+])]
+mod tests {
+    use super::*;
+
+    #[rudzio::test]
+    async fn sums_correctly() -> anyhow::Result<()> {
+        assert_eq!(add(1, 2), 3);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[rudzio::main]
+fn main() {}
+",
+    )?;
+    fs::write(
+        root.join("src/bin/token.rs"),
+        "// The `token` bin keeps a real, un-gated `fn main`. `clippy
+// --all-targets` (and `cargo build --bins`) compile the bin target
+// without `cfg(test)`, so a `#[cfg(test)]`-gated entry point here
+// would leave the bin without a `main` and fail E0601.
+fn main() {
+    println!(\"token\");
+}
+",
+    )?;
+    Ok(())
+}
+
+/// Shape D-broken — the operator's misconfigured `token` bin:
+/// `[[bin]] harness = false` (the wrong key for a bin) plus a
+/// `#[cfg(test)]`-gated entry point. `clippy --all-targets` compiles
+/// the bin target without `cfg(test)`, so `fn main` is absent and the
+/// build fails `E0601`. This pins the exact failure the README now
+/// warns against.
+fn write_fixture_broken_token_bin(root: &Path, rudzio_root: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(root.join("src/bin"))?;
+    fs::write(
+        root.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "broken_token_bin"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+harness = false
+
+[[bin]]
+name = "token"
+harness = false
+
+[dev-dependencies]
+rudzio = {{ path = "{rudzio}", features = ["runtime-tokio-multi-thread", "common"] }}
+anyhow = "=1.0.104"
+"#,
+            rudzio = rudzio_root.display(),
+        ),
+    )?;
+    fs::write(
+        root.join("src").join("lib.rs"),
+        "pub fn add(a: i32, b: i32) -> i32 { a + b }
+
+#[cfg(test)]
+#[rudzio::main]
+fn main() {}
+",
+    )?;
+    fs::write(
+        root.join("src/bin/token.rs"),
+        "// Broken: the entry point is `#[cfg(test)]`-gated, so the bin
+// target (compiled by `clippy --all-targets` without `cfg(test)`) has
+// no `fn main` and rustc rejects it with E0601.
+#[cfg(test)]
+#[rudzio::main]
+fn main() {}
+",
+    )?;
+    Ok(())
+}
+
+/// Shared `clippy --all-targets --all-features -- -D warnings` runner
+/// that expects a FAILURE. Returns the captured stderr so the caller
+/// can assert the exact `E0601` diagnostic.
+fn run_clippy_all_targets_expect_failure(
+    scratch: &Path,
+    cargo_home: &Path,
+    cargo_target_dir: &Path,
+) -> anyhow::Result<String> {
+    let cargo_bin = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let output = Command::new(cargo_bin)
+        .arg("clippy")
+        .arg("--all-targets")
+        .arg("--all-features")
+        .arg("--")
+        .arg("-D")
+        .arg("warnings")
+        .current_dir(scratch)
+        .env("CARGO_HOME", cargo_home)
+        .env("CARGO_TARGET_DIR", cargo_target_dir)
+        .env("CARGO_NET_OFFLINE", "true")
+        .output()?;
+    anyhow::ensure!(
+        !output.status.success(),
+        "expected `cargo clippy --all-targets --all-features -- -D warnings` to fail, \
+         but it succeeded",
+    );
+    Ok(String::from_utf8_lossy(&output.stderr).into_owned())
+}
+
 #[rudzio::suite([
     (runtime = TokioMultithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
 ])]
 mod tests {
     use super::{
-        IsolatedCargoTest, TempDir, repo_root, run_clippy_all_targets, write_fixture_feature_gated,
-        write_fixture_migrated, write_fixture_readme,
+        IsolatedCargoTest, TempDir, repo_root, run_clippy_all_targets,
+        run_clippy_all_targets_expect_failure, write_fixture_broken_token_bin,
+        write_fixture_feature_gated, write_fixture_lib_bin_token, write_fixture_migrated,
+        write_fixture_readme,
     };
 
     /// Bug #2, shape A — the README `[lib] harness = false` recipe must
@@ -302,5 +457,41 @@ mod tests {
         let scratch = TempDir::new_in(ctx.suite_tempdir())?;
         write_fixture_feature_gated(scratch.path(), &repo_root()?)?;
         run_clippy_all_targets(scratch.path(), ctx.cargo_home(), ctx.cargo_target_dir())
+    }
+
+    /// Bug #2, shape D — the operator's lib + `[[bin]]` `token` shape,
+    /// with the CORRECT recipe (the bin keeps a real, un-gated
+    /// `#[rudzio::main] fn main() {}` and `[[bin]] test = false`), must
+    /// not break `cargo clippy --all-targets --all-features`.
+    #[rudzio::test]
+    fn lib_harness_false_with_token_bin_clippy_all_targets_succeeds(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let scratch = TempDir::new_in(ctx.suite_tempdir())?;
+        write_fixture_lib_bin_token(scratch.path(), &repo_root()?)?;
+        run_clippy_all_targets(scratch.path(), ctx.cargo_home(), ctx.cargo_target_dir())
+    }
+
+    /// Bug #2, shape D-broken — a `[[bin]] harness = false` with a
+    /// `#[cfg(test)]`-gated entry point (no un-gated `fn main`) must
+    /// fail `cargo clippy --all-targets` with `E0601: main function
+    /// not found in crate 'token'`. Pins the failure the README now
+    /// warns against.
+    #[rudzio::test]
+    fn token_bin_with_cfg_test_only_main_fails_clippy_e0601(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let scratch = TempDir::new_in(ctx.suite_tempdir())?;
+        write_fixture_broken_token_bin(scratch.path(), &repo_root()?)?;
+        let stderr = run_clippy_all_targets_expect_failure(
+            scratch.path(),
+            ctx.cargo_home(),
+            ctx.cargo_target_dir(),
+        )?;
+        anyhow::ensure!(
+            stderr.contains("function not found in crate `token`"),
+            "expected E0601 `main function not found in crate 'token'` in stderr;\n--- stderr ---\n{stderr}",
+        );
+        Ok(())
     }
 }
