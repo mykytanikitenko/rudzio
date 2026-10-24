@@ -5417,15 +5417,27 @@ fn crate_name_to_ident(name: &str) -> String {
 ///
 /// Parses with syn (not a substring scan) so a `mod project;` that only
 /// appears inside a doc comment, string literal, or a nested module does
-/// not false-positive. A source that fails to parse returns `false`: the
-/// member's lib.rs is copied into the bridge verbatim, so the alias is
-/// emitted unchanged (the pre-fix behaviour) rather than silently
-/// dropped on an input syn cannot inspect.
+/// not false-positive.
+///
+/// `syn::parse_file` consumes a leading shebang (`#!...`) that
+/// `parse_str` rejects, and is otherwise equivalent — a lib.rs that
+/// rustc accepts with a shebang must still be inspected.
+///
+/// When syn cannot parse the copy at all (rustc-accepted syntax the
+/// pinned syn does not yet know), fall back to a lexical scan for a
+/// crate-root `mod <ident>;`. That declaration is the exact binding the
+/// bridge's `extern crate self as <ident>;` collides with (E0260), and
+/// is itself always syn-parseable; a false positive here is safe — it
+/// routes the member through the `__rudzio_self_alias` glob path, which
+/// is equivalent to the alias for non-self-named members — whereas the
+/// pre-fix `return false` silently re-emitted the alias and collided.
 fn crate_root_declares_ident(lib_source: &str, ident: &str) -> bool {
-    let Ok(file) = syn::parse_str::<syn::File>(lib_source) else {
-        return false;
-    };
-    file.items.iter().any(|item| item_binds_ident(item, ident))
+    if let Ok(file) = syn::parse_file(lib_source) {
+        return file.items.iter().any(|item| item_binds_ident(item, ident));
+    }
+    lib_source
+        .lines()
+        .any(|line| parse_top_level_mod_decl(line).as_deref() == Some(ident))
 }
 
 /// Whether an [`syn::Item`] introduces a crate-root binding named
@@ -6428,4 +6440,56 @@ pub fn plan_from_manifest(manifest_path: &Path) -> Result<Plan> {
             )
         })?;
     build_plan(&metadata)
+}
+
+#[cfg(test)]
+mod self_named_root_detection_tests {
+    use super::crate_root_declares_ident;
+
+    /// The parseable, private `mod X;` case the guard has always handled.
+    #[test]
+    fn private_mod_is_detected_when_parseable() {
+        assert!(crate_root_declares_ident("mod project;\n", "project"));
+    }
+
+    /// A crate-root `pub fn project()` also binds the ident.
+    #[test]
+    fn fn_binding_is_detected() {
+        assert!(crate_root_declares_ident(
+            "pub fn project() {}\n",
+            "project"
+        ));
+    }
+
+    /// A non-self-named root has no binding for the ident.
+    #[test]
+    fn unrelated_ident_is_not_detected() {
+        assert!(!crate_root_declares_ident("pub fn other() {}\n", "project"));
+    }
+
+    /// The faithful Bug #7 shape: a leading shebang (`#!`) that
+    /// `syn::parse_str` rejects but rustc accepts. `syn::parse_file`
+    /// consumes it, so the private `mod selfmod;` is still detected.
+    #[test]
+    fn shebang_prefixed_private_mod_is_detected() {
+        let source = "#!/usr/bin/env rust\nmod selfmod;\n\npub fn answer() -> u32 { 42 }\n";
+        assert!(crate_root_declares_ident(source, "selfmod"));
+    }
+
+    /// When syn cannot parse the copy at all (rustc-accepted syntax the
+    /// pinned syn does not yet know), the lexical fallback still finds the
+    /// crate-root `mod selfmod;` and skips the alias.
+    #[test]
+    fn lexical_fallback_finds_self_named_mod_when_syn_rejects() {
+        let source = "mod selfmod;\n\npub struct Cfg { pub n: u32 = 7 }\n";
+        assert!(crate_root_declares_ident(source, "selfmod"));
+    }
+
+    /// The same unparseable source without a self-named `mod` must not
+    /// false-positive.
+    #[test]
+    fn lexical_fallback_does_not_false_positive_on_other_mod() {
+        let source = "mod other;\n\npub struct Cfg { pub n: u32 = 7 }\n";
+        assert!(!crate_root_declares_ident(source, "selfmod"));
+    }
 }
