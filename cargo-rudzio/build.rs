@@ -1,53 +1,58 @@
-//! Captures two build-time stamps so the produced binary can prove what
-//! it is and when it was built.
-//!
-//! 1. `CARGO_RUDZIO_BUILD_STAMP` — `<CARGO_PKG_VERSION>-<unix_epoch_seconds>`.
-//! 2. `CARGO_RUDZIO_BUILD_GIT_HEAD` / `CARGO_RUDZIO_BUILD_GIT_DIRTY` —
-//!    the git identity of the checkout that produced the binary.
-//!
-//! # Why the version+epoch stamp
-//!
-//! Bug #18: `<aggregator>/target/` is preserved across `cargo rudzio
-//! test` invocations. Cargo's fingerprinter keys on source content
-//! hashes — NOT on the producing binary's version. When `cargo-rudzio`
-//! is rebuilt and emits byte-identical aggregator source for an
-//! unchanged consumer workspace, cargo skips the relink and the OLD
-//! aggregator binary persists with OLD runner code. Behavioural fixes
-//! shipped in `cargo-rudzio` silently fail to take effect.
-//!
-//! The fix routes around cargo's fingerprinter: the aggregator subdir
-//! name includes a hash of this stamp (see `aggregator_subdir_name` in
-//! `src/generate.rs`). Different stamps → different subdir → fresh
-//! `target/` → fresh compile → fresh binary.
-//!
-//! # Why the git identity
-//!
-//! `env!("CARGO_BIN_EXE_cargo-rudzio")` resolves a path against the
-//! ambient `CARGO_TARGET_DIR`. A shared target dir can hand the e2e
-//! suite a binary built from a different HEAD than the test source. The
-//! suite re-checks this identity before every spawn (see
-//! `cargo-rudzio-test-helpers::assert_fresh_binary`): a binary whose
-//! reported HEAD differs from the live checkout HEAD fails loudly
-//! instead of silently running the wrong code.
-//!
-//! # git resolution
-//!
-//! HEAD and dirty-state come from the `git` binary scoped to
-//! `CARGO_MANIFEST_DIR` so worktrees, packed refs, and detached HEAD all
-//! resolve correctly. When `git` is unavailable (or the crate is built
-//! from a published tarball with no `.git`), both fields fall back to
-//! `"unknown"` — the build still succeeds, it just carries no identity.
-//!
-//! # rerun-if-changed
-//!
-//! Once any `rerun-if-changed` is emitted, cargo drops its implicit
-//! "rerun on any package file change" behaviour, so the source inputs
-//! are re-listed explicitly (`src`, `build.rs`, `Cargo.toml`) to keep
-//! the version+epoch stamp fresh on every source-touching edit. The git
-//! files (`HEAD`, `refs`, `packed-refs`) are watched in addition so a
-//! commit or pull refreshes the identity even when no `cargo-rudzio`
-//! source file changed — otherwise the identity would lag the checkout
-//! and the freshness guard would flag a false stale.
+// Captures two build-time stamps so the produced binary can prove what
+// it is and when it was built.
+//
+// 1. `CARGO_RUDZIO_BUILD_STAMP` — `<CARGO_PKG_VERSION>-<unix_epoch_seconds>`.
+// 2. `CARGO_RUDZIO_BUILD_GIT_HEAD` / `CARGO_RUDZIO_BUILD_GIT_DIRTY` —
+//    the git identity of the checkout that produced the binary.
+//
+// # Why the version+epoch stamp
+//
+// Bug #18: `<aggregator>/target/` is preserved across `cargo rudzio
+// test` invocations. Cargo's fingerprinter keys on source content
+// hashes — NOT on the producing binary's version. When `cargo-rudzio`
+// is rebuilt and emits byte-identical aggregator source for an
+// unchanged consumer workspace, cargo skips the relink and the OLD
+// aggregator binary persists with OLD runner code. Behavioural fixes
+// shipped in `cargo-rudzio` silently fail to take effect.
+//
+// The fix routes around cargo's fingerprinter: the aggregator subdir
+// name includes a hash of this stamp (see `aggregator_subdir_name` in
+// `src/generate.rs`). Different stamps → different subdir → fresh
+// `target/` → fresh compile → fresh binary.
+//
+// # Why the git identity
+//
+// `env!("CARGO_BIN_EXE_cargo-rudzio")` resolves a path against the
+// ambient `CARGO_TARGET_DIR`. A shared target dir can hand the e2e
+// suite a binary built from a different HEAD than the test source. The
+// suite re-checks this identity before every spawn (see
+// `cargo-rudzio-test-helpers::assert_fresh_binary`): a binary whose
+// reported HEAD differs from the live checkout HEAD fails loudly
+// instead of silently running the wrong code.
+//
+// # git resolution
+//
+// HEAD and dirty-state come from the `git` binary scoped to
+// `CARGO_MANIFEST_DIR` so worktrees, packed refs, and detached HEAD all
+// resolve correctly. When `git` is unavailable (or the crate is built
+// from a published tarball with no `.git`), both fields fall back to
+// `"unknown"` — the build still succeeds, it just carries no identity.
+//
+// # rerun-if-changed
+//
+// Once any `rerun-if-changed` is emitted, cargo drops its implicit
+// "rerun on any package file change" behaviour, so the source inputs
+// are re-listed explicitly (`src`, `build.rs`, `Cargo.toml`) to keep
+// the version+epoch stamp fresh on every source-touching edit. The git
+// files (`HEAD`, `refs`, `packed-refs`) are watched in addition so a
+// commit or pull refreshes the identity even when no `cargo-rudzio`
+// source file changed — otherwise the identity would lag the checkout
+// and the freshness guard would flag a false stale.
+//
+// NOTE: no `//!` inner doc comments and no `#![...]` inner attributes
+// are permitted here. The build-script-propagation feature splices this
+// file into `mod __member_build { include!("build.rs") }`, a context in
+// which inner attributes are illegal.
 
 use std::env;
 use std::error::Error;
@@ -76,7 +81,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo::rustc-env=CARGO_RUDZIO_BUILD_PROFILE={profile}");
 
     // Keep the stamp fresh on source edits (Bug #18) and the identity
-    // fresh on commit/pull. See the module doc's `rerun-if-changed`.
+    // fresh on commit/pull. See the `rerun-if-changed` note above.
     for path in ["src", "build.rs", "Cargo.toml"] {
         println!("cargo::rerun-if-changed={path}");
     }
