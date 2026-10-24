@@ -448,7 +448,14 @@ mod tests {
 
     #[rudzio::test]
     fn main_rs_skips_workspace_root_but_extern_crates_every_bridge() -> anyhow::Result<()> {
-        let mut root_member = member("root_crate", Vec::new());
+        // The dogfood shape: rudzio's own workspace root. The aggregator
+        // already injects `rudzio` directly (see `is_injected_rudzio_root`
+        // in generate.rs), so `build_main_rs` must NOT emit a second
+        // `extern crate rudzio;` for it. Only this injected rudzio root is
+        // skipped — a standalone non-rudzio workspace root is extern-crated
+        // like any other member (Bug #8; covered e2e by
+        // `ground_truth_bug_08_bin_only_standalone_e2e_spec`).
+        let mut root_member = member("rudzio", Vec::new());
         root_member.manifest_dir = PathBuf::from("/ws-root");
         root_member.has_src_rudzio_suite = true;
 
