@@ -177,7 +177,12 @@ fn run_cargo_rudzio_fresh(
         .env("RUSTC_WRAPPER", "")
         .env("SCCACHE_DISABLE", "1")
         .env("NO_COLOR", "1")
-        .env("CARGO_NET_OFFLINE", "true")
+        // The fixture declares `rudzio` as a `file://` git dep pinned to the
+        // checkout's HEAD. `--offline` blocks cargo from resolving a git rev
+        // not already present in the ambient git db cache (a fresh rev like
+        // HEAD is never cached yet), so the git fetch must be permitted here.
+        // `file://` is a local fetch (no network); the crates.io registry
+        // deps are already cached.
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()

@@ -664,11 +664,12 @@ fn prepopulate_cargo_home(cargo_home: &Path, work_root: &Path) -> Result<()> {
     // We depend on rudzio as a path-dep so the prepop's `cargo check`
     // resolves rudzio's full transitive dep graph (crossbeam-channel,
     // signal-hook, linkme, etc.) — not just the two registry deps
-    // that the synthetic fixture's own manifest names directly. Both
-    // `runtime-tokio-multi-thread` and `runtime-tokio-current-thread`
-    // are enabled to cover the union of features any spec's
-    // synthetic fixture may activate (see
-    // `bug_14_monolith_sigkill_spec::workspace_rudzio_features`).
+    // that the synthetic fixture's own manifest names directly.
+    // `runtime-tokio-multi-thread`, `runtime-tokio-current-thread`,
+    // `runtime-futures`, and `runtime-compio` are enabled to cover the
+    // union of features any spec's synthetic fixture may activate (see
+    // `bug_14_monolith_sigkill_spec::workspace_rudzio_features` and the
+    // `migration_bug_08_modera_exact_e2e_spec` git-dep shape).
     let rudzio_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .ok_or_else(|| {
@@ -690,7 +691,7 @@ publish = false
 [dependencies]
 anyhow = "=1.0.104"
 tokio = {{ version = "=1.54.1", features = ["full"] }}
-rudzio = {{ path = "{rudzio_root}", features = ["common", "runtime-tokio-multi-thread", "runtime-tokio-current-thread"] }}
+rudzio = {{ path = "{rudzio_root}", features = ["common", "runtime-tokio-multi-thread", "runtime-tokio-current-thread", "runtime-futures", "runtime-compio"] }}
 "#,
             rudzio_root = rudzio_root.display(),
         ),
