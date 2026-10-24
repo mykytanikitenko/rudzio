@@ -479,9 +479,17 @@ mod tests {
             Path::new("/ws-root/out"),
         );
 
+        // The fixture's root member is the injected `rudzio` dogfood root,
+        // so the skip must be asserted against `extern crate rudzio;` — not a
+        // hypothetical `root_crate` identifier. Asserting on a name that no
+        // member carries would be a false-green (always-true) check: the skip
+        // predicate could regress to `paths_equal` (Bug #8's pre-fix state)
+        // and the test would still pass. This assertion fails exactly when the
+        // injected rudzio root is wrongly extern-crated.
         anyhow::ensure!(
-            !rendered.contains("extern crate root_crate;"),
-            "workspace-root member must not appear (already covered by rudzio dep):\n{rendered}",
+            !rendered.contains("extern crate rudzio;"),
+            "injected rudzio workspace-root must be skipped (already covered by the \
+             aggregator's direct rudzio dep):\n{rendered}",
         );
         anyhow::ensure!(
             rendered.contains("extern crate only_bins;"),
