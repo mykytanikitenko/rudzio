@@ -297,6 +297,16 @@ Two paths coexist, picked per package:
    through rudzio without any extra binary. Bin-only crates (no
    `src/lib.rs`) skip both edits.
 
+   `harness = false` (and `#[cfg(test)] #[rudzio::main]`) is for test
+   targets only — `[lib]` and `[[test]]`. A `[[bin]]` target is a real
+   executable that `cargo clippy --all-targets` compiles **without**
+   `cfg(test)`, so its `fn main` must exist and be un-gated. If the
+   crate also ships bins, migrate sets `[[bin]] test = false` (never
+   `[[bin]] harness = false`) and leaves each bin's own `fn main`
+   untouched; a bin whose entry point is `#[cfg(test)]`-gated fails
+   `cargo clippy --all-targets --all-features -- -D warnings` with
+   `error[E0601]: main function not found in crate '<name>'`.
+
 2. **Shared-runner aggregation (opt-in via the `y` prompt).** If you
    asked for the shared runner, the tool also creates
    `tests/main.rs` that `#[path]`-includes each top-level `mod X;`

@@ -592,6 +592,19 @@ fn main() {}
 wires both edits automatically when it converts a crate with `src/` unit
 tests.
 
+> **`harness = false` is for test targets, not bins.** `[lib] harness =
+> false` and `[[test]] harness = false` swap the harness of a *test*
+> target. A `[[bin]]` target is a real executable: `cargo clippy
+> --all-targets` (and `cargo build --bins`) compiles it **without**
+> `cfg(test)`, so its `fn main` must not be `#[cfg(test)]`-gated and
+> must exist. If a crate also ships a `[[bin]]` (for example a `token`
+> binary alongside the library), keep a real `#[rudzio::main] fn main()
+> {}` in that bin's source and use `[[bin]] test = false` — never
+> `[[bin]] harness = false` — to suppress its libtest pass. A
+> `#[cfg(test)]`-only entry point in a bin fails
+> `cargo clippy --all-targets --all-features -- -D warnings` with
+> `error[E0601]: main function not found in crate '<name>'`.
+
 ## Same-crate single-binary test runner (unit + integration + e2e)
 
 If every flavour of test lives in one crate — unit tests inside `src/`,
