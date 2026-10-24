@@ -38,6 +38,7 @@ mod migration_bug_07_extern_crate_self_collision_spec;
 mod migration_bug_07_self_named_module_e2e_spec;
 mod migration_bug_07_shapes_e2e_spec;
 mod migration_bug_08_bin_only_crates_spec;
+mod migration_bug_08_modera_cli_e2e_spec;
 mod migration_bug_09_readme_format_json_spec;
 mod migration_bug_10_lexer_harness_e2e_spec;
 mod optional_dep_force_enable_spec;
