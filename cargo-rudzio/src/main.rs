@@ -248,7 +248,7 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
     let manifest_str = manifest.to_str().ok_or_else(|| {
         anyhow::anyhow!("manifest path is not valid UTF-8: {}", manifest.display())
     })?;
-    let argv = aggregator_cargo_args(&parsed, manifest_str);
+    let argv = aggregator_cargo_args(&parsed, manifest_str, &panic_profile_overrides(&plan));
     let mut cmd = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     // Anchor the spawned cargo at the consumer's workspace root so cargo
     // resolves `.cargo/config.toml` from the same place a plain
@@ -521,4 +521,36 @@ fn parse_output_flag(rest: &[String]) -> Result<Option<PathBuf>> {
         }
     }
     Ok(out)
+}
+
+/// Extract `--config profile.<p>.panic="<v>"` args from the plan's re-emitted
+/// `[profile]` table.
+///
+/// Returns one `--config` arg per profile that declares a literal `panic`
+/// value (`[profile.dev]`, `[profile.release]`, …). `package.*` /
+/// `build-override` sub-tables are skipped: they are per-package or
+/// build-script scopes, not profiles, and never carry a top-level `panic`.
+///
+/// `--config` is the highest-precedence layer in cargo's config hierarchy,
+/// above every `.cargo/config.toml` the inner build discovers by walking up
+/// from the consumer's workspace root. Re-stating the consumer's `panic`
+/// there is what keeps it authoritative even when an ancestor config (the
+/// rudzio repo's own `.cargo/config.toml`, which intentionally pins
+/// `panic = "unwind"` for the framework's self-tests) would otherwise
+/// override the aggregator manifest's re-emitted `panic = "abort"`.
+fn panic_profile_overrides(plan: &generate::Plan) -> Vec<String> {
+    let Some(profile) = &plan.profile else {
+        return Vec::new();
+    };
+    let mut args = Vec::new();
+    for (name, item) in profile {
+        let Some(table) = item.as_table() else {
+            continue;
+        };
+        let Some(value) = table.get("panic").and_then(|entry| entry.as_str()) else {
+            continue;
+        };
+        args.push(format!("--config=profile.{name}.panic=\"{value}\""));
+    }
+    args
 }

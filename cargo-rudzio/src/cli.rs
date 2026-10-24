@@ -165,8 +165,16 @@ pub fn runner_exit(code: Option<i32>) -> RunnerExit {
 /// `--no-run`).
 #[inline]
 #[must_use]
-pub fn aggregator_cargo_args(parsed: &ParsedTestArgs, manifest: &str) -> Vec<String> {
-    let capacity = parsed.forwarded_cargo_args.len().saturating_add(8_usize);
+pub fn aggregator_cargo_args(
+    parsed: &ParsedTestArgs,
+    manifest: &str,
+    panic_overrides: &[String],
+) -> Vec<String> {
+    let capacity = parsed
+        .forwarded_cargo_args
+        .len()
+        .saturating_add(8_usize)
+        .saturating_add(panic_overrides.len());
     let mut argv = Vec::with_capacity(capacity);
     argv.push("build".to_owned());
     argv.push("--workspace".to_owned());
@@ -177,6 +185,7 @@ pub fn aggregator_cargo_args(parsed: &ParsedTestArgs, manifest: &str) -> Vec<Str
     if !user_supplied_message_format(&parsed.forwarded_cargo_args) {
         argv.push("--message-format=json-render-diagnostics".to_owned());
     }
+    argv.extend(panic_overrides.iter().cloned());
     argv
 }
 
