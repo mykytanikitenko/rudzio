@@ -31,11 +31,13 @@ fn repo_root() -> anyhow::Result<&'static Path> {
 
 #[rudzio::suite([(runtime = FuturesThreadPool::new, suite = Suite, test = Test)])]
 mod tests {
+    use std::fs::read_to_string;
+
     use super::repo_root;
 
     #[rudzio::test]
     fn readme_does_not_document_format_json() -> anyhow::Result<()> {
-        let readme = std::fs::read_to_string(repo_root()?.join("README.md"))?;
+        let readme = read_to_string(repo_root()?.join("README.md"))?;
         anyhow::ensure!(
             !readme.contains("--format json") && !readme.contains("--format=json"),
             "README must not document `--format json` / `--format=json`: the runner's `--format` \
