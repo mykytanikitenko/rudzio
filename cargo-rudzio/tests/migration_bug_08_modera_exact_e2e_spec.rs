@@ -308,16 +308,20 @@ fn write_modera_crate(root: &Path, git_rev: &str) -> io::Result<()> {
     (runtime = Multithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
 ])]
 mod tests {
+    use std::path::{Path, PathBuf};
+    use std::process::Output;
+
     use super::{
         IsolatedCargoTest, cargo_home_with_full_graph, current_git_head, run_cargo_rudzio_fresh,
         write_modera_crate,
     };
 
+    /// The three `#[rudzio::test]` fns the operator's `tests/cli.rs` declares.
     const EXPECTED_TESTS: [&str; 3] = ["version_short_flag", "version_long_flag", "help_flag"];
 
     /// Assert a successful `cargo rudzio test` run reported exactly the three
     /// `modera` tests.
-    fn assert_three_tests(output: &std::process::Output) -> anyhow::Result<()> {
+    fn assert_three_tests(output: &Output) -> anyhow::Result<()> {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::ensure!(
@@ -340,9 +344,7 @@ mod tests {
     }
 
     /// Build a task-local cargo build dir beside the cargo target dir.
-    fn cargo_build_dir_for(
-        cargo_target_dir: &std::path::Path,
-    ) -> anyhow::Result<std::path::PathBuf> {
+    fn cargo_build_dir_for(cargo_target_dir: &Path) -> anyhow::Result<PathBuf> {
         Ok(cargo_target_dir
             .parent()
             .ok_or_else(|| anyhow::anyhow!("cargo target dir has a parent"))?
