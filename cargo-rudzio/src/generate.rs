@@ -5172,7 +5172,7 @@ fn write_test_binary_proxies(proxies: &[TestBinaryProxy]) -> Result<()> {
         };
         fs::create_dir_all(proxy_dir)
             .with_context(|| format!("creating {}", proxy_dir.display()))?;
-        let source_files = walk_rs_files(&proxy.test_root_dir);
+        let source_files = walk_proxy_files(&proxy.test_root_dir);
         let helper_names: BTreeSet<String> = proxy.helper_synth_lookup.keys().cloned().collect();
         for source_file in source_files {
             let rel = source_file
@@ -5188,6 +5188,15 @@ fn write_test_binary_proxies(proxies: &[TestBinaryProxy]) -> Result<()> {
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent)
                     .with_context(|| format!("creating {}", parent.display()))?;
+            }
+            if source_file.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                // Non-Rust fixture files (`*.me`, `*.json`, …) resolve
+                // relative to the proxied test file's location when read
+                // via `include_str!` / `include_bytes!`, so they must be
+                // copied verbatim next to the proxy (Bug #10).
+                fs::copy(&source_file, &dest)
+                    .with_context(|| format!("copying {}", source_file.display()))?;
+                continue;
             }
             let original = fs::read_to_string(&source_file)
                 .with_context(|| format!("reading {}", source_file.display()))?;
@@ -5216,13 +5225,15 @@ fn write_test_binary_proxies(proxies: &[TestBinaryProxy]) -> Result<()> {
     Ok(())
 }
 
-/// Depth-first walk of `dir`, returning every `.rs` file inside it
+/// Depth-first walk of `dir`, returning every file inside it
 /// (recursive). Used to enumerate the full source set of a test
 /// binary so the proxy emit covers every file `mod.rs` reaches
-/// transitively. Errors during traversal are dropped: a unreadable
-/// subdir yields fewer files (which surfaces later as an unresolved
-/// mod), but doesn't abort the whole proxy emission.
-fn walk_rs_files(dir: &Path) -> Vec<PathBuf> {
+/// transitively — including non-Rust fixtures referenced by
+/// `include_str!` / `include_bytes!` (Bug #10). Errors during
+/// traversal are dropped: a unreadable subdir yields fewer files
+/// (which surfaces later as an unresolved mod or missing fixture),
+/// but doesn't abort the whole proxy emission.
+fn walk_proxy_files(dir: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     let Ok(entries) = fs::read_dir(dir) else {
         return out;
@@ -5231,15 +5242,9 @@ fn walk_rs_files(dir: &Path) -> Vec<PathBuf> {
         let Ok(entry) = entry_result else { continue };
         let path = entry.path();
         if path.is_dir() {
-            out.extend(walk_rs_files(&path));
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
-            out.push(path);
+            out.extend(walk_proxy_files(&path));
         } else {
-            // Non-Rust files (`*.toml`, `*.md`, build-script
-            // outputs, etc.) are ignored — they don't contribute
-            // test-binary sources and the proxy emit shouldn't copy
-            // them. Explicit branch silences the `else_if_without_else`
-            // lint without changing behaviour.
+            out.push(path);
         }
     }
     out.sort();
@@ -5524,22 +5529,16 @@ fn discover_test_root_helpers(test_file: &Path) -> Vec<(String, PathBuf)> {
     let Some(dir) = test_file.parent() else {
         return Vec::new();
     };
-    let file_name = test_file.file_name().and_then(|os_name| os_name.to_str());
     // Determine cargo's mod-resolution base for `mod X;` declarations
-    // in this entry. Directory-style entries (mod.rs / main.rs /
-    // lib.rs) resolve siblings; flat entries (tests/<name>.rs)
-    // resolve under a subdir named after the entry's stem.
-    let resolution_base: PathBuf = if matches!(file_name, Some("mod.rs" | "main.rs" | "lib.rs")) {
-        dir.to_path_buf()
-    } else {
-        let Some(stem) = test_file
-            .file_stem()
-            .and_then(|stem_name| stem_name.to_str())
-        else {
-            return Vec::new();
-        };
-        dir.join(stem)
-    };
+    // in this entry. Every file cargo compiles as an integration-test
+    // crate root — flat `tests/<name>.rs` files AND directory-style
+    // `tests/<name>/mod.rs` entries — resolves its `mod X;` children in
+    // its own directory (`<dir>/X.rs` / `<dir>/X/mod.rs`). A flat test
+    // root is a crate root, not a submodule, so it follows the same
+    // same-directory rule as the canonical `tests/common/mod.rs`
+    // pattern rather than the subdir rule for non-mod-rs submodules
+    // (Bug #10).
+    let resolution_base: PathBuf = dir.to_path_buf();
     let Ok(text) = fs::read_to_string(test_file) else {
         return Vec::new();
     };
