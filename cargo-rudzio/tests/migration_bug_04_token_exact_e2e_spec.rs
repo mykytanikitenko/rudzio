@@ -138,8 +138,14 @@ fn write_fixture(parent: &Path, rev: &str) -> io::Result<PathBuf> {
          workspace = true\n",
     )?;
 
-    fs::write(token.join("src").join("lib.rs"), "pub mod asm;\npub mod span;\npub mod token;\n")?;
-    fs::write(token.join("src").join("asm").join("mod.rs"), "pub mod backend;\n")?;
+    fs::write(
+        token.join("src").join("lib.rs"),
+        "pub mod asm;\npub mod span;\npub mod token;\n",
+    )?;
+    fs::write(
+        token.join("src").join("asm").join("mod.rs"),
+        "pub mod backend;\n",
+    )?;
     fs::write(
         token.join("src").join("span.rs"),
         "//! Minimal span type so the token fixture compiles under `warnings = \"deny\"`.\n\
@@ -229,7 +235,10 @@ fn run_cargo_rudzio(
         .arg("-p")
         .arg("token")
         .current_dir(fixture_root)
-        .env("CARGO", env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+        .env(
+            "CARGO",
+            env::var_os("CARGO").unwrap_or_else(|| "cargo".into()),
+        )
         .env("CARGO_HOME", cargo_home)
         .env("CARGO_TARGET_DIR", cargo_target_dir)
         .env("CARGO_BUILD_BUILD_DIR", cargo_build_dir)

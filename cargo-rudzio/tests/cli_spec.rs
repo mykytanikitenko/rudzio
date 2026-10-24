@@ -502,7 +502,7 @@ mod tests {
     async fn aggregator_cargo_args_emits_build_workspace_bins_with_manifest_path()
     -> anyhow::Result<()> {
         let parsed = parse_test_args(&argv(&["my_filter"]), no_dirs)?;
-        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
+        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml", &[]);
         anyhow::ensure!(
             invocation
                 == vec![
@@ -521,7 +521,7 @@ mod tests {
     #[rudzio::test]
     async fn aggregator_cargo_args_no_run_emits_identical_build_argv() -> anyhow::Result<()> {
         let parsed = parse_test_args(&argv(&["--no-run"]), no_dirs)?;
-        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
+        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml", &[]);
         anyhow::ensure!(
             invocation
                 == vec![
@@ -541,7 +541,7 @@ mod tests {
     #[rudzio::test]
     async fn aggregator_cargo_args_never_emits_separator_or_runner_args() -> anyhow::Result<()> {
         let parsed = parse_test_args(&argv(&["my_filter", "--skip", "slow_"]), no_dirs)?;
-        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
+        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml", &[]);
         anyhow::ensure!(
             !invocation.contains(&"--".to_owned()),
             "argv must never contain `--` separator (runner args go to direct exec, not cargo), \
@@ -1325,7 +1325,7 @@ mod tests {
             &argv(&["--release", "--features", "ci", "my_filter"]),
             no_dirs,
         )?;
-        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
+        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml", &[]);
         anyhow::ensure!(
             invocation.contains(&"--release".to_owned()),
             "expected --release forwarded into build argv, got {invocation:?}",
@@ -1345,7 +1345,7 @@ mod tests {
     async fn aggregator_cargo_args_auto_injects_message_format_when_user_did_not()
     -> anyhow::Result<()> {
         let parsed = parse_test_args(&argv(&["--release"]), no_dirs)?;
-        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
+        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml", &[]);
         anyhow::ensure!(
             invocation.contains(&"--message-format=json-render-diagnostics".to_owned()),
             "expected auto --message-format injection, got {invocation:?}",
@@ -1357,7 +1357,7 @@ mod tests {
     async fn aggregator_cargo_args_skips_auto_message_format_when_user_supplied_equals_form()
     -> anyhow::Result<()> {
         let parsed = parse_test_args(&argv(&["--message-format=human"]), no_dirs)?;
-        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
+        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml", &[]);
         anyhow::ensure!(
             !invocation.contains(&"--message-format=json-render-diagnostics".to_owned()),
             "auto-injection should be skipped when user supplied --message-format, got \
@@ -1374,7 +1374,7 @@ mod tests {
     async fn aggregator_cargo_args_skips_auto_message_format_when_user_supplied_space_form()
     -> anyhow::Result<()> {
         let parsed = parse_test_args(&argv(&["--message-format", "human"]), no_dirs)?;
-        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
+        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml", &[]);
         anyhow::ensure!(
             !invocation.contains(&"--message-format=json-render-diagnostics".to_owned()),
             "auto-injection should be skipped when user supplied --message-format, got \
@@ -1483,7 +1483,7 @@ mod tests {
             &argv(&["my_filter", "--skip", "slow_", "--output=plain"]),
             no_dirs,
         )?;
-        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml");
+        let invocation = aggregator_cargo_args(&parsed, "/tmp/Cargo.toml", &[]);
         anyhow::ensure!(
             !invocation.contains(&"--".to_owned()),
             "argv must not contain a `--` separator under Option B-json, got {invocation:?}",
