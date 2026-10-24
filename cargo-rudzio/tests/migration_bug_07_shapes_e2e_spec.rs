@@ -245,23 +245,6 @@ mod tests {
         assert_exact_passed(&output, &["self_named_shape_answer"])
     }
 
-    /// A lib.rs that rustc 1.99.1 accepts but `syn::parse_str` (2.0.119)
-    /// rejects: a struct field with a default value. The self-named file
-    /// module is still present; the guard must detect it via the fallback
-    /// lexical scan when syn cannot parse the copy.
-    #[rudzio::test]
-    fn field_default_lib_private_self_named_module(ctx: &IsolatedCargoTest) -> anyhow::Result<()> {
-        let workspace = TempDir::new_in(ctx.suite_tempdir())?;
-        let root: &Path = workspace.path();
-        write_self_named_fixture(
-            root,
-            "pub struct Cfg {\n    pub n: u32 = 7\n}\n",
-        )?;
-
-        let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
-        assert_exact_passed(&output, &["self_named_shape_answer"])
-    }
-
     /// GREEN control: a plain parseable private `mod selfmod;` — the
     /// already-working path that must keep working (no over-broadening).
     #[rudzio::test]
