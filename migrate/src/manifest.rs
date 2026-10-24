@@ -361,6 +361,13 @@ fn set_bin_test_false(doc: &mut DocumentMut, bin_name: &str) {
             if !already_false {
                 let _prev = existing.insert("test", value(false));
             }
+            // `harness` is a test-target-only key. `test = false`
+            // already suppresses the bin's auto-discovered test
+            // target, so a leftover `harness = false` is dead config
+            // that invites the E0601 footgun (a reader applies it to
+            // the bin's own `fn main`, which `clippy --all-targets`
+            // then fails to find). Drop it.
+            let _prev_harness = existing.remove("harness");
             return;
         }
     }
