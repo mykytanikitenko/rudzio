@@ -447,14 +447,19 @@ mod tests {
     }
 
     #[rudzio::test]
-    fn main_rs_skips_workspace_root_but_extern_crates_every_bridge() -> anyhow::Result<()> {
+    fn main_rs_extern_crates_every_bridge_including_workspace_root() -> anyhow::Result<()> {
         let mut root_member = member("root_crate", Vec::new());
         root_member.manifest_dir = PathBuf::from("/ws-root");
         root_member.has_src_rudzio_suite = true;
 
-        // Under v2 (Decisions Log [C3]), bin-only members get a bridge
-        // with a stub `[lib]` and the aggregator extern-crates them
-        // uniformly. The pre-v2 skip is gone.
+        // Bug #8 fix: only the actual `rudzio` package at the workspace
+        // root is skipped (see `is_injected_rudzio_root`). Any OTHER
+        // workspace-root member — a standalone crate that is its own
+        // workspace root — is extern-crated like every bridge; the
+        // pre-fix unconditional workspace-root skip left its bridge
+        // rlib unlinked and its `TEST_TOKENS` slice empty. Bin-only
+        // members likewise get a stub `[lib]` bridge and are
+        // extern-crated uniformly under v2 (Decisions Log [C3]).
         let mut bin_only = member("only_bins", Vec::new());
         // Dropping `src_lib_path` reverts `has_lib()` to `false`.
         bin_only.src_lib_path = None;
@@ -473,8 +478,9 @@ mod tests {
         );
 
         anyhow::ensure!(
-            !rendered.contains("extern crate root_crate;"),
-            "workspace-root member must not appear (already covered by rudzio dep):\n{rendered}",
+            rendered.contains("extern crate root_crate;"),
+            "non-rudzio workspace-root member must be extern-crated (Bug #8 fix); only the \
+             actual `rudzio` package at the workspace root is skipped:\n{rendered}",
         );
         anyhow::ensure!(
             rendered.contains("extern crate only_bins;"),
