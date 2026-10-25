@@ -741,13 +741,27 @@ fn write_case10(root: &Path, rev: &str) -> io::Result<PathBuf> {
         consumer.join("tests").join("common").join("mod.rs"),
         "//! Shared helper for the autotests member.\n\npub fn answer() -> u32 { 42 }\n",
     )?;
+    // Unlike the shim cases, `autotests = true` has no `tests/main.rs` to
+    // declare `mod common;`, so the flat test file declares the helper
+    // module itself (the canonical `tests/common/mod.rs` pattern).
     fs::write(
         consumer.join("tests").join("a.rs"),
-        futures_test_file(
-            "autotests_a_uses_common",
-            "    use crate::common::answer;\n",
-            "        anyhow::ensure!(answer() == 42);\n",
-        ),
+        "//! `autotests_a_uses_common` fixture test.\n\n\
+         mod common;\n\n\
+         #[rudzio::suite([\n\
+         \x20\x20\x20\x20(runtime = rudzio::runtime::futures::ThreadPool::new,\n\
+         \x20\x20\x20\x20 suite = rudzio::common::context::Suite,\n\
+         \x20\x20\x20\x20 test = rudzio::common::context::Test),\n\
+         ])]\n\
+         mod tests {\n\
+         \x20\x20\x20\x20use crate::common::answer;\n\
+         \n\
+         \x20\x20\x20\x20#[rudzio::test]\n\
+         \x20\x20\x20\x20async fn autotests_a_uses_common(_ctx: &rudzio::common::context::Test) -> anyhow::Result<()> {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20anyhow::ensure!(answer() == 42);\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
+         \x20\x20\x20\x20}\n\
+         }\n",
     )?;
     Ok(root.to_path_buf())
 }
