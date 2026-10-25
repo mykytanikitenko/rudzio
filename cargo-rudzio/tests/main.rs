@@ -17,6 +17,7 @@ mod cli_spec;
 mod crate_path_under_aggregator_spec;
 mod cross_bridge_spec;
 mod edge_bin_only_e2e_spec;
+mod edge_crate_paths_e2e_spec;
 mod edge_profile_propagation_e2e_spec;
 mod edge_self_named_module_e2e_spec;
 mod edge_workspace_deps_a_e2e_spec;
