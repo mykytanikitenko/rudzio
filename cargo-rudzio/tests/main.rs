@@ -45,6 +45,7 @@ mod migration_bug_08_modera_cli_e2e_spec;
 mod migration_bug_08_modera_exact_e2e_spec;
 mod migration_bug_09_readme_format_json_spec;
 mod migration_bug_10_lexer_harness_e2e_spec;
+mod migration_bug_10_lexer_main_rs_harness_e2e_spec;
 mod optional_dep_force_enable_spec;
 mod package_filter_transitive_spec;
 mod parallel_invocations_shared_target_dir_spec;
