@@ -655,9 +655,12 @@ mod tests {
 
         let stderr = String::from_utf8_lossy(&test_output.stderr);
         anyhow::ensure!(
-            stderr.contains("RUSTC_WRAPPER") && stderr.contains("LLVM_PROFILE_FILE"),
-            "the loud error must name the missing coverage variables (RUSTC_WRAPPER and \
-             LLVM_PROFILE_FILE); got:\n{stderr}",
+            stderr.contains("RUSTC_WRAPPER"),
+            "the loud error must name the missing coverage variable (RUSTC_WRAPPER); got:\n{stderr}",
+        );
+        anyhow::ensure!(
+            stderr.contains("--sh"),
+            "the loud error must point at the `show-env --sh` fix; got:\n{stderr}",
         );
 
         Ok(())

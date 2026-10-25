@@ -113,7 +113,7 @@ test-isolated:
 coverage:
     #!/usr/bin/env bash
     set -euo pipefail
-    eval "$(cargo llvm-cov show-env)"
+    eval "$(cargo llvm-cov show-env --sh)"
     cargo run -p cargo-rudzio -- test -- --threads-parallel-hardlimit=none
     cargo llvm-cov report
     cargo llvm-cov report --lcov --output-path target/lcov.info

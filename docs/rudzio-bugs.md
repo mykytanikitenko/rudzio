@@ -152,14 +152,24 @@ Root cause: the auto-runner is a separate generated project; it doesn't inherit 
 Minimal repro:
 
 ```
-eval "$(cargo llvm-cov show-env)"
+eval "$(cargo llvm-cov show-env --sh)"
 cargo rudzio test
 cargo llvm-cov report
-# error: failed to collect object files: not found object files
-# (searched directory: <target>/llvm-cov-target/debug)
 ```
 
-Root cause: aggregator builds into `<target>/rudzio-auto-runner-<hash>/target` and produces no `.profraw` where llvm-cov searches.
+Root cause (two halves):
+
+1. `cargo llvm-cov show-env` **without** `--sh` emits a single line of
+   `NAME='value'` assignments (no `export ` prefix). `eval`-ing that in
+   bash/zsh creates shell-local variables that child processes do not
+   inherit, so the inner cargo build is uninstrumented and writes zero
+   `.profraw`. The `--sh` flag emits `export NAME='value'` lines, which
+   `eval` propagates. `cargo rudzio` fails loudly when `CARGO_LLVM_COV`
+   is set but `RUSTC_WRAPPER` / `LLVM_PROFILE_FILE` are missing.
+2. The aggregator otherwise builds into
+   `<target>/rudzio-auto-runner-<hash>/target`; under coverage the runner
+   and its `.profraw` are anchored at `CARGO_LLVM_COV_TARGET_DIR` so
+   `cargo llvm-cov report` can collect them.
 
 ## #1 (LOW) — cargo-rudzio's own self-test suite won't compile on 1.99.1
 
