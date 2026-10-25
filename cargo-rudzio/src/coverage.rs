@@ -39,6 +39,11 @@ pub const WRAPPER_CRATE_NAMES_ENV: &str = "__CARGO_LLVM_COV_RUSTC_WRAPPER_CRATE_
 /// Cargo environment variable carrying `--remap-path-prefix` rustflags for
 /// the inner aggregator build.
 pub const RUSTFLAGS_ENV: &str = "RUSTFLAGS";
+/// `show-env`-emitted rustc wrapper that instruments the build.
+pub const RUSTC_WRAPPER_ENV: &str = "RUSTC_WRAPPER";
+/// `show-env`-emitted profile-output pattern the instrumented runner dumps
+/// its `.profraw` to.
+pub const LLVM_PROFILE_FILE_ENV: &str = "LLVM_PROFILE_FILE";
 
 /// Resolved target/build directories for the inner aggregator cargo build.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +94,55 @@ pub fn augment_crate_names(existing: &str, generated: &[String]) -> String {
 #[inline]
 pub fn is_active() -> bool {
     env::var_os(COVERAGE_ENV).is_some()
+}
+
+/// Verify the `show-env` contract's wrapper and profile-file variables are
+/// present in the current process when coverage is active.
+///
+/// `eval "$(cargo llvm-cov show-env)"` without `--sh` emits bare
+/// `NAME='value'` assignments that `eval` makes shell-local (not exported),
+/// so a child process can see [`COVERAGE_ENV`] while [`RUSTC_WRAPPER_ENV`]
+/// and [`LLVM_PROFILE_FILE_ENV`] are still absent. In that half-set state the
+/// inner build would be uninstrumented and the runner would emit no
+/// `.profraw`, so this fails loudly rather than silently producing an empty
+/// report.
+///
+/// # Errors
+///
+/// Fails when either [`RUSTC_WRAPPER_ENV`] or [`LLVM_PROFILE_FILE_ENV`] is
+/// unset, naming the missing variable and the correct `--sh` invocation.
+#[inline]
+pub fn validate_wrapper_env() -> Result<()> {
+    validate_wrapper(
+        env::var_os(RUSTC_WRAPPER_ENV).as_deref(),
+        env::var_os(LLVM_PROFILE_FILE_ENV).as_deref(),
+    )
+}
+
+/// Pure predicate for [`validate_wrapper_env`]: both wrapper variables must
+/// be present, else the environment is incomplete and the build would be
+/// uninstrumented.
+#[inline]
+fn validate_wrapper(
+    rustc_wrapper: Option<&OsStr>,
+    llvm_profile_file: Option<&OsStr>,
+) -> Result<()> {
+    for (name, value) in [
+        (RUSTC_WRAPPER_ENV, rustc_wrapper),
+        (LLVM_PROFILE_FILE_ENV, llvm_profile_file),
+    ] {
+        if value.is_none() {
+            anyhow::bail!(
+                "`{COVERAGE_ENV}` is set but `{name}` is not: the coverage environment is \
+                 incomplete. `cargo llvm-cov show-env` without `--sh` emits non-exported \
+                 assignments, so `eval \"$(cargo llvm-cov show-env)\"` leaves them shell-local \
+                 and child processes do not inherit them. Re-run with \
+                 `eval \"$(cargo llvm-cov show-env --sh)\"` and eval its output before \
+                 `cargo rudzio test`, or unset `{COVERAGE_ENV}` to run without coverage."
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Build a single `--remap-path-prefix=<from>=<to>` rustflag.
@@ -162,7 +216,8 @@ pub fn resolve_aggregator_dirs(
 #[cfg(test)]
 mod tests {
     use super::{
-        COVERAGE_TARGET_DIR_ENV, augment_crate_names, remap_prefix_flag, resolve_aggregator_dirs,
+        COVERAGE_TARGET_DIR_ENV, LLVM_PROFILE_FILE_ENV, RUSTC_WRAPPER_ENV, augment_crate_names,
+        remap_prefix_flag, resolve_aggregator_dirs, validate_wrapper,
     };
     use std::ffi::{OsStr, OsString};
     use std::path::{Path, PathBuf};
@@ -296,6 +351,44 @@ mod tests {
             anyhow::bail!("expected remap flag construction to fail on non-UTF-8 source");
         };
         assert!(format!("{err:#}").contains("not valid UTF-8"));
+        Ok(())
+    }
+
+    #[test]
+    fn validate_wrapper_accepts_both_variables() -> anyhow::Result<()> {
+        validate_wrapper(
+            Some(OsStr::new("/bin/cargo-llvm-cov")),
+            Some(OsStr::new("/target/ws-%p.profraw")),
+        )
+    }
+
+    #[test]
+    fn validate_wrapper_fails_on_missing_rustc_wrapper() -> anyhow::Result<()> {
+        let Err(err) = validate_wrapper(None, Some(OsStr::new("/target/ws-%p.profraw"))) else {
+            anyhow::bail!("expected missing RUSTC_WRAPPER to fail validation");
+        };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains(RUSTC_WRAPPER_ENV),
+            "should name RUSTC_WRAPPER: {msg}"
+        );
+        assert!(
+            msg.contains("--sh"),
+            "should recommend `show-env --sh`: {msg}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn validate_wrapper_fails_on_missing_llvm_profile_file() -> anyhow::Result<()> {
+        let Err(err) = validate_wrapper(Some(OsStr::new("/bin/cargo-llvm-cov")), None) else {
+            anyhow::bail!("expected missing LLVM_PROFILE_FILE to fail validation");
+        };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains(LLVM_PROFILE_FILE_ENV),
+            "should name LLVM_PROFILE_FILE: {msg}"
+        );
         Ok(())
     }
 }

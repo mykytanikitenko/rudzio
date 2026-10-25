@@ -423,6 +423,11 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
 /// environment), rather than silently building an uninstrumented runner that
 /// would emit no `.profraw`.
 fn apply_coverage_build_env(cmd: &mut Command, plan: &generate::Plan) -> Result<()> {
+    // A half-set coverage environment (e.g. `eval "$(cargo llvm-cov show-env)"`
+    // without `--sh`, which leaves the assignments shell-local) would build an
+    // uninstrumented runner that emits no `.profraw`. Fail loudly before
+    // spawning the inner cargo rather than silently yielding an empty report.
+    coverage::validate_wrapper_env()?;
     let existing_names = match env::var(coverage::WRAPPER_CRATE_NAMES_ENV) {
         Ok(names) => names,
         Err(source) => {
