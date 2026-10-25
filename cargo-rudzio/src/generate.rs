@@ -408,6 +408,13 @@ pub struct MemberPlan {
     pub src_lib_path: Option<PathBuf>,
     /// Absolute paths to the member's integration-test source files.
     ///
+    /// Every explicit `[[test]]` entry src path, INCLUDING the
+    /// `tests/main.rs` shim excluded from `test_files`. The shim is the
+    /// crate root that declares the `mod X;` decls its sibling test
+    /// files rely on (`crate::harness`), so it must stay reachable for
+    /// helper discovery even though it carries no test surface itself
+    /// (Bug #10).
+    pub test_entry_files: Vec<PathBuf>,
     /// Excludes its `tests/main.rs` shim.
     pub test_files: Vec<PathBuf>,
     /// Member's `[package].version` as a full semver string (e.g. `1.2.3-alpha.1+build`).
@@ -822,6 +829,7 @@ impl MemberPlan {
             rust_version: String::new(),
             src_lib_path: None,
             test_files: Vec::new(),
+            test_entry_files: Vec::new(),
             version: String::new(),
             version_major: String::new(),
             version_minor: String::new(),
@@ -1497,6 +1505,26 @@ fn collect_package_version_fields(pkg: &Package) -> PackageVersionFields {
     }
 }
 
+/// Load the member's `[package.metadata.rudzio].exclude` list and discover
+/// its `(test_files, test_entry_files)` pair, with member-named context so
+/// failures name the offending crate. Kept as a single call site so
+/// [`build_member_plan`] stays under its line budget while both the shim
+/// entry files and the test files reach the plan (Bug #10).
+fn discover_member_test_surface(
+    pkg: &Package,
+    manifest_dir: &Path,
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+    let exclude_list =
+        load_rudzio_exclude_list(pkg.manifest_path.as_std_path()).with_context(|| {
+            format!(
+                "loading `[package.metadata.rudzio].exclude` from {}",
+                pkg.manifest_path.as_std_path().display()
+            )
+        })?;
+    discover_test_files(pkg, manifest_dir, &exclude_list)
+        .with_context(|| format!("discovering test files for `{}`", pkg.name))
+}
+
 /// Construct a `MemberPlan` for one workspace package.
 ///
 /// Reads the member's manifest for excluded test files, dev-deps, and
@@ -1512,16 +1540,7 @@ fn build_member_plan(pkg: &Package) -> Result<Option<MemberPlan>> {
     let manifest_dir = manifest_parent.to_path_buf();
     let manifest_dir_std = manifest_dir.as_std_path().to_path_buf();
 
-    let exclude_list =
-        load_rudzio_exclude_list(pkg.manifest_path.as_std_path()).with_context(|| {
-            format!(
-                "loading `[package.metadata.rudzio].exclude` from {}",
-                pkg.manifest_path.as_std_path().display()
-            )
-        })?;
-
-    let test_files = discover_test_files(pkg, &manifest_dir_std, &exclude_list)
-        .with_context(|| format!("discovering test files for `{}`", pkg.name))?;
+    let (test_files, test_entry_files) = discover_member_test_surface(pkg, &manifest_dir_std)?;
 
     let bin_targets = collect_bin_targets(pkg);
     let is_proc_macro = detect_proc_macro_lib(pkg);
@@ -1616,6 +1635,7 @@ fn build_member_plan(pkg: &Package) -> Result<Option<MemberPlan>> {
         rust_version,
         src_lib_path,
         test_files,
+        test_entry_files,
         version,
         version_major,
         version_minor,
@@ -2442,16 +2462,16 @@ fn discover_test_files(
     pkg: &Package,
     manifest_dir: &Path,
     exclude: &[PathBuf],
-) -> Result<Vec<PathBuf>> {
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
     let tests_dir = manifest_dir.join("tests");
     let main_shim = tests_dir.join("main.rs");
 
-    // Explicit `[[test]]` entries, minus the aggregator shim (`tests/main.rs`
-    // — the file containing its own `#[rudzio::main]`). Rudzio crates set
-    // `autotests = false` and declare a single `[[test]] path = "tests/main.rs"`,
-    // so the explicit list collapses to empty here and we fall through to
-    // directory scanning.
-    let explicit: Vec<PathBuf> = pkg
+    // Every explicit `[[test]]` entry src path (INCLUDING the shim).
+    // Kept separate from `test_files` so the shim's own `mod X;` decls
+    // stay reachable for helper discovery: the `tests/main.rs` shim is
+    // the crate root that declares `mod harness;` for its sibling test
+    // files, but is itself excluded from `test_files` (Bug #10).
+    let entry_files: Vec<PathBuf> = pkg
         .targets
         .iter()
         .filter(|target| {
@@ -2461,12 +2481,22 @@ fn discover_test_files(
                 .any(|kind| matches!(kind, TargetKind::Test))
         })
         .map(|target| target.src_path.as_std_path().to_path_buf())
-        .filter(|path_buf| path_buf != &main_shim)
+        .collect();
+
+    // Explicit `[[test]]` entries, minus the aggregator shim (`tests/main.rs`
+    // — the file containing its own `#[rudzio::main]`). Rudzio crates set
+    // `autotests = false` and declare a single `[[test]] path = "tests/main.rs"`,
+    // so the explicit list collapses to empty here and we fall through to
+    // directory scanning.
+    let explicit: Vec<PathBuf> = entry_files
+        .iter()
+        .filter(|path_buf| *path_buf != &main_shim)
+        .cloned()
         .collect();
 
     let mut files: Vec<PathBuf> = if explicit.is_empty() {
         if !tests_dir.is_dir() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), entry_files));
         }
         let mut out: Vec<PathBuf> = Vec::new();
         for raw_entry in
@@ -2496,7 +2526,7 @@ fn discover_test_files(
 
     files.sort();
     files.dedup();
-    Ok(files)
+    Ok((files, entry_files))
 }
 
 /// Load `[package.metadata.rudzio].exclude` from the member's Cargo.toml.
@@ -5077,6 +5107,23 @@ fn collect_test_binary_proxies(plan: &Plan, out_dir: &Path) -> Result<Vec<TestBi
             }
             None => false,
         };
+        // Bug #10 (main.rs shim): the `[[test]]` entry shim (e.g.
+        // `tests/main.rs`) is the crate root that declares the
+        // `mod X;` decls its sibling test files rely on, but it is
+        // excluded from `test_files` (it carries only `#[rudzio::main]`,
+        // no test surface). Its non-test helper mods (`mod harness;`)
+        // would otherwise never be discovered or mounted, leaving every
+        // sibling test's `use crate::harness::…` unresolved. Discover
+        // those helpers once per member and hoist them into every proxy
+        // so the bridge crate root carries them under per-binary synth
+        // names (distinct synth per binary ⇒ no duplicate-module clash).
+        let shim_helpers: Vec<(String, PathBuf)> = member
+            .test_entry_files
+            .iter()
+            .filter(|entry| !member.test_files.contains(entry))
+            .flat_map(|entry| discover_test_root_helpers(entry))
+            .filter(|(_, source_path)| !file_carries_test_markers(source_path))
+            .collect();
         for test_file in &member.test_files {
             let Some(test_root_dir) = test_file.parent() else {
                 continue;
@@ -5098,6 +5145,15 @@ fn collect_test_binary_proxies(plan: &Plan, out_dir: &Path) -> Result<Vec<TestBi
                 };
                 helper_mods.push((synth.clone(), proxy_path));
                 let _previous_synth = helper_synth_lookup.insert(helper_name, synth);
+            }
+            for (helper_name, source_path) in &shim_helpers {
+                let synth = format!("__rudzio__{binary_id}__{helper_name}");
+                let proxy_path = match source_path.strip_prefix(test_root_dir) {
+                    Ok(rel) => proxy_dir.join(rel),
+                    Err(_) => continue,
+                };
+                helper_mods.push((synth.clone(), proxy_path));
+                let _previous_synth = helper_synth_lookup.insert(helper_name.clone(), synth);
             }
             out.push(TestBinaryProxy {
                 binary_id,
