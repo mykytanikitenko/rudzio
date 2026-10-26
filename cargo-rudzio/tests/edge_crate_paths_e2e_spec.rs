@@ -604,6 +604,68 @@ mod tests {
         assert_exact_passed(&output, &["hyphenated_lib_name_override_answer"])
     }
 
+    /// **Control — hyphenated package, no `[lib] name` override** — package
+    /// `my-crate` with the implicit default lib name `my_crate`. The test
+    /// references the crate by its sanitised lib name (`my_crate::answer`),
+    /// proving a hyphenated package whose lib name matches the sanitised
+    /// package name still resolves (the fix must not regress the common
+    /// package-name == lib-name path).
+    #[rudzio::test]
+    async fn hyphenated_package_default_lib_name(ctx: &IsolatedCargoTest) -> anyhow::Result<()> {
+        let workspace = ctx.suite_tempdir().join("hyphenated-default-lib-name");
+        let git_rev = rudzio_git_rev()?;
+        write_workspace_manifest(&workspace, &git_rev)?;
+
+        let member = workspace.join("crates").join("my-crate");
+        fs::create_dir_all(member.join("src"))?;
+        fs::create_dir_all(member.join("tests").join("integration"))?;
+        fs::write(
+            member.join("Cargo.toml"),
+            "[package]\n\
+             name = \"my-crate\"\n\
+             version = \"0.1.0\"\n\
+             edition.workspace = true\n\
+             publish = false\n\
+             autotests = false\n\
+             \n\
+             [lib]\n\
+             path = \"src/lib.rs\"\n\
+             \n\
+             [[test]]\n\
+             name = \"integration\"\n\
+             path = \"tests/integration/mod.rs\"\n\
+             harness = false\n\
+             \n\
+             [dev-dependencies]\n\
+             rudzio = { workspace = true }\n\
+             anyhow = { workspace = true }\n\
+             \n\
+             [lints]\n\
+             workspace = true\n",
+        )?;
+        fs::write(
+            member.join("src").join("lib.rs"),
+            "pub fn answer() -> u32 {\n    42\n}\n",
+        )?;
+        write_test_source(
+            &member.join("tests").join("integration"),
+            &simple_body(
+                "use my_crate::answer;",
+                "hyphenated_default_lib_name_answer",
+            ),
+        )?;
+
+        let cargo_build_dir = cargo_build_dir_for(ctx.cargo_target_dir())?;
+        let output = run_cargo_rudzio(
+            ctx.cargo_home(),
+            ctx.cargo_target_dir(),
+            &cargo_build_dir,
+            &workspace,
+            &[],
+        )?;
+        assert_exact_passed(&output, &["hyphenated_default_lib_name_answer"])
+    }
+
     /// **Cross-crate self-named dependency** — crate `a` depends on the
     /// self-named crate `b` (whose lib declares `pub mod b;`), and `a`'s
     /// test uses `b::b::item`. Run workspace-wide.

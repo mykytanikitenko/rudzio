@@ -372,6 +372,21 @@ pub struct MemberPlan {
     /// other proc-macro / build-dep crates, so the bridge's sibling-
     /// bridge dep rule would conflict. Out of scope for v2.
     pub is_proc_macro: bool,
+    /// Member's real lib crate name: the `[lib] name` override when
+    /// present, otherwise cargo's normalised default lib name. Read off
+    /// cargo metadata's lib target `name` (cargo already hyphen→underscore
+    /// normalises the default), so a hyphenated package whose `[lib] name`
+    /// differs from its package name is identified correctly.
+    ///
+    /// Everywhere the member's OWN crate name/ident is referenced (the
+    /// bridge `[lib] name`, the `extern crate self as <ident>` /
+    /// `__rudzio_self_alias` emission, `CratePathRewriter`'s
+    /// `member_lib_ident`, and the aggregator's `extern crate` + dep-key)
+    /// must derive from this, not `package_name`: deriving the ident from
+    /// the package name leaves `use <lib_name>::…` unresolved (E0433).
+    /// Bin-only members have no lib target, so this falls back to the
+    /// package name.
+    pub lib_name: String,
     /// Member's `[package].license` (empty if absent).
     pub license: String,
     /// Member's `[package].license-file` path (empty if absent).
@@ -565,7 +580,7 @@ pub struct WorkspaceDepSpec {
 struct CratePathRewriter<'helpers> {
     /// `helper_name -> synth_name` substitution table.
     helpers: &'helpers BTreeMap<String, String>,
-    /// The member's lib identifier (= `crate_name_to_ident(member.package_name)`).
+    /// The member's lib identifier (= `member.lib_ident()`).
     ///
     /// Used to detect the `super::<member>::*` pattern and strip the
     /// `super::` prefix so the path resolves via the bridge's
@@ -723,7 +738,7 @@ struct TestBinaryProxy {
     /// rewrites `<member_lib_ident>::` → `crate::` in this binary's
     /// proxy sources.
     member_has_self_named_root: bool,
-    /// Member's lib identifier (= `crate_name_to_ident(member.package_name)`).
+    /// Member's lib identifier (= `member.lib_ident()`).
     ///
     /// Used by the syn rewriter to strip `super::<member>::` prefixes
     /// off paths in the original test source. See
@@ -798,13 +813,22 @@ impl MemberPlan {
         self.src_lib_path.is_some()
     }
 
+    /// The member's lib crate identifier: `lib_name` sanitised to a Rust
+    /// identifier (`-` → `_`). This is the name the member's own lib is
+    /// referred to by in source, honouring a `[lib] name` override.
+    #[inline]
+    #[must_use]
+    pub fn lib_ident(&self) -> String {
+        crate_name_to_ident(&self.lib_name)
+    }
+
     /// Construct a `MemberPlan` with empty / default fields except for the package name and manifest dir.
     ///
     /// The remaining fields are populated via direct assignment by the
     /// generator (and by tests) after construction.
     #[inline]
     #[must_use]
-    pub const fn new(package_name: String, manifest_dir: PathBuf) -> Self {
+    pub fn new(package_name: String, manifest_dir: PathBuf) -> Self {
         Self {
             authors: String::new(),
             bin_targets: Vec::new(),
@@ -821,6 +845,7 @@ impl MemberPlan {
             license: String::new(),
             license_file: String::new(),
             links: String::new(),
+            lib_name: package_name.clone(),
             manifest_dir,
             package_name,
             readme: String::new(),
@@ -1429,6 +1454,25 @@ fn locate_src_lib_path(pkg: &Package) -> Option<PathBuf> {
         .map(|target| target.src_path.as_std_path().to_path_buf())
 }
 
+/// The member's real lib crate name, honouring a `[lib] name` override.
+///
+/// Reads cargo metadata's lib target `name` (cargo already normalises the
+/// default lib name — hyphens → underscores — so `my-crate` with no
+/// `[lib] name` reports `my_crate`, while `[lib] name = "renamed_lib"`
+/// reports `renamed_lib` verbatim). Falls back to the package name for
+/// bin-only members, which have no lib target.
+fn locate_lib_name(pkg: &Package) -> String {
+    pkg.targets
+        .iter()
+        .find(|target| {
+            target
+                .kind
+                .iter()
+                .any(|kind| matches!(kind, TargetKind::Lib))
+        })
+        .map_or_else(|| pkg.name.to_string(), |target| target.name.clone())
+}
+
 /// Absolute path to `pkg`'s build script, when it has one.
 ///
 /// Primary source is cargo metadata's `custom-build` target (`kind ==
@@ -1545,6 +1589,7 @@ fn build_member_plan(pkg: &Package) -> Result<Option<MemberPlan>> {
     let bin_targets = collect_bin_targets(pkg);
     let is_proc_macro = detect_proc_macro_lib(pkg);
     let src_lib_path = locate_src_lib_path(pkg);
+    let lib_name = locate_lib_name(pkg);
     let edition = pkg.edition.to_string();
 
     let dev_deps = read_dev_deps(pkg.manifest_path.as_std_path()).with_context(|| {
@@ -1629,6 +1674,7 @@ fn build_member_plan(pkg: &Package) -> Result<Option<MemberPlan>> {
         links,
         manifest_dir: manifest_dir_std,
         package_name: pkg.name.to_string(),
+        lib_name,
         readme,
         repository,
         rudzio_activated_features,
@@ -3943,7 +3989,7 @@ fn remove_file_tolerating_missing(path: &Path) -> IoResult<()> {
 /// build.
 fn emit_member_env_overrides(out: &mut String, member: &MemberPlan) {
     let manifest_dir_str = member.manifest_dir.to_string_lossy();
-    let crate_name = crate_name_to_ident(&member.package_name);
+    let crate_name = member.lib_ident();
     // Decisions Log [E16]: explicit `rerun-if-changed` targets the
     // REAL member directory so changes to source files reachable via
     // bridge symlinks invalidate the bridge cache reliably. Without
@@ -4154,7 +4200,7 @@ fn emit_member_build_invocation(out: &mut String, member: &MemberPlan) {
     if member.build_rs.is_none() {
         return;
     }
-    let crate_name = crate_name_to_ident(&member.package_name);
+    let crate_name = member.lib_ident();
     let manifest_dir = member.manifest_dir.to_string_lossy();
     let manifest_path = member.manifest_dir.join("Cargo.toml");
     let manifest_path_str = manifest_path.to_string_lossy();
@@ -4320,7 +4366,7 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
     // bin-only members it carries a stub body. Either way the
     // aggregator's uniform `extern crate <bridge>;` ([C3]) resolves.
     let mut lib = Table::new();
-    lib.insert("name", value(crate_name_to_ident(&member.package_name)));
+    lib.insert("name", value(member.lib_ident()));
     // Path is bridge-local `src/lib.rs`. `materialize_bridge_src_dir`
     // creates `<bridge>/src/` as a real dir and writes the generated
     // lib.rs into it (or symlinks the member's source for lib-bearing
@@ -4447,7 +4493,7 @@ fn build_bin_bridge_cargo_toml(
     // resolves through the MEMBER bridge (sibling-bridge path), not
     // through a second compile unit of the member. Mirrors the
     // aggregator's own member-bridge dep entry shape.
-    let member_dep_key = crate_name_to_ident(&member.package_name);
+    let member_dep_key = member.lib_ident();
     let mut member_dep = InlineTable::new();
     member_dep.insert(
         "path",
@@ -4662,7 +4708,7 @@ fn build_bridge_lib_rs(member: &MemberPlan, proxies: &[&TestBinaryProxy]) -> Res
     // arguments that a syntax-tree rewrite cannot reach.
     let self_named_root = proxies.iter().any(|proxy| proxy.member_has_self_named_root);
     if member.src_lib_path.is_some() {
-        let lib_ident = crate_name_to_ident(&member.package_name);
+        let lib_ident = member.lib_ident();
         let _alias_emit: FmtResult = if self_named_root {
             writeln!(
                 out,
@@ -4945,7 +4991,7 @@ pub fn build_main_rs(plan: &Plan, _out_dir: &Path) -> String {
         if !bridge_applies_to(member) {
             continue;
         }
-        let ident = crate_name_to_ident(&member.package_name);
+        let ident = member.lib_ident();
         if !seen.insert(ident.clone()) {
             continue;
         }
@@ -5103,7 +5149,7 @@ fn collect_test_binary_proxies(plan: &Plan, out_dir: &Path) -> Result<Vec<TestBi
             Some(lib_path) => {
                 let source = fs::read_to_string(lib_path)
                     .with_context(|| format!("reading member lib.rs at {}", lib_path.display()))?;
-                crate_root_declares_ident(&source, &crate_name_to_ident(&member.package_name))
+                crate_root_declares_ident(&source, &member.lib_ident())
             }
             None => false,
         };
@@ -5159,7 +5205,7 @@ fn collect_test_binary_proxies(plan: &Plan, out_dir: &Path) -> Result<Vec<TestBi
                 binary_id,
                 helper_synth_lookup,
                 helper_mods,
-                member_lib_ident: crate_name_to_ident(&member.package_name),
+                member_lib_ident: member.lib_ident(),
                 member_has_self_named_root,
                 test_root: test_file.clone(),
                 test_root_dir: test_root_dir.to_path_buf(),
@@ -5868,7 +5914,7 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
                 )),
             );
         }
-        deps.insert(&member.package_name, Item::Value(Value::InlineTable(tbl)));
+        deps.insert(&member.lib_ident(), Item::Value(Value::InlineTable(tbl)));
     }
 
     add_bin_bridge_deps(&mut deps, plan, workspace_root_abs);
