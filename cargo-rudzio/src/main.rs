@@ -22,6 +22,7 @@ use cargo_rudzio::build_id;
 use cargo_rudzio::cli::{
     RunnerExit, aggregator_cargo_args, format_target_flag_warning, parse_test_args, runner_exit,
 };
+use cargo_rudzio::config_env;
 use cargo_rudzio::coverage;
 use cargo_rudzio::generate;
 use rudzio_migrate::run::entry_with_args as rudzio_migrate_entry;
@@ -387,8 +388,7 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
     }
     // Direct exec: the runner is already built. Zero second cargo
     // subprocess. Decisions Log [C1] USER-RATIFIED.
-    let mut runner_cmd = Command::new(&runner_path);
-    runner_cmd.args(&parsed.runner_args);
+    let mut runner_cmd = runner_command(&runner_path, &parsed.runner_args, &plan)?;
     let runner_status = runner_cmd.status().with_context(|| {
         format!(
             "failed to exec runner at {runner_path}",
@@ -405,6 +405,38 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
             abort();
         }
     }
+}
+
+/// Build the directly exec'd runner command: user runner args plus the
+/// consumer's `[env]` config.
+///
+/// Resolves workspace `.cargo/config.toml` + `$CARGO_HOME/config.toml` under
+/// cargo's precedence. Stock cargo sets these on the test binary it runs; the
+/// direct exec skips cargo's injection, so `std::env::var` on a `[env]` key
+/// would otherwise come back `NotPresent` (compile-time `option_env!` still
+/// works because the inner `cargo build` is anchored at the workspace root).
+/// Only the runner is patched: build scripts, proc-macros, and rustc already
+/// receive `[env]` from that inner cargo.
+///
+/// # Errors
+///
+/// Fails when a config file is unreadable or holds an unsupported `[env]`
+/// entry.
+fn runner_command(
+    runner_path: &Path,
+    runner_args: &[String],
+    plan: &generate::Plan,
+) -> Result<Command> {
+    let mut runner_cmd = Command::new(runner_path);
+    runner_cmd.args(runner_args);
+    for (name, var) in config_env::resolve(plan.workspace_root.as_std_path())? {
+        // `force = true` overrides an already-set variable; otherwise match
+        // cargo's default of not clobbering the inherited environment.
+        if var.force || env::var_os(&name).is_none() {
+            runner_cmd.env(&name, &var.value);
+        }
+    }
+    Ok(runner_cmd)
 }
 
 /// Instrument the runner and remap bridge source copies under coverage.
