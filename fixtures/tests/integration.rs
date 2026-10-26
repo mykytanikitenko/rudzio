@@ -469,6 +469,117 @@ mod tests {
         Ok(())
     }
 
+    /// Raw-identifier test names (`fn r#type`, `fn r#match`) must register
+    /// and run. The suite codegen derives the hidden token-static and
+    /// run-test-helper idents from the test ident's string form; a raw ident
+    /// carries a `r#` prefix that must be stripped or `format_ident!` panics.
+    #[rudzio::test]
+    fn raw_ident_test_names_register(_ctx: &Test) -> anyhow::Result<()> {
+        let out = run(env!("CARGO_BIN_EXE_raw_ident_test_names_tokio_mt"))?;
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(0_i32),
+            "expected exit 0, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("r#type"), "output:\n{log}");
+        anyhow::ensure!(log.contains("r#match"), "output:\n{log}");
+        anyhow::ensure!(log.contains("ordinary_name"), "output:\n{log}");
+        anyhow::ensure!(log.contains("3 passed"), "output:\n{log}");
+        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        Ok(())
+    }
+
+    /// A `#[rudzio::suite]` mod nested inside another `#[rudzio::suite]` mod.
+    /// The outer suite must pass the still-attributed inner mod through its
+    /// body and register only its own direct test; the inner suite registers
+    /// its own. Both run under a single `#[rudzio::main]`.
+    #[rudzio::test]
+    fn nested_suite_registers_both_levels(_ctx: &Test) -> anyhow::Result<()> {
+        let out = run(env!("CARGO_BIN_EXE_nested_suite_tokio_mt"))?;
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(0_i32),
+            "expected exit 0, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("outer_direct"), "output:\n{log}");
+        anyhow::ensure!(log.contains("inner_direct"), "output:\n{log}");
+        anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
+        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        Ok(())
+    }
+
+    /// A `#[cfg(feature = "...")]`-gated suite *mod*. cfg-stripping runs
+    /// before attribute-macro expansion, so the gated suite vanishes when the
+    /// feature is off (its test must not register) and survives when on.
+    /// Mirrors `macro_rules_cfg_gated_tokio_mt`'s runtime-branch assertion.
+    #[rudzio::test]
+    fn cfg_gated_suite_mod_matches_feature_state(_ctx: &Test) -> anyhow::Result<()> {
+        let out = run(env!("CARGO_BIN_EXE_cfg_gated_suite_mod_tokio_mt"))?;
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(0_i32),
+            "expected exit 0, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("always_on"), "output:\n{log}");
+        if cfg!(feature = "edge-cfg-macro") {
+            anyhow::ensure!(
+                log.contains("cfg_gated_suite_test"),
+                "feature on: gated suite must register, output:\n{log}"
+            );
+            anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
+        } else {
+            anyhow::ensure!(
+                !log.contains("cfg_gated_suite_test"),
+                "feature off: gated suite must be absent, output:\n{log}"
+            );
+            anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
+        }
+        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        Ok(())
+    }
+
+    /// `#[rudzio::main]` on a fn with an explicit
+    /// `-> ::std::process::ExitCode` return type must be tolerated: the macro
+    /// discards the user's signature and always emits its own
+    /// `fn main() -> ExitCode` wrapper.
+    #[rudzio::test]
+    fn main_explicit_exitcode_return_type_works(_ctx: &Test) -> anyhow::Result<()> {
+        let out = run(env!("CARGO_BIN_EXE_main_explicit_exitcode_tokio_mt"))?;
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(0_i32),
+            "expected exit 0, output:\n{log}"
+        );
+        anyhow::ensure!(
+            log.contains("passes_under_explicit_exitcode"),
+            "output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
+        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        Ok(())
+    }
+
+    /// `#[cfg_attr(cond, ignore = "...")]` emitted through `macro_rules!` must
+    /// round-trip through the forwarding macro and be respected: the generated
+    /// test is reported ignored with its reason.
+    #[rudzio::test]
+    fn cfg_attr_ignore_via_macro_rules_is_respected(_ctx: &Test) -> anyhow::Result<()> {
+        let out = run(env!("CARGO_BIN_EXE_cfg_attr_ignore_macro_rules_tokio_mt"))?;
+        let log = log_of(&out);
+        anyhow::ensure!(
+            out.status.code() == Some(0_i32),
+            "expected exit 0, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("cfg_attr_ignored_via_macro"), "output:\n{log}");
+        anyhow::ensure!(
+            log.contains("macro-generated cfg_attr ignore"),
+            "ignore reason must be reported, output:\n{log}"
+        );
+        anyhow::ensure!(log.contains("1 ignored"), "output:\n{log}");
+        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        Ok(())
+    }
+
     #[rudzio::test]
     fn failing_tokio_mt_exits_one(_ctx: &Test) -> anyhow::Result<()> {
         let out = run(env!("CARGO_BIN_EXE_failing_tokio_mt"))?;
