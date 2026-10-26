@@ -369,6 +369,44 @@ mod tests {
         assert_passed(&output, "config_env_runtime")
     }
 
+    #[rudzio::test]
+    fn config_env_cargo_home_fallback_and_workspace_outranks(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let root = ctx.suite_tempdir().join("case3-env-precedence");
+        fs::create_dir_all(&root)?;
+        // Lower-precedence layer: `$CARGO_HOME/config.toml` (the isolated
+        // per-test home `run_cargo_rudzio` passes as CARGO_HOME).
+        fs::write(
+            ctx.cargo_home().join("config.toml"),
+            "[env]\nMY_VAR = \"home\"\nHOME_ONLY = \"home-only\"\n",
+        )?;
+        // Higher-precedence layer: the consumer workspace's own config.
+        // Cargo prefers the closer (workspace) config over $CARGO_HOME, and
+        // still applies $CARGO_HOME keys the workspace does not shadow.
+        write_fixture(
+            &root,
+            rudzio_root()?,
+            "",
+            Some("[env]\nMY_VAR = \"consumer\"\nWORKSPACE_ONLY = \"ws-only\"\n"),
+            "config_env_precedence",
+            r#"            anyhow::ensure!(std::env::var("MY_VAR").as_deref() == Ok("consumer"), "workspace [env] must outrank $CARGO_HOME [env]");
+            anyhow::ensure!(std::env::var("WORKSPACE_ONLY").as_deref() == Ok("ws-only"), "workspace [env] WORKSPACE_ONLY must reach the runner");
+            anyhow::ensure!(std::env::var("HOME_ONLY").as_deref() == Ok("home-only"), "$CARGO_HOME [env] HOME_ONLY must apply as the fallback layer");
+            Ok(())
+"#,
+        )?;
+        let output = run_cargo_rudzio(
+            ctx.cargo_home(),
+            ctx.cargo_target_dir(),
+            &cargo_build_dir_for(ctx.cargo_target_dir())?,
+            &root,
+            &[],
+            &[],
+        )?;
+        assert_passed(&output, "config_env_precedence")
+    }
+
     // ── 4. `[build] rustflags = ["--cfg", ...]` ─────────────────────────
 
     #[rudzio::test]

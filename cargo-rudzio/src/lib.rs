@@ -4,5 +4,6 @@
 
 pub mod build_id;
 pub mod cli;
+pub mod config_env;
 pub mod coverage;
 pub mod generate;
