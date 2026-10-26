@@ -287,5 +287,25 @@ test = false
 name = "cfg_attr_ignore_tokio_mt"
 test = false
 
+[[bin]]
+name = "cfg_attr_ignore_macro_rules_tokio_mt"
+test = false
+
+[[bin]]
+name = "cfg_gated_suite_mod_tokio_mt"
+test = false
+
+[[bin]]
+name = "main_explicit_exitcode_tokio_mt"
+test = false
+
+[[bin]]
+name = "nested_suite_tokio_mt"
+test = false
+
+[[bin]]
+name = "raw_ident_test_names_tokio_mt"
+test = false
+
 [lints]
 workspace = true

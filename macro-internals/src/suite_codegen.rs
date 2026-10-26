@@ -579,14 +579,7 @@ fn generate_per_test(args: &GeneratePerTestArgs<'_>) -> syn::Result<(TokenStream
         ));
     }
 
-    let token_static_ident = format_ident!(
-        "__RUDZIO_TOKEN_{}_{}_{}",
-        mod_name.to_string().to_ascii_uppercase(),
-        test_name.to_string().to_ascii_uppercase(),
-        cfg_idx,
-    );
-    let run_test_fn = format_ident!("__rudzio_run_test_{}_{}_{}", mod_name, test_name, cfg_idx,);
-
+    let (token_static_ident, run_test_fn) = per_test_idents(mod_name, test_name, cfg_idx);
     // `ctx` is bound in every branch because the runner always runs
     // per-test teardown (`ctx.teardown()`) — that's the whole point
     // of the `Test` trait, regardless of whether the test body
@@ -1466,6 +1459,37 @@ fn to_upper_camel(name: &str) -> String {
         }
     }
     out
+}
+
+/// Stringify an ident into a `format_ident!`-safe fragment. Raw identifiers
+/// (`r#type`) print with a leading `r#`, which is not a valid identifier
+/// fragment; strip it so generated hidden names stay well-formed.
+fn ident_fragment(ident: &Ident) -> String {
+    ident
+        .to_string()
+        .strip_prefix("r#")
+        .map_or_else(|| ident.to_string(), str::to_owned)
+}
+
+/// Generate the two hidden idents for a test fn: the token-static name
+/// (`__RUDZIO_TOKEN_{MOD}_{TEST}_{cfg}`) and the run-test helper name
+/// (`__rudzio_run_test_{mod}_{test}_{cfg}`). Raw test idents (`r#type`) are
+/// sanitized so the fragments stay well-formed identifiers.
+fn per_test_idents(mod_name: &Ident, test_name: &Ident, cfg_idx: usize) -> (Ident, Ident) {
+    let test_fragment = ident_fragment(test_name);
+    let token_static = format_ident!(
+        "__RUDZIO_TOKEN_{}_{}_{}",
+        mod_name.to_string().to_ascii_uppercase(),
+        test_fragment.to_ascii_uppercase(),
+        cfg_idx,
+    );
+    let run_test_fn = format_ident!(
+        "__rudzio_run_test_{}_{}_{}",
+        mod_name,
+        test_fragment,
+        cfg_idx
+    );
+    (token_static, run_test_fn)
 }
 
 /// Hidden const name holding the suite module's outer `module_path!()`.

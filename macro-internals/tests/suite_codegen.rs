@@ -207,4 +207,42 @@ mod tests {
         );
         Ok(())
     }
+
+    /// A raw-identifier test name (`fn r#type`) must not panic the generated
+    /// hidden idents. `format_ident!` over `r#type` would emit `R#TYPE`
+    /// (an invalid fragment); the codegen strips the `r#` prefix so the token
+    /// static and run-test helper names are well-formed.
+    #[rudzio::test]
+    fn raw_ident_test_name_is_sanitized(_ctx: &Test) -> anyhow::Result<()> {
+        let args: MainArgs = parse_quote!([(
+            runtime = rudzio::runtime::futures::ThreadPool::new,
+            suite = rudzio::common::context::Suite,
+            test = rudzio::common::context::Test
+        ),]);
+        let input_mod: ItemMod = parse_quote! {
+            mod tests {
+                use super::Test;
+
+                #[rudzio::test]
+                async fn r#type(_ctx: &Test) -> anyhow::Result<()> { Ok(()) }
+            }
+        };
+
+        let expanded = expand_suite(&args, input_mod)?;
+        let tokens = expanded.to_string();
+
+        anyhow::ensure!(
+            !tokens.contains("R#TYPE"),
+            "raw-ident `r#` fragment must not leak into generated idents:\n{tokens}",
+        );
+        anyhow::ensure!(
+            tokens.contains("__RUDZIO_TOKEN_TESTS_TYPE_0"),
+            "expected sanitized token-static name, got:\n{tokens}",
+        );
+        anyhow::ensure!(
+            tokens.contains("__rudzio_run_test_tests_type_0"),
+            "expected sanitized run-test-helper name, got:\n{tokens}",
+        );
+        Ok(())
+    }
 }
