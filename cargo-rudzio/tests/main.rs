@@ -14,6 +14,7 @@ mod bug_8_helper_discovery_edge_cases_spec;
 mod build_freshness_spec;
 mod cfg_test_warning_narrowing_spec;
 mod cli_spec;
+mod concurrent_same_target_dir_spec;
 mod crate_path_under_aggregator_spec;
 mod cross_bridge_spec;
 mod edge_bin_only_e2e_spec;
