@@ -3505,6 +3505,39 @@ pub fn validate_no_unmounted_markers(plan: &Plan) -> Result<()> {
     Err(anyhow!("{msg}"))
 }
 
+/// Acquire the exclusive per-aggregator generation lock.
+///
+/// Creates the output directory and a `<out_dir>/.rudzio.lock` file if
+/// absent, then blocks until the advisory lock is acquired. Returns the
+/// open handle; dropping it releases the lock. Callers must hold the
+/// returned handle across both [`write_runner`] and the inner cargo
+/// build.
+///
+/// Two `cargo rudzio test` invocations against the same workspace
+/// resolve to the same [`Plan::aggregator_subdir_name`] (same workspace
+/// hash + build stamp) and therefore regenerate the same files under the
+/// same output directory. [`write_runner`] wipes and rewrites `src/` /
+/// `members/` on every invocation; without serialisation one invocation
+/// races another's `fs::write` (`ENOENT` / `ENOTEMPTY`). Cargo's build
+/// lock serialises only the build phase, so the lock must also be held
+/// across the inner build — otherwise a later invocation's regeneration
+/// can clobber an earlier invocation's in-flight build.
+#[inline]
+pub fn lock_aggregator_dir(out_dir: &Path) -> Result<fs::File> {
+    fs::create_dir_all(out_dir)
+        .with_context(|| format!("creating aggregator dir {}", out_dir.display()))?;
+    let lock_path = out_dir.join(".rudzio.lock");
+    let file = fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("opening aggregator lock file {}", lock_path.display()))?;
+    file.lock()
+        .with_context(|| format!("acquiring aggregator lock {}", lock_path.display()))?;
+    Ok(file)
+}
+
 /// Write the generated aggregator crate to `out_dir`.
 ///
 /// Recreates `Cargo.toml`, `build.rs`, `src/main.rs`, `src/tests.rs`,

@@ -244,6 +244,13 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
     plan.restrict_to_test_binaries(&parsed.filters.include_test_binaries)?;
     emit_diagnostic_warnings(&plan);
     let target = plan.default_output_dir();
+    // Serialise concurrent `cargo rudzio test` invocations that resolve
+    // to the same aggregator output dir (same workspace + build stamp).
+    // `write_runner` regenerates `src/` / `members/` on every run, and
+    // that regeneration must also be ordered against the inner cargo
+    // build — cargo's own lock covers only the build phase, so this
+    // guard spans generation through build completion.
+    let _aggregator_lock = generate::lock_aggregator_dir(&target)?;
     generate::write_runner(&plan, &target)?;
     let manifest = target.join("Cargo.toml");
     let manifest_str = manifest.to_str().ok_or_else(|| {
