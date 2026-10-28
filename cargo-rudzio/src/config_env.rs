@@ -37,6 +37,17 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use toml_edit::{DocumentMut, Item, Value};
 
+#[cfg(any(test, rudzio_test))]
+use rudzio::common::context::{Suite, Test};
+#[cfg(any(test, rudzio_test))]
+use rudzio::runtime::futures::ThreadPool;
+#[cfg(all(any(test, rudzio_test), any(target_os = "linux", target_os = "macos"),))]
+use rudzio::runtime::monoio;
+#[cfg(any(test, rudzio_test))]
+use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
+#[cfg(any(test, rudzio_test))]
+use rudzio::runtime::{async_std, compio, embassy, smol};
+
 /// A single resolved `[env]` entry, ready to apply to the runner.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -369,7 +380,19 @@ fn resolve_relative(base: &Path, value: &str, name: &str, path: &Path) -> Result
     Ok(base.join(value).to_string_lossy().into_owned())
 }
 
-#[cfg(test)]
+#[rudzio::suite([
+    (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
+])]
+#[cfg(any(test, rudzio_test))]
 mod tests {
     use std::collections::BTreeMap;
     use std::fs;
@@ -378,7 +401,7 @@ mod tests {
     use toml_edit::DocumentMut;
 
     use super::{
-        EnvVar, discover_config_file, merge_cli_config, merge_file, parse_cli_env_value,
+        EnvVar, Test, discover_config_file, merge_cli_config, merge_file, parse_cli_env_value,
         parse_entry,
     };
 
@@ -394,8 +417,8 @@ mod tests {
         parse_entry(item, name, Path::new("/ws"), Path::new(CONFIG))
     }
 
-    #[test]
-    fn plain_string_entry() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn plain_string_entry(_ctx: &Test) -> anyhow::Result<()> {
         assert_eq!(
             entry("MY_VAR = \"consumer\"", "MY_VAR")?,
             EnvVar {
@@ -406,8 +429,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn inline_table_force() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn inline_table_force(_ctx: &Test) -> anyhow::Result<()> {
         assert_eq!(
             entry("TOKEN = { value = \"secret\", force = true }", "TOKEN")?,
             EnvVar {
@@ -418,8 +441,10 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn inline_table_relative_resolves_against_parent_of_cargo_dir() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn inline_table_relative_resolves_against_parent_of_cargo_dir(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
         assert_eq!(
             entry(
                 "OPENSSL_DIR = { value = \"vendor/openssl\", relative = true }",
@@ -433,8 +458,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn inline_table_unknown_key_fails_loudly() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn inline_table_unknown_key_fails_loudly(_ctx: &Test) -> anyhow::Result<()> {
         let err = entry("MY_VAR = { value = \"x\", bogus = true }", "MY_VAR")
             .err()
             .ok_or_else(|| anyhow::anyhow!("expected an error for an unknown key"))?;
@@ -445,8 +470,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn inline_table_missing_value_fails_loudly() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn inline_table_missing_value_fails_loudly(_ctx: &Test) -> anyhow::Result<()> {
         let err = entry("MY_VAR = { force = true }", "MY_VAR")
             .err()
             .ok_or_else(|| anyhow::anyhow!("expected an error for a missing value"))?;
@@ -454,8 +479,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn non_string_non_table_fails_loudly() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn non_string_non_table_fails_loudly(_ctx: &Test) -> anyhow::Result<()> {
         let err = entry("MY_VAR = 1", "MY_VAR")
             .err()
             .ok_or_else(|| anyhow::anyhow!("expected an error for an integer"))?;
@@ -466,8 +491,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn later_file_overrides_value_and_force_per_key() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn later_file_overrides_value_and_force_per_key(_ctx: &Test) -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         let low = dir.path().join("low.toml");
         let high = dir.path().join("high.toml");
@@ -499,8 +524,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn discover_config_file_prefers_extensionless() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn discover_config_file_prefers_extensionless(_ctx: &Test) -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         fs::write(dir.path().join("config"), "[env]\nA = \"ext\"\n")?;
         fs::write(dir.path().join("config.toml"), "[env]\nA = \"toml\"\n")?;
@@ -510,8 +535,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn discover_config_file_falls_back_to_toml() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn discover_config_file_falls_back_to_toml(_ctx: &Test) -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         fs::write(dir.path().join("config.toml"), "[env]\nA = \"toml\"\n")?;
         let chosen = discover_config_file(dir.path())
@@ -520,15 +545,15 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn discover_config_file_none_when_absent() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn discover_config_file_none_when_absent(_ctx: &Test) -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         assert!(discover_config_file(dir.path()).is_none());
         Ok(())
     }
 
-    #[test]
-    fn cli_env_string_form() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn cli_env_string_form(_ctx: &Test) -> anyhow::Result<()> {
         assert_eq!(
             parse_cli_env_value("FOO", "\"bar\"")?,
             EnvVar {
@@ -539,8 +564,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn cli_env_inline_table_rejected() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn cli_env_inline_table_rejected(_ctx: &Test) -> anyhow::Result<()> {
         let err = parse_cli_env_value("FOO", "{ value = \"bar\", force = true }")
             .err()
             .ok_or_else(|| anyhow::anyhow!("expected the inline table to be rejected"))?;
@@ -548,8 +573,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn cli_env_bare_value_rejected() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn cli_env_bare_value_rejected(_ctx: &Test) -> anyhow::Result<()> {
         let err = parse_cli_env_value("FOO", "bar")
             .err()
             .ok_or_else(|| anyhow::anyhow!("expected the bare value to be rejected"))?;
@@ -557,8 +582,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn cli_env_non_string_scalar_rejected() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn cli_env_non_string_scalar_rejected(_ctx: &Test) -> anyhow::Result<()> {
         let err = parse_cli_env_value("FOO", "42")
             .err()
             .ok_or_else(|| anyhow::anyhow!("expected the integer to be rejected"))?;
@@ -566,8 +591,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn cli_env_nested_subkey_rejected() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn cli_env_nested_subkey_rejected(_ctx: &Test) -> anyhow::Result<()> {
         let mut merged: BTreeMap<String, EnvVar> = BTreeMap::new();
         let err = merge_cli_config(
             &mut merged,
@@ -583,8 +608,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn cli_config_overrides_file_per_key() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn cli_config_overrides_file_per_key(_ctx: &Test) -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         let file = dir.path().join("config.toml");
         fs::write(&file, "[env]\nFOO = \"file\"\nKEEP = \"kept\"\n")?;
@@ -611,8 +636,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn cli_config_file_form_merges_env() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn cli_config_file_form_merges_env(_ctx: &Test) -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         let extra = dir.path().join("extra.toml");
         fs::write(&extra, "[env]\nEXTRA = \"from-file\"\n")?;
@@ -633,8 +658,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn cli_config_ignores_non_env_key() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn cli_config_ignores_non_env_key(_ctx: &Test) -> anyhow::Result<()> {
         let mut merged: BTreeMap<String, EnvVar> = BTreeMap::new();
         merge_cli_config(
             &mut merged,
