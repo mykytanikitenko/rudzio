@@ -631,8 +631,8 @@ mod tests {
             log.contains("passes_under_explicit_exitcode"),
             "output:\n{log}"
         );
-        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&log, &["passes_under_explicit_exitcode"])?;
         Ok(())
     }
 
