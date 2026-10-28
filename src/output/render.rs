@@ -1233,7 +1233,7 @@ fn terminal_width() -> usize {
 #[cfg(unix)]
 fn terminal_height() -> usize {
     let (_cols, rows) = terminal_size_unix();
-    rows.map_or(24, |rows| rows)
+    rows.map_or(24, |height| height)
 }
 
 /// Read the terminal `(cols, rows)` via `TIOCGWINSZ`, walking
