@@ -239,7 +239,10 @@ pub fn render_bridge_impls(plan: &Plan) -> String {
 
 /// Last `::`-delimited segment of `path_str`.
 fn last_segment(path_str: &str) -> String {
-    path_str.rsplit("::").next().unwrap_or(path_str).to_owned()
+    match path_str.rsplit("::").next() {
+        Some(seg) => seg.to_owned(),
+        None => path_str.to_owned(),
+    }
 }
 
 /// Compute `Some("crate::foo::bar")` when `impl_file` maps to a
@@ -250,7 +253,9 @@ fn last_segment(path_str: &str) -> String {
 /// isn't derivable from the path alone and the user needs to tell us
 /// via a custom `mod` declaration.
 fn infer_module_path(impl_file: &Path, pkg_root: &Path) -> Option<String> {
-    let rel = impl_file.strip_prefix(pkg_root).ok()?;
+    let Ok(rel) = impl_file.strip_prefix(pkg_root) else {
+        return None;
+    };
     let components: Vec<&str> = rel
         .components()
         .filter_map(|component| component.as_os_str().to_str())
@@ -276,14 +281,18 @@ fn infer_module_path(impl_file: &Path, pkg_root: &Path) -> Option<String> {
 /// genuinely private, in which case the caller passes through whatever
 /// the scanner saw.
 fn render_visibility(vis: Option<&Visibility>) -> String {
-    vis.map(|value| {
-        quote::ToTokens::to_token_stream(value)
-            .to_string()
-            .trim()
-            .to_owned()
-    })
-    .filter(|text| !text.is_empty())
-    .unwrap_or_else(|| "pub(crate)".to_owned())
+    match vis
+        .map(|value| {
+            quote::ToTokens::to_token_stream(value)
+                .to_string()
+                .trim()
+                .to_owned()
+        })
+        .filter(|text| !text.is_empty())
+    {
+        Some(text) => text,
+        None => "pub(crate)".to_owned(),
+    }
 }
 
 /// Render `crate::a::b::c` for a module whose impl file lies deeper
@@ -291,7 +300,10 @@ fn render_visibility(vis: Option<&Visibility>) -> String {
 /// the leaf doesn't end in `.rs`.
 fn render_deeper_module_path(components: &[&str]) -> Option<String> {
     let mut segments: Vec<String> = Vec::new();
-    let last_idx = components.len().saturating_sub(1);
+    let last_idx = match components.len().checked_sub(1) {
+        Some(v) => v,
+        None => 0,
+    };
     for (idx, comp) in components.iter().enumerate() {
         if idx == last_idx {
             if *comp == "mod.rs" {

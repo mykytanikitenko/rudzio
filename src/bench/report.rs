@@ -246,7 +246,10 @@ impl Report {
                 .ok_or_else(|| anyhow::anyhow!("throughput: division by 10"))?
                 .checked_rem(100_u32)
                 .ok_or_else(|| anyhow::anyhow!("throughput: remainder by 100"))?;
-            writeln!(out, "  throughput:        {int_part}.{centi_part:02} iter/s")?;
+            writeln!(
+                out,
+                "  throughput:        {int_part}.{centi_part:02} iter/s"
+            )?;
         }
         if let (Some(min), Some(max)) = (self.min(), self.max()) {
             let min_text = fmt_duration(min)?;
@@ -456,9 +459,7 @@ impl Report {
         // `numerator − 1` never underflows and the floor form
         // `(numerator − 1) / 1000` equals `ceil(numerator / 1000) − 1`.
         let numerator = permille_u128.checked_mul(n_u128)?.checked_add(999_u128)?;
-        let rank_floor = numerator
-            .checked_sub(1_u128)?
-            .checked_div(1000_u128)?;
+        let rank_floor = numerator.checked_sub(1_u128)?.checked_div(1000_u128)?;
         let Ok(rank) = usize::try_from(rank_floor) else {
             return None;
         };
@@ -517,7 +518,10 @@ impl Report {
     pub fn summary_line(&self) -> anyhow::Result<String> {
         let n = self.samples.len();
         if n == 0 {
-            return Ok(format!("no successful samples (iterations={})", self.iterations));
+            return Ok(format!(
+                "no successful samples (iterations={})",
+                self.iterations
+            ));
         }
         let min_text = fmt_duration(
             self.min()

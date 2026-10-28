@@ -308,22 +308,34 @@ fn parse_sentinel_line(line: &str) -> Option<(&str, usize)> {
     let trimmed = line.trim_end_matches(['\n', '\r']);
     // TODO(rs-cleanup): masking_arith — saturating_sub of two trimmed
     // lengths cannot underflow; intentional.
-    let leading_len = trimmed.len().saturating_sub(trimmed.trim_start().len());
+    let leading_len = match trimmed.len().checked_sub(trimmed.trim_start().len()) {
+        Some(v) => v,
+        None => 0,
+    };
     // TODO(rs-cleanup): silencing — get/unwrap_or fall back to "".
-    let indent = trimmed.get(..leading_len).unwrap_or("");
-    let body = trimmed.get(leading_len..).unwrap_or("");
+    let indent = match trimmed.get(..leading_len) {
+        Some(v) => v,
+        None => "",
+    };
+    let body = match trimmed.get(leading_len..) {
+        Some(v) => v,
+        None => "",
+    };
     // Accept both `/// <sentinel>` and `///<sentinel>` forms; the
     // former is what prettyplease emits when the doc string starts with
     // a leading space, the latter without.
     let after_triple_raw = body.strip_prefix("///")?;
-    let after_triple = after_triple_raw
-        .strip_prefix(' ')
-        .unwrap_or(after_triple_raw);
+    let after_triple = match after_triple_raw.strip_prefix(' ') {
+        Some(v) => v,
+        None => after_triple_raw,
+    };
     let after_prefix = after_triple.strip_prefix(SENTINEL_INNER_PREFIX)?;
     let digits = after_prefix.strip_suffix(SENTINEL_INNER_SUFFIX)?;
     // TODO(rs-cleanup): silencing — malformed index treated as "not a
     // sentinel"; review whether it should hard-error.
-    let idx: usize = digits.parse().ok()?;
+    let Ok(idx) = digits.parse::<usize>() else {
+        return None;
+    };
     Some((indent, idx))
 }
 

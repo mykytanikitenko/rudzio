@@ -548,7 +548,9 @@ fn ensure_suite_root_has_main(mod_rs: &Path) -> anyhow::Result<bool> {
 /// directly modified.
 fn suite_root_mod_rs_for(file: &Path, pkg_root: &Path) -> Option<PathBuf> {
     let tests_dir = pkg_root.join("tests");
-    let rel = file.strip_prefix(&tests_dir).ok()?;
+    let Ok(rel) = file.strip_prefix(&tests_dir) else {
+        return None;
+    };
     let mut components = rel.components();
     let suite = components.next()?.as_os_str().to_str()?.to_owned();
     let rest: Vec<&OsStr> = components.map(Component::as_os_str).collect();
@@ -573,7 +575,9 @@ fn integration_test_entry_for(
     pkg_root: &Path,
 ) -> Option<manifest::IntegrationTestEntry> {
     let tests_dir = pkg_root.join("tests");
-    let rel = file.strip_prefix(&tests_dir).ok()?;
+    let Ok(rel) = file.strip_prefix(&tests_dir) else {
+        return None;
+    };
     let mut components = rel.components();
     let first = components.next()?.as_os_str().to_str()?.to_owned();
     let rest: Vec<&OsStr> = components.map(Component::as_os_str).collect();

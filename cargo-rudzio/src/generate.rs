@@ -904,7 +904,7 @@ impl Plan {
         let mut workspace_hash: u64 = FNV_OFFSET_64;
         for byte in self.workspace_root.as_str().as_bytes() {
             workspace_hash ^= u64::from(*byte);
-            workspace_hash = workspace_hash.wrapping_mul(FNV_PRIME_64);
+            workspace_hash = workspace_hash.overflowing_mul(FNV_PRIME_64).0;
         }
         // Bug #18: hashing `BUILD_STAMP` into the subdir name ensures
         // a fresh `cargo-rudzio` binary produces a fresh aggregator
@@ -914,7 +914,7 @@ impl Plan {
         let mut stamp_hash: u64 = FNV_OFFSET_64;
         for byte in BUILD_STAMP.as_bytes() {
             stamp_hash ^= u64::from(*byte);
-            stamp_hash = stamp_hash.wrapping_mul(FNV_PRIME_64);
+            stamp_hash = stamp_hash.overflowing_mul(FNV_PRIME_64).0;
         }
         format!("{AGGREGATOR_NAME}-{workspace_hash:016x}-{stamp_hash:016x}")
     }
@@ -1213,7 +1213,10 @@ pub fn member_under_any_root(member_dir: &Path, roots: &[PathBuf]) -> bool {
 
 /// Canonicalize `path`, falling back to the input when the OS call fails.
 fn canonicalize_or_keep(path: &Path) -> PathBuf {
-    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    match fs::canonicalize(path) {
+        Ok(canonical) => canonical,
+        Err(_) => path.to_path_buf(),
+    }
 }
 
 /// Reconcile the workspace's `cargo metadata` output into a `Plan` for the generator.
@@ -1514,26 +1517,38 @@ fn collect_package_metadata_fields(pkg: &Package) -> PackageMetadataFields {
         // Cargo's documented `CARGO_PKG_AUTHORS` convention joins authors
         // with `:` (colon).
         authors: pkg.authors.join(":"),
-        description: pkg.description.clone().unwrap_or_default(),
-        homepage: pkg.homepage.clone().unwrap_or_default(),
-        license: pkg.license.clone().unwrap_or_default(),
-        license_file: pkg
-            .license_file
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_default(),
-        links: pkg.links.clone().unwrap_or_default(),
-        readme: pkg
-            .readme
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_default(),
-        repository: pkg.repository.clone().unwrap_or_default(),
-        rust_version: pkg
-            .rust_version
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_default(),
+        description: match pkg.description.clone() {
+            Some(v) => v,
+            None => String::new(),
+        },
+        homepage: match pkg.homepage.clone() {
+            Some(v) => v,
+            None => String::new(),
+        },
+        license: match pkg.license.clone() {
+            Some(v) => v,
+            None => String::new(),
+        },
+        license_file: match pkg.license_file.as_ref() {
+            Some(v) => v.to_string(),
+            None => String::new(),
+        },
+        links: match pkg.links.clone() {
+            Some(v) => v,
+            None => String::new(),
+        },
+        readme: match pkg.readme.as_ref() {
+            Some(v) => v.to_string(),
+            None => String::new(),
+        },
+        repository: match pkg.repository.clone() {
+            Some(v) => v,
+            None => String::new(),
+        },
+        rust_version: match pkg.rust_version.as_ref() {
+            Some(v) => v.to_string(),
+            None => String::new(),
+        },
     }
 }
 
@@ -2052,8 +2067,12 @@ fn load_out_of_line_mod_items(
     } else {
         return None;
     };
-    let text = fs::read_to_string(&body_path).ok()?;
-    let parsed = syn::parse_file(&text).ok()?;
+    let Ok(text) = fs::read_to_string(&body_path) else {
+        return None;
+    };
+    let Ok(parsed) = syn::parse_file(&text) else {
+        return None;
+    };
     Some(parsed.items)
 }
 
@@ -5228,16 +5247,19 @@ fn collect_test_binary_proxies(plan: &Plan, out_dir: &Path) -> Result<Vec<TestBi
 fn compute_test_binary_id(member: &MemberPlan, test_file: &Path) -> String {
     let member_part = sanitize_ident(&member.package_name);
     let parent_part = if test_file.file_name().and_then(|name| name.to_str()) == Some("mod.rs") {
-        test_file
+        match test_file
             .parent()
             .and_then(|parent| parent.file_name())
             .and_then(|name| name.to_str())
-            .unwrap_or("root")
+        {
+            Some(part) => part,
+            None => "root",
+        }
     } else {
-        test_file
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or("test")
+        match test_file.file_stem().and_then(|stem| stem.to_str()) {
+            Some(stem) => stem,
+            None => "test",
+        }
     };
     format!("{member_part}__{}", sanitize_ident(parent_part))
 }
@@ -5678,11 +5700,14 @@ fn parse_top_level_mod_decl(raw_line: &str) -> Option<String> {
     if trimmed.starts_with("//") {
         return None;
     }
-    let after_vis = trimmed
+    let after_vis = match trimmed
         .strip_prefix("pub(crate) ")
         .or_else(|| trimmed.strip_prefix("pub(super) "))
         .or_else(|| trimmed.strip_prefix("pub "))
-        .unwrap_or(trimmed);
+    {
+        Some(v) => v,
+        None => trimmed,
+    };
     let rest = after_vis.strip_prefix("mod ")?;
     let semi_idx = rest.find(';')?;
     let brace_idx = rest.find('{');
@@ -6042,10 +6067,14 @@ fn emit_features_table(doc: &mut DocumentMut, plan: &Plan) {
 /// post-rename name in `dep.name`.
 fn real_package_name<'spec>(dep: &'spec DevDepSpec, plan: &'spec Plan) -> &'spec str {
     if dep.workspace_inherited {
-        plan.workspace_deps
+        match plan
+            .workspace_deps
             .get(&dep.name)
             .and_then(|ws| ws.package.as_deref())
-            .unwrap_or(&dep.name)
+        {
+            Some(name) => name,
+            None => &dep.name,
+        }
     } else {
         &dep.name
     }
@@ -6090,7 +6119,10 @@ fn render_sibling_bridge_dep(dep: &DevDepSpec, plan: &Plan) -> Option<Item> {
     } else {
         None
     };
-    let mut feats: Vec<String> = ws_entry.map(|ws| ws.features.clone()).unwrap_or_default();
+    let mut feats: Vec<String> = match ws_entry {
+        Some(ws) => ws.features.clone(),
+        None => Vec::new(),
+    };
     feats.extend(dep.features.iter().cloned());
     feats.sort();
     feats.dedup();
@@ -6158,7 +6190,10 @@ fn render_build_sibling_real_dep(dep: &DevDepSpec, plan: &Plan) -> Option<Item> 
     } else {
         None
     };
-    let mut feats: Vec<String> = ws_entry.map(|ws| ws.features.clone()).unwrap_or_default();
+    let mut feats: Vec<String> = match ws_entry {
+        Some(ws) => ws.features.clone(),
+        None => Vec::new(),
+    };
     feats.extend(dep.features.iter().cloned());
     feats.sort();
     feats.dedup();
@@ -6417,7 +6452,10 @@ pub fn build_build_rs(_plan: &Plan) -> String {
 /// forbid. Used by the bridge-lib codegen path that splices member-side
 /// proxy paths into `#[path = …]` attributes.
 fn escape_rust_string_literal(value: &str) -> String {
-    let mut buf = String::with_capacity(value.len().saturating_add(2));
+    let mut buf = String::with_capacity(match value.len().checked_add(2) {
+        Some(v) => v,
+        None => 0,
+    });
     buf.push('"');
     buf.push_str(&escape_str_literal(value));
     buf.push('"');
@@ -6476,16 +6514,19 @@ fn escape_str_literal(value: &str) -> String {
 /// Used by [`Plan::restrict_to_test_binaries`] to match `--test foo`
 /// against the workspace's `[[test]]` entries.
 fn test_binary_name_for(file: &Path) -> String {
-    let stem = file
-        .file_stem()
-        .and_then(|os_stem| os_stem.to_str())
-        .unwrap_or("test");
+    let stem = match file.file_stem().and_then(|os_stem| os_stem.to_str()) {
+        Some(s) => s,
+        None => "test",
+    };
     if matches!(stem, "mod" | "main" | "lib") {
-        file.parent()
+        match file
+            .parent()
             .and_then(|parent| parent.file_name())
             .and_then(|os_name| os_name.to_str())
-            .unwrap_or(stem)
-            .to_owned()
+        {
+            Some(name) => name.to_owned(),
+            None => stem.to_owned(),
+        }
     } else {
         stem.to_owned()
     }
@@ -6516,9 +6557,16 @@ fn sanitize_ident(value: &str) -> String {
 /// Falls back to direct equality when canonicalization fails (the paths
 /// may not exist on disk yet — e.g. synthetic test fixtures).
 fn paths_equal(left: &Path, right: &Path) -> bool {
-    fs::canonicalize(left)
-        .ok()
-        .zip(fs::canonicalize(right).ok())
+    let left_canon = match fs::canonicalize(left) {
+        Ok(p) => Some(p),
+        Err(_) => None,
+    };
+    let right_canon = match fs::canonicalize(right) {
+        Ok(p) => Some(p),
+        Err(_) => None,
+    };
+    left_canon
+        .zip(right_canon)
         .is_some_and(|(canonical_left, canonical_right)| canonical_left == canonical_right)
         || left == right
 }

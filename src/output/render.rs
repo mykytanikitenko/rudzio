@@ -22,7 +22,7 @@ use std::str;
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context as _, Result};
+use anyhow::{Context as _, Result, anyhow};
 use crossbeam_channel::{Receiver, Sender, select};
 
 use super::color::Policy as ColorPolicy;
@@ -281,11 +281,7 @@ impl Drawer {
 
     /// Print the header, failure message, and captured output for a
     /// completed test.
-    fn emit_completion_block(
-        &mut self,
-        state: &TestState,
-        outcome: &TestOutcome,
-    ) -> Result<()> {
+    fn emit_completion_block(&mut self, state: &TestState, outcome: &TestOutcome) -> Result<()> {
         if matches!(self.output_mode, OutputMode::Live) {
             self.clear_live_region();
         }
@@ -442,7 +438,9 @@ impl Drawer {
                 thread,
                 elapsed,
                 result,
-            } => self.handle_suite_teardown_finished(runtime_name, suite, thread, elapsed, result)?,
+            } => {
+                self.handle_suite_teardown_finished(runtime_name, suite, thread, elapsed, result)?
+            }
             LifecycleEvent::TestTeardownFailed {
                 module_path,
                 test_name,
@@ -947,8 +945,9 @@ impl Drawer {
                     let remaining = rows_cap
                         .saturating_sub(LIVE_REGION_RESERVED_ROWS)
                         .saturating_sub(used);
-                    output_lines
-                        .extend(bench_histogram_lines(snapshot, self.color, cols, remaining)?);
+                    output_lines.extend(bench_histogram_lines(
+                        snapshot, self.color, cols, remaining,
+                    )?);
                 }
                 (
                     running_line(slot.runtime_name, state, self.color, cols)?,
@@ -1744,7 +1743,10 @@ pub fn bench_histogram_lines(
                 Some(l) => l,
                 None => 0,
             };
-            let glyph = match levels.get(usize::try_from(level).unwrap_or(0).min(7)).copied() {
+            let glyph = match levels
+                .get(usize::try_from(level).unwrap_or(0).min(7))
+                .copied()
+            {
                 Some(g) => g,
                 None => ' ',
             };
