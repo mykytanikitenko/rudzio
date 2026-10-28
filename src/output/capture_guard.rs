@@ -28,7 +28,7 @@ use crate::output::pipe;
 #[cfg(unix)]
 pub struct CaptureGuard {
     /// Join handle for the drawer thread; taken in `Drop`.
-    drawer: Option<JoinHandle<()>>,
+    drawer: Option<JoinHandle<anyhow::Result<()>>>,
     /// Join handle for the stderr pipe-reader thread.
     reader_stderr: Option<JoinHandle<()>>,
     /// Join handle for the stdout pipe-reader thread.
@@ -59,7 +59,7 @@ impl CaptureGuard {
         saved: Arc<pipe::SavedFds>,
         reader_stdout: JoinHandle<()>,
         reader_stderr: JoinHandle<()>,
-        drawer: JoinHandle<()>,
+        drawer: JoinHandle<anyhow::Result<()>>,
         shutdown_tx: Sender<()>,
     ) -> Self {
         Self {

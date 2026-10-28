@@ -7,7 +7,6 @@ use std::io::{self, IsTerminal as _, Write as _};
 use std::mem;
 use std::process::ExitCode;
 use std::sync::Mutex;
-use std::sync::PoisonError;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -116,7 +115,10 @@ impl PlainState {
     /// Append a failure record to the shared list, holding the mutex
     /// only for the duration of the push.
     fn record_failure(&self, info: FailureInfo) {
-        let mut guard = self.failures.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut guard = match self.failures.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         guard.push(info);
     }
 }
@@ -372,8 +374,10 @@ impl SuiteReporter for ModeReporter {
                 let _flush = io::stdout().flush();
             }
             Format::Pretty => {
-                let block = pretty_outcome_block(token, runtime_name, &outcome, plain.colored);
-                write_stdout(&format!("{block}\n"));
+                match pretty_outcome_block(token, runtime_name, &outcome, plain.colored) {
+                    Ok(block) => write_stdout(&format!("{block}\n")),
+                    Err(e) => write_stderr(&format!("render failed: {e:#}\n")),
+                }
             }
         }
 
@@ -724,23 +728,23 @@ impl TestSummary {
 
     #[inline]
     #[must_use]
-    pub const fn merge(self, other: Self) -> Self {
-        Self {
-            cancelled: self.cancelled.saturating_add(other.cancelled),
-            ensure_time_exceeded: self
-                .ensure_time_exceeded
-                .saturating_add(other.ensure_time_exceeded),
-            failed: self.failed.saturating_add(other.failed),
-            hung: self.hung.saturating_add(other.hung),
-            ignored: self.ignored.saturating_add(other.ignored),
-            panicked: self.panicked.saturating_add(other.panicked),
-            passed: self.passed.saturating_add(other.passed),
-            timed_out: self.timed_out.saturating_add(other.timed_out),
-            total: self.total.saturating_add(other.total),
-            teardown_failures: self
-                .teardown_failures
-                .saturating_add(other.teardown_failures),
-        }
+    pub fn merge(self, other: Self) -> anyhow::Result<Self> {
+        let sum = |a: usize, b: usize| -> anyhow::Result<usize> {
+            a.checked_add(b)
+                .ok_or_else(|| anyhow::anyhow!("summary merge: counter overflow"))
+        };
+        Ok(Self {
+            cancelled: sum(self.cancelled, other.cancelled)?,
+            ensure_time_exceeded: sum(self.ensure_time_exceeded, other.ensure_time_exceeded)?,
+            failed: sum(self.failed, other.failed)?,
+            hung: sum(self.hung, other.hung)?,
+            ignored: sum(self.ignored, other.ignored)?,
+            panicked: sum(self.panicked, other.panicked)?,
+            passed: sum(self.passed, other.passed)?,
+            timed_out: sum(self.timed_out, other.timed_out)?,
+            total: sum(self.total, other.total)?,
+            teardown_failures: sum(self.teardown_failures, other.teardown_failures)?,
+        })
     }
 
     #[inline]
@@ -823,7 +827,10 @@ fn enable_full_backtrace_default() {
 /// Format `elapsed` for the trailing `<runtime, …>` block using a
 /// short `1.23s`-style representation.
 fn format_elapsed(elapsed: Duration) -> String {
-    fmt_duration(elapsed)
+    match fmt_duration(elapsed) {
+        Ok(text) => text,
+        Err(_) => format!("{elapsed:?}"),
+    }
 }
 
 /// Format the libtest-shape stderr notice for a `--ensure-time`
@@ -840,9 +847,9 @@ fn format_ensure_time_notice(
         EnsureTimeViolation::Warn => ("warn", thresholds.warn),
     };
     format!(
-        "note: ensure-time {label}: test {qualified} took {elapsed}, exceeds threshold {threshold}",
-        elapsed = fmt_duration(elapsed),
-        threshold = fmt_duration(threshold),
+        "note: ensure-time {label}: test {qualified} took {}, exceeds threshold {}",
+        format_elapsed(elapsed),
+        format_elapsed(threshold),
     )
 }
 
@@ -958,7 +965,10 @@ pub fn normalize_module_path(mp: &str) -> String {
     // `<member>__<stem>`, so the binary id always starts with that
     // ident plus `__`. Capture the prefix once so we can dedupe the
     // member name out of every unwrapped binary id in this pass.
-    let head_segment = mp.split("::").next().unwrap_or("");
+    let head_segment = match mp.split("::").next() {
+        Some(head) => head,
+        None => "",
+    };
     let member_prefix =
         (is_aggregator && !head_segment.is_empty()).then(|| format!("{head_segment}__"));
     let mut out: Vec<&str> = Vec::new();
@@ -977,10 +987,13 @@ pub fn normalize_module_path(mp: &str) -> String {
             continue;
         }
         if let Some(test_id) = seg.strip_prefix("__rudzio_test_") {
-            let cleaned = member_prefix
+            let cleaned = match member_prefix
                 .as_deref()
                 .and_then(|prefix| test_id.strip_prefix(prefix))
-                .unwrap_or(test_id);
+            {
+                Some(cleaned) => cleaned,
+                None => test_id,
+            };
             if !cleaned.is_empty() {
                 out.push(cleaned);
             }
@@ -1002,7 +1015,7 @@ fn pretty_outcome_block(
     runtime_name: &'static str,
     outcome: &TestOutcome,
     colored: bool,
-) -> String {
+) -> anyhow::Result<String> {
     let label = StatusLabel::from_outcome(outcome);
     let (tag_rendered, tag_visible) = status_tag(label, colored);
     let display = qualified_test_name(token.module_path, token.name);
@@ -1020,9 +1033,9 @@ fn pretty_outcome_block(
         // a single atomic write so concurrent runtime threads can't
         // interleave each other's blocks.
         buf.push('\n');
-        buf.push_str(report.detailed_summary().trim_end_matches('\n'));
+        buf.push_str(report.detailed_summary()?.trim_end_matches('\n'));
         if report.failures.is_empty() && report.panics == 0 {
-            let histogram = report.ascii_histogram(10, 30);
+            let histogram = report.ascii_histogram(10, 30)?;
             if !histogram.is_empty() {
                 buf.push('\n');
                 buf.push_str("  histogram:\n");
@@ -1053,7 +1066,7 @@ fn pretty_outcome_block(
     } else {
         // Passed / Ignored / etc.; the status line is the whole payload.
     }
-    buf
+    Ok(buf)
 }
 
 /// One-shot diagnostic message for a finished test — rendered
@@ -1131,16 +1144,22 @@ fn render_status_line(
 ) -> String {
     let lhs_visible = lhs_naked.chars().count();
     let trailing_visible = trailing.chars().count();
-    let pad = term_cols
-        .saturating_sub(lhs_visible)
-        .saturating_sub(trailing_visible)
-        .max(MIN_TRAILING_PAD);
-    let mut out = String::with_capacity(
-        lhs_rendered
-            .len()
-            .saturating_add(pad)
-            .saturating_add(trailing.len()),
-    );
+    let pad = match term_cols
+        .checked_sub(lhs_visible)
+        .and_then(|v| v.checked_sub(trailing_visible))
+    {
+        Some(v) => v.max(MIN_TRAILING_PAD),
+        None => MIN_TRAILING_PAD,
+    };
+    let capacity = match lhs_rendered
+        .len()
+        .checked_add(pad)
+        .and_then(|v| v.checked_add(trailing.len()))
+    {
+        Some(c) => c,
+        None => 0,
+    };
+    let mut out = String::with_capacity(capacity);
     out.push_str(lhs_rendered);
     for _ in 0..pad {
         out.push(' ');
@@ -1174,14 +1193,14 @@ fn print_plain_summary(
     filtered_out: usize,
     elapsed: Duration,
     colored_plain: bool,
-) {
+) -> anyhow::Result<()> {
     if plain.fmt == Format::Terse && total_count > 0 {
         write_stdout("\n");
     }
-    let guard = plain
-        .failures
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
+    let guard = match plain.failures.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     if !guard.is_empty() {
         write_stdout("\nfailures:\n\n");
         for failure in guard.iter() {
@@ -1201,7 +1220,7 @@ fn print_plain_summary(
     } else {
         bold(&red("FAILED", colored_plain), colored_plain)
     };
-    let elapsed_text = fmt_duration(elapsed);
+    let elapsed_text = fmt_duration(elapsed)?;
     write_stdout(&format!(
         "test result: {}. {} passed; {} failed; {} panicked; {} timed out; \
          {} cancelled; {} ignored; {} teardown failed; 0 measured; {} total; \
@@ -1217,6 +1236,7 @@ fn print_plain_summary(
         grand_total.total,
         filtered_out,
     ));
+    Ok(())
 }
 
 /// Group `tokens` by `(runtime_group_key)` and dispatch one OS thread
@@ -1229,7 +1249,7 @@ fn dispatch_test_groups(
     config: &Config,
     root_token: &CancellationToken,
     reporter: &ModeReporter,
-) -> TestSummary {
+) -> anyhow::Result<TestSummary> {
     // Defense-in-depth: confirm macro-generated owner and token agree on
     // the (Runtime, Suite) identity before any cross-type pointer cast
     // can happen inside `RuntimeGroupOwner::run_group`. With the
@@ -1244,11 +1264,11 @@ fn dispatch_test_groups(
     // better than SEGVing in a runtime allocator's memcpy.
     if let Err(msg) = validate_dispatch_table(tokens) {
         write_stderr(&format!("{msg}\n"));
-        return TestSummary {
+        return Ok(TestSummary {
             panicked: 1,
             total: 1,
             ..TestSummary::zero()
-        };
+        });
     }
     let mut groups: HashMap<RuntimeGroupKey, Vec<&'static TestToken>> = HashMap::new();
     for token in tokens {
@@ -1269,14 +1289,8 @@ fn dispatch_test_groups(
                 // runs on its own thread and its own runtime, so
                 // reordering across groups wouldn't change interleaving
                 // in any user-visible way.
-                // TODO(rs-cleanup): permute_with_seed is currently infallible
-                // (always Ok). Once it gains real propagated errors,
-                // dispatch_test_groups should become Result<TestSummary> and
-                // this should `?`-propagate instead of logging. Handling the
-                // Result here keeps the hazard visible without cascading the
-                // signature change through run() yet.
                 if let Err(err) =
-                    permute_with_seed(&mut group_tokens, resolved_shuffle_seed(config))
+                    permute_with_seed(&mut group_tokens, resolved_shuffle_seed(config)?)
                 {
                     write_stderr(&format!("shuffle failed: {err:#}\n"));
                 }
@@ -1299,24 +1313,27 @@ fn dispatch_test_groups(
         for handle in handles {
             match handle.join() {
                 Ok(suite_summary) => {
-                    total = total.merge(TestSummary::from(suite_summary));
+                    total = total.merge(TestSummary::from(suite_summary))?;
                 }
                 Err(payload) => {
-                    let msg = payload
+                    let msg = match payload
                         .downcast_ref::<&str>()
                         .copied()
                         .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-                        .unwrap_or("unknown panic");
+                    {
+                        Some(m) => m,
+                        None => "unknown panic",
+                    };
                     write_stderr(&format!("error: runtime thread panicked: {msg}\n"));
                     total = total.merge(TestSummary {
                         panicked: 1,
                         total: 1,
                         ..TestSummary::zero()
-                    });
+                    })?;
                 }
             }
         }
-        total
+        Ok(total)
     })
 }
 
@@ -1326,7 +1343,10 @@ fn spawn_run_timeout_watchdog(token: CancellationToken, dur: Duration) {
     let _watchdog = thread::spawn(move || {
         thread::sleep(dur);
         if !token.is_cancelled() {
-            let dur_text = fmt_duration(dur);
+            let dur_text = match fmt_duration(dur) {
+                Ok(text) => text,
+                Err(_) => format!("{dur:?}"),
+            };
             write_stderr(&format!(
                 "\nrun timeout ({dur_text}) exceeded, cancelling run...\n"
             ));
@@ -1353,7 +1373,10 @@ fn spawn_grace_force_exit_watchdog(token: CancellationToken, grace: Duration) {
                 thread::sleep(Duration::from_millis(50));
             }
             thread::sleep(grace);
-            let grace_text = fmt_duration(grace);
+            let grace_text = match fmt_duration(grace) {
+                Ok(text) => text,
+                Err(_) => format!("{grace:?}"),
+            };
             write_stderr(&format!(
                 "\nrudzio: {grace_text} grace period exceeded after cancellation, \
                  force-exiting (some phase ignored cooperative cancel)\n"
@@ -1378,8 +1401,11 @@ fn spawn_grace_force_exit_watchdog(token: CancellationToken, grace: Duration) {
 /// `--shuffle-seed=N` if present, otherwise a clock-derived value via
 /// [`derive_shuffle_seed`]. Both branches return the same `u64` so the
 /// caller can pass it to `permute_with_seed` and print it for repro.
-fn resolved_shuffle_seed(config: &Config) -> u64 {
-    config.shuffle_seed.unwrap_or_else(derive_shuffle_seed)
+fn resolved_shuffle_seed(config: &Config) -> anyhow::Result<u64> {
+    match config.shuffle_seed {
+        Some(seed) => Ok(seed),
+        None => derive_shuffle_seed(),
+    }
 }
 
 /// Build a fresh shuffle seed from the wall clock. Used when the user
@@ -1387,17 +1413,21 @@ fn resolved_shuffle_seed(config: &Config) -> u64 {
 /// clock is somehow before `UNIX_EPOCH` — that branch only happens with
 /// a deeply broken system clock and a 0 seed is still a valid (if
 /// boring) permutation. Computed as `secs * 1e9 + subsec_nanos` with
-/// wrapping arithmetic to dodge the u128 → u64 truncation cast: both
-/// `secs` (`u64`) and `subsec_nanos` (`u32`) already fit, so no
-/// information is lost beyond the natural u64 wrap on year ~2554.
-fn derive_shuffle_seed() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |dur| {
-            dur.as_secs()
-                .wrapping_mul(1_000_000_000)
-                .wrapping_add(u64::from(dur.subsec_nanos()))
-        })
+/// checked arithmetic so the year-2554 u64 overflow surfaces as an
+/// error instead of silently wrapping the seed.
+fn derive_shuffle_seed() -> anyhow::Result<u64> {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(dur) => {
+            let seed = dur
+                .as_secs()
+                .checked_mul(1_000_000_000)
+                .ok_or_else(|| anyhow::anyhow!("shuffle seed: seconds overflow"))?
+                .checked_add(u64::from(dur.subsec_nanos()))
+                .ok_or_else(|| anyhow::anyhow!("shuffle seed: nanos overflow"))?;
+            Ok(seed)
+        }
+        Err(_) => Ok(0),
+    }
 }
 
 #[must_use]
@@ -1497,7 +1527,13 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
     // in libtest-compatible form: a re-run with `--shuffle-seed=<N>`
     // reproduces the same order.
     if config.shuffle {
-        let seed = config.shuffle_seed.unwrap_or_else(derive_shuffle_seed);
+        let seed = match resolved_shuffle_seed(&config) {
+            Ok(seed) => seed,
+            Err(e) => {
+                write_stderr(&format!("shuffle seed error: {e:#}\n"));
+                return ExitCode::from(1);
+            }
+        };
         config.shuffle_seed = Some(seed);
         write_stdout(&format!("shuffle seed: {seed}\n"));
     }
@@ -1516,30 +1552,45 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
     let reporter = ModeReporter::new(&config);
     let start = Instant::now();
 
-    let total = dispatch_test_groups(&filtered_tokens, &config, &root_token, &reporter);
+    let total = match dispatch_test_groups(&filtered_tokens, &config, &root_token, &reporter) {
+        Ok(total) => total,
+        Err(e) => {
+            write_stderr(&format!("dispatch failed: {e:#}\n"));
+            return ExitCode::from(1);
+        }
+    };
 
     // Per-test teardown failures aren't visible to the per-thread
     // SuiteSummary (the per-test fn doesn't have it in scope), so fold
     // the reporter's atomic counter in here.
-    let grand_total = total.merge(TestSummary {
+    let grand_total = match total.merge(TestSummary {
         teardown_failures: reporter.test_teardown_failures.load(Ordering::Relaxed),
         ensure_time_exceeded: reporter.ensure_time_exceeded.load(Ordering::Relaxed),
         ..TestSummary::zero()
-    });
+    }) {
+        Ok(g) => g,
+        Err(e) => {
+            write_stderr(&format!("summary merge failed: {e:#}\n"));
+            return ExitCode::from(1);
+        }
+    };
 
     let elapsed = start.elapsed();
 
     // Plain-mode summary rendering. Live mode lets the drawer handle
     // it during its shutdown path.
     if let Some(plain) = &reporter.plain {
-        print_plain_summary(
+        if let Err(e) = print_plain_summary(
             plain,
             grand_total,
             total_count,
             filtered_out,
             elapsed,
             colored_plain,
-        );
+        ) {
+            write_stderr(&format!("summary render failed: {e:#}\n"));
+            return ExitCode::from(1);
+        }
     }
 
     // Flush the libtest-format logfile (no-op when --logfile was not
@@ -1600,9 +1651,8 @@ fn status_tag(outcome_label: StatusLabel, colored: bool) -> (String, usize) {
     let visible = naked.chars().count();
     let painted = paint(&naked, code, colored);
     // Pad with trailing spaces so the status column has uniform width.
-    let pad = STATUS_TAG_WIDTH.saturating_sub(visible);
     let mut out = painted;
-    for _ in 0..pad {
+    for _ in visible..STATUS_TAG_WIDTH {
         out.push(' ');
     }
     (out, STATUS_TAG_WIDTH)
@@ -1699,7 +1749,10 @@ fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
             report.strategy,
         );
         if let Some(p50) = report.median() {
-            let p50_text = fmt_duration(p50);
+            let p50_text = match fmt_duration(p50) {
+                Ok(text) => text,
+                Err(_) => format!("{p50:?}"),
+            };
             let _write_ret: Result<(), fmt::Error> = write!(inner, ", p50 {p50_text}");
         }
         return format!("<{inner}>");
