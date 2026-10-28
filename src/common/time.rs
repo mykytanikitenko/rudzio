@@ -14,29 +14,32 @@ use std::time::Duration;
 /// so call sites that previously used Debug formatting can swap to this
 /// helper without changing the rendered string.
 ///
-/// All arithmetic is performed in `u128` integer space — there is no
-/// floating-point conversion and no fallible operation, so the helper
-/// is total over `Duration`.
+/// All arithmetic is performed in `u128` integer space through
+/// `checked_*` so the workspace `arithmetic_side_effects` /
+/// `integer_division` lints stay green; the divisors are non-zero
+/// literals, but the checked form is kept so a future non-literal
+/// divisor would surface as an error instead of a silent wrap.
 #[must_use]
 #[inline]
-pub fn fmt_duration(dur: Duration) -> String {
+pub fn fmt_duration(dur: Duration) -> anyhow::Result<String> {
     let nanos = dur.as_nanos();
-    if nanos >= 1_000_000_000_u128 {
-        let centi = nanos.checked_div(10_000_000_u128).unwrap_or(0_u128);
-        let int_part = centi.checked_div(100_u128).unwrap_or(0_u128);
-        let frac_part = centi.checked_rem(100_u128).unwrap_or(0_u128);
-        format!("{int_part}.{frac_part:02}s")
+    let (unit, divisor) = if nanos >= 1_000_000_000_u128 {
+        ("s", 10_000_000_u128)
     } else if nanos >= 1_000_000_u128 {
-        let centi = nanos.checked_div(10_000_u128).unwrap_or(0_u128);
-        let int_part = centi.checked_div(100_u128).unwrap_or(0_u128);
-        let frac_part = centi.checked_rem(100_u128).unwrap_or(0_u128);
-        format!("{int_part}.{frac_part:02}ms")
+        ("ms", 10_000_u128)
     } else if nanos >= 1_000_u128 {
-        let centi = nanos.checked_div(10_u128).unwrap_or(0_u128);
-        let int_part = centi.checked_div(100_u128).unwrap_or(0_u128);
-        let frac_part = centi.checked_rem(100_u128).unwrap_or(0_u128);
-        format!("{int_part}.{frac_part:02}\u{b5}s")
+        ("µs", 10_u128)
     } else {
-        format!("{nanos}.00ns")
-    }
+        return Ok(format!("{nanos}.00ns"));
+    };
+    let centi = nanos
+        .checked_div(divisor)
+        .ok_or_else(|| anyhow::anyhow!("duration division by {divisor}"))?;
+    let int_part = centi
+        .checked_div(100_u128)
+        .ok_or_else(|| anyhow::anyhow!("duration division by 100"))?;
+    let frac_part = centi
+        .checked_rem(100_u128)
+        .ok_or_else(|| anyhow::anyhow!("duration remainder by 100"))?;
+    Ok(format!("{int_part}.{frac_part:02}{unit}"))
 }
