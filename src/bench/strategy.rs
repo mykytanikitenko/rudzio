@@ -9,7 +9,7 @@
 
 use std::iter;
 use std::panic::AssertUnwindSafe;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures_util::FutureExt as _;
 use futures_util::StreamExt as _;
@@ -105,8 +105,7 @@ impl Strategy for Sequential {
             }
             let done = idx.checked_add(1).map_or(usize::MAX, |value| value);
             if done.checked_rem(stride).is_some_and(|rem| rem == 0) || done == iterations {
-                let snapshot = ProgressSnapshot::from_samples(&samples, done, iterations)
-                    .map_or(ProgressSnapshot::initial(iterations), |snapshot| snapshot);
+                let snapshot = snapshot_or_initial(&samples, done, iterations);
                 on_progress(snapshot);
             }
         }
@@ -188,8 +187,7 @@ impl Strategy for Concurrent {
             }
             done = done.checked_add(1).map_or(usize::MAX, |value| value);
             if done.is_multiple_of(stride) || done == iterations {
-                let snapshot = ProgressSnapshot::from_samples(&samples, done, iterations)
-                    .map_or(ProgressSnapshot::initial(iterations), |snapshot| snapshot);
+                let snapshot = snapshot_or_initial(&samples, done, iterations);
                 on_progress(snapshot);
             }
         }
@@ -202,4 +200,14 @@ impl Strategy for Concurrent {
             total_elapsed: start.elapsed(),
         }
     }
+}
+
+/// Build the progress snapshot for `done` samples out of `iterations`,
+/// falling back to the initial (zero-filled) snapshot when the sample
+/// set is too small or inconsistent to produce a real one.
+fn snapshot_or_initial(samples: &[Duration], done: usize, iterations: usize) -> ProgressSnapshot {
+    if let Ok(snapshot) = ProgressSnapshot::from_samples(samples, done, iterations) {
+        return snapshot;
+    }
+    ProgressSnapshot::initial(iterations)
 }

@@ -861,17 +861,7 @@ impl Config {
     ) -> Self {
         let parsed = parse_argv(argv);
 
-        let resolved_threads = parsed
-            .threads
-            .or_else(|| {
-                env.get("RUST_TEST_THREADS")
-                    .and_then(|val| val.parse::<usize>().map_or(None, Some))
-                    .filter(|count| *count > 0)
-            })
-            .map_or(
-                thread::available_parallelism().map_or(1, NonZeroUsize::get),
-                |value| value,
-            );
+        let resolved_threads = resolve_threads(parsed.threads, &env);
 
         // `concurrency_limit` defaults to `threads` so the single-flag
         // `--test-threads=N` invocation keeps behaving the way libtest users
@@ -956,6 +946,28 @@ impl OutputMode {
             Self::Plain
         }
     }
+}
+
+/// Parse the `RUST_TEST_THREADS` env var into a thread count, keeping
+/// only strictly-positive values. Unset or unparsable values yield `None`.
+fn env_thread_count(env: &BTreeMap<String, String>) -> Option<usize> {
+    let value = env.get("RUST_TEST_THREADS")?;
+    if let Ok(count) = value.parse::<usize>() {
+        return (count > 0).then_some(count);
+    }
+    None
+}
+
+/// Resolve the worker-thread count: the `--test-threads` flag, else the
+/// `RUST_TEST_THREADS` env var, else `available_parallelism()`.
+fn resolve_threads(threads: Option<usize>, env: &BTreeMap<String, String>) -> usize {
+    if let Some(explicit) = threads {
+        return explicit;
+    }
+    if let Some(env_threads) = env_thread_count(env) {
+        return env_threads;
+    }
+    thread::available_parallelism().map_or(1, NonZeroUsize::get)
 }
 
 /// Parse a `--ensure-time=<warn-ms>,<critical-ms>` value into thresholds.
