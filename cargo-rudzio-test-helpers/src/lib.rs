@@ -1013,10 +1013,10 @@ fn hardlink_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 #[inline]
 #[must_use]
 pub fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("cargo-rudzio-test-helpers must live at <workspace>/cargo-rudzio-test-helpers")
-        .to_path_buf()
+    match Path::new(env!("CARGO_MANIFEST_DIR")).parent() {
+        Some(parent) => parent.to_path_buf(),
+        None => PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+    }
 }
 
 /// Resolve the current checkout's git HEAD (full SHA) via
@@ -1024,16 +1024,23 @@ pub fn repo_root() -> PathBuf {
 /// unavailable or the tree is not a repository.
 #[must_use]
 pub fn current_git_head() -> Option<String> {
-    let output = Command::new("git")
+    let output = match Command::new("git")
         .arg("-C")
         .arg(repo_root())
         .args(["rev-parse", "HEAD"])
         .output()
-        .ok()?;
+    {
+        Ok(output) => output,
+        Err(_) => return None,
+    };
     if !output.status.success() {
         return None;
     }
-    Some(String::from_utf8(output.stdout).ok()?.trim().to_owned())
+    let stdout = match String::from_utf8(output.stdout) {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+    Some(stdout.trim().to_owned())
 }
 
 /// Proves `binary` is the freshly-built cargo-rudzio for the current
@@ -1140,7 +1147,7 @@ fn build_id_field(line: &str, key: &str) -> Option<String> {
 /// enumerated (git unavailable).
 fn newest_source_mtime() -> Option<SystemTime> {
     let root = repo_root();
-    let output = Command::new("git")
+    let output = match Command::new("git")
         .arg("-C")
         .arg(&root)
         .args([
@@ -1152,7 +1159,10 @@ fn newest_source_mtime() -> Option<SystemTime> {
             "cargo-rudzio/Cargo.toml",
         ])
         .output()
-        .ok()?;
+    {
+        Ok(output) => output,
+        Err(_) => return None,
+    };
     if !output.status.success() {
         return None;
     }

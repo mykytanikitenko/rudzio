@@ -9,31 +9,32 @@
 use proc_macro::TokenStream;
 
 use rudzio_macro_internals::{main_codegen, proc_macro_env_codegen, suite_codegen};
-use syn::Error;
-
 #[inline]
 #[proc_macro_attribute]
 pub fn main(args: TokenStream, input: TokenStream) -> TokenStream {
-    main_codegen::expand(args.into(), input.into())
-        .unwrap_or_else(Error::into_compile_error)
-        .into()
+    match main_codegen::expand(args.into(), input.into()) {
+        Ok(ts) => ts.into(),
+        Err(e) => e.into_compile_error().into(),
+    }
 }
 
 #[inline]
 #[proc_macro_attribute]
 pub fn suite(args: TokenStream, input: TokenStream) -> TokenStream {
-    suite_codegen::expand_entry(args.into(), input.into())
-        .unwrap_or_else(Error::into_compile_error)
-        .into()
+    match suite_codegen::expand_entry(args.into(), input.into()) {
+        Ok(ts) => ts.into(),
+        Err(e) => e.into_compile_error().into(),
+    }
 }
 
 #[inline]
 #[proc_macro_attribute]
 pub fn test(args: TokenStream, input: TokenStream) -> TokenStream {
     let args_ts = args.into();
-    suite_codegen::expand_test_attr(&args_ts, input.into())
-        .unwrap_or_else(Error::into_compile_error)
-        .into()
+    match suite_codegen::expand_test_attr(&args_ts, input.into()) {
+        Ok(ts) => ts.into(),
+        Err(e) => e.into_compile_error().into(),
+    }
 }
 
 /// Internal helper: reads the env var named by `input` (a string
@@ -49,9 +50,10 @@ pub fn test(args: TokenStream, input: TokenStream) -> TokenStream {
 #[inline]
 #[proc_macro]
 pub fn __proc_macro_env(input: TokenStream) -> TokenStream {
-    proc_macro_env_codegen::expand(input.into())
-        .unwrap_or_else(Error::into_compile_error)
-        .into()
+    match proc_macro_env_codegen::expand(input.into()) {
+        Ok(ts) => ts.into(),
+        Err(e) => e.into_compile_error().into(),
+    }
 }
 
 /// Internal function-like macro invoked by the hidden
@@ -63,7 +65,8 @@ pub fn __proc_macro_env(input: TokenStream) -> TokenStream {
 #[inline]
 #[proc_macro]
 pub fn __register_test(input: TokenStream) -> TokenStream {
-    suite_codegen::expand_register_test(input.into())
-        .unwrap_or_else(Error::into_compile_error)
-        .into()
+    match suite_codegen::expand_register_test(input.into()) {
+        Ok(ts) => ts.into(),
+        Err(e) => e.into_compile_error().into(),
+    }
 }

@@ -6585,48 +6585,54 @@ mod self_named_root_detection_tests {
 
     /// The parseable, private `mod X;` case the guard has always handled.
     #[test]
-    fn private_mod_is_detected_when_parseable() {
+    fn private_mod_is_detected_when_parseable() -> anyhow::Result<()> {
         assert!(crate_root_declares_ident("mod project;\n", "project"));
+        Ok(())
     }
 
     /// A crate-root `pub fn project()` also binds the ident.
     #[test]
-    fn fn_binding_is_detected() {
+    fn fn_binding_is_detected() -> anyhow::Result<()> {
         assert!(crate_root_declares_ident(
             "pub fn project() {}\n",
             "project"
         ));
+        Ok(())
     }
 
     /// A non-self-named root has no binding for the ident.
     #[test]
-    fn unrelated_ident_is_not_detected() {
+    fn unrelated_ident_is_not_detected() -> anyhow::Result<()> {
         assert!(!crate_root_declares_ident("pub fn other() {}\n", "project"));
+        Ok(())
     }
 
     /// The faithful Bug #7 shape: a leading shebang (`#!`) that
     /// `syn::parse_str` rejects but rustc accepts. `syn::parse_file`
     /// consumes it, so the private `mod selfmod;` is still detected.
     #[test]
-    fn shebang_prefixed_private_mod_is_detected() {
+    fn shebang_prefixed_private_mod_is_detected() -> anyhow::Result<()> {
         let source = "#!/usr/bin/env rust\nmod selfmod;\n\npub fn answer() -> u32 { 42 }\n";
         assert!(crate_root_declares_ident(source, "selfmod"));
+        Ok(())
     }
 
     /// When syn cannot parse the copy at all (rustc-accepted syntax the
     /// pinned syn does not yet know), the lexical fallback still finds the
     /// crate-root `mod selfmod;` and skips the alias.
     #[test]
-    fn lexical_fallback_finds_self_named_mod_when_syn_rejects() {
+    fn lexical_fallback_finds_self_named_mod_when_syn_rejects() -> anyhow::Result<()> {
         let source = "mod selfmod;\n\npub struct Cfg { pub n: u32 = 7 }\n";
         assert!(crate_root_declares_ident(source, "selfmod"));
+        Ok(())
     }
 
     /// The same unparseable source without a self-named `mod` must not
     /// false-positive.
     #[test]
-    fn lexical_fallback_does_not_false_positive_on_other_mod() {
+    fn lexical_fallback_does_not_false_positive_on_other_mod() -> anyhow::Result<()> {
         let source = "mod other;\n\npub struct Cfg { pub n: u32 = 7 }\n";
         assert!(!crate_root_declares_ident(source, "selfmod"));
+        Ok(())
     }
 }

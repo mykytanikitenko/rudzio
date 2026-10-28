@@ -290,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn augment_appends_generated_names_not_already_present() {
+    fn augment_appends_generated_names_not_already_present() -> anyhow::Result<()> {
         let existing = "consumer,consumer_tests,consumer,main";
         let generated = vec!["rudzio_auto_runner".to_owned()];
         let augmented = augment_crate_names(existing, &generated);
@@ -298,20 +298,22 @@ mod tests {
             augmented, "consumer,consumer_tests,main,rudzio_auto_runner",
             "existing duplicates collapsed, generated runner name appended"
         );
+        Ok(())
     }
 
     #[test]
-    fn augment_is_idempotent_when_generated_already_present() {
+    fn augment_is_idempotent_when_generated_already_present() -> anyhow::Result<()> {
         let existing = "consumer,rudzio_auto_runner";
         let generated = vec!["rudzio_auto_runner".to_owned()];
         assert_eq!(
             augment_crate_names(existing, &generated),
             "consumer,rudzio_auto_runner"
         );
+        Ok(())
     }
 
     #[test]
-    fn augment_tolerates_empty_existing_and_trims() {
+    fn augment_tolerates_empty_existing_and_trims() -> anyhow::Result<()> {
         let generated = vec![
             "rudzio_auto_runner".to_owned(),
             "a_bin_rudzio_bridge_lib".to_owned(),
@@ -324,6 +326,7 @@ mod tests {
             augment_crate_names("  consumer ,, consumer ", &generated),
             "consumer,rudzio_auto_runner,a_bin_rudzio_bridge_lib"
         );
+        Ok(())
     }
 
     #[test]
