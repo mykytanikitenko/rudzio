@@ -155,17 +155,17 @@ release-status:
 release-watch:
     gh run watch
 
-# Dry-run `cargo publish` in dep order — sanity check before tagging.
-# Pre-first-publish: each crate's dry-run will fail at the verify step
-# because cargo strips path deps and tries to resolve workspace siblings
-# from crates.io. Use `--no-verify` to package-only check, or run live
-# in order via the release.yml workflow on a tag push.
+# Dry-run packaging of every publishable crate before tagging, in a single
+# `--workspace` pass. `cargo package --workspace` stages the workspace
+# siblings into a local overlay registry, so unpublished same-version path
+# deps (e.g. `rudzio-macro` -> `rudzio-macro-internals = "^0.2.0"`) resolve
+# from the staged siblings instead of crates.io — no `--no-verify` needed.
+# Each crate is packaged AND verified (built) exactly as CI/release would.
+# `--exclude` drops the `publish = false` crates (`rudzio-fixtures`,
+# `cargo-rudzio-test-helpers`) that `--workspace` would otherwise try to
+# package.
 release-dry-run:
-    cargo publish --dry-run --no-verify -p rudzio-macro-internals
-    cargo publish --dry-run --no-verify -p rudzio-macro
-    cargo publish --dry-run --no-verify -p rudzio
-    cargo publish --dry-run --no-verify -p rudzio-migrate
-    cargo publish --dry-run --no-verify -p cargo-rudzio
+    cargo package --workspace --exclude rudzio-fixtures --exclude cargo-rudzio-test-helpers
 
 # Tag current commit and instruct on push, e.g. `just release-tag 0.2.0`
 release-tag VERSION:
