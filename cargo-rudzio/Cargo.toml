@@ -64,16 +64,16 @@ rudzio = { workspace = true, features = [
 ] }
 tempfile = "=3.27.0"
 
-# libc is Unix-only here: `build_dir_deadlock_spec` uses
-# `process_group(0)` + `killpg` to reap the entire grandchild cargo
-# tree on its 180s timeout. Without process-group cleanup, SIGKILL on
-# `cargo-rudzio` leaves the nested `cargo build --bins` grandchildren
-# alive (they are blocked on the same `flock` we are testing for), and
-# they accumulate across runs. Deadlock under `[build] build-dir` is a
-# Unix-cargo phenomenon; the test file itself is gated with
-# `#![cfg(unix)]`.
+# Unix-only test dependencies.
+#
+# `bug_14_monolith_sigkill_spec` uses `process_group(0)` to reap the
+# entire grandchild cargo tree on its safety-bound timeout. Safe signal
+# delivery (`killpg`, `getpgid`) goes through `rustix` (`process`
+# feature) so the spec carries no `unsafe` FFI. `libc` remains only for
+# the `pid_t` type alias used by `bug_14` and `edge_dep_rendering_e2e_spec`.
 [target.'cfg(unix)'.dev-dependencies]
 libc = { workspace = true }
+rustix = { version = "=1.1.5", features = ["process"] }
 
 [lints]
 workspace = true

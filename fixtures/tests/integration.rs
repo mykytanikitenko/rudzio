@@ -90,7 +90,11 @@ fn run(exe: &str) -> anyhow::Result<Output> {
 /// in `Output`. Unix-only; the fixture must print a deterministic
 /// readiness marker so the integration test can race-free signal it.
 #[cfg(unix)]
-fn run_and_signal(exe: &str, ready_marker: &str, signal: i32) -> anyhow::Result<Output> {
+fn run_and_signal(
+    exe: &str,
+    ready_marker: &str,
+    signal: rustix::process::Signal,
+) -> anyhow::Result<Output> {
     use std::os::unix::process::ExitStatusExt as _;
 
     let mut child = Command::new(exe)
@@ -136,15 +140,11 @@ fn run_and_signal(exe: &str, ready_marker: &str, signal: i32) -> anyhow::Result<
     // any post-return setup signal_hook does internally.
     thread::sleep(Duration::from_millis(100_u64));
 
-    let pid = libc::pid_t::try_from(child.id())
+    let pid_raw = i32::try_from(child.id())
         .with_context(|| format!("child pid {} does not fit in pid_t", child.id()))?;
-    #[expect(
-        unsafe_code,
-        reason = "integration test helper delivering a signal via libc::kill — the kill(2) call must be unsafe"
-    )]
-    // SAFETY: `kill(2)` is signal-safe and the child pid is valid (just spawned + still alive).
-    let rc = unsafe { libc::kill(pid, signal) };
-    anyhow::ensure!(rc == 0_i32, "kill({signal}) failed");
+    let pid = rustix::process::Pid::from_raw(pid_raw)
+        .ok_or_else(|| anyhow::anyhow!("child pid 0 is not a valid pid"))?;
+    rustix::process::kill_process(pid, signal).with_context(|| format!("kill({signal:?})"))?;
 
     // Drain the rest of stdout concurrently with stderr.
     let mut stderr = child
@@ -179,7 +179,7 @@ fn run_and_signal(exe: &str, ready_marker: &str, signal: i32) -> anyhow::Result<
             let _killed: IoResult<()> = child.kill();
             let waited = child.wait().context("wait killed child")?;
             anyhow::bail!(
-                "child did not exit within deadline after signal {signal}; \
+                "child did not exit within deadline after signal {signal:?}; \
                  killed via SIGKILL. Final status: {:?}",
                 waited.code()
             );
@@ -1739,7 +1739,7 @@ mod unix_tests {
         let out = run_and_signal(
             env!("CARGO_BIN_EXE_sigint_cancel_tokio_mt"),
             "sigint_cancel_ready_marker",
-            libc::SIGINT,
+            rustix::process::Signal::INT,
         )?;
         let log = log_of(&out);
         anyhow::ensure!(
@@ -1929,7 +1929,7 @@ mod unix_tests {
         let out = run_and_signal(
             env!("CARGO_BIN_EXE_sigint_cancel_tokio_mt"),
             "sigint_cancel_ready_marker",
-            libc::SIGTERM,
+            rustix::process::Signal::TERM,
         )?;
         let log = log_of(&out);
         anyhow::ensure!(
@@ -2059,13 +2059,10 @@ mod unix_tests {
             && let Some(pid_str) = line.strip_prefix("rudzio_capture_test_child_pid=")
             && let Ok(pid) = pid_str.trim().parse::<i32>()
         {
-            #[expect(
-                unsafe_code,
-                reason = "test cleanup: send SIGKILL to the inherited child process the fixture spawned; pid is a one-shot value harvested from the fixture's own log, so there's no aliasing concern"
-            )]
-            // SAFETY: libc::kill with a real PID and SIGKILL is well-defined.
-            unsafe {
-                let _killed = libc::kill(pid, libc::SIGKILL);
+            // SIGKILL the inherited child; pid is a one-shot value harvested
+            // from the fixture's own log. `rustix` wraps `kill(2)` safely.
+            if let Some(pid) = rustix::process::Pid::from_raw(pid) {
+                let _killed = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
             }
         }
     }

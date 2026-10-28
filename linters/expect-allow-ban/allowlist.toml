@@ -1,1107 +1,784 @@
 # expect-allow-ban allowlist
 #
 # Every `#[expect(...)]` / `#[allow(...)]` attribute in the workspace must
-# have one entry here, matched exactly by (path, line, kind, lints). An entry
-# whose line drifts or whose site is deleted becomes an orphan and fails CI;
-# an attribute without an entry is an unallowlisted hit and fails CI.
+# have one entry here, matched exactly by (path, key, kind, lints). An entry
+# whose site is deleted becomes an orphan and fails CI; an attribute without
+# an entry is an unallowlisted hit and fails CI.
+#
+# `key` is the STRUCTURAL identity of the suppression: the `::`-joined path
+# of enclosing items (mods, fns, structs, impl self-types, traits, and their
+# associated items). A file-scope inner attribute (`#![allow(...)]` at crate
+# root) has the empty key. When a single item carries several identical
+# suppressions (e.g. two `#[expect(unsafe_code)]` blocks in one fn), the
+# second and later occurrences get a `.1`, `.2`, ... suffix in source order.
+# Because the key is line-independent, entries survive unrelated edits above
+# the site without re-pointing.
 #
 # `reason` is the human-vetted justification for the suppression and mirrors
 # the in-source `reason = "..."` string (the code's own stated WHY). It is
 # rendered into the orphan report so a reviewer of a failing CI sees what each
 # allowlisted entry claims about itself.
-#
-# Matching is line-based and exact: a suppression that moves must have its
-# `line` re-pointed here; a suppression that is deleted must have its entry
-# removed; a new suppression must add an entry. No wildcards, no path globs.
+
 
 [[entry]]
-path = "cargo-rudzio/src/main.rs"
-line = 7
-kind = "allow"
-lints = ["unused_results", "clippy::needless_pass_by_value"]
-reason = "toml_edit's Table::insert / ArrayOfTables::push API returns the previous value (Option<&mut Item>) which this crate discards under its rewrite-from-scratch generation model; needless_pass_by_value triggers on the owned-input shape toml_edit's builders require. Both are workspace-lint vs third-party-API mismatches, not real hazards."
+path = "cargo-rudzio-test-helpers/src/lib.rs"
+key = "apply_cargo_offline"
+kind = "expect"
+lints = ["unsafe_code"]
+reason = "single-threaded env-guard: set/remove happen on the same thread around a synchronous body, no concurrent env reader"
 
 [[entry]]
 path = "cargo-rudzio/src/generate.rs"
-line = 1
+key = ""
 kind = "allow"
 lints = ["unused_results", "clippy::needless_pass_by_value"]
-reason = "toml_edit's Table::insert / ArrayOfTables::push API returns the previous value (Option<&mut Item>) which this crate discards under its rewrite-from-scratch generation model; needless_pass_by_value triggers on the owned-input shape toml_edit's builders require. Both are workspace-lint vs third-party-API mismatches, not real hazards."
+reason = "toml_edit's insert/push API routinely returns the previous value; CLI glue does not care about the dropped option"
 
 [[entry]]
-path = "cargo-rudzio/tests/registry_preservation_spec.rs"
-line = 225
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/registry_preservation_spec.rs"
-line = 234
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/registry_preservation_spec.rs"
-line = 247
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/crate_path_under_aggregator_spec.rs"
-line = 152
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/crate_path_under_aggregator_spec.rs"
-line = 161
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/crate_path_under_aggregator_spec.rs"
-line = 174
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/optional_dep_force_enable_spec.rs"
-line = 133
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/optional_dep_force_enable_spec.rs"
-line = 142
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/optional_dep_force_enable_spec.rs"
-line = 155
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/strict_parse_spec.rs"
-line = 186
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/strict_parse_spec.rs"
-line = 195
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/strict_parse_spec.rs"
-line = 208
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/per_binary_helper_isolation_spec.rs"
-line = 163
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/per_binary_helper_isolation_spec.rs"
-line = 172
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/per_binary_helper_isolation_spec.rs"
-line = 185
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/cfg_test_warning_narrowing_spec.rs"
-line = 150
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/cfg_test_warning_narrowing_spec.rs"
-line = 159
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/cfg_test_warning_narrowing_spec.rs"
-line = 172
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/features_table_propagation_spec.rs"
-line = 92
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/features_table_propagation_spec.rs"
-line = 101
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/features_table_propagation_spec.rs"
-line = 114
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/path_attribute_helper_spec.rs"
-line = 146
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/path_attribute_helper_spec.rs"
-line = 155
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/path_attribute_helper_spec.rs"
-line = 168
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/main_rs_test_root_helper_spec.rs"
-line = 138
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/main_rs_test_root_helper_spec.rs"
-line = 147
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/main_rs_test_root_helper_spec.rs"
-line = 160
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/synth_name_leak_spec.rs"
-line = 166
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/synth_name_leak_spec.rs"
-line = 175
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/synth_name_leak_spec.rs"
-line = 188
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/bug_8_helper_discovery_edge_cases_spec.rs"
-line = 124
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/bug_8_helper_discovery_edge_cases_spec.rs"
-line = 133
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/bug_8_helper_discovery_edge_cases_spec.rs"
-line = 146
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/bug_10_helper_isolation_edge_cases_spec.rs"
-line = 112
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/bug_10_helper_isolation_edge_cases_spec.rs"
-line = 121
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/bug_10_helper_isolation_edge_cases_spec.rs"
-line = 134
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/bug_11_double_execution_edge_cases_spec.rs"
-line = 153
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/bug_11_double_execution_edge_cases_spec.rs"
-line = 162
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/bug_11_double_execution_edge_cases_spec.rs"
-line = 175
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/package_filter_transitive_spec.rs"
-line = 165
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/package_filter_transitive_spec.rs"
-line = 174
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/package_filter_transitive_spec.rs"
-line = 187
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/bug_12_bare_use_alias_spec.rs"
-line = 162
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/bug_12_bare_use_alias_spec.rs"
-line = 171
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
-
-[[entry]]
-path = "cargo-rudzio/tests/bug_12_bare_use_alias_spec.rs"
-line = 184
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
+path = "cargo-rudzio/src/main.rs"
+key = ""
+kind = "allow"
+lints = ["unused_results", "clippy::needless_pass_by_value"]
+reason = "toml_edit's insert/push API routinely returns the previous value; CLI glue does not care about the dropped option"
 
 [[entry]]
 path = "cargo-rudzio/tests/bug_14_monolith_sigkill_spec.rs"
-line = 283
+key = "generate_consumer_lib_rs"
 kind = "expect"
 lints = ["clippy::too_many_lines"]
-reason = "test fixture or generator: function exceeds 100-line threshold due to inline fixture material (Cargo.toml + src files declared as raw strings in one helper). Refactor target = template+substitute helper; deferred to Phase B aggregator-pre-compile follow-up since the helpers live in spec files migrating to the warmup snapshot pattern."
+reason = "this fn emits a ~150-line Rust source-code template defining `SharedSuite` + `SharedTest`; splitting would fragment the template"
 
 [[entry]]
 path = "cargo-rudzio/tests/bug_14_monolith_sigkill_spec.rs"
-line = 604
+key = "generate_test_binary_mod_rs_distinct"
 kind = "expect"
 lints = ["clippy::too_many_lines"]
-reason = "test fixture or generator: function exceeds 100-line threshold due to inline fixture material (Cargo.toml + src files declared as raw strings in one helper). Refactor target = template+substitute helper; deferred to Phase B aggregator-pre-compile follow-up since the helpers live in spec files migrating to the warmup snapshot pattern."
+reason = "this fn emits a ~200-line Rust source-code template via format!; splitting it into smaller helpers would fragment the template into less-readable chunks and break the 1:1 correspondence between the function body and the generated mod.rs"
 
 [[entry]]
 path = "fixtures/src/bin/bg_thread_panic_in_setup_tokio_mt.rs"
-line = 118
+key = "BgPanicSuite::setup"
 kind = "expect"
 lints = ["clippy::panic"]
 reason = "this fixture asserts the runner's background-thread panic safety net detects panics escaping a non-runtime std::thread; the panic must occur off-runtime to exercise that path"
 
 [[entry]]
 path = "fixtures/src/bin/bg_thread_panic_in_setup_tokio_mt.rs"
-line = 188
+key = "tests::body_passes_despite_bg_panic"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
 reason = "this fixture asserts the test body completes successfully despite a background-thread panic in Suite::setup; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/cancel_token_propagation_tokio_mt.rs"
-line = 29
+key = "tests::cancel_token_wakes_on_teardown"
 kind = "expect"
 lints = ["clippy::print_stdout"]
-reason = "test fixture emits println! markers for spec-side stdout assertions: the runner production code uses tracing; fixtures use println! so the integration test can grep captured stdout for behavior signals. Legitimate test instrumentation, not production code."
+reason = "this fixture asserts Test::teardown cancels the per-test token by emitting a machine-readable cancel_propagation_marker line on stdout that the integration test greps; println! is the deliberate channel"
 
 [[entry]]
 path = "fixtures/src/bin/context_creation_failure_tokio_mt.rs"
-line = 172
+key = "tests::first"
 kind = "expect"
 lints = ["clippy::unreachable"]
 reason = "this fixture exercises Suite::context returning Err; the body must be unreachable to confirm the runner reports SETUP without invoking it"
 
 [[entry]]
 path = "fixtures/src/bin/context_creation_failure_tokio_mt.rs"
-line = 181
+key = "tests::second"
 kind = "expect"
 lints = ["clippy::unreachable"]
 reason = "this fixture exercises Suite::context returning Err; the body must be unreachable to confirm the runner reports SETUP without invoking it"
 
 [[entry]]
 path = "fixtures/src/bin/cross_runtime_parallel.rs"
-line = 184
+key = "start_watchdog"
 kind = "expect"
 lints = ["clippy::print_stderr", "clippy::exit"]
 reason = "this fixture's watchdog must abort the process with a non-zero code if the cross-runtime barrier never releases (the only way to surface a stuck-serialised run from a thread that has no async runtime), and eprintln! is the deliberate channel for the diagnostic line the integration test greps"
 
 [[entry]]
 path = "fixtures/src/bin/custom_context_tokio_mt.rs"
-line = 196
+key = "tests::runs_on_custom_context"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
 reason = "this fixture exercises hand-rolled Suite/Test impls and a non-anyhow error type; the trivial body verifies the macro wires custom contexts correctly, and the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/failing_tokio_mt.rs"
-line = 15
+key = "tests::passes"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture pairs a passing test with a deliberately failing one to assert the runner reports a mixed-outcome summary; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/gradual_cancel_tokio_mt.rs"
-line = 29
+key = "tests::task_cleans_up_on_cancel"
 kind = "expect"
 lints = ["clippy::print_stdout"]
-reason = "test fixture emits println! markers for spec-side stdout assertions: the runner production code uses tracing; fixtures use println! so the integration test can grep captured stdout for behavior signals. Legitimate test instrumentation, not production code."
+reason = "this fixture verifies that a tracked task's cleanup marker reaches stdout before the process exits even when the root cancel token fires mid-task; integration tests grep for the marker"
 
 [[entry]]
 path = "fixtures/src/bin/group_dedup_tokio_mt.rs"
-line = 110
+key = "CountingSuite::setup"
 kind = "expect"
 lints = ["clippy::print_stdout"]
 reason = "this fixture asserts duplicate suite tuples collapse into one group by emitting machine-readable COUNTING_SUITE_SETUP lines that the integration test greps; println! is the deliberate channel"
 
 [[entry]]
 path = "fixtures/src/bin/group_dedup_tokio_mt.rs"
-line = 131
+key = "CountingSuite::teardown"
 kind = "expect"
 lints = ["clippy::print_stdout"]
 reason = "this fixture asserts duplicate suite tuples collapse into one group by emitting machine-readable COUNTING_SUITE_TEARDOWN lines that the integration test greps; println! is the deliberate channel"
 
 [[entry]]
 path = "fixtures/src/bin/hung_run_grace_tokio_mt.rs"
-line = 44
+key = "tests::body_sync_blocks_60s"
 kind = "expect"
 lints = ["clippy::print_stdout"]
-reason = "test fixture emits println! markers for spec-side stdout assertions: the runner production code uses tracing; fixtures use println! so the integration test can grep captured stdout for behavior signals. Legitimate test instrumentation, not production code."
+reason = "this fixture asserts Layer 1's cancel-grace watchdog force-exits the process before the body completes; the println! is the unreached marker that the integration test greps for absence"
 
 [[entry]]
 path = "fixtures/src/bin/ignored_tokio_mt.rs"
-line = 5
+key = "tests"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture asserts #[ignore]'d tests never run; the ignored bodies diverge so their anyhow::Result<()> wrappers are statically unreachable, and the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/ignored_tokio_mt.rs"
-line = 26
+key = "tests::ignored_bare"
 kind = "expect"
 lints = ["clippy::panic"]
-reason = "test fixture: panic IS the assertion shape (e.g., a body asserting an `#[ignore]`d test never runs; a Suite::setup asserting panic-safety-net detection). Removing the panic would defeat the fixture's purpose."
+reason = "this fixture asserts #[ignore]'d tests never execute; the body panics so any regression that runs the ignored test is loudly observable"
 
 [[entry]]
 path = "fixtures/src/bin/ignored_tokio_mt.rs"
-line = 36
+key = "tests::ignored_with_reason"
 kind = "expect"
 lints = ["clippy::panic"]
-reason = "test fixture: panic IS the assertion shape (e.g., a body asserting an `#[ignore]`d test never runs; a Suite::setup asserting panic-safety-net detection). Removing the panic would defeat the fixture's purpose."
+reason = "this fixture asserts #[ignore]'d tests never execute; the body panics so any regression that runs the ignored test is loudly observable"
 
 [[entry]]
 path = "fixtures/src/bin/multi_file_suite/module_a.rs"
-line = 22
+key = "tests_a::module_a_first"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture exercises distributed-slice token registration across multiple files; tests simply pass and the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/multi_file_suite/module_a.rs"
-line = 31
+key = "tests_a::module_a_second"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture exercises distributed-slice token registration across multiple files; tests simply pass and the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/multi_file_suite/module_b.rs"
-line = 21
+key = "tests_b::module_b_first"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture exercises distributed-slice token registration across multiple files; tests simply pass and the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/multi_file_suite/module_b.rs"
-line = 30
+key = "tests_b::module_b_second"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture exercises distributed-slice token registration across multiple files; tests simply pass and the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/multi_panic_ordering_tokio_mt.rs"
-line = 11
+key = "tests"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture interleaves panicking and passing tests; the panicking bodies diverge so their anyhow::Result<()> wrappers are statically unreachable, and the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/multi_panic_ordering_tokio_mt.rs"
-line = 31
+key = "tests::step_2_panic"
 kind = "expect"
 lints = ["clippy::panic"]
-reason = "test fixture: panic IS the assertion shape (e.g., a body asserting an `#[ignore]`d test never runs; a Suite::setup asserting panic-safety-net detection). Removing the panic would defeat the fixture's purpose."
+reason = "this fixture interleaves panicking and passing tests to verify panic isolation works for every panic, not just the first; the body must panic to exercise that path"
 
 [[entry]]
 path = "fixtures/src/bin/multi_panic_ordering_tokio_mt.rs"
-line = 45
+key = "tests::step_4_panic"
 kind = "expect"
 lints = ["clippy::panic"]
-reason = "test fixture: panic IS the assertion shape (e.g., a body asserting an `#[ignore]`d test never runs; a Suite::setup asserting panic-safety-net detection). Removing the panic would defeat the fixture's purpose."
+reason = "this fixture interleaves panicking and passing tests to verify panic isolation works for every panic, not just the first; the body must panic to exercise that path"
 
 [[entry]]
 path = "fixtures/src/bin/multi_runtime.rs"
-line = 21
+key = "tests::runs_on_every_runtime"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture verifies a single test runs once per runtime in a multi-runtime suite; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/panic_in_suite_setup_tokio_mt.rs"
-line = 86
+key = "PanickingSetupSuite::context"
 kind = "expect"
 lints = ["clippy::unreachable"]
 reason = "this fixture asserts Suite::setup's panic prevents context() from ever being invoked; the unreachable!() guards that contract — the panic must occur in setup() to exercise that path"
 
 [[entry]]
 path = "fixtures/src/bin/panic_in_suite_setup_tokio_mt.rs"
-line = 103
+key = "PanickingSetupSuite::setup"
 kind = "expect"
 lints = ["clippy::panic"]
 reason = "this fixture asserts the runner's catch_unwind wrapper turns a Suite::setup panic into a structured [FAIL] setup line; the panic must occur to exercise that path"
 
 [[entry]]
 path = "fixtures/src/bin/panic_in_suite_setup_tokio_mt.rs"
-line = 168
+key = "tests::never_runs"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
 reason = "this fixture asserts the test never runs because Suite::setup panicked; the trivial body would only execute if the catch_unwind wrapper failed, and the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/panic_in_suite_teardown_tokio_mt.rs"
-line = 116
+key = "PanickingTeardownSuite::teardown"
 kind = "expect"
 lints = ["clippy::panic"]
 reason = "this fixture asserts the runner's catch_unwind wrapper turns a Suite::teardown panic into a structured [PANIC] teardown line; the panic must occur to exercise that path"
 
 [[entry]]
 path = "fixtures/src/bin/panic_in_suite_teardown_tokio_mt.rs"
-line = 162
+key = "tests"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
 reason = "this fixture asserts Suite::teardown's panic is captured by catch_unwind; the test body trivially returns Ok(()) so its anyhow::Result<()> wrapper is redundant, but the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/panic_in_test_setup_tokio_mt.rs"
-line = 61
+key = "PanickingContextSuite::context"
 kind = "expect"
 lints = ["clippy::panic"]
 reason = "this fixture exercises the catch_unwind wrapper around Suite::context (per-test setup); the body must panic to verify the runner reports the failure as TestOutcome::SetupFailed with the panic message"
 
 [[entry]]
 path = "fixtures/src/bin/panic_in_test_setup_tokio_mt.rs"
-line = 168
+key = "tests::body_never_runs"
 kind = "expect"
 lints = ["clippy::unreachable"]
 reason = "this fixture exercises panic_in_test_setup; Suite::context panics before the body runs, so the body must be unreachable to confirm the runner never invoked it"
 
 [[entry]]
 path = "fixtures/src/bin/panic_in_test_teardown_tokio_mt.rs"
-line = 145
+key = "PanickingTeardownTest::teardown"
 kind = "expect"
 lints = ["clippy::panic"]
 reason = "this fixture exercises the catch_unwind wrapper around Test::teardown (per-test teardown); the teardown body must panic to verify the runner routes the panic through report_test_teardown_failure with the panic message"
 
 [[entry]]
 path = "fixtures/src/bin/panic_in_test_teardown_tokio_mt.rs"
-line = 172
+key = "tests::body_runs_then_teardown_panics"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
 reason = "this fixture's body runs to completion (Ok(())) so per-test teardown can panic afterwards; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/panics_tokio_mt.rs"
-line = 28
+key = "tests::after_panic"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture asserts panic-in-test isolation by sandwiching a panicking test between two passing ones; the surrounding pass tests must succeed without doing anything else, and the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/panics_tokio_mt.rs"
-line = 37
+key = "tests::before_panic"
+kind = "expect"
+lints = ["clippy::unnecessary_wraps"]
+reason = "this fixture asserts panic-in-test isolation by sandwiching a panicking test between two passing ones; the surrounding pass tests must succeed without doing anything else, and the framework requires the test fn signature to return anyhow::Result<()>"
+
+[[entry]]
+path = "fixtures/src/bin/panics_tokio_mt.rs"
+key = "tests::panics"
 kind = "expect"
 lints = ["clippy::panic"]
-reason = "test fixture: panic IS the assertion shape (e.g., a body asserting an `#[ignore]`d test never runs; a Suite::setup asserting panic-safety-net detection). Removing the panic would defeat the fixture's purpose."
-
-[[entry]]
-path = "fixtures/src/bin/panics_tokio_mt.rs"
-line = 46
-kind = "expect"
-lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture deliberately triggers a panic to verify the runner isolates it (records 1 panicked test) and continues running subsequent tests; panicking is the test scenario being exercised"
 
 [[entry]]
 path = "fixtures/src/bin/passing_compio.rs"
-line = 5
+key = "tests"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture asserts a passing test compiles and runs under the compio runtime; the body trivially succeeds, and the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/passing_tokio_mt.rs"
-line = 15
+key = "tests::first_passes"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture exercises the basic happy-path: two tests that simply pass; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/passing_tokio_mt.rs"
-line = 24
+key = "tests::second_passes"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture exercises the basic happy-path: two tests that simply pass; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/per_test_attr_body_timeout_tokio_mt.rs"
-line = 27
+key = "tests::attr_body_times_out"
 kind = "expect"
 lints = ["clippy::print_stdout"]
-reason = "test fixture emits println! markers for spec-side stdout assertions: the runner production code uses tracing; fixtures use println! so the integration test can grep captured stdout for behavior signals. Legitimate test instrumentation, not production code."
+reason = "this fixture verifies the per-test #[rudzio::test(timeout=1)] override fires after 1s; the marker after the cancelled sleep must never appear, and integration tests grep stdout to confirm absence"
 
 [[entry]]
 path = "fixtures/src/bin/per_test_attr_body_timeout_tokio_mt.rs"
-line = 43
+key = "tests::unbounded_sibling_still_runs"
 kind = "expect"
 lints = ["clippy::print_stdout"]
-reason = "test fixture emits println! markers for spec-side stdout assertions: the runner production code uses tracing; fixtures use println! so the integration test can grep captured stdout for behavior signals. Legitimate test instrumentation, not production code."
+reason = "this fixture verifies an unbounded sibling test runs unaffected after another test's per-test attribute timeout fires; integration tests grep stdout for this marker"
 
 [[entry]]
 path = "fixtures/src/bin/per_test_attr_setup_timeout_tokio_mt.rs"
-line = 174
+key = "tests::attr_setup_times_out"
 kind = "expect"
 lints = ["clippy::unreachable"]
 reason = "this fixture exercises the per-test #[rudzio::test(setup_timeout=1)] override; Suite::context hangs and is killed by the per-test setup timeout, so the body must be unreachable"
 
 [[entry]]
 path = "fixtures/src/bin/per_test_attr_teardown_timeout_tokio_mt.rs"
-line = 171
+key = "tests::attr_teardown_times_out"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
 reason = "this fixture asserts the per-test teardown_timeout attribute fires while the body itself merely passes; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/per_test_timeout_tokio_mt.rs"
-line = 28
+key = "tests::hangs_until_timeout"
 kind = "expect"
 lints = ["clippy::print_stdout"]
-reason = "test fixture emits println! markers for spec-side stdout assertions: the runner production code uses tracing; fixtures use println! so the integration test can grep captured stdout for behavior signals. Legitimate test instrumentation, not production code."
+reason = "this fixture asserts the per-test watchdog drops the future before the body's println! runs; reaching that println! line is the bug the integration test greps for, so the marker must remain"
 
 [[entry]]
 path = "fixtures/src/bin/per_test_timeout_tokio_mt.rs"
-line = 48
+key = "tests::still_runs_after_previous_timeout"
 kind = "expect"
 lints = ["clippy::print_stdout"]
-reason = "test fixture emits println! markers for spec-side stdout assertions: the runner production code uses tracing; fixtures use println! so the integration test can grep captured stdout for behavior signals. Legitimate test instrumentation, not production code."
+reason = "this fixture asserts a passing test still runs after the previous test's per-test timeout; the println! emits the marker the integration test greps to confirm the run continued"
 
 [[entry]]
 path = "fixtures/src/bin/plain_test_attr_tokio_mt.rs"
-line = 9
+key = "tests"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture exercises the bare #[test] attribute on a body that trivially passes; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/run_timeout_tokio_mt.rs"
-line = 27
+key = "tests::never_starts_first"
 kind = "expect"
 lints = ["clippy::print_stdout"]
-reason = "test fixture emits println! markers for spec-side stdout assertions: the runner production code uses tracing; fixtures use println! so the integration test can grep captured stdout for behavior signals. Legitimate test instrumentation, not production code."
+reason = "this fixture asserts queued tests after a run-timeout cancellation are never started; reaching the println! marker would be a bug the integration test greps for, so the marker must remain"
 
 [[entry]]
 path = "fixtures/src/bin/run_timeout_tokio_mt.rs"
-line = 48
+key = "tests::never_starts_second"
 kind = "expect"
 lints = ["clippy::print_stdout"]
-reason = "test fixture emits println! markers for spec-side stdout assertions: the runner production code uses tracing; fixtures use println! so the integration test can grep captured stdout for behavior signals. Legitimate test instrumentation, not production code."
+reason = "this fixture asserts queued tests after a run-timeout cancellation are never started; reaching the println! marker would be a bug the integration test greps for, so the marker must remain"
 
 [[entry]]
 path = "fixtures/src/bin/run_timeout_tokio_mt.rs"
-line = 58
+key = "tests::waits_for_run_cancel"
 kind = "expect"
 lints = ["clippy::print_stdout"]
-reason = "test fixture emits println! markers for spec-side stdout assertions: the runner production code uses tracing; fixtures use println! so the integration test can grep captured stdout for behavior signals. Legitimate test instrumentation, not production code."
+reason = "this fixture asserts the run-timeout watchdog cancels the root token; the println! emits the acknowledgement marker the integration test greps for"
 
 [[entry]]
 path = "fixtures/src/bin/setup_failure_tokio_mt.rs"
-line = 157
+key = "tests"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
 reason = "this fixture asserts Suite::setup's Err is reported and tests are Cancelled; the never_runs() body trivially returns Ok(()) so its anyhow::Result<()> wrapper is redundant, but the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/sigint_cancel_tokio_mt.rs"
-line = 34
+key = "tests::never_runs_after_sigint"
 kind = "expect"
 lints = ["clippy::print_stdout"]
-reason = "test fixture emits println! markers for spec-side stdout assertions: the runner production code uses tracing; fixtures use println! so the integration test can grep captured stdout for behavior signals. Legitimate test instrumentation, not production code."
+reason = "this fixture asserts the queued test never runs after SIGINT cancellation; the println! marker would only appear if the runner failed to honor cancellation"
 
 [[entry]]
 path = "fixtures/src/bin/sigint_cancel_tokio_mt.rs"
-line = 58
+key = "tests::waits_for_sigint"
 kind = "expect"
 lints = ["clippy::print_stdout"]
-reason = "test fixture emits println! markers for spec-side stdout assertions: the runner production code uses tracing; fixtures use println! so the integration test can grep captured stdout for behavior signals. Legitimate test instrumentation, not production code."
+reason = "this fixture coordinates a SIGINT delivery from the integration test by emitting readiness/observed markers on stdout that the parent process greps; println! is the deliberate channel"
 
 [[entry]]
 path = "fixtures/src/bin/stdio_attribution_tokio_mt.rs"
-line = 26
+key = "tests::alpha"
 kind = "expect"
 lints = ["clippy::print_stdout", "clippy::print_stderr", "clippy::unnecessary_wraps"]
-reason = "test fixture: emits both stdout AND stderr markers for spec assertions, plus structurally returns Result<()> per macro contract. Combined lint suppression matches the documented test-fixture pattern."
+reason = "this fixture asserts rudzio attributes captured stdout/stderr to the originating test; the integration test greps the combined binary output for these per-test markers, so println!/eprintln! are the deliberate channels and the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/stdio_attribution_tokio_mt.rs"
-line = 43
+key = "tests::beta"
 kind = "expect"
 lints = ["clippy::print_stdout", "clippy::print_stderr", "clippy::unnecessary_wraps"]
-reason = "test fixture: emits both stdout AND stderr markers for spec assertions, plus structurally returns Result<()> per macro contract. Combined lint suppression matches the documented test-fixture pattern."
+reason = "this fixture asserts rudzio attributes captured stdout/stderr to the originating test; the integration test greps the combined binary output for these per-test markers, so println!/eprintln! are the deliberate channels and the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/stdio_attribution_tokio_mt.rs"
-line = 60
+key = "tests::gamma_panics"
 kind = "expect"
 lints = ["clippy::panic", "clippy::print_stdout", "clippy::print_stderr"]
-reason = "test fixture: combines explicit panic with stdout/stderr markers used by the runner's panic-safety-net assertions. All three lints describe one fixture pattern."
+reason = "this fixture asserts rudzio attributes the panic message to the failing test (not the surrounding alpha/beta); the panic! is the test scenario being exercised and println!/eprintln! emit the markers the integration test greps"
 
 [[entry]]
 path = "fixtures/src/bin/suite_setup_timeout_tokio_mt.rs"
-line = 106
+key = "HangingSetupSuite::setup"
 kind = "expect"
 lints = ["clippy::print_stdout"]
 reason = "this fixture asserts the suite-setup-timeout phase wrapper drops the in-flight setup future before completion; the println! after the sleep is the unreached marker that the integration test greps for absence"
 
 [[entry]]
 path = "fixtures/src/bin/suite_setup_timeout_tokio_mt.rs"
-line = 132
+key = "HangingSetupSuite::teardown"
 kind = "expect"
 lints = ["clippy::print_stdout"]
 reason = "this fixture asserts Suite::teardown does not run when setup timed out; the println! is the unreached marker that the integration test greps for absence"
 
 [[entry]]
 path = "fixtures/src/bin/suite_setup_timeout_tokio_mt.rs"
-line = 179
+key = "tests"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
 reason = "this fixture asserts queued tests are Cancelled when Suite::setup times out; the never_runs() body trivially returns Ok(()) so its anyhow::Result<()> wrapper is redundant, but the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/suite_teardown_timeout_tokio_mt.rs"
-line = 124
+key = "HangingTeardownSuite::teardown"
 kind = "expect"
 lints = ["clippy::print_stdout"]
 reason = "this fixture asserts the suite-teardown watchdog drops the teardown future before the println! marker runs; reaching the marker would be a bug the integration test greps for, so the marker must remain"
 
 [[entry]]
 path = "fixtures/src/bin/suite_teardown_timeout_tokio_mt.rs"
-line = 191
+key = "tests::body_passes_then_suite_teardown_times_out"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
 reason = "this fixture exercises the suite-teardown timeout path; the test body must pass quickly so the suite teardown is the only failing phase, and the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/sync_mixed_tokio_mt.rs"
-line = 16
+key = "tests"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture exercises the sync arm's std::panic::catch_unwind isolation; sync_panics() diverges so its anyhow::Result<()> wrapper is statically unreachable, and the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/sync_mixed_tokio_mt.rs"
-line = 41
+key = "tests::sync_panics"
 kind = "expect"
 lints = ["clippy::panic"]
-reason = "test fixture: panic IS the assertion shape (e.g., a body asserting an `#[ignore]`d test never runs; a Suite::setup asserting panic-safety-net detection). Removing the panic would defeat the fixture's purpose."
+reason = "this fixture exercises the sync arm's std::panic::catch_unwind isolation; the test body must panic to verify the runtime thread isn't killed"
 
 [[entry]]
 path = "fixtures/src/bin/teardown_always_runs_tokio_mt.rs"
-line = 32
-kind = "expect"
-lints = ["clippy::print_stdout"]
-reason = "this fixture verifies the per-test watchdog fires before the body's 30 s sleep completes; the marker after the cancelled sleep must never appear, and integration tests grep stdout to confirm absence"
-
-[[entry]]
-path = "fixtures/src/bin/teardown_always_runs_tokio_mt.rs"
-line = 158
+key = "TeardownSuite::teardown"
 kind = "expect"
 lints = ["clippy::print_stdout"]
 reason = "this fixture verifies that suite-level teardown runs after a per-test body timeout; the marker is printed for integration tests to grep"
 
 [[entry]]
 path = "fixtures/src/bin/teardown_always_runs_tokio_mt.rs"
-line = 198
+key = "TeardownTest::teardown"
 kind = "expect"
 lints = ["clippy::print_stdout"]
 reason = "this fixture verifies that per-test teardown runs after the runner's per-test watchdog fires; the marker is printed for integration tests to grep"
 
 [[entry]]
+path = "fixtures/src/bin/teardown_always_runs_tokio_mt.rs"
+key = "tests::body_times_out"
+kind = "expect"
+lints = ["clippy::print_stdout"]
+reason = "this fixture verifies the per-test watchdog fires before the body's 30 s sleep completes; the marker after the cancelled sleep must never appear, and integration tests grep stdout to confirm absence"
+
+[[entry]]
 path = "fixtures/src/bin/teardown_failure_tokio_mt.rs"
-line = 182
+key = "tests::body_runs_then_teardown_fails"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
 reason = "this fixture's body must succeed (Ok(())) so suite teardown failure is the unambiguous failure point; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/teardown_invariants_tokio_mt.rs"
-line = 162
+key = "InvariantsSuite::teardown"
 kind = "expect"
 lints = ["clippy::print_stdout"]
 reason = "this fixture verifies invariants by emitting a single machine-readable INVARIANTS_CHECK line that the integration test greps; using println! is the deliberate channel"
 
 [[entry]]
 path = "fixtures/src/bin/teardown_invariants_tokio_mt.rs"
-line = 234
+key = "tests"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
 reason = "this fixture asserts Test::teardown runs even when the body panics; the panicking() test body diverges so its anyhow::Result<()> wrapper is statically unreachable, and the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/teardown_invariants_tokio_mt.rs"
-line = 261
+key = "tests::panicking"
 kind = "expect"
 lints = ["clippy::panic"]
 reason = "this fixture asserts Test::teardown runs even when the body panics; the body must panic to exercise that branch"
 
 [[entry]]
 path = "fixtures/src/bin/test_setup_timeout_tokio_mt.rs"
-line = 89
+key = "HangingContextSuite::context"
 kind = "expect"
 lints = ["clippy::print_stdout"]
 reason = "this fixture asserts the test-setup-timeout phase wrapper drops the in-flight context() future before completion; the println! after the sleep is the unreached marker that the integration test greps for absence"
 
 [[entry]]
 path = "fixtures/src/bin/test_setup_timeout_tokio_mt.rs"
-line = 161
+key = "NeverBuiltTest::teardown"
 kind = "expect"
 lints = ["clippy::print_stdout"]
 reason = "this fixture asserts Test::teardown does not run when context() timed out (no context was constructed); the println! is the unreached marker that the integration test greps for absence"
 
 [[entry]]
 path = "fixtures/src/bin/test_setup_timeout_tokio_mt.rs"
-line = 189
+key = "tests::body_never_runs"
 kind = "expect"
 lints = ["clippy::unreachable"]
 reason = "this fixture asserts the test body never runs when Suite::context() timed out; unreachable!() guards that contract — if it ever fires, the runner failed to honor the timeout"
 
 [[entry]]
 path = "fixtures/src/bin/test_teardown_timeout_tokio_mt.rs"
-line = 150
+key = "HangingTeardownTest::teardown"
 kind = "expect"
 lints = ["clippy::print_stdout"]
 reason = "this fixture asserts the test-teardown-timeout phase wrapper drops the in-flight teardown future before completion; the println! after the sleep is the unreached marker that the integration test greps for absence"
 
 [[entry]]
 path = "fixtures/src/bin/test_teardown_timeout_tokio_mt.rs"
-line = 169
+key = "tests"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
 reason = "this fixture asserts the test body's Passed outcome survives a teardown timeout; the body trivially returns Ok(()) so its anyhow::Result<()> wrapper is redundant, but the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/src/bin/tracker_drain_tokio_mt.rs"
-line = 31
+key = "tests::returns_before_tracked_task_completes"
 kind = "expect"
 lints = ["clippy::print_stdout", "clippy::unnecessary_wraps"]
-reason = "test fixture: stdout marker + Result<()> return per rudzio::test macro contract. Both lints suppressed for the standard fixture shape."
+reason = "this fixture verifies Suite::teardown drains the shared TaskTracker before returning; the tracked task prints a marker that integration tests grep for, and the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/tests/compile.rs"
-line = 26
+key = "tests::inner_attr_allow_compiles"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture drives trybuild compile-pass assertions; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/tests/compile.rs"
-line = 42
+key = "tests::inner_attr_behavioral_allow_suppresses_outer_deny_compiles"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture drives trybuild compile-pass assertions; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/tests/compile.rs"
-line = 54
+key = "tests::inner_attr_cfg_attr_compiles"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture drives trybuild compile-pass assertions; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/tests/compile.rs"
-line = 66
+key = "tests::inner_attr_deny_compiles"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture drives trybuild compile-pass assertions; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/tests/compile.rs"
-line = 80
+key = "tests::inner_attr_in_suite_mod_compiles"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture drives trybuild compile-pass assertions; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/tests/compile.rs"
-line = 93
+key = "tests::inner_attr_mixed_outer_and_inner_compiles"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture drives trybuild compile-pass assertions; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/tests/compile.rs"
-line = 106
+key = "tests::inner_attr_multiple_consecutive_compiles"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture drives trybuild compile-pass assertions; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/tests/compile.rs"
-line = 119
+key = "tests::inner_attr_tool_compiles"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture drives trybuild compile-pass assertions; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/tests/compile.rs"
-line = 132
+key = "tests::inner_attr_warn_compiles"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture drives trybuild compile-pass assertions; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/tests/compile.rs"
-line = 146
+key = "tests::inner_attr_with_cfg_gated_runtime_configs_compiles"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture drives trybuild compile-pass assertions; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/tests/compile.rs"
-line = 160
+key = "tests::inner_attr_with_outer_attrs_on_items_compiles"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture drives trybuild compile-pass assertions; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/tests/compile.rs"
-line = 174
+key = "tests::inner_doc_comment_compiles"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture drives trybuild compile-pass assertions; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/tests/compile.rs"
-line = 191
+key = "tests::macro_test_outside_suite_compile_fails"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "this fixture drives trybuild compile-fail assertions; the framework requires the test fn signature to return anyhow::Result<()>"
+
+[[entry]]
+path = "fixtures/tests/compile.rs"
+key = "tests::sync_test_should_compile"
+kind = "expect"
+lints = ["clippy::unnecessary_wraps"]
+reason = "this fixture drives trybuild compile-pass assertions; the framework requires the test fn signature to return anyhow::Result<()>"
 
 [[entry]]
 path = "fixtures/tests/integration.rs"
-line = 39
+key = "LogPathGuard"
 kind = "expect"
 lints = ["dead_code"]
-reason = "test fixture or helper: item appears unused to clippy but is referenced via proc-macro expansion / cfg-gated code path the lint does not see."
-
-[[entry]]
-path = "fixtures/tests/integration.rs"
-line = 140
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "deferred: std::env::set_var/remove_var RAII test guard (Rust 1.80+ marks these unsafe). Pattern duplicated across spec files; awaiting cargo-rudzio-test-helpers env-guard consolidation per .opencode/issues.md P-0 plan. RAII drop runs on the same thread; no concurrent setters."
+reason = "non-Unix builds skip the Bug #13 capture-pipe regression test; the guard is Unix-only"
 
 [[entry]]
 path = "migrate/src/lib.rs"
-line = 11
+key = ""
 kind = "allow"
 lints = ["unreachable_pub", "dead_code"]
-reason = "test fixture: type/fn is reachable through proc-macro expansion but not via direct module imports, so `unreachable_pub` and `dead_code` both fire on the literal AST. Macro-emitted reachability is a known shape clippy cannot model."
+reason = "binary crate: all pub items are internal"
 
 [[entry]]
 path = "migrate/tests/golden.rs"
-line = 2
+key = ""
 kind = "allow"
 lints = ["clippy::panic", "clippy::panic_in_result_fn", "clippy::expect_used", "clippy::format_push_string", "clippy::branches_sharing_code", "clippy::manual_assert"]
-reason = "linter binary or generator code: compound lint set covers the explicit-failure idioms used in CLI/code-generation utilities (panic on invariant violation; expect() with documented panic message; manual format-push for readability). Not production library code."
+reason = "test harness: panic-on-diff and Result-shaped helpers are intentional"
 
 [[entry]]
 path = "migrate/tests/main.rs"
-line = 20
+key = ""
 kind = "allow"
 lints = ["unreachable_pub", "dead_code"]
-reason = "test fixture: type/fn is reachable through proc-macro expansion but not via direct module imports, so `unreachable_pub` and `dead_code` both fire on the literal AST. Macro-emitted reachability is a known shape clippy cannot model."
+reason = "test binary is a recompile of the lib; visibility and usage lints don't apply here"
 
 [[entry]]
 path = "src/output/pipe.rs"
-line = 16
+key = ""
 kind = "expect"
 lints = ["unsafe_code"]
-reason = "deferred: production unsafe_code site awaiting consolidation crate per D-EXP.5; per-site SAFETY comment in source documents the invariants. Tracked in `.opencode/issues.md` P-0 disposition plan."
+reason = "live-output pipe replumbing requires libc::pipe2/dup2/fcntl/splice for atomic stdout/stderr capture; module-level expect documents the FFI boundary in one place rather than annotating every call site"
 
 [[entry]]
 path = "src/output/pipe.rs"
-line = 286
+key = "set_pipe_size"
 kind = "expect"
 lints = ["clippy::unnecessary_wraps"]
-reason = "test fixture: function returns anyhow::Result<()> per rudzio::test macro contract; body has no fallible op so wraps lint fires structurally. Refactor target = relax the macro contract to accept () returns. Tracked in `.opencode/issues.md` P-0 plan."
+reason = "Mirrors the Linux signature so the call site is platform-agnostic."
 
 [[entry]]
 path = "src/output/render.rs"
-line = 1184
+key = "terminal_size_unix"
 kind = "expect"
 lints = ["unsafe_code"]
 reason = "zero-initialised winsize for FFI; see SAFETY comment below"
 
 [[entry]]
 path = "src/output/render.rs"
-line = 1195
+key = "terminal_size_unix.1"
 kind = "expect"
 lints = ["unsafe_code"]
 reason = "ioctl TIOCGWINSZ FFI call; see SAFETY comment below"
 
 [[entry]]
 path = "src/runner.rs"
-line = 798
+key = "enable_full_backtrace_default"
 kind = "expect"
 lints = ["unsafe_code"]
 reason = "single-threaded entry point; see SAFETY comment below"
 
 [[entry]]
 path = "src/runner.rs"
-line = 810
+key = "enable_full_backtrace_default.1"
 kind = "expect"
 lints = ["unsafe_code"]
 reason = "single-threaded entry point; see SAFETY comment below"
 
 [[entry]]
 path = "src/runner.rs"
-line = 1361
+key = "set_runner_args_env"
 kind = "expect"
 lints = ["unsafe_code"]
-reason = "watchdog runs on a spawned thread; \n                main may be sync-blocked, so cooperative ExitCode return cannot \n                reach the process exit. _exit avoids the clippy::exit lint while \n                preserving the deliberate force-exit semantics."
+reason = "single-threaded entry point; see SAFETY comment below"
 
 [[entry]]
 path = "src/runner.rs"
-line = 1616
+key = "spawn_grace_force_exit_watchdog"
+kind = "expect"
+lints = ["unsafe_code"]
+reason = "watchdog runs on a spawned thread; main may be sync-blocked, so cooperative ExitCode return cannot reach the process exit. _exit avoids the clippy::exit lint while preserving the deliberate force-exit semantics."
+
+[[entry]]
+path = "src/runner.rs"
+key = "terminal_width"
 kind = "expect"
 lints = ["unsafe_code"]
 reason = "zero-initialised winsize; FFI; see SAFETY comment below"
 
 [[entry]]
 path = "src/runner.rs"
-line = 1624
+key = "terminal_width.1"
 kind = "expect"
 lints = ["unsafe_code"]
 reason = "ioctl TIOCGWINSZ FFI call; see SAFETY comment below"
 
 [[entry]]
 path = "src/runtime/embassy/runtime.rs"
-line = 9
+key = ""
 kind = "allow"
 lints = ["unsafe_code"]
-reason = "deferred: production unsafe_code site awaiting consolidation crate per D-EXP.5; per-site SAFETY comment in source documents the invariants. Tracked in `.opencode/issues.md` P-0 disposition plan."
+reason = "unsafe glue around embassy_executor::raw::Executor — see per-site SAFETY comments"
 
 [[entry]]
 path = "src/suite.rs"
-line = 676
+key = "extend_phase_future_lifetime"
 kind = "expect"
 lints = ["unsafe_code"]
 reason = "scoped spawn — see fn docstring"
-
-[[entry]]
-path = "cargo-rudzio/tests/bug_14_monolith_sigkill_spec.rs"
-line = 1020
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "killpg is the only way to reap grandchild processes (cargo, nested cargo, the synthetic test runner, AND the spawned `sigkill_repro_child` bins) if the test safety bound expires; `Child::kill()` only reaches the immediate child."
-
-[[entry]]
-path = "cargo-rudzio/tests/bug_14_monolith_sigkill_spec.rs"
-line = 1034
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "libc::getpgid(0) is a thin syscall wrapper; querying our own pgid is unconditionally safe."
-
-[[entry]]
-path = "fixtures/tests/compile.rs"
-line = 208
-kind = "expect"
-lints = ["clippy::unnecessary_wraps"]
-reason = "this fixture drives trybuild compile-fail assertions; the framework requires the test fn signature to return anyhow::Result<()>"
-
-[[entry]]
-path = "fixtures/tests/integration.rs"
-line = 1985
-kind = "expect"
-lints = ["unsafe_code"]
-reason = "test cleanup: send SIGKILL to the inherited child process the fixture spawned; pid is a one-shot value harvested from the fixture's own log, so there's no aliasing concern"

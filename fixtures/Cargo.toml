@@ -52,12 +52,13 @@ edge-cfg-macro = []
 # on direct/macro-generated test fns is therefore always false, exercising the
 # cfg-stripped registration path deterministically.
 never-enabled = []
-
 # Integration tests drive child processes and deliver Unix signals to them
-# to exercise the runner's SIGINT/SIGTERM handling.
-[target.'cfg(unix)'.dev-dependencies]
-libc = "=0.2.191"
+# to exercise the runner's SIGINT/SIGTERM handling. Safe signal delivery
+# goes through `rustix` (`process` feature), so no `unsafe` FFI remains.
 
+[target.'cfg(unix)'.dev-dependencies]
+
+rustix = { version = "=1.1.5", features = ["process"] }
 # Rudzio tests itself: one `#[rudzio::main]` collects every `#[rudzio::test]`
 # across the whole test binary (both integration scenarios and trybuild
 # compile checks), so there is a single test entry point per crate.

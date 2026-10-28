@@ -1017,28 +1017,23 @@ fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
 }
 
 /// `SIGKILL` the entire process group `pgid`. Best-effort.
-#[expect(
-    unsafe_code,
-    reason = "killpg is the only way to reap grandchild processes (cargo, nested cargo, the synthetic test runner, AND the spawned `sigkill_repro_child` bins) if the test safety bound expires; `Child::kill()` only reaches the immediate child."
-)]
+///
+/// `killpg` is the only way to reap grandchild processes (cargo, nested
+/// cargo, the synthetic test runner, AND the spawned `sigkill_repro_child`
+/// bins) if the test safety bound expires; `Child::kill()` only reaches the
+/// immediate child. `rustix` wraps the syscall safely, so no `unsafe` FFI
+/// is needed here.
 fn kill_pgroup(pgid: libc::pid_t) {
-    // SAFETY: `libc::killpg` is a thin syscall wrapper, no aliasing or
-    // memory requirements. The pgid was created by `process_group(0)`
-    // on the spawned cargo-rudzio Command -- we own it.
-    let _ret: i32 = unsafe { libc::killpg(pgid, libc::SIGKILL) };
+    // `Pid::from_raw` yields `None` for pgid 0; a spawned process group is
+    // never 0, so the guard is defensive-only and the skip is harmless.
+    if let Some(pid) = rustix::process::Pid::from_raw(pgid) {
+        let _ignored = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+    }
 }
 
-/// Query the calling process's process-group id. Wrapper around
-/// `libc::getpgid(0)` so the `unsafe` block stays in one well-named
-/// helper rather than scattered through P1/P3 orphan-detection tests.
-#[expect(
-    unsafe_code,
-    reason = "libc::getpgid(0) is a thin syscall wrapper; querying our own pgid is unconditionally safe."
-)]
+/// Query the calling process's process-group id.
 fn current_pgid() -> libc::pid_t {
-    // SAFETY: `getpgid(0)` queries the calling process's pgid — no
-    // aliasing, no memory requirements, never fails for pid 0.
-    unsafe { libc::getpgid(0) }
+    rustix::process::getpgrp().as_raw_nonzero().get()
 }
 
 // Full 9-runtime matrix mirroring the rudzio-wide convention for
