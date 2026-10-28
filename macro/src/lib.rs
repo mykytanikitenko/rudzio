@@ -14,7 +14,7 @@ use rudzio_macro_internals::{main_codegen, proc_macro_env_codegen, suite_codegen
 pub fn main(args: TokenStream, input: TokenStream) -> TokenStream {
     match main_codegen::expand(args.into(), input.into()) {
         Ok(ts) => ts.into(),
-        Err(e) => e.into_compile_error().into(),
+        Err(error) => error.into_compile_error().into(),
     }
 }
 
@@ -23,7 +23,7 @@ pub fn main(args: TokenStream, input: TokenStream) -> TokenStream {
 pub fn suite(args: TokenStream, input: TokenStream) -> TokenStream {
     match suite_codegen::expand_entry(args.into(), input.into()) {
         Ok(ts) => ts.into(),
-        Err(e) => e.into_compile_error().into(),
+        Err(error) => error.into_compile_error().into(),
     }
 }
 
@@ -33,7 +33,7 @@ pub fn test(args: TokenStream, input: TokenStream) -> TokenStream {
     let args_ts = args.into();
     match suite_codegen::expand_test_attr(&args_ts, input.into()) {
         Ok(ts) => ts.into(),
-        Err(e) => e.into_compile_error().into(),
+        Err(error) => error.into_compile_error().into(),
     }
 }
 
@@ -52,7 +52,7 @@ pub fn test(args: TokenStream, input: TokenStream) -> TokenStream {
 pub fn __proc_macro_env(input: TokenStream) -> TokenStream {
     match proc_macro_env_codegen::expand(input.into()) {
         Ok(ts) => ts.into(),
-        Err(e) => e.into_compile_error().into(),
+        Err(error) => error.into_compile_error().into(),
     }
 }
 
@@ -67,6 +67,6 @@ pub fn __proc_macro_env(input: TokenStream) -> TokenStream {
 pub fn __register_test(input: TokenStream) -> TokenStream {
     match suite_codegen::expand_register_test(input.into()) {
         Ok(ts) => ts.into(),
-        Err(e) => e.into_compile_error().into(),
+        Err(error) => error.into_compile_error().into(),
     }
 }

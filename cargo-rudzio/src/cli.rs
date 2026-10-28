@@ -131,10 +131,7 @@ pub enum RunnerExit {
 #[must_use]
 pub fn runner_exit(code: Option<i32>) -> RunnerExit {
     code.map_or(RunnerExit::Abort, |exit_code| {
-        RunnerExit::Code(match u8::try_from(exit_code & 0xFF_i32) {
-            Ok(code) => code,
-            Err(_) => 1,
-        })
+        RunnerExit::Code(u8::try_from(exit_code & 0xFF_i32).map_or(1, |byte| byte))
     })
 }
 
@@ -173,15 +170,12 @@ pub fn aggregator_cargo_args(
     manifest: &str,
     panic_overrides: &[String],
 ) -> Vec<String> {
-    let capacity = match parsed
+    let capacity = parsed
         .forwarded_cargo_args
         .len()
         .checked_add(8_usize)
-        .and_then(|v| v.checked_add(panic_overrides.len()))
-    {
-        Some(c) => c,
-        None => 0,
-    };
+        .and_then(|value| value.checked_add(panic_overrides.len()))
+        .map_or(0, |count| count);
     let mut argv = Vec::with_capacity(capacity);
     argv.push("build".to_owned());
     argv.push("--workspace".to_owned());
@@ -206,26 +200,39 @@ pub fn aggregator_cargo_args(
 /// (`KEY=VALUE` or a config-file path); the caller feeds them to
 /// `config_env::resolve` to mirror cargo's highest-precedence `[env]`
 /// layer on the directly-exec'd runner.
+///
+/// # Errors
+///
+/// Returns an error if advancing the scan index overflows `usize`. This
+/// cannot occur for a valid slice, but the overflow is surfaced rather
+/// than silently clamped.
 #[inline]
-#[must_use]
-pub fn extract_config_values(forwarded: &[String]) -> Vec<String> {
+pub fn extract_config_values(forwarded: &[String]) -> Result<Vec<String>> {
     let mut values = Vec::new();
     let mut idx = 0_usize;
     while let Some(arg) = forwarded.get(idx) {
         if arg == "--config" {
-            let next_idx = idx.saturating_add(1_usize);
+            let next_idx = idx
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("index overflow while scanning `--config`"))?;
             if let Some(value) = forwarded.get(next_idx) {
                 values.push(value.clone());
             }
-            idx = next_idx.saturating_add(1_usize);
+            idx = next_idx
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("index overflow while scanning `--config`"))?;
         } else if let Some(value) = arg.strip_prefix("--config=") {
             values.push(value.to_owned());
-            idx = idx.saturating_add(1_usize);
+            idx = idx
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("index overflow while scanning `--config=`"))?;
         } else {
-            idx = idx.saturating_add(1_usize);
+            idx = idx
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("index overflow while scanning forwarded args"))?;
         }
     }
-    values
+    Ok(values)
 }
 
 /// Pull `--exclude <name>` / `--exclude=<name>` out of `args`.

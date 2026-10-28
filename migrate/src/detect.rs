@@ -100,10 +100,10 @@ pub fn as_test_context(attr: &Attribute) -> Option<syn::Path> {
     let Meta::List(list) = &attr.meta else {
         return None;
     };
-    match list.parse_args::<syn::Path>() {
-        Ok(path) => Some(path),
-        Err(_) => None,
+    if let Ok(path) = list.parse_args::<syn::Path>() {
+        return Some(path);
     }
+    None
 }
 
 /// Classify an attribute. Returns `Some(_)` if it's a recognised

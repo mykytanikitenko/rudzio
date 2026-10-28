@@ -376,7 +376,7 @@ impl SuiteReporter for ModeReporter {
             Format::Pretty => {
                 match pretty_outcome_block(token, runtime_name, &outcome, plain.colored) {
                     Ok(block) => write_stdout(&format!("{block}\n")),
-                    Err(e) => write_stderr(&format!("render failed: {e:#}\n")),
+                    Err(error) => write_stderr(&format!("render failed: {error:#}\n")),
                 }
             }
         }
@@ -727,10 +727,9 @@ impl TestSummary {
     }
 
     #[inline]
-    #[must_use]
     pub fn merge(self, other: Self) -> anyhow::Result<Self> {
-        let sum = |a: usize, b: usize| -> anyhow::Result<usize> {
-            a.checked_add(b)
+        let sum = |left: usize, right: usize| -> anyhow::Result<usize> {
+            left.checked_add(right)
                 .ok_or_else(|| anyhow::anyhow!("summary merge: counter overflow"))
         };
         Ok(Self {
@@ -849,10 +848,10 @@ fn set_runner_args_env(config: &Config) {
 /// Format `elapsed` for the trailing `<runtime, …>` block using a
 /// short `1.23s`-style representation.
 fn format_elapsed(elapsed: Duration) -> String {
-    match fmt_duration(elapsed) {
-        Ok(text) => text,
-        Err(_) => format!("{elapsed:?}"),
+    if let Ok(text) = fmt_duration(elapsed) {
+        return text;
     }
+    format!("{elapsed:?}")
 }
 
 /// Format the libtest-shape stderr notice for a `--ensure-time`
@@ -987,10 +986,7 @@ pub fn normalize_module_path(mp: &str) -> String {
     // `<member>__<stem>`, so the binary id always starts with that
     // ident plus `__`. Capture the prefix once so we can dedupe the
     // member name out of every unwrapped binary id in this pass.
-    let head_segment = match mp.split("::").next() {
-        Some(head) => head,
-        None => "",
-    };
+    let head_segment = mp.split("::").next().map_or("", |head| head);
     let member_prefix =
         (is_aggregator && !head_segment.is_empty()).then(|| format!("{head_segment}__"));
     let mut out: Vec<&str> = Vec::new();
@@ -1009,13 +1005,10 @@ pub fn normalize_module_path(mp: &str) -> String {
             continue;
         }
         if let Some(test_id) = seg.strip_prefix("__rudzio_test_") {
-            let cleaned = match member_prefix
+            let cleaned = member_prefix
                 .as_deref()
                 .and_then(|prefix| test_id.strip_prefix(prefix))
-            {
-                Some(cleaned) => cleaned,
-                None => test_id,
-            };
+                .map_or(test_id, |cleaned| cleaned);
             if !cleaned.is_empty() {
                 out.push(cleaned);
             }
@@ -1166,21 +1159,15 @@ fn render_status_line(
 ) -> String {
     let lhs_visible = lhs_naked.chars().count();
     let trailing_visible = trailing.chars().count();
-    let pad = match term_cols
+    let pad = term_cols
         .checked_sub(lhs_visible)
-        .and_then(|v| v.checked_sub(trailing_visible))
-    {
-        Some(v) => v.max(MIN_TRAILING_PAD),
-        None => MIN_TRAILING_PAD,
-    };
-    let capacity = match lhs_rendered
+        .and_then(|value| value.checked_sub(trailing_visible))
+        .map_or(MIN_TRAILING_PAD, |value| value.max(MIN_TRAILING_PAD));
+    let capacity = lhs_rendered
         .len()
         .checked_add(pad)
-        .and_then(|v| v.checked_add(trailing.len()))
-    {
-        Some(c) => c,
-        None => 0,
-    };
+        .and_then(|value| value.checked_add(trailing.len()))
+        .map_or(0, |count| count);
     let mut out = String::with_capacity(capacity);
     out.push_str(lhs_rendered);
     for _ in 0..pad {
@@ -1338,14 +1325,11 @@ fn dispatch_test_groups(
                     total = total.merge(TestSummary::from(suite_summary))?;
                 }
                 Err(payload) => {
-                    let msg = match payload
+                    let msg = payload
                         .downcast_ref::<&str>()
                         .copied()
                         .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-                    {
-                        Some(m) => m,
-                        None => "unknown panic",
-                    };
+                        .map_or("unknown panic", |message| message);
                     write_stderr(&format!("error: runtime thread panicked: {msg}\n"));
                     total = total.merge(TestSummary {
                         panicked: 1,
@@ -1365,10 +1349,7 @@ fn spawn_run_timeout_watchdog(token: CancellationToken, dur: Duration) {
     let _watchdog = thread::spawn(move || {
         thread::sleep(dur);
         if !token.is_cancelled() {
-            let dur_text = match fmt_duration(dur) {
-                Ok(text) => text,
-                Err(_) => format!("{dur:?}"),
-            };
+            let dur_text = format_elapsed(dur);
             write_stderr(&format!(
                 "\nrun timeout ({dur_text}) exceeded, cancelling run...\n"
             ));
@@ -1395,10 +1376,7 @@ fn spawn_grace_force_exit_watchdog(token: CancellationToken, grace: Duration) {
                 thread::sleep(Duration::from_millis(50));
             }
             thread::sleep(grace);
-            let grace_text = match fmt_duration(grace) {
-                Ok(text) => text,
-                Err(_) => format!("{grace:?}"),
-            };
+            let grace_text = format_elapsed(grace);
             write_stderr(&format!(
                 "\nrudzio: {grace_text} grace period exceeded after cancellation, \
                  force-exiting (some phase ignored cooperative cancel)\n"
@@ -1424,10 +1402,7 @@ fn spawn_grace_force_exit_watchdog(token: CancellationToken, grace: Duration) {
 /// [`derive_shuffle_seed`]. Both branches return the same `u64` so the
 /// caller can pass it to `permute_with_seed` and print it for repro.
 fn resolved_shuffle_seed(config: &Config) -> anyhow::Result<u64> {
-    match config.shuffle_seed {
-        Some(seed) => Ok(seed),
-        None => derive_shuffle_seed(),
-    }
+    config.shuffle_seed.map_or_else(derive_shuffle_seed, Ok)
 }
 
 /// Build a fresh shuffle seed from the wall clock. Used when the user
@@ -1449,6 +1424,45 @@ fn derive_shuffle_seed() -> anyhow::Result<u64> {
             Ok(seed)
         }
         Err(_) => Ok(0),
+    }
+}
+
+#[must_use]
+#[inline]
+/// Collect every registered test token and return the subset passing the
+/// CLI filters, plus the count that was filtered out.
+fn collect_filtered_tokens(config: &Config) -> (Vec<&'static TestToken>, usize) {
+    let all_tokens: Vec<&'static TestToken> = TEST_TOKENS.iter().collect();
+    let filtered_tokens: Vec<&'static TestToken> = all_tokens
+        .iter()
+        .copied()
+        .filter(|token| {
+            let qualified = qualified_test_name(token.module_path, token.name);
+            token_passes_filters(
+                &qualified,
+                token.ignored,
+                config.filter.as_deref(),
+                &config.skip_filters,
+                config.run_ignored,
+                config.exact_match,
+            )
+        })
+        .collect();
+    let filtered_out = all_tokens
+        .len()
+        .checked_sub(filtered_tokens.len())
+        .map_or(0, |value| value);
+    (filtered_tokens, filtered_out)
+}
+
+/// Spawn the run-timeout and grace-force-exit watchdog threads for the
+/// configured durations, both keyed off `root_token`.
+fn spawn_watchdogs(config: &Config, root_token: &CancellationToken) {
+    if let Some(dur) = config.run_timeout {
+        spawn_run_timeout_watchdog(root_token.clone(), dur);
+    }
+    if let Some(grace) = config.cancel_grace_period {
+        spawn_grace_force_exit_watchdog(root_token.clone(), grace);
     }
 }
 
@@ -1503,28 +1517,7 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
         }
     };
 
-    let all_tokens: Vec<&'static TestToken> = TEST_TOKENS.iter().collect();
-
-    let filtered_tokens: Vec<&'static TestToken> = all_tokens
-        .iter()
-        .copied()
-        .filter(|token| {
-            let qualified = qualified_test_name(token.module_path, token.name);
-            token_passes_filters(
-                &qualified,
-                token.ignored,
-                config.filter.as_deref(),
-                &config.skip_filters,
-                config.run_ignored,
-                config.exact_match,
-            )
-        })
-        .collect();
-
-    let filtered_out = match all_tokens.len().checked_sub(filtered_tokens.len()) {
-        Some(v) => v,
-        None => 0,
-    };
+    let (filtered_tokens, filtered_out) = collect_filtered_tokens(&config);
 
     if matches!(config.print_only, PrintOnly::List) {
         drop(capture_guard);
@@ -1555,8 +1548,8 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
     if config.shuffle {
         let seed = match resolved_shuffle_seed(&config) {
             Ok(seed) => seed,
-            Err(e) => {
-                write_stderr(&format!("shuffle seed error: {e:#}\n"));
+            Err(error) => {
+                write_stderr(&format!("shuffle seed error: {error:#}\n"));
                 return ExitCode::from(1);
             }
         };
@@ -1568,20 +1561,15 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
     let root_token = CancellationToken::new();
     install_signal_handler(root_token.clone());
 
-    if let Some(dur) = config.run_timeout {
-        spawn_run_timeout_watchdog(root_token.clone(), dur);
-    }
-    if let Some(grace) = config.cancel_grace_period {
-        spawn_grace_force_exit_watchdog(root_token.clone(), grace);
-    }
+    spawn_watchdogs(&config, &root_token);
 
     let reporter = ModeReporter::new(&config);
     let start = Instant::now();
 
     let total = match dispatch_test_groups(&filtered_tokens, &config, &root_token, &reporter) {
         Ok(total) => total,
-        Err(e) => {
-            write_stderr(&format!("dispatch failed: {e:#}\n"));
+        Err(error) => {
+            write_stderr(&format!("dispatch failed: {error:#}\n"));
             return ExitCode::from(1);
         }
     };
@@ -1594,9 +1582,9 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
         ensure_time_exceeded: reporter.ensure_time_exceeded.load(Ordering::Relaxed),
         ..TestSummary::zero()
     }) {
-        Ok(g) => g,
-        Err(e) => {
-            write_stderr(&format!("summary merge failed: {e:#}\n"));
+        Ok(grand) => grand,
+        Err(error) => {
+            write_stderr(&format!("summary merge failed: {error:#}\n"));
             return ExitCode::from(1);
         }
     };
@@ -1605,18 +1593,18 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
 
     // Plain-mode summary rendering. Live mode lets the drawer handle
     // it during its shutdown path.
-    if let Some(plain) = &reporter.plain {
-        if let Err(e) = print_plain_summary(
+    if let Some(plain) = &reporter.plain
+        && let Err(error) = print_plain_summary(
             plain,
             grand_total,
             total_count,
             filtered_out,
             elapsed,
             colored_plain,
-        ) {
-            write_stderr(&format!("summary render failed: {e:#}\n"));
-            return ExitCode::from(1);
-        }
+        )
+    {
+        write_stderr(&format!("summary render failed: {error:#}\n"));
+        return ExitCode::from(1);
     }
 
     // Flush the libtest-format logfile (no-op when --logfile was not
@@ -1775,10 +1763,7 @@ fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
             report.strategy,
         );
         if let Some(p50) = report.median() {
-            let p50_text = match fmt_duration(p50) {
-                Ok(text) => text,
-                Err(_) => format!("{p50:?}"),
-            };
+            let p50_text = format_elapsed(p50);
             let _write_ret: Result<(), fmt::Error> = write!(inner, ", p50 {p50_text}");
         }
         return format!("<{inner}>");

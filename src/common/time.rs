@@ -19,7 +19,6 @@ use std::time::Duration;
 /// `integer_division` lints stay green; the divisors are non-zero
 /// literals, but the checked form is kept so a future non-literal
 /// divisor would surface as an error instead of a silent wrap.
-#[must_use]
 #[inline]
 pub fn fmt_duration(dur: Duration) -> anyhow::Result<String> {
     let nanos = dur.as_nanos();
@@ -28,7 +27,7 @@ pub fn fmt_duration(dur: Duration) -> anyhow::Result<String> {
     } else if nanos >= 1_000_000_u128 {
         ("ms", 10_000_u128)
     } else if nanos >= 1_000_u128 {
-        ("µs", 10_u128)
+        ("\u{b5}s", 10_u128)
     } else {
         return Ok(format!("{nanos}.00ns"));
     };

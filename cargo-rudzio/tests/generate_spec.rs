@@ -409,7 +409,7 @@ mod tests {
         let rendered = build_main_rs(
             &plan_with_members(members, "/nowhere"),
             Path::new("/nowhere/out"),
-        );
+        )?;
 
         anyhow::ensure!(
             rendered.contains("extern crate alpha;"),
@@ -433,7 +433,7 @@ mod tests {
         let rendered = build_main_rs(
             &plan_with_members(vec![entry], "/nowhere"),
             Path::new("/nowhere/out"),
-        );
+        )?;
 
         anyhow::ensure!(
             rendered.contains("extern crate foo_bar_baz;"),
@@ -482,7 +482,7 @@ mod tests {
         let rendered = build_main_rs(
             &plan_with_members(members, "/ws-root"),
             Path::new("/ws-root/out"),
-        );
+        )?;
 
         // The fixture's root member is the injected `rudzio` dogfood root,
         // so the skip must be asserted against `extern crate rudzio;` — not a
@@ -521,7 +521,7 @@ mod tests {
         let rendered = build_main_rs(
             &plan_with_members(members, "/nowhere"),
             Path::new("/nowhere/out"),
-        );
+        )?;
 
         anyhow::ensure!(
             rendered.matches("extern crate foo_bar;").count() == 1,

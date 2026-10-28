@@ -9,7 +9,7 @@
 
 use std::iter;
 use std::panic::AssertUnwindSafe;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures_util::FutureExt as _;
 use futures_util::StreamExt as _;
@@ -84,10 +84,7 @@ impl Strategy for Sequential {
         P: FnMut(ProgressSnapshot),
     {
         let iterations = self.0;
-        let stride = match iterations.checked_div(100) {
-            Some(v) => v.max(1),
-            None => 1,
-        };
+        let stride = iterations.checked_div(100).map_or(1, |value| value.max(1));
         let mut samples = Vec::with_capacity(iterations);
         let mut failures = Vec::new();
         let mut panics: usize = 0;
@@ -103,21 +100,12 @@ impl Strategy for Sequential {
                 Ok(Ok(())) => samples.push(iter_elapsed),
                 Ok(Err(err)) => failures.push(err.to_string()),
                 Err(_payload) => {
-                    panics = match panics.checked_add(1) {
-                        Some(v) => v,
-                        None => usize::MAX,
-                    }
+                    panics = panics.checked_add(1).map_or(usize::MAX, |value| value);
                 }
             }
-            let done = match idx.checked_add(1) {
-                Some(v) => v,
-                None => usize::MAX,
-            };
+            let done = idx.checked_add(1).map_or(usize::MAX, |value| value);
             if done.checked_rem(stride).is_some_and(|rem| rem == 0) || done == iterations {
-                let snapshot = match ProgressSnapshot::from_samples(&samples, done, iterations) {
-                    Ok(snapshot) => snapshot,
-                    Err(_) => ProgressSnapshot::initial(iterations),
-                };
+                let snapshot = snapshot_or_initial(&samples, done, iterations);
                 on_progress(snapshot);
             }
         }
@@ -165,10 +153,7 @@ impl Strategy for Concurrent {
         P: FnMut(ProgressSnapshot),
     {
         let iterations = self.0;
-        let stride = match iterations.checked_div(100) {
-            Some(v) => v.max(1),
-            None => 1,
-        };
+        let stride = iterations.checked_div(100).map_or(1, |value| value.max(1));
         let start = Instant::now();
         // body() is `FnMut`; we call it sequentially up front, then
         // drive the resulting futures via `FuturesUnordered` so we can
@@ -197,21 +182,12 @@ impl Strategy for Concurrent {
                 Ok(Ok(())) => samples.push(iter_elapsed),
                 Ok(Err(err)) => failures.push(err.to_string()),
                 Err(_payload) => {
-                    panics = match panics.checked_add(1) {
-                        Some(v) => v,
-                        None => usize::MAX,
-                    }
+                    panics = panics.checked_add(1).map_or(usize::MAX, |value| value);
                 }
             }
-            done = match done.checked_add(1) {
-                Some(v) => v,
-                None => usize::MAX,
-            };
+            done = done.checked_add(1).map_or(usize::MAX, |value| value);
             if done.is_multiple_of(stride) || done == iterations {
-                let snapshot = match ProgressSnapshot::from_samples(&samples, done, iterations) {
-                    Ok(snapshot) => snapshot,
-                    Err(_) => ProgressSnapshot::initial(iterations),
-                };
+                let snapshot = snapshot_or_initial(&samples, done, iterations);
                 on_progress(snapshot);
             }
         }
@@ -224,4 +200,14 @@ impl Strategy for Concurrent {
             total_elapsed: start.elapsed(),
         }
     }
+}
+
+/// Build the progress snapshot for `done` samples out of `iterations`,
+/// falling back to the initial (zero-filled) snapshot when the sample
+/// set is too small or inconsistent to produce a real one.
+fn snapshot_or_initial(samples: &[Duration], done: usize, iterations: usize) -> ProgressSnapshot {
+    if let Ok(snapshot) = ProgressSnapshot::from_samples(samples, done, iterations) {
+        return snapshot;
+    }
+    ProgressSnapshot::initial(iterations)
 }
