@@ -51,7 +51,10 @@ impl Report {
     /// the report can't overflow if a run tries hard enough.
     #[inline]
     pub const fn add_converted(&mut self, count: usize) {
-        self.tests_converted = self.tests_converted.saturating_add(count);
+        self.tests_converted = match self.tests_converted.checked_add(count) {
+            Some(v) => v,
+            None => usize::MAX,
+        };
     }
 
     /// Record that `path` was backed up (i.e. a sibling

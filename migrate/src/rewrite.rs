@@ -221,7 +221,10 @@ impl Rewriter<'_, '_> {
                 )
             },
             |plan| {
-                let base = plan.module_path.as_deref().unwrap_or("crate");
+                let base = match plan.module_path.as_deref() {
+                    Some(p) => p,
+                    None => "crate",
+                };
                 (
                     make_static_path(&format!("{base}::{}", plan.suite_ident)),
                     make_static_path(&format!("{base}::{}", plan.bridge_ident)),
@@ -237,12 +240,18 @@ impl Rewriter<'_, '_> {
                 ),
             ])]
         };
-        let mut child_items: Vec<Item> = Vec::with_capacity(fns.len().saturating_add(2));
+        let mut child_items: Vec<Item> = Vec::with_capacity(match fns.len().checked_add(2) {
+            Some(v) => v,
+            None => 0,
+        });
         child_items.push(syn::parse_quote! {
             use super::*;
         });
         if let Some(plan) = outer_plan {
-            let base = plan.module_path.as_deref().unwrap_or("crate");
+            let base = match plan.module_path.as_deref() {
+                Some(p) => p,
+                None => "crate",
+            };
             let bridge_path: syn::Path =
                 make_static_path(&format!("{base}::{}", plan.bridge_ident));
             child_items.push(syn::parse_quote! {
@@ -268,15 +277,21 @@ impl Rewriter<'_, '_> {
     /// empty string if the recorded byte ranges fall outside the file
     /// (defensive — should not trigger for well-formed input).
     fn capture_original_snippet(&self, func: &ItemFn) -> String {
-        let span_start = func
+        let span_start = match func
             .attrs
             .iter()
             .map(|attr| attr.span().byte_range().start)
             .min()
-            .unwrap_or_else(|| func.sig.fn_token.span.byte_range().start);
+        {
+            Some(start) => start,
+            None => func.sig.fn_token.span.byte_range().start,
+        };
         let span_end = func.block.span().byte_range().end;
         let src: &str = &self.source;
-        src.get(span_start..span_end).unwrap_or("").to_owned()
+        match src.get(span_start..span_end) {
+            Some(s) => s.to_owned(),
+            None => String::new(),
+        }
     }
 
     /// Post-pass: a file that's a TEST BINARY ROOT under `tests/` (i.e.
@@ -535,10 +550,10 @@ impl Rewriter<'_, '_> {
         self.apply_signature_rewrite(func, had_resolved_test_context);
 
         // Pick the runtime: forced by detected kind > file's default.
-        let runtime = detected
-            .kind
-            .forced_runtime()
-            .unwrap_or(self.default_runtime);
+        let runtime = match detected.kind.forced_runtime() {
+            Some(r) => r,
+            None => self.default_runtime,
+        };
         let _: bool = self.rewrite.runtimes_used.insert(runtime);
         if self.mod_depth == 0
             && let Some(forced) = detected.kind.forced_runtime()
@@ -612,7 +627,10 @@ impl Rewriter<'_, '_> {
         // forces the same runtime (e.g. all `#[tokio::test(flavor = ...)]`
         // with the same flavor), honor that unanimous choice;
         // otherwise fall back to `--runtime`.
-        let runtime = unanimous_inner_runtime(module).unwrap_or(self.default_runtime);
+        let runtime = match unanimous_inner_runtime(module) {
+            Some(r) => r,
+            None => self.default_runtime,
+        };
         let runtime_path = make_static_path(runtime.suite_path());
 
         // Mixed-context handling: when a single `mod tests` holds both
@@ -630,7 +648,10 @@ impl Rewriter<'_, '_> {
         // a resolved `#[test_context(T)]`.
         let resolved_ctx = first_resolved_test_context(module, self.test_contexts);
         let (suite_path, test_path) = if let Some(plan) = resolved_ctx {
-            let base = plan.module_path.as_deref().unwrap_or("crate");
+            let base = match plan.module_path.as_deref() {
+                Some(p) => p,
+                None => "crate",
+            };
             if plan.module_path.is_none() {
                 self.warn_span(
                     module.ident.span(),
@@ -692,7 +713,10 @@ impl Rewriter<'_, '_> {
     fn warn_span(&mut self, span: Span, message: impl Into<String>) {
         let range = span.byte_range();
         let offset = range.start;
-        let len = range.end.saturating_sub(range.start);
+        let len = match range.end.checked_sub(range.start) {
+            Some(v) => v,
+            None => 0,
+        };
         self.report.warn_with_span(
             self.file_path.clone(),
             span.start().line,
@@ -733,11 +757,10 @@ impl Rewriter<'_, '_> {
         fns.reverse();
 
         let runtime = if self.file_scope_runtimes.len() == 1 {
-            self.file_scope_runtimes
-                .iter()
-                .next()
-                .copied()
-                .unwrap_or(self.default_runtime)
+            match self.file_scope_runtimes.iter().next().copied() {
+                Some(r) => r,
+                None => self.default_runtime,
+            }
         } else {
             self.default_runtime
         };
@@ -756,7 +779,10 @@ impl Rewriter<'_, '_> {
                 )
             },
             |plan| {
-                let base = plan.module_path.as_deref().unwrap_or("crate");
+                let base = match plan.module_path.as_deref() {
+                    Some(p) => p,
+                    None => "crate",
+                };
                 (
                     make_static_path(&format!("{base}::{}", plan.suite_ident)),
                     make_static_path(&format!("{base}::{}", plan.bridge_ident)),
@@ -779,7 +805,11 @@ impl Rewriter<'_, '_> {
             })
             .collect();
 
-        let mut synth_items: Vec<Item> = Vec::with_capacity(cleaned_fns.len().saturating_add(3));
+        let mut synth_items: Vec<Item> =
+            Vec::with_capacity(match cleaned_fns.len().checked_add(3) {
+                Some(v) => v,
+                None => 0,
+            });
         synth_items.push(syn::parse_quote! {
             use super::*;
         });
@@ -790,7 +820,10 @@ impl Rewriter<'_, '_> {
             // `crate::` with a warning (emitted once per plan at
             // module-promotion time; repeating it here would be
             // noise).
-            let base = plan.module_path.as_deref().unwrap_or("crate");
+            let base = match plan.module_path.as_deref() {
+                Some(p) => p,
+                None => "crate",
+            };
             let bridge_path: syn::Path =
                 make_static_path(&format!("{base}::{}", plan.bridge_ident));
             synth_items.push(syn::parse_quote! {
@@ -825,7 +858,10 @@ impl VisitMut for CfgAttrTestRewriter {
     #[inline]
     fn visit_attribute_mut(&mut self, i: &mut Attribute) {
         if rewrite_cfg_attr_test_attr(i) {
-            self.rewrites = self.rewrites.saturating_add(1);
+            self.rewrites = match self.rewrites.checked_add(1) {
+                Some(v) => v,
+                None => usize::MAX,
+            };
         }
         visit_mut::visit_attribute_mut(self, i);
     }
@@ -873,9 +909,15 @@ impl VisitMut for Rewriter<'_, '_> {
     #[inline]
     fn visit_item_mod_mut(&mut self, i: &mut ItemMod) {
         self.try_promote_cfg_test_mod(i);
-        self.mod_depth = self.mod_depth.saturating_add(1);
+        self.mod_depth = match self.mod_depth.checked_add(1) {
+            Some(v) => v,
+            None => usize::MAX,
+        };
         visit_mut::visit_item_mod_mut(self, i);
-        self.mod_depth = self.mod_depth.saturating_sub(1);
+        self.mod_depth = match self.mod_depth.checked_sub(1) {
+            Some(v) => v,
+            None => 0,
+        };
         prune_unused_test_context_import(i);
         if self.stripped_any_test_context_attr
             && let Some((_, items)) = &mut i.content
@@ -1041,12 +1083,10 @@ fn fn_return_kind(ret: &ReturnType) -> ReturnKind {
         return ReturnKind::UnitExplicit;
     }
     if let Type::Path(path_ty) = ty.as_ref() {
-        let last = path_ty
-            .path
-            .segments
-            .last()
-            .map(|seg| seg.ident.to_string())
-            .unwrap_or_default();
+        let last = match path_ty.path.segments.last() {
+            Some(seg) => seg.ident.to_string(),
+            None => String::new(),
+        };
         return if last == "Result" {
             ReturnKind::Result
         } else {
@@ -1170,7 +1210,10 @@ fn is_tests_binary_root(path: &Path) -> bool {
     else {
         return false;
     };
-    let rel = components.split_off(tests_idx.saturating_add(1));
+    let rel = components.split_off(match tests_idx.checked_add(1) {
+        Some(v) => v,
+        None => 0,
+    });
     // `tests/<stem>.rs`: exactly one `.rs` component after `tests/`.
     if let [single] = rel.as_slice() {
         return Path::new(single).extension().is_some_and(|ext| ext == "rs");
@@ -1207,8 +1250,14 @@ fn item_is_fn_main(item: &Item) -> bool {
 /// Convert `crate::foo::DbCtx` → `db_ctx`. Used to derive a snake-case
 /// suffix for split-child module names (`tests_with_db_ctx`).
 fn last_segment_snake(path: &str) -> String {
-    let last = path.rsplit("::").next().unwrap_or(path);
-    let mut out = String::with_capacity(last.len().saturating_add(4));
+    let last = match path.rsplit("::").next() {
+        Some(seg) => seg,
+        None => path,
+    };
+    let mut out = String::with_capacity(match last.len().checked_add(4) {
+        Some(v) => v,
+        None => 0,
+    });
     for (i, ch) in last.chars().enumerate() {
         if ch.is_ascii_uppercase() {
             if i > 0 {
@@ -1228,7 +1277,10 @@ fn last_segment_snake(path: &str) -> String {
 /// the fallback exists strictly to keep the rewriter free of
 /// `.expect()` calls.
 fn make_static_path(text: &str) -> syn::Path {
-    syn::parse_str::<syn::Path>(text).unwrap_or_else(|_err| syn::parse_quote!(crate))
+    match syn::parse_str::<syn::Path>(text) {
+        Ok(path) => path,
+        Err(_) => syn::parse_quote!(crate),
+    }
 }
 
 /// True if `module` (recursively) contains at least one fn carrying a

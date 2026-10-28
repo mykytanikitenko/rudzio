@@ -20,7 +20,9 @@ impl CfgAttrIgnore {
     /// attribute whose trailing attributes include an `ignore`. Returns
     /// `None` when the attribute is not a `cfg_attr` wrapping `ignore`.
     fn from_attr(attr: &Attribute) -> Option<Self> {
-        let list = attr.parse_args::<CfgAttrList>().ok()?;
+        let Ok(list) = attr.parse_args::<CfgAttrList>() else {
+            return None;
+        };
         for meta in &list.attrs {
             if meta.path().is_ident("ignore") {
                 let reason = meta_ignore_reason(meta);
@@ -141,11 +143,17 @@ pub fn extract_ignore_reason(func: &ItemFn) -> (TokenStream, TokenStream) {
         }
     }
 
-    let ignored = ignored_terms
+    let ignored = match ignored_terms
         .into_iter()
         .reduce(|acc, term| quote! { (#acc) || (#term) })
-        .unwrap_or_else(|| quote! { false });
-    let reason_expr = reason.unwrap_or_else(|| quote! { "" });
+    {
+        Some(v) => v,
+        None => quote! { false },
+    };
+    let reason_expr = match reason {
+        Some(v) => v,
+        None => quote! { "" },
+    };
 
     (ignored, reason_expr)
 }

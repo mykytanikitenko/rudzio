@@ -18,7 +18,7 @@ use std::mem;
 use std::pin::Pin;
 use std::ptr;
 use std::sync::mpsc;
-use std::sync::{Condvar, Mutex, PoisonError};
+use std::sync::{Condvar, Mutex};
 use std::task::Poll;
 use std::thread;
 use std::time::Duration;
@@ -69,7 +69,10 @@ impl Signaler {
     /// Set the latch and wake any thread parked in [`Self::wait`].
     fn signal(&self) {
         {
-            let mut guard = self.flag.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut guard = match self.flag.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
             *guard = true;
         }
         self.condvar.notify_one();
@@ -78,12 +81,15 @@ impl Signaler {
     /// Block until [`Self::signal`] is observed, clearing the latch
     /// before returning so the next wait can be re-armed.
     fn wait(&self) {
-        let mut guard = self.flag.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut guard = match self.flag.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         while !*guard {
-            guard = self
-                .condvar
-                .wait(guard)
-                .unwrap_or_else(PoisonError::into_inner);
+            guard = match self.condvar.wait(guard) {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
         }
         *guard = false;
     }

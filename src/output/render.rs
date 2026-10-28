@@ -22,7 +22,7 @@ use std::str;
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, anyhow};
 use crossbeam_channel::{Receiver, Sender, select};
 
 use super::color::Policy as ColorPolicy;
@@ -269,18 +269,19 @@ impl Drawer {
 
     /// Drain any pending lifecycle and pipe events at shutdown so the
     /// final summary reflects every test's outcome.
-    fn drain_remaining(&mut self) {
+    fn drain_remaining(&mut self) -> Result<()> {
         while let Ok(ev) = self.lifecycle_rx.try_recv() {
-            self.handle_lifecycle(ev);
+            self.handle_lifecycle(ev)?;
         }
         while let Ok(chunk) = self.pipe_rx.try_recv() {
             self.handle_pipe(&chunk);
         }
+        Ok(())
     }
 
     /// Print the header, failure message, and captured output for a
     /// completed test.
-    fn emit_completion_block(&mut self, state: &TestState, outcome: &TestOutcome) {
+    fn emit_completion_block(&mut self, state: &TestState, outcome: &TestOutcome) -> Result<()> {
         if matches!(self.output_mode, OutputMode::Live) {
             self.clear_live_region();
         }
@@ -333,10 +334,10 @@ impl Drawer {
             elapsed: _elapsed,
         } = outcome
         {
-            let detail = report.detailed_summary();
+            let detail = report.detailed_summary()?;
             drop(self.terminal.write_all(detail.as_bytes()));
             if report.failures.is_empty() && report.panics == 0 {
-                let hist = report.ascii_histogram(10, 30);
+                let hist = report.ascii_histogram(10, 30)?;
                 if !hist.is_empty() {
                     drop(self.terminal.write_all(b"  histogram:\n"));
                     drop(self.terminal.write_all(hist.as_bytes()));
@@ -345,6 +346,7 @@ impl Drawer {
         }
         drop(self.terminal.write_all(b"\n"));
         self.last_live_rows = 0;
+        Ok(())
     }
 
     /// Emit the plain-mode `... started` line for a freshly started test.
@@ -361,7 +363,7 @@ impl Drawer {
 
     /// Dispatch a lifecycle event to the appropriate state-update path
     /// (start, finish, ignore, suite hooks).
-    fn handle_lifecycle(&mut self, ev: LifecycleEvent) {
+    fn handle_lifecycle(&mut self, ev: LifecycleEvent) -> Result<()> {
         match ev {
             LifecycleEvent::TestStarted {
                 test_id,
@@ -385,7 +387,7 @@ impl Drawer {
                 test_name,
                 runtime_name,
                 reason,
-            } => self.handle_test_ignored(module_path, test_name, runtime_name, reason),
+            } => self.handle_test_ignored(module_path, test_name, runtime_name, reason)?,
             LifecycleEvent::SuiteSetupStarted {
                 runtime_name,
                 suite,
@@ -436,17 +438,20 @@ impl Drawer {
                 thread,
                 elapsed,
                 result,
-            } => self.handle_suite_teardown_finished(runtime_name, suite, thread, elapsed, result),
+            } => {
+                self.handle_suite_teardown_finished(runtime_name, suite, thread, elapsed, result)?
+            }
             LifecycleEvent::TestTeardownFailed {
                 module_path,
                 test_name,
                 runtime_name,
                 result,
-            } => self.handle_test_teardown_failed(module_path, test_name, runtime_name, result),
+            } => self.handle_test_teardown_failed(module_path, test_name, runtime_name, result)?,
             LifecycleEvent::TestCompleted { test_id, outcome } => {
-                self.handle_test_completed(test_id, &outcome);
+                self.handle_test_completed(test_id, &outcome)?;
             }
         }
+        Ok(())
     }
 
     /// Attribute a captured pipe chunk to the appropriate in-flight test
@@ -615,7 +620,7 @@ impl Drawer {
         thread: ThreadId,
         elapsed: Duration,
         result: TeardownResult,
-    ) {
+    ) -> Result<()> {
         let failure = match result {
             TeardownResult::Ok => None,
             TeardownResult::Err(msg) => Some(LifecycleFailure::Error(msg)),
@@ -628,7 +633,11 @@ impl Drawer {
             )),
         };
         if failure.is_some() {
-            self.summary.teardown_failures = self.summary.teardown_failures.saturating_add(1);
+            self.summary.teardown_failures = self
+                .summary
+                .teardown_failures
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("summary: teardown_failures counter overflow"))?;
         }
         self.handle_suite_lifecycle_finish(
             LifecyclePhase::Teardown,
@@ -638,18 +647,19 @@ impl Drawer {
             elapsed,
             failure,
         );
+        Ok(())
     }
 
     /// Drain late pipe bytes, record the outcome, emit the completion
     /// block, and clear the thread/slot mapping for a finished test.
-    fn handle_test_completed(&mut self, test_id: TestId, outcome: &TestOutcome) {
+    fn handle_test_completed(&mut self, test_id: TestId, outcome: &TestOutcome) -> Result<()> {
         // Drain the pipe aggressively so any bytes the test wrote
         // just before the runtime thread flushed land in the correct
         // test's buffer.
         while let Ok(chunk) = self.pipe_rx.try_recv() {
             self.handle_pipe(&chunk);
         }
-        self.summary.record_outcome(outcome);
+        self.summary.record_outcome(outcome)?;
         if let Some(state) = self.tests.remove(&test_id) {
             if is_failure(outcome) {
                 self.summary.failures.push(FailureRecord {
@@ -660,7 +670,7 @@ impl Drawer {
                     captured_stdout: String::from_utf8_lossy(&state.stdout_buffer).into_owned(),
                 });
             }
-            self.emit_completion_block(&state, outcome);
+            self.emit_completion_block(&state, outcome)?;
             // Clear the thread and slot mappings *after* emission so
             // late-drained bytes attributed via the thread map are
             // already flushed.
@@ -671,6 +681,7 @@ impl Drawer {
                 slot.current = None;
             }
         }
+        Ok(())
     }
 
     /// Render the `[IGNORE]` status line for a test skipped via
@@ -681,8 +692,12 @@ impl Drawer {
         test_name: &'static str,
         runtime_name: &'static str,
         reason: &'static str,
-    ) {
-        self.summary.ignored = self.summary.ignored.saturating_add(1);
+    ) -> Result<()> {
+        self.summary.ignored = self
+            .summary
+            .ignored
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("summary: ignored counter overflow"))?;
         let display = qualified_test_name(module_path, test_name);
         if matches!(self.output_mode, OutputMode::Live) {
             self.clear_live_region();
@@ -699,6 +714,7 @@ impl Drawer {
         drop(self.terminal.write_all(line.as_bytes()));
         drop(self.terminal.write_all(b"\n"));
         self.last_live_rows = 0;
+        Ok(())
     }
 
     /// Register a freshly-started test in the lifecycle maps and emit
@@ -751,13 +767,13 @@ impl Drawer {
         test_name: &'static str,
         runtime_name: &'static str,
         result: TeardownResult,
-    ) {
+    ) -> Result<()> {
         if matches!(self.output_mode, OutputMode::Live) {
             self.clear_live_region();
         }
         let display = qualified_test_name(module_path, test_name);
         let (label, label_text, message) = match result {
-            TeardownResult::Ok => return,
+            TeardownResult::Ok => return Ok(()),
             TeardownResult::Err(msg) => (StatusLabel::Fail, "error", msg),
             TeardownResult::Panicked(msg) => (StatusLabel::Panic, "panic", msg),
             TeardownResult::TimedOut => (
@@ -782,7 +798,11 @@ impl Drawer {
         let body = format!("  {label_text}: {message}\n");
         let painted = self.color.red(&body);
         drop(self.terminal.write_all(painted.as_bytes()));
-        self.summary.teardown_failures = self.summary.teardown_failures.saturating_add(1);
+        self.summary.teardown_failures = self
+            .summary
+            .teardown_failures
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("summary: teardown_failures counter overflow"))?;
         self.summary.failures.push(FailureRecord {
             display_name: format!("teardown {display}"),
             outcome_label: "TEST TEARDOWN FAILED",
@@ -791,6 +811,7 @@ impl Drawer {
             captured_stdout: String::new(),
         });
         self.last_live_rows = 0;
+        Ok(())
     }
 
     /// Build a drawer. Slots are allocated lazily as `TestStarted`
@@ -828,7 +849,7 @@ impl Drawer {
 
     /// Print the failures section followed by the one-line totals at
     /// the very end of the run.
-    fn print_final_summary(&mut self) {
+    fn print_final_summary(&mut self) -> Result<()> {
         let total_elapsed = self
             .summary
             .started_at
@@ -865,11 +886,12 @@ impl Drawer {
         let failed_total = self
             .summary
             .failed
-            .saturating_add(self.summary.panicked)
-            .saturating_add(self.summary.timed_out)
-            .saturating_add(self.summary.hung)
-            .saturating_add(self.summary.cancelled)
-            .saturating_add(self.summary.teardown_failures);
+            .checked_add(self.summary.panicked)
+            .and_then(|v| v.checked_add(self.summary.timed_out))
+            .and_then(|v| v.checked_add(self.summary.hung))
+            .and_then(|v| v.checked_add(self.summary.cancelled))
+            .and_then(|v| v.checked_add(self.summary.teardown_failures))
+            .ok_or_else(|| anyhow!("summary: failed total overflow"))?;
         let overall = if failed_total == 0 {
             self.color.green("ok")
         } else {
@@ -887,13 +909,14 @@ impl Drawer {
         );
         drop(self.terminal.write_all(summary_line.as_bytes()));
         drop(self.terminal.flush());
+        Ok(())
     }
 
     /// Erase and repaint the live region with the current per-slot
     /// activity; called on every redraw tick in live mode.
-    fn redraw_live_region(&mut self) {
+    fn redraw_live_region(&mut self) -> Result<()> {
         if !matches!(self.output_mode, OutputMode::Live) || matches!(self.format, Format::Terse) {
-            return;
+            return Ok(());
         }
         // Build the live region from slots that have *actual* activity
         // — an in-flight test or a suite setup/teardown. Idle slots
@@ -922,11 +945,12 @@ impl Drawer {
                     let remaining = rows_cap
                         .saturating_sub(LIVE_REGION_RESERVED_ROWS)
                         .saturating_sub(used);
-                    output_lines
-                        .extend(bench_histogram_lines(snapshot, self.color, cols, remaining));
+                    output_lines.extend(bench_histogram_lines(
+                        snapshot, self.color, cols, remaining,
+                    )?);
                 }
                 (
-                    running_line(slot.runtime_name, state, self.color, cols),
+                    running_line(slot.runtime_name, state, self.color, cols)?,
                     output_lines,
                 )
             } else {
@@ -934,13 +958,17 @@ impl Drawer {
             };
             buf.push_str(&status_line);
             buf.push('\n');
-            rows = rows.saturating_add(1);
+            rows = rows
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("live region: row count overflow"))?;
             // Stream the test's stdout/stderr live below the status
             // row, untruncated, in source order.
             for line in &output_lines {
                 buf.push_str(line);
                 buf.push('\n');
-                rows = rows.saturating_add(1);
+                rows = rows
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow!("live region: row count overflow"))?;
             }
         }
         // Clear last frame regardless of whether we have something new
@@ -948,44 +976,48 @@ impl Drawer {
         // when the active-slot count drops to zero.
         self.clear_live_region();
         if rows == 0 {
-            return;
+            return Ok(());
         }
         drop(self.terminal.write_all(buf.as_bytes()));
         drop(self.terminal.flush());
         self.last_live_rows = rows;
+        Ok(())
     }
 
     /// Return the `(cols, rows)` size to render against, honouring any
     /// test-only override before falling back to the ioctl probe.
     fn render_size(&self) -> (usize, usize) {
-        self.size_override
-            .unwrap_or_else(|| (terminal_width(), terminal_height()))
+        match self.size_override {
+            Some(sz) => sz,
+            None => (terminal_width(), terminal_height()),
+        }
     }
 
     /// Main loop: `select!` over all input channels plus a redraw
     /// timer until shutdown. On exit, drain pending events, clear
     /// the live region, and print the final summary.
     #[inline]
-    pub fn run(mut self) {
+    pub fn run(mut self) -> Result<()> {
         self.summary.started_at = Some(Instant::now());
         let timer = crossbeam_channel::tick(REDRAW_INTERVAL);
         loop {
             select! {
                 recv(self.lifecycle_rx) -> msg => match msg {
-                    Ok(ev) => self.handle_lifecycle(ev),
+                    Ok(ev) => self.handle_lifecycle(ev)?,
                     Err(_) => break,
                 },
                 recv(self.pipe_rx) -> msg => match msg {
                     Ok(chunk) => self.handle_pipe(&chunk),
                     Err(_) => break,
                 },
-                recv(timer) -> _ => self.redraw_live_region(),
+                recv(timer) -> _ => self.redraw_live_region()?,
                 recv(self.shutdown_rx) -> _ => break,
             }
         }
-        self.drain_remaining();
+        self.drain_remaining()?;
         self.clear_live_region();
-        self.print_final_summary();
+        self.print_final_summary()?;
+        Ok(())
     }
 
     /// Force the drawer to render against a fixed terminal size,
@@ -1004,10 +1036,13 @@ impl Drawer {
 impl Summary {
     /// Bump the counter that matches `outcome` so the final summary
     /// totals stay in sync with completed tests.
-    const fn record_outcome(&mut self, outcome: &TestOutcome) {
+    fn record_outcome(&mut self, outcome: &TestOutcome) -> Result<()> {
         match outcome {
             TestOutcome::Passed { elapsed: _elapsed } => {
-                self.passed = self.passed.saturating_add(1);
+                self.passed = self
+                    .passed
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow!("summary: passed counter overflow"))?;
             }
             TestOutcome::Failed {
                 elapsed: _elapsed,
@@ -1017,24 +1052,52 @@ impl Summary {
                 elapsed: _elapsed,
                 message: _message,
             } => {
-                self.failed = self.failed.saturating_add(1);
+                self.failed = self
+                    .failed
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow!("summary: failed counter overflow"))?;
             }
             TestOutcome::Panicked { elapsed: _elapsed } => {
-                self.panicked = self.panicked.saturating_add(1);
+                self.panicked = self
+                    .panicked
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow!("summary: panicked counter overflow"))?;
             }
-            TestOutcome::TimedOut => self.timed_out = self.timed_out.saturating_add(1),
-            TestOutcome::Hung { elapsed: _elapsed } => self.hung = self.hung.saturating_add(1),
-            TestOutcome::Cancelled => self.cancelled = self.cancelled.saturating_add(1),
+            TestOutcome::TimedOut => {
+                self.timed_out = self
+                    .timed_out
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow!("summary: timed_out counter overflow"))?;
+            }
+            TestOutcome::Hung { elapsed: _elapsed } => {
+                self.hung = self
+                    .hung
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow!("summary: hung counter overflow"))?;
+            }
+            TestOutcome::Cancelled => {
+                self.cancelled = self
+                    .cancelled
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow!("summary: cancelled counter overflow"))?;
+            }
             TestOutcome::Benched {
                 report,
                 elapsed: _elapsed,
             } => {
-                self.benched = self.benched.saturating_add(1);
+                self.benched = self
+                    .benched
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow!("summary: benched counter overflow"))?;
                 if !report.is_success() {
-                    self.failed = self.failed.saturating_add(1);
+                    self.failed = self
+                        .failed
+                        .checked_add(1)
+                        .ok_or_else(|| anyhow!("summary: failed counter overflow"))?;
                 }
             }
         }
+        Ok(())
     }
 }
 
@@ -1105,9 +1168,8 @@ fn render_status_tag(label: StatusLabel, color: ColorPolicy) -> String {
         StatusLabel::Timeout | StatusLabel::Cancel | StatusLabel::Run => color.yellow(&naked),
         StatusLabel::Ignore => color.dim(&naked),
     };
-    let pad = STATUS_TAG_WIDTH.saturating_sub(visible);
     let mut out = painted;
-    for _ in 0..pad {
+    for _ in visible..STATUS_TAG_WIDTH {
         out.push(' ');
     }
     out
@@ -1117,10 +1179,10 @@ fn render_status_tag(label: StatusLabel, color: ColorPolicy) -> String {
 /// finished test.
 fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
     if let TestOutcome::Benched { elapsed, report } = outcome {
-        let median = report
-            .median()
-            .map(|median| format!(", p50 {median:.2?}"))
-            .unwrap_or_default();
+        let median = match report.median() {
+            Some(median) => format!(", p50 {median:.2?}"),
+            None => String::new(),
+        };
         return format!(
             "<{runtime_name}, {elapsed:.2?}, {}{median}>",
             report.strategy,
@@ -1139,16 +1201,22 @@ fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
 fn render_line(lhs_naked: &str, lhs_rendered: &str, trailing: &str, term_cols: usize) -> String {
     let lhs_visible = lhs_naked.chars().count();
     let trailing_visible = trailing.chars().count();
-    let pad = term_cols
-        .saturating_sub(lhs_visible)
-        .saturating_sub(trailing_visible)
-        .max(MIN_TRAILING_PAD);
-    let mut out = String::with_capacity(
-        lhs_rendered
-            .len()
-            .saturating_add(pad)
-            .saturating_add(trailing.len()),
-    );
+    let pad = match term_cols
+        .checked_sub(lhs_visible)
+        .and_then(|v| v.checked_sub(trailing_visible))
+    {
+        Some(v) => v.max(MIN_TRAILING_PAD),
+        None => MIN_TRAILING_PAD,
+    };
+    let capacity = match lhs_rendered
+        .len()
+        .checked_add(pad)
+        .and_then(|v| v.checked_add(trailing.len()))
+    {
+        Some(c) => c,
+        None => 0,
+    };
+    let mut out = String::with_capacity(capacity);
     out.push_str(lhs_rendered);
     for _ in 0..pad {
         out.push(' ');
@@ -1163,7 +1231,10 @@ fn render_line(lhs_naked: &str, lhs_rendered: &str, trailing: &str, term_cols: u
 #[cfg(unix)]
 fn terminal_width() -> usize {
     let (cols, _rows) = terminal_size_unix();
-    cols.unwrap_or(100)
+    match cols {
+        Some(c) => c,
+        None => 100,
+    }
 }
 
 /// Best-effort terminal height. Used to bound the live region so it
@@ -1174,7 +1245,10 @@ fn terminal_width() -> usize {
 #[cfg(unix)]
 fn terminal_height() -> usize {
     let (_cols, rows) = terminal_size_unix();
-    rows.unwrap_or(24)
+    match rows {
+        Some(r) => r,
+        None => 24,
+    }
 }
 
 /// Read the terminal `(cols, rows)` via `TIOCGWINSZ`, walking
@@ -1371,16 +1445,24 @@ fn append_complete_lines(dst: &mut Vec<String>, bytes: &[u8]) {
 /// `done / total` filled. Solid block `█` for filled cells, light shade
 /// `░` for empty. Used by [`bench_progress_trailing`] for the inline
 /// trailing-block bar.
-fn bar_render(done: usize, total: usize, width: usize) -> String {
+fn bar_render(done: usize, total: usize, width: usize) -> Result<String> {
     if width == 0 {
-        return String::new();
+        return Ok(String::new());
     }
-    let filled = done
-        .saturating_mul(width)
-        .checked_div(total)
-        .unwrap_or(0)
-        .min(width);
-    let mut out = String::with_capacity(width.saturating_add(2));
+    let filled = if total == 0 {
+        0_usize
+    } else {
+        done.checked_mul(width)
+            .ok_or_else(|| anyhow!("bar: width overflow"))?
+            .checked_div(total)
+            .ok_or_else(|| anyhow!("bar: zero total"))?
+            .min(width)
+    };
+    let mut out = String::with_capacity(
+        width
+            .checked_add(2)
+            .ok_or_else(|| anyhow!("bar: capacity overflow"))?,
+    );
     out.push('[');
     for _ in 0..filled {
         out.push('\u{2588}');
@@ -1389,7 +1471,7 @@ fn bar_render(done: usize, total: usize, width: usize) -> String {
         out.push('\u{2591}');
     }
     out.push(']');
-    out
+    Ok(out)
 }
 
 /// Build the trailing `<…>` block that follows a `[BENCH]` running
@@ -1410,47 +1492,59 @@ fn bar_render(done: usize, total: usize, width: usize) -> String {
 #[doc(hidden)]
 #[must_use]
 #[inline]
-pub fn bench_progress_trailing(snap: &ProgressSnapshot, cols: usize, _elapsed: Duration) -> String {
-    let pct = snap
-        .done
-        .saturating_mul(100)
-        .checked_div(snap.total)
-        .unwrap_or(0);
-    let bar = bar_render(snap.done, snap.total, 10);
+pub fn bench_progress_trailing(
+    snap: &ProgressSnapshot,
+    cols: usize,
+    _elapsed: Duration,
+) -> Result<String> {
+    let pct = if snap.total == 0 {
+        0_usize
+    } else {
+        snap.done
+            .checked_mul(100)
+            .ok_or_else(|| anyhow!("bench progress: pct overflow"))?
+            .checked_div(snap.total)
+            .ok_or_else(|| anyhow!("bench progress: zero total"))?
+    };
+    let bar = bar_render(snap.done, snap.total, 10)?;
     if let Some(cov_permille) = snap.cov_permille.filter(|_| cols >= 100) {
         // cov_permille = cov × 1000; we render cov × 100 with one
         // decimal, i.e. cov_permille / 10 . cov_permille % 10.
-        let cov_int = cov_permille.checked_div(10_u16).unwrap_or(0);
-        let cov_frac = cov_permille.checked_rem(10_u16).unwrap_or(0);
-        return format!(
+        let cov_int = cov_permille
+            .checked_div(10_u16)
+            .ok_or_else(|| anyhow!("bench progress: cov division"))?;
+        let cov_frac = cov_permille
+            .checked_rem(10_u16)
+            .ok_or_else(|| anyhow!("bench progress: cov remainder"))?;
+        return Ok(format!(
             "<{bar} {pct}% {}/{}  p50={p50:.0?}  p95={p95:.0?}  cov={cov_int}.{cov_frac}%>",
             snap.done,
             snap.total,
             p50 = snap.p50,
             p95 = snap.p95,
-        );
+        ));
     }
     if cols >= 80 {
-        return format!(
+        return Ok(format!(
             "<{bar} {pct}% {}/{} p50={p50:.0?} p95={p95:.0?}>",
             snap.done,
             snap.total,
             p50 = snap.p50,
             p95 = snap.p95,
-        );
+        ));
     }
     if cols >= 60 {
-        return format!(
+        return Ok(format!(
             "<{pct}% {}/{} p50={p50:.0?}>",
             snap.done,
             snap.total,
             p50 = snap.p50,
-        );
+        ));
     }
     if cols >= 50 {
-        return format!("<{pct}% {}/{}>", snap.done, snap.total);
+        return Ok(format!("<{pct}% {}/{}>", snap.done, snap.total));
     }
-    format!("<{pct}%>")
+    Ok(format!("<{pct}%>"))
 }
 
 /// Build the live-region status row for a running test. Public for
@@ -1460,7 +1554,12 @@ pub fn bench_progress_trailing(snap: &ProgressSnapshot, cols: usize, _elapsed: D
 #[doc(hidden)]
 #[must_use]
 #[inline]
-pub fn running_line(runtime: &str, state: &TestState, color: ColorPolicy, cols: usize) -> String {
+pub fn running_line(
+    runtime: &str,
+    state: &TestState,
+    color: ColorPolicy,
+    cols: usize,
+) -> Result<String> {
     let prefix = format!("{runtime:<RUNTIME_PREFIX_WIDTH$}");
     let label = match &state.kind {
         TestStateKind::Running => StatusLabel::Run,
@@ -1472,10 +1571,10 @@ pub fn running_line(runtime: &str, state: &TestState, color: ColorPolicy, cols: 
     let elapsed = state.started_at.elapsed();
     let trailing = match &state.kind {
         TestStateKind::Running => {
-            let elapsed_text = fmt_duration(elapsed);
+            let elapsed_text = fmt_duration(elapsed)?;
             format!("<{elapsed_text}>")
         }
-        TestStateKind::Bench { snapshot } => bench_progress_trailing(snapshot, cols, elapsed),
+        TestStateKind::Bench { snapshot } => bench_progress_trailing(snapshot, cols, elapsed)?,
     };
     // Clip `display` so the rendered row stays *strictly* inside
     // `cols` (we leave 1 col slack at the right edge): a row that
@@ -1489,13 +1588,17 @@ pub fn running_line(runtime: &str, state: &TestState, color: ColorPolicy, cols: 
         let raw = qualified_test_name(state.module_path, state.test_name);
         let prefix_visible = prefix.chars().count();
         let trailing_visible = trailing.chars().count();
-        let budget = cols
-            .saturating_sub(1) // 1 col of right-edge slack
-            .saturating_sub(prefix_visible)
-            .saturating_sub(STATUS_TAG_WIDTH)
-            .saturating_sub(1) // space between tag and display
-            .saturating_sub(MIN_TRAILING_PAD)
-            .saturating_sub(trailing_visible);
+        let budget = match cols
+            .checked_sub(1) // 1 col of right-edge slack
+            .and_then(|v| v.checked_sub(prefix_visible))
+            .and_then(|v| v.checked_sub(STATUS_TAG_WIDTH))
+            .and_then(|v| v.checked_sub(1)) // space between tag and display
+            .and_then(|v| v.checked_sub(MIN_TRAILING_PAD))
+            .and_then(|v| v.checked_sub(trailing_visible))
+        {
+            Some(v) => v,
+            None => 0,
+        };
         clip_to_cols(&raw, budget)
     };
     let lhs_naked = format!(
@@ -1503,12 +1606,15 @@ pub fn running_line(runtime: &str, state: &TestState, color: ColorPolicy, cols: 
         pad = " ".repeat(STATUS_TAG_WIDTH),
     );
     let lhs_rendered = format!("{prefix}{tag} {display}");
-    render_line(
+    Ok(render_line(
         &lhs_naked,
         &lhs_rendered,
         &trailing,
-        cols.saturating_sub(1).max(1),
-    )
+        match cols.checked_sub(1) {
+            Some(v) => v.max(1),
+            None => 1,
+        },
+    ))
 }
 
 /// Lines emitted below a running test's status row — the test's
@@ -1537,15 +1643,25 @@ pub fn running_output_lines(
     if state.recent_output.is_empty() {
         return Vec::new();
     }
-    let cap_rows = height.saturating_sub(LIVE_REGION_RESERVED_ROWS).max(1);
-    let start = state.recent_output.len().saturating_sub(cap_rows);
+    let cap_rows = match height.checked_sub(LIVE_REGION_RESERVED_ROWS) {
+        Some(v) => v.max(1),
+        None => 1,
+    };
+    let start = match state.recent_output.len().checked_sub(cap_rows) {
+        Some(s) => s,
+        None => 0,
+    };
     // 1 col of right-edge slack — same DECAWM defence as
     // `running_line`'s display clip.
-    let line_budget = cols.saturating_sub(1).max(1);
-    state
-        .recent_output
-        .get(start..)
-        .unwrap_or(&[])
+    let line_budget = match cols.checked_sub(1) {
+        Some(v) => v.max(1),
+        None => 1,
+    };
+    let lines: &[String] = match state.recent_output.get(start..) {
+        Some(lines) => lines,
+        None => &[],
+    };
+    lines
         .iter()
         .map(|line| color.dim(&clip_to_cols(line, line_budget)))
         .collect()
@@ -1571,22 +1687,32 @@ pub fn bench_histogram_lines(
     color: ColorPolicy,
     cols: usize,
     height_budget: usize,
-) -> Vec<String> {
+) -> Result<Vec<String>> {
     if height_budget < 2 || cols < 20 || snap.done == 0 || snap.max == snap.min {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    let max_count = snap.histogram.iter().copied().max().unwrap_or(0);
+    let max_count = match snap.histogram.iter().copied().max() {
+        Some(m) => m,
+        None => 0,
+    };
     if max_count == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let indent_width = RUNTIME_PREFIX_WIDTH
-        .saturating_add(STATUS_TAG_WIDTH)
-        .saturating_add(1);
-    let line_budget = cols.saturating_sub(1).max(1);
-    let body_budget = line_budget.saturating_sub(indent_width).max(1);
+        .checked_add(STATUS_TAG_WIDTH)
+        .and_then(|v| v.checked_add(1))
+        .ok_or_else(|| anyhow!("histogram: indent width overflow"))?;
+    let line_budget = match cols.checked_sub(1) {
+        Some(v) => v.max(1),
+        None => 1,
+    };
+    let body_budget = match line_budget.checked_sub(indent_width) {
+        Some(v) => v.max(1),
+        None => 1,
+    };
     let bars_width = body_budget.min(HISTOGRAM_BUCKETS);
     if bars_width == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let levels: [char; 8] = [
         '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
@@ -1595,22 +1721,35 @@ pub fn bench_histogram_lines(
     let mut bars = String::new();
     for col in 0..bars_width {
         let bin = col
-            .saturating_mul(HISTOGRAM_BUCKETS)
+            .checked_mul(HISTOGRAM_BUCKETS)
+            .ok_or_else(|| anyhow!("histogram: bin overflow"))?
             .checked_div(bars_width)
-            .unwrap_or(0)
-            .min(HISTOGRAM_BUCKETS.saturating_sub(1));
-        let count = snap.histogram.get(bin).copied().unwrap_or(0);
+            .ok_or_else(|| anyhow!("histogram: zero bars width"))?
+            .min(HISTOGRAM_BUCKETS - 1);
+        let count = match snap.histogram.get(bin).copied() {
+            Some(c) => c,
+            None => 0,
+        };
         if count == 0 {
             bars.push(' ');
         } else {
-            let level_u32 = count
-                .saturating_mul(8)
-                .checked_div(max_count.max(1))
-                .unwrap_or(0)
-                .min(8)
-                .saturating_sub(1);
-            let level = usize::try_from(level_u32).unwrap_or(0_usize);
-            let glyph = levels.get(level.min(7)).copied().unwrap_or(' ');
+            let scaled = count
+                .checked_mul(8)
+                .ok_or_else(|| anyhow!("histogram: level overflow"))?
+                .checked_div(max_count)
+                .ok_or_else(|| anyhow!("histogram: zero max count"))?
+                .min(8);
+            let level = match scaled.checked_sub(1) {
+                Some(l) => l,
+                None => 0,
+            };
+            let glyph = match levels
+                .get(usize::try_from(level).unwrap_or(0).min(7))
+                .copied()
+            {
+                Some(g) => g,
+                None => ' ',
+            };
             bars.push(glyph);
         }
     }
@@ -1621,7 +1760,7 @@ pub fn bench_histogram_lines(
     let axis_line_raw = format!("{:width$}{axis_text}", "", width = indent_width);
     let axis_line = clip_to_cols(&axis_line_raw, line_budget);
 
-    vec![color.dim(&bars_line), color.dim(&axis_line)]
+    Ok(vec![color.dim(&bars_line), color.dim(&axis_line)])
 }
 
 /// Clip `s` to `cols` visible characters; appends `…` when truncated
@@ -1636,7 +1775,9 @@ fn clip_to_cols(text: &str, cols: usize) -> String {
     if count <= cols {
         return text.to_owned();
     }
-    let take = cols.saturating_sub(1);
+    let Some(take) = cols.checked_sub(1) else {
+        return String::new();
+    };
     let mut out: String = text.chars().take(take).collect();
     out.push('\u{2026}');
     out
@@ -1662,13 +1803,17 @@ fn lifecycle_line(
     let display = {
         let prefix_visible = prefix.chars().count();
         let trailing_visible = trailing.chars().count();
-        let budget = cols
-            .saturating_sub(1) // DECAWM right-edge slack
-            .saturating_sub(prefix_visible)
-            .saturating_sub(STATUS_TAG_WIDTH)
-            .saturating_sub(1)
-            .saturating_sub(MIN_TRAILING_PAD)
-            .saturating_sub(trailing_visible);
+        let budget = match cols
+            .checked_sub(1) // DECAWM right-edge slack
+            .and_then(|v| v.checked_sub(prefix_visible))
+            .and_then(|v| v.checked_sub(STATUS_TAG_WIDTH))
+            .and_then(|v| v.checked_sub(1))
+            .and_then(|v| v.checked_sub(MIN_TRAILING_PAD))
+            .and_then(|v| v.checked_sub(trailing_visible))
+        {
+            Some(v) => v,
+            None => 0,
+        };
         clip_to_cols(&raw_display, budget)
     };
     let lhs_naked = format!(
@@ -1680,7 +1825,10 @@ fn lifecycle_line(
         &lhs_naked,
         &lhs_rendered,
         &trailing,
-        cols.saturating_sub(1).max(1),
+        match cols.checked_sub(1) {
+            Some(v) => v.max(1),
+            None => 1,
+        },
     )
 }
 
@@ -1693,7 +1841,7 @@ fn lifecycle_line(
 /// Returns an error when the OS refuses to spawn the named drawer
 /// thread (e.g. resource exhaustion).
 #[inline]
-pub fn spawn_drawer(drawer: Drawer) -> IoResult<JoinHandle<()>> {
+pub fn spawn_drawer(drawer: Drawer) -> IoResult<JoinHandle<Result<()>>> {
     thread::Builder::new()
         .name("rudzio-output-drawer".to_owned())
         .spawn(move || drawer.run())

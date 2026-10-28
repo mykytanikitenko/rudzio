@@ -51,7 +51,7 @@ use rudzio::suite::TestOutcome;
 struct Harness {
     /// Join handle for the spawned drawer thread; consumed in
     /// `finish` so the drawer can wind down before the file is read.
-    drawer_thread: thread::JoinHandle<()>,
+    drawer_thread: thread::JoinHandle<anyhow::Result<()>>,
     /// Lifecycle event channel; sending on it is how a test feeds
     /// `BenchProgress`/`TestStarted`/`TestCompleted` to the drawer.
     life_tx: Sender<LifecycleEvent>,
@@ -205,7 +205,7 @@ mod tests {
     #[rudzio::test]
     fn bench_histogram_renders_below_running_row() -> anyhow::Result<()> {
         let snap = fake_snapshot(500, 1000);
-        let lines = bench_histogram_lines(&snap, ColorPolicy::off(), 120, 8);
+        let lines = bench_histogram_lines(&snap, ColorPolicy::off(), 120, 8)?;
         anyhow::ensure!(
             lines.len() == 2,
             "expected 2 histogram rows (bars + axis); got {} rows: {lines:?}",
@@ -271,7 +271,7 @@ mod tests {
             (40, &["42%"], &["[", "421/1000", "p50=", "p95=", "cov="]),
         ];
         for &(cols, expect_present, expect_absent) in cases {
-            let trailing = bench_progress_trailing(&snap, cols, Duration::from_millis(120));
+            let trailing = bench_progress_trailing(&snap, cols, Duration::from_millis(120))?;
             for needle in expect_present {
                 anyhow::ensure!(
                     trailing.contains(needle),
@@ -293,7 +293,7 @@ mod tests {
     #[rudzio::test]
     fn bench_progress_appears_in_trailing_block() -> anyhow::Result<()> {
         let snap = fake_snapshot(421, 1000);
-        let trailing = bench_progress_trailing(&snap, 200, Duration::from_millis(120));
+        let trailing = bench_progress_trailing(&snap, 200, Duration::from_millis(120))?;
         for needle in [
             "[", "\u{2588}", "\u{2591}", "]", "42%", "421/1000", "p50=", "p95=", "cov=4.3%",
         ] {
@@ -389,7 +389,7 @@ mod tests {
         state.test_name = "with_a_very_long_descriptive_test_name_indeed";
 
         for cols in [40_usize, 60, 80, 100, 120, 200, 400] {
-            let row = running_line("tokio::Multithread", &state, ColorPolicy::off(), cols);
+            let row = running_line("tokio::Multithread", &state, ColorPolicy::off(), cols)?;
             let visible = strip_ansi(&row).chars().count();
             anyhow::ensure!(
                 visible <= cols,
@@ -399,7 +399,7 @@ mod tests {
                 anyhow::bail!("test fixture must set TestStateKind::Bench");
             };
             let snap: &ProgressSnapshot = snapshot;
-            for (idx, line) in bench_histogram_lines(snap, ColorPolicy::off(), cols, 24)
+            for (idx, line) in bench_histogram_lines(snap, ColorPolicy::off(), cols, 24)?
                 .iter()
                 .enumerate()
             {

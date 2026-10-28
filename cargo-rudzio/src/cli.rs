@@ -131,7 +131,10 @@ pub enum RunnerExit {
 #[must_use]
 pub fn runner_exit(code: Option<i32>) -> RunnerExit {
     code.map_or(RunnerExit::Abort, |exit_code| {
-        RunnerExit::Code(u8::try_from(exit_code & 0xFF_i32).unwrap_or(1))
+        RunnerExit::Code(match u8::try_from(exit_code & 0xFF_i32) {
+            Ok(code) => code,
+            Err(_) => 1,
+        })
     })
 }
 
@@ -170,11 +173,15 @@ pub fn aggregator_cargo_args(
     manifest: &str,
     panic_overrides: &[String],
 ) -> Vec<String> {
-    let capacity = parsed
+    let capacity = match parsed
         .forwarded_cargo_args
         .len()
-        .saturating_add(8_usize)
-        .saturating_add(panic_overrides.len());
+        .checked_add(8_usize)
+        .and_then(|v| v.checked_add(panic_overrides.len()))
+    {
+        Some(c) => c,
+        None => 0,
+    };
     let mut argv = Vec::with_capacity(capacity);
     argv.push("build".to_owned());
     argv.push("--workspace".to_owned());

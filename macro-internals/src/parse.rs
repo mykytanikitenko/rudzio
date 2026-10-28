@@ -26,7 +26,10 @@ impl RuntimeConfig {
     #[inline]
     #[must_use]
     pub fn runtime_type(&self) -> Path {
-        let take_n = self.runtime.segments.len().saturating_sub(1);
+        let take_n = match self.runtime.segments.len().checked_sub(1) {
+            Some(v) => v,
+            None => 0,
+        };
         let segments = self.runtime.segments.iter().take(take_n).cloned().collect();
         Path {
             leading_colon: self.runtime.leading_colon,

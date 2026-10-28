@@ -861,24 +861,33 @@ impl Config {
     ) -> Self {
         let parsed = parse_argv(argv);
 
-        let resolved_threads = parsed
-            .threads
-            .or_else(|| {
-                env.get("RUST_TEST_THREADS")
-                    .and_then(|val| val.parse::<usize>().ok())
-                    .filter(|count| *count > 0)
-            })
-            .unwrap_or_else(|| thread::available_parallelism().map_or(1, NonZeroUsize::get));
+        let resolved_threads = match parsed.threads.or_else(|| {
+            env.get("RUST_TEST_THREADS")
+                .and_then(|val| match val.parse::<usize>() {
+                    Ok(count) => Some(count),
+                    Err(_) => None,
+                })
+                .filter(|count| *count > 0)
+        }) {
+            Some(v) => v,
+            None => thread::available_parallelism().map_or(1, NonZeroUsize::get),
+        };
 
         // `concurrency_limit` defaults to `threads` so the single-flag
         // `--test-threads=N` invocation keeps behaving the way libtest users
         // expect: N worker threads, N tests in-flight.
-        let resolved_concurrency_limit = parsed.concurrency_limit.unwrap_or(resolved_threads);
+        let resolved_concurrency_limit = match parsed.concurrency_limit {
+            Some(v) => v,
+            None => resolved_threads,
+        };
 
         // `threads` is guaranteed >= 1 by the resolution chain above
         // (available_parallelism returns NonZeroUsize); the fallback is
         // unreachable in practice but keeps us off unwrap/expect.
-        let threads_nz = NonZeroUsize::new(resolved_threads).unwrap_or(NonZeroUsize::MIN);
+        let threads_nz = match NonZeroUsize::new(resolved_threads) {
+            Some(v) => v,
+            None => NonZeroUsize::MIN,
+        };
         let parallel_hardlimit =
             resolve_parallel_hardlimit(parsed.hardlimit_arg, parsed.bench_mode, threads_nz);
 
@@ -963,8 +972,12 @@ impl OutputMode {
 /// millisecond counts; pure-integer parse, no fractional ms.
 fn parse_ensure_time_pair(text: &str) -> Option<EnsureTimeArg> {
     let (warn_text, critical_text) = text.split_once(',')?;
-    let warn_ms: u64 = warn_text.parse().ok()?;
-    let critical_ms: u64 = critical_text.parse().ok()?;
+    let Ok(warn_ms) = warn_text.parse::<u64>() else {
+        return None;
+    };
+    let Ok(critical_ms) = critical_text.parse::<u64>() else {
+        return None;
+    };
     Some(EnsureTimeArg::Explicit {
         critical: Duration::from_millis(critical_ms),
         warn: Duration::from_millis(warn_ms),
@@ -1005,11 +1018,10 @@ fn classify_hardlimit(text: &str) -> Option<HardlimitArg> {
     match text {
         "none" => Some(HardlimitArg::Disabled),
         "threads" => Some(HardlimitArg::Threads),
-        _ => text
-            .parse::<usize>()
-            .ok()
-            .and_then(NonZeroUsize::new)
-            .map(HardlimitArg::Explicit),
+        _ => match text.parse::<usize>() {
+            Ok(n) => NonZeroUsize::new(n).map(HardlimitArg::Explicit),
+            Err(_) => None,
+        },
     }
 }
 
@@ -1052,7 +1064,10 @@ fn flag_value<'argv>(
         return Some(rest);
     }
     if arg == flag_name {
-        *i = i.saturating_add(1);
+        *i = match i.checked_add(1) {
+            Some(v) => v,
+            None => usize::MAX,
+        };
         return argv.get(*i).map(String::as_str);
     }
     None
@@ -1068,7 +1083,10 @@ fn parse_positive_usize_flag(
     i: &mut usize,
 ) -> Option<usize> {
     let value = flag_value(arg, flag_name, prefix_eq, argv, i)?;
-    value.parse::<usize>().ok().filter(|&n| n > 0)
+    match value.parse::<usize>() {
+        Ok(n) if n > 0 => Some(n),
+        Ok(_) | Err(_) => None,
+    }
 }
 
 /// Parse a `--flag=<secs>` / `--flag <secs>` duration flag. Returns
@@ -1083,7 +1101,10 @@ fn parse_duration_secs_flag(
     i: &mut usize,
 ) -> Option<Duration> {
     let value = flag_value(arg, flag_name, prefix_eq, argv, i)?;
-    value.parse::<u64>().ok().map(Duration::from_secs)
+    match value.parse::<u64>() {
+        Ok(secs) => Some(Duration::from_secs(secs)),
+        Err(_) => None,
+    }
 }
 
 /// Parse a `--flag=<secs>` / `--flag <secs>` duration flag where `secs == 0`
@@ -1212,7 +1233,10 @@ fn handle_presentation_flag(
         return true;
     }
     if let Some(value) = arg.strip_prefix("--ensure-time=") {
-        state.ensure_time = Some(parse_ensure_time_pair(value).unwrap_or(EnsureTimeArg::Default));
+        state.ensure_time = Some(match parse_ensure_time_pair(value) {
+            Some(v) => v,
+            None => EnsureTimeArg::Default,
+        });
         return true;
     }
     if let Some(value) = flag_value(arg, "--shuffle-seed", "--shuffle-seed=", argv, i) {
@@ -1348,7 +1372,10 @@ fn handle_filter_or_unparsed(
         return true;
     }
     if arg == "--skip" {
-        *i = i.saturating_add(1);
+        *i = match i.checked_add(1) {
+            Some(v) => v,
+            None => usize::MAX,
+        };
         if let Some(next) = argv.get(*i) {
             state.skip_filters.push(next.clone());
         }
@@ -1379,12 +1406,17 @@ fn parse_argv(argv: &[String]) -> ParsedArgs {
         let Some(arg) = argv.get(i).cloned() else {
             break;
         };
-        let consumed = handle_concurrency_flag(&mut state, &arg, argv, &mut i)
+        // Every arg is consumed by at least one handler: the final
+        // `handle_filter_or_unparsed` is a catch-all that always
+        // returns `true`, so this chain never falls through.
+        let _handled = handle_concurrency_flag(&mut state, &arg, argv, &mut i)
             || handle_presentation_flag(&mut state, &arg, argv, &mut i)
             || handle_timeout_flag(&mut state, &arg, argv, &mut i)
             || handle_filter_or_unparsed(&mut state, &arg, argv, &mut i);
-        debug_assert!(consumed, "every arg should be consumed by some handler");
-        i = i.saturating_add(1);
+        i = match i.checked_add(1) {
+            Some(v) => v,
+            None => usize::MAX,
+        };
     }
 
     state

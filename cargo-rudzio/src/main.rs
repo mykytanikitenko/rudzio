@@ -559,7 +559,10 @@ fn emit_diagnostic_warnings(plan: &generate::Plan) {
 
 /// Handler for `cargo rudzio migrate`: forward every arg verbatim into `rudzio_migrate::run::entry_with_args`.
 fn run_migrate(rest: &[String]) -> ExitCode {
-    let mut argv: Vec<String> = Vec::with_capacity(rest.len().saturating_add(1));
+    let mut argv: Vec<String> = Vec::with_capacity(match rest.len().checked_add(1) {
+        Some(c) => c,
+        None => 0,
+    });
     argv.push("rudzio-migrate".to_owned());
     argv.extend(rest.iter().cloned());
     rudzio_migrate_entry(argv)

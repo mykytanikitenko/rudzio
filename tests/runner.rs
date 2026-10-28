@@ -1219,7 +1219,7 @@ mod config_parser {
     fn suite_summary_merge_includes_hung(_ctx: &Test) -> anyhow::Result<()> {
         let summary_a = SuiteSummary::new(SummaryOutcomes::new(0, 0, 2, 0, 0, 0, 0), 0, 2);
         let summary_b = SuiteSummary::new(SummaryOutcomes::new(0, 0, 1, 0, 0, 0, 0), 0, 1);
-        let merged = summary_a.merge(summary_b);
+        let merged = summary_a.merge(summary_b)?;
         anyhow::ensure!(
             merged.hung == 3,
             "merge must sum hung counters, got {}",
@@ -1300,7 +1300,7 @@ mod config_parser {
         let mut right = TestSummary::zero();
         right.hung = 2;
         right.total = 2;
-        let merged = left.merge(right);
+        let merged = left.merge(right)?;
         anyhow::ensure!(
             merged.hung == 6,
             "TestSummary::merge must sum hung counters, got {}",
@@ -1337,7 +1337,7 @@ mod config_parser {
         let mut right = TestSummary::zero();
         right.ensure_time_exceeded = 4;
         right.total = 4;
-        let merged = left.merge(right);
+        let merged = left.merge(right)?;
         anyhow::ensure!(
             merged.ensure_time_exceeded == 7,
             "TestSummary::merge must sum ensure_time_exceeded counters, got {}",
@@ -1455,7 +1455,7 @@ mod bench_strategies {
         anyhow::ensure!(report.mean().is_none());
         anyhow::ensure!(report.median().is_none());
         anyhow::ensure!(report.percentile_permille(500_u32).is_none());
-        anyhow::ensure!(report.ascii_histogram(8, 20).is_empty());
+        anyhow::ensure!(report.ascii_histogram(8, 20)?.is_empty());
         Ok(())
     }
 
