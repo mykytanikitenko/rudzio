@@ -25,6 +25,17 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+#[cfg(any(test, rudzio_test))]
+use rudzio::common::context::{Suite, Test};
+#[cfg(any(test, rudzio_test))]
+use rudzio::runtime::futures::ThreadPool;
+#[cfg(all(any(test, rudzio_test), any(target_os = "linux", target_os = "macos"),))]
+use rudzio::runtime::monoio;
+#[cfg(any(test, rudzio_test))]
+use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
+#[cfg(any(test, rudzio_test))]
+use rudzio::runtime::{async_std, compio, embassy, smol};
+
 /// Marker emitted by `cargo llvm-cov show-env` to signal that the build runs
 /// under LLVM source-based coverage instrumentation.
 pub const COVERAGE_ENV: &str = "CARGO_LLVM_COV";
@@ -213,19 +224,31 @@ pub fn resolve_aggregator_dirs(
     })
 }
 
-#[cfg(test)]
+#[rudzio::suite([
+    (runtime = Multithread::new, suite = Suite, test = Test),
+    (runtime = CurrentThread::new, suite = Suite, test = Test),
+    (runtime = Local::new, suite = Suite, test = Test),
+    (runtime = compio::Runtime::new, suite = Suite, test = Test),
+    (runtime = embassy::Runtime::new, suite = Suite, test = Test),
+    (runtime = ThreadPool::new, suite = Suite, test = Test),
+    (runtime = async_std::Runtime::new, suite = Suite, test = Test),
+    (runtime = smol::Runtime::new, suite = Suite, test = Test),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    (runtime = monoio::Runtime::new, suite = Suite, test = Test),
+])]
+#[cfg(any(test, rudzio_test))]
 mod tests {
     use super::{
-        COVERAGE_TARGET_DIR_ENV, LLVM_PROFILE_FILE_ENV, RUSTC_WRAPPER_ENV, augment_crate_names,
-        remap_prefix_flag, resolve_aggregator_dirs, validate_wrapper,
+        COVERAGE_TARGET_DIR_ENV, LLVM_PROFILE_FILE_ENV, RUSTC_WRAPPER_ENV, Test,
+        augment_crate_names, remap_prefix_flag, resolve_aggregator_dirs, validate_wrapper,
     };
     use std::ffi::{OsStr, OsString};
     use std::path::{Path, PathBuf};
 
     const BASE: &str = "/outer/target/rudzio-auto-runner-0123456789abcdef-0123456789abcdef";
 
-    #[test]
-    fn non_coverage_anchors_under_base_output_dir() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn non_coverage_anchors_under_base_output_dir(_ctx: &Test) -> anyhow::Result<()> {
         let dirs = resolve_aggregator_dirs(false, None, None, Path::new(BASE))?;
         assert_eq!(
             dirs.target_dir,
@@ -240,8 +263,10 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn coverage_uses_llvm_cov_target_dir_even_when_it_conflicts_with_base() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn coverage_uses_llvm_cov_target_dir_even_when_it_conflicts_with_base(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
         // The coverage target dir is the directory `cargo llvm-cov report`
         // searches; it has no relationship to `base_output_dir`. This is the
         // "conflicting CARGO_TARGET_DIR" case: the outer target dir (BASE's
@@ -263,8 +288,10 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn coverage_without_build_dir_does_not_override_build_dir_env() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn coverage_without_build_dir_does_not_override_build_dir_env(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
         let dirs =
             resolve_aggregator_dirs(true, Some(OsStr::new("/cov-target")), None, Path::new(BASE))?;
         assert_eq!(dirs.target_dir, Path::new("/cov-target"));
@@ -272,8 +299,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn coverage_without_target_dir_fails_loudly() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn coverage_without_target_dir_fails_loudly(_ctx: &Test) -> anyhow::Result<()> {
         let Err(err) = resolve_aggregator_dirs(true, None, None, Path::new(BASE)) else {
             anyhow::bail!("expected coverage dir resolution to fail when target dir is unset");
         };
@@ -289,8 +316,10 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn augment_appends_generated_names_not_already_present() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn augment_appends_generated_names_not_already_present(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
         let existing = "consumer,consumer_tests,consumer,main";
         let generated = vec!["rudzio_auto_runner".to_owned()];
         let augmented = augment_crate_names(existing, &generated);
@@ -301,8 +330,10 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn augment_is_idempotent_when_generated_already_present() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn augment_is_idempotent_when_generated_already_present(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
         let existing = "consumer,rudzio_auto_runner";
         let generated = vec!["rudzio_auto_runner".to_owned()];
         assert_eq!(
@@ -312,8 +343,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn augment_tolerates_empty_existing_and_trims() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn augment_tolerates_empty_existing_and_trims(_ctx: &Test) -> anyhow::Result<()> {
         let generated = vec![
             "rudzio_auto_runner".to_owned(),
             "a_bin_rudzio_bridge_lib".to_owned(),
@@ -329,8 +360,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn remap_flag_is_one_whitespace_free_token() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn remap_flag_is_one_whitespace_free_token(_ctx: &Test) -> anyhow::Result<()> {
         let flag = remap_prefix_flag(
             Path::new("/out/members/consumer"),
             Path::new("/ws/consumer"),
@@ -346,8 +377,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn remap_flag_errors_on_non_utf8_source() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn remap_flag_errors_on_non_utf8_source(_ctx: &Test) -> anyhow::Result<()> {
         use std::os::unix::ffi::OsStringExt as _;
         let bad = PathBuf::from(OsString::from_vec(vec![0xff, 0xfe]));
         let Err(err) = remap_prefix_flag(&bad, Path::new("/ws/consumer")) else {
@@ -357,16 +388,16 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn validate_wrapper_accepts_both_variables() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn validate_wrapper_accepts_both_variables(_ctx: &Test) -> anyhow::Result<()> {
         validate_wrapper(
             Some(OsStr::new("/bin/cargo-llvm-cov")),
             Some(OsStr::new("/target/ws-%p.profraw")),
         )
     }
 
-    #[test]
-    fn validate_wrapper_fails_on_missing_rustc_wrapper() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn validate_wrapper_fails_on_missing_rustc_wrapper(_ctx: &Test) -> anyhow::Result<()> {
         let Err(err) = validate_wrapper(None, Some(OsStr::new("/target/ws-%p.profraw"))) else {
             anyhow::bail!("expected missing RUSTC_WRAPPER to fail validation");
         };
@@ -382,8 +413,10 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn validate_wrapper_fails_on_missing_llvm_profile_file() -> anyhow::Result<()> {
+    #[rudzio::test]
+    async fn validate_wrapper_fails_on_missing_llvm_profile_file(
+        _ctx: &Test,
+    ) -> anyhow::Result<()> {
         let Err(err) = validate_wrapper(Some(OsStr::new("/bin/cargo-llvm-cov")), None) else {
             anyhow::bail!("expected missing LLVM_PROFILE_FILE to fail validation");
         };
