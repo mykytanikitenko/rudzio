@@ -20,7 +20,8 @@ use anyhow::{Context as _, Result, bail};
 use cargo_metadata::{Message, TargetKind};
 use cargo_rudzio::build_id;
 use cargo_rudzio::cli::{
-    RunnerExit, aggregator_cargo_args, format_target_flag_warning, parse_test_args, runner_exit,
+    RunnerExit, aggregator_cargo_args, extract_config_values, format_target_flag_warning,
+    parse_test_args, runner_exit,
 };
 use cargo_rudzio::config_env;
 use cargo_rudzio::coverage;
@@ -388,7 +389,8 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
     }
     // Direct exec: the runner is already built. Zero second cargo
     // subprocess. Decisions Log [C1] USER-RATIFIED.
-    let mut runner_cmd = runner_command(&runner_path, &parsed.runner_args, &plan)?;
+    let cli_config = extract_config_values(&parsed.forwarded_cargo_args);
+    let mut runner_cmd = runner_command(&runner_path, &parsed.runner_args, &plan, &cli_config)?;
     let runner_status = runner_cmd.status().with_context(|| {
         format!(
             "failed to exec runner at {runner_path}",
@@ -410,13 +412,15 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
 /// Build the directly exec'd runner command: user runner args plus the
 /// consumer's `[env]` config.
 ///
-/// Resolves workspace `.cargo/config.toml` + `$CARGO_HOME/config.toml` under
-/// cargo's precedence. Stock cargo sets these on the test binary it runs; the
-/// direct exec skips cargo's injection, so `std::env::var` on a `[env]` key
-/// would otherwise come back `NotPresent` (compile-time `option_env!` still
-/// works because the inner `cargo build` is anchored at the workspace root).
-/// Only the runner is patched: build scripts, proc-macros, and rustc already
-/// receive `[env]` from that inner cargo.
+/// Resolves the workspace `.cargo/config` (extensionless preferred) +
+/// `$CARGO_HOME/config` under cargo's precedence, then applies `--config`
+/// overrides (`cli_config`) as the highest layer. Stock cargo sets these on
+/// the test binary it runs; the direct exec skips cargo's injection, so
+/// `std::env::var` on a `[env]` key would otherwise come back `NotPresent`
+/// (compile-time `option_env!` still works because the inner `cargo build`
+/// is anchored at the workspace root). Only the runner is patched: build
+/// scripts, proc-macros, and rustc already receive `[env]` from that inner
+/// cargo.
 ///
 /// # Errors
 ///
@@ -426,10 +430,11 @@ fn runner_command(
     runner_path: &Path,
     runner_args: &[String],
     plan: &generate::Plan,
+    cli_config: &[String],
 ) -> Result<Command> {
     let mut runner_cmd = Command::new(runner_path);
     runner_cmd.args(runner_args);
-    for (name, var) in config_env::resolve(plan.workspace_root.as_std_path())? {
+    for (name, var) in config_env::resolve(plan.workspace_root.as_std_path(), cli_config)? {
         // `force = true` overrides an already-set variable; otherwise match
         // cargo's default of not clobbering the inherited environment.
         if var.force || env::var_os(&name).is_none() {
