@@ -32,11 +32,25 @@
 //
 // # git resolution
 //
-// HEAD and dirty-state come from the `git` binary scoped to
-// `CARGO_MANIFEST_DIR` so worktrees, packed refs, and detached HEAD all
-// resolve correctly. When `git` is unavailable (or the crate is built
-// from a published tarball with no `.git`), both fields fall back to
-// `"unknown"` — the build still succeeds, it just carries no identity.
+// Precedence for HEAD and dirty-state, highest first:
+//
+// 1. A non-empty `CARGO_RUDZIO_BUILD_GIT_HEAD` / `CARGO_RUDZIO_BUILD_GIT_DIRTY`
+//    in the build script's environment. Builds from a source tree with
+//    no `.git` (nix, published tarballs) pass the revision explicitly.
+// 2. The `git` binary scoped to `CARGO_MANIFEST_DIR`, so worktrees,
+//    packed refs, and detached HEAD all resolve correctly.
+// 3. `"unknown"` — the build still succeeds, it just carries no
+//    identity, and the freshness guard rejects it loudly.
+//
+// # Why runtime env reads
+//
+// `CARGO_MANIFEST_DIR` and `CARGO_PKG_VERSION` are read with
+// `env::var`, never `env!`. When `cargo rudzio` bridges this crate the
+// build script is spliced into a synthesized package and re-run after
+// the bridge repoints those variables at the real member. A compile-time
+// `env!` would freeze the synthesized package's directory (no `.git`)
+// and version (`0.0.0`). Reading at runtime also lets the script compile
+// standalone under `rustc`, which the stamp-precedence spec relies on.
 //
 // # rerun-if-changed
 //
@@ -65,16 +79,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const UNKNOWN: &str = "unknown";
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let version = env!("CARGO_PKG_VERSION");
+    let version = env::var("CARGO_PKG_VERSION")
+        .map_err(|err| format!("CARGO_PKG_VERSION is not set: {err}"))?;
     let epoch = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|err| format!("system clock before unix epoch: {err}"))?
         .as_secs();
     let stamp = format!("{version}-{epoch}");
     println!("cargo::rustc-env=CARGO_RUDZIO_BUILD_STAMP={stamp}");
+    println!("cargo::rustc-env=CARGO_RUDZIO_BUILD_VERSION={version}");
 
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let (head, dirty) = git_identity(manifest_dir);
+    let manifest_dir = PathBuf::from(
+        env::var("CARGO_MANIFEST_DIR")
+            .map_err(|err| format!("CARGO_MANIFEST_DIR is not set: {err}"))?,
+    );
+    let (head, dirty) = git_identity(&manifest_dir);
     println!("cargo::rustc-env=CARGO_RUDZIO_BUILD_GIT_HEAD={head}");
     println!("cargo::rustc-env=CARGO_RUDZIO_BUILD_GIT_DIRTY={dirty}");
     let profile = env::var("PROFILE").unwrap_or_else(|_| UNKNOWN.to_owned());
@@ -85,7 +104,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     for path in ["src", "build.rs", "Cargo.toml"] {
         println!("cargo::rerun-if-changed={path}");
     }
-    if let Some(git_dir) = git_dir(manifest_dir) {
+    for var in [
+        "CARGO_RUDZIO_BUILD_GIT_HEAD",
+        "CARGO_RUDZIO_BUILD_GIT_DIRTY",
+    ] {
+        println!("cargo::rerun-if-env-changed={var}");
+    }
+    if let Some(git_dir) = git_dir(&manifest_dir) {
         for watch in ["HEAD", "refs", "packed-refs"] {
             let path = git_dir.join(watch);
             if path.exists() {
@@ -110,17 +135,35 @@ fn git_dir(dir: &Path) -> Option<PathBuf> {
     Some(PathBuf::from(gitdir))
 }
 
-/// Best-effort `(head_sha, dirty)` from the `git` binary scoped to
-/// `dir`. Falls back to `("unknown", "unknown")` when `git` is
-/// unavailable or `dir` is not inside a repository.
+/// `(head_sha, dirty)` resolved per the precedence in the header: env
+/// override, then `git` scoped to `dir`, then `"unknown"`.
 fn git_identity(dir: &Path) -> (String, String) {
-    let head = git_cmd(dir, &["rev-parse", "HEAD"]).unwrap_or_else(|| UNKNOWN.to_owned());
-    let dirty = match git_cmd(dir, &["status", "--porcelain", "--untracked-files=no"]) {
-        None => UNKNOWN.to_owned(),
-        Some(out) if out.is_empty() => "clean".to_owned(),
-        Some(_) => "dirty".to_owned(),
-    };
+    let head = resolve_stamp(
+        "CARGO_RUDZIO_BUILD_GIT_HEAD",
+        git_cmd(dir, &["rev-parse", "HEAD"]),
+    );
+    let dirty = resolve_stamp(
+        "CARGO_RUDZIO_BUILD_GIT_DIRTY",
+        git_cmd(dir, &["status", "--porcelain", "--untracked-files=no"]).map(|out| {
+            if out.is_empty() {
+                "clean".to_owned()
+            } else {
+                "dirty".to_owned()
+            }
+        }),
+    );
     (head, dirty)
+}
+
+/// A non-empty `override_var` in the environment wins over `git_value`;
+/// with neither, the result is `"unknown"`.
+fn resolve_stamp(override_var: &str, git_value: Option<String>) -> String {
+    env::var(override_var)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .or(git_value)
+        .unwrap_or_else(|| UNKNOWN.to_owned())
 }
 
 /// Run `git -C <dir> <args>`, returning trimmed stdout, or `None` when

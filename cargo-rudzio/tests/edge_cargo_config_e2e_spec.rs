@@ -370,6 +370,100 @@ mod tests {
     }
 
     #[rudzio::test]
+    fn config_env_extensionless_config_reaches_runtime(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let root = ctx.suite_tempdir().join("case3-env-extless");
+        fs::create_dir_all(&root)?;
+        write_fixture(
+            &root,
+            rudzio_root()?,
+            "",
+            None,
+            "config_env_extensionless",
+            r#"            anyhow::ensure!(std::env::var("MY_VAR").as_deref() == Ok("legacy"), "extensionless .cargo/config [env] MY_VAR must reach the runner at runtime");
+            Ok(())
+"#,
+        )?;
+        // Both files present: cargo prefers the extensionless `config`.
+        fs::create_dir_all(root.join(".cargo"))?;
+        fs::write(
+            root.join(".cargo").join("config"),
+            "[env]\nMY_VAR = \"legacy\"\n",
+        )?;
+        fs::write(
+            root.join(".cargo").join("config.toml"),
+            "[env]\nMY_VAR = \"modern\"\n",
+        )?;
+        let output = run_cargo_rudzio(
+            ctx.cargo_home(),
+            ctx.cargo_target_dir(),
+            &cargo_build_dir_for(ctx.cargo_target_dir())?,
+            &root,
+            &[],
+            &[],
+        )?;
+        assert_passed(&output, "config_env_extensionless")
+    }
+
+    #[rudzio::test]
+    fn config_env_cli_config_override_reaches_runtime(
+        ctx: &IsolatedCargoTest,
+    ) -> anyhow::Result<()> {
+        let root = ctx.suite_tempdir().join("case3-env-cli");
+        fs::create_dir_all(&root)?;
+        write_fixture(
+            &root,
+            rudzio_root()?,
+            "",
+            None,
+            "config_env_cli_override",
+            r#"            anyhow::ensure!(std::env::var("MY_VAR").as_deref() == Ok("cli"), "--config env.MY_VAR must reach the runner at runtime");
+            Ok(())
+"#,
+        )?;
+        let output = run_cargo_rudzio(
+            ctx.cargo_home(),
+            ctx.cargo_target_dir(),
+            &cargo_build_dir_for(ctx.cargo_target_dir())?,
+            &root,
+            &["--config", "env.MY_VAR=\"cli\""],
+            &[],
+        )?;
+        assert_passed(&output, "config_env_cli_override")
+    }
+
+    #[rudzio::test]
+    fn config_env_cli_config_file_reaches_runtime(ctx: &IsolatedCargoTest) -> anyhow::Result<()> {
+        let root = ctx.suite_tempdir().join("case3-env-cli-file");
+        fs::create_dir_all(&root)?;
+        write_fixture(
+            &root,
+            rudzio_root()?,
+            "",
+            None,
+            "config_env_cli_file",
+            r#"            anyhow::ensure!(std::env::var("MY_VAR").as_deref() == Ok("from-file"), "--config <path> [env] MY_VAR must reach the runner at runtime");
+            Ok(())
+"#,
+        )?;
+        let extra = root.join("extra-config.toml");
+        fs::write(&extra, "[env]\nMY_VAR = \"from-file\"\n")?;
+        let extra_arg = extra
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("config path is not UTF-8"))?;
+        let output = run_cargo_rudzio(
+            ctx.cargo_home(),
+            ctx.cargo_target_dir(),
+            &cargo_build_dir_for(ctx.cargo_target_dir())?,
+            &root,
+            &["--config", extra_arg],
+            &[],
+        )?;
+        assert_passed(&output, "config_env_cli_file")
+    }
+
+    #[rudzio::test]
     fn config_env_cargo_home_fallback_and_workspace_outranks(
         ctx: &IsolatedCargoTest,
     ) -> anyhow::Result<()> {

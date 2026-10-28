@@ -4290,6 +4290,46 @@ pub fn bridge_dir_name(member: &MemberPlan) -> String {
     crate_name_to_ident(&member.package_name)
 }
 
+/// The bridge `[lib] name` (and aggregator `extern crate` ident) for
+/// `member`, disambiguated so two members that independently declare the
+/// same `[lib] name` still get distinct crate names.
+///
+/// Cargo permits distinct packages sharing a lib name in one workspace (it
+/// warns about the `lib<name>.rlib` output collision), but a single crate
+/// depending on both links only one of them (the colliding rlibs shadow one
+/// another). The aggregator depends on every bridge, so colliding members
+/// must get distinct bridge lib names. Non-colliding members keep
+/// `lib_ident()`; colliding members get a deterministic `_2`, `_3`, … suffix
+/// in package-name order. The member's source still refers to its own lib by
+/// `lib_ident()` via the bridge's `extern crate self as <lib_ident>;` alias,
+/// which is independent of this name.
+fn member_bridge_lib_name(member: &MemberPlan, plan: &Plan) -> String {
+    let mut bridged: Vec<&MemberPlan> = plan
+        .members
+        .iter()
+        .filter(|entry| bridge_applies_to(entry))
+        .collect();
+    bridged.sort_by(|lhs, rhs| lhs.package_name.cmp(&rhs.package_name));
+
+    let mut used: BTreeSet<String> = BTreeSet::new();
+    let mut names: BTreeMap<String, String> = BTreeMap::new();
+    for entry in bridged {
+        let base = entry.lib_ident();
+        let mut name = base.clone();
+        let mut suffix = 2_u32;
+        while used.contains(&name) {
+            name = format!("{base}_{suffix}");
+            suffix = suffix.saturating_add(1);
+        }
+        used.insert(name.clone());
+        names.insert(entry.package_name.clone(), name);
+    }
+
+    names
+        .remove(&member.package_name)
+        .unwrap_or_else(|| member.lib_ident())
+}
+
 /// Subdirectory name (under the aggregator's `members/` dir) that holds the per-bin bridge for `bin` of `member`.
 #[must_use]
 fn bin_bridge_dir_name(member: &MemberPlan, bin: &MemberBin) -> String {
@@ -4366,7 +4406,7 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
     // bin-only members it carries a stub body. Either way the
     // aggregator's uniform `extern crate <bridge>;` ([C3]) resolves.
     let mut lib = Table::new();
-    lib.insert("name", value(member.lib_ident()));
+    lib.insert("name", value(member_bridge_lib_name(member, plan)));
     // Path is bridge-local `src/lib.rs`. `materialize_bridge_src_dir`
     // creates `<bridge>/src/` as a real dir and writes the generated
     // lib.rs into it (or symlinks the member's source for lib-bearing
@@ -4706,6 +4746,16 @@ fn build_bridge_lib_rs(member: &MemberPlan, proxies: &[&TestBinaryProxy]) -> Res
     // imports it into every proxied module, so `<member>::` resolves
     // by name lookup, including inside macro bodies and invocation
     // arguments that a syntax-tree rewrite cannot reach.
+    //
+    // The re-export is `#[allow(unused_imports)]` because whether any
+    // proxied test actually *uses* the `<member>` name is undecidable at
+    // generation time: a bare `<member>::` reference can hide inside a
+    // macro body, which the syntax-tree rewriter cannot inspect. Emitting
+    // the alias conservatively is correct, so the false-positive
+    // `unused import: crate as <member>` warning (when the test resolves
+    // the member through `crate::<member>` instead) is silenced on the
+    // generated code — the same allowance the companion
+    // `use crate::__rudzio_self_alias::*;` glob already carries.
     let self_named_root = proxies.iter().any(|proxy| proxy.member_has_self_named_root);
     if member.src_lib_path.is_some() {
         let lib_ident = member.lib_ident();
@@ -4715,6 +4765,7 @@ fn build_bridge_lib_rs(member: &MemberPlan, proxies: &[&TestBinaryProxy]) -> Res
                 "#[cfg(rudzio_test)]\n\
                  #[doc(hidden)]\n\
                  mod {SELF_ALIAS_MOD} {{\n\
+                 \x20   #[allow(unused_imports)]\n\
                  \x20   pub(crate) use crate as {lib_ident};\n\
                  }}\n"
             )
@@ -4868,7 +4919,7 @@ fn build_bridge_dependencies(plan: &Plan, member: &MemberPlan) -> Result<Table> 
         if dep.name == member.package_name {
             continue;
         }
-        let entry_name = dep.rename.as_deref().unwrap_or(&dep.name).to_owned();
+        let entry_name = dev_dep_entry_name(dep, plan);
         merged
             .entry(entry_name)
             .and_modify(|existing| {
@@ -4991,7 +5042,10 @@ pub fn build_main_rs(plan: &Plan, _out_dir: &Path) -> String {
         if !bridge_applies_to(member) {
             continue;
         }
-        let ident = member.lib_ident();
+        // `member_bridge_lib_name` is unique per bridged member, so the
+        // `seen` guard no longer drops a member sharing a lib name; it only
+        // cross-checks against the per-bin bridge idents below.
+        let ident = member_bridge_lib_name(member, plan);
         if !seen.insert(ident.clone()) {
             continue;
         }
@@ -5914,7 +5968,10 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
                 )),
             );
         }
-        deps.insert(&member.lib_ident(), Item::Value(Value::InlineTable(tbl)));
+        deps.insert(
+            &member_bridge_lib_name(member, plan),
+            Item::Value(Value::InlineTable(tbl)),
+        );
     }
 
     add_bin_bridge_deps(&mut deps, plan, workspace_root_abs);
@@ -6051,29 +6108,50 @@ fn real_package_name<'spec>(dep: &'spec DevDepSpec, plan: &'spec Plan) -> &'spec
     }
 }
 
-/// Render `dep` as a sibling-bridge dependency entry when its package
-/// name matches another bridged member of `plan`.
+/// Find the bridged sibling member `dep` refers to, when `dep` resolves to a
+/// workspace member that is itself bridged.
+fn find_bridged_sibling<'plan>(dep: &DevDepSpec, plan: &'plan Plan) -> Option<&'plan MemberPlan> {
+    let real_name = real_package_name(dep, plan);
+    plan.members
+        .iter()
+        .find(|member| member.package_name == real_name && bridge_applies_to(member))
+}
+
+/// The key under which a dev-dep appears in the bridge's `[dependencies]`.
 ///
-/// Without this redirection, the bridge's `[dependencies]` would point
-/// at the original member path/version while the aggregator's
-/// `[dependencies]` points at the sibling's bridge — cargo would then
-/// compile the same crate twice (different package IDs because the
-/// paths differ) and the aggregator would drown in
-/// `the trait bound X: Y is not satisfied` errors at link time.
+/// For a non-renamed bridged sibling this is the sibling's lib identifier
+/// (cargo's extern-name rule: a non-renamed dep's crate name is its lib name,
+/// not its package name), so `use <lib_name>::…` in the consumer's test source
+/// resolves. Renamed and non-sibling deps keep their rename / package name.
+fn dev_dep_entry_name(dep: &DevDepSpec, plan: &Plan) -> String {
+    if let Some(rename) = &dep.rename {
+        return rename.clone();
+    }
+    if let Some(sibling) = find_bridged_sibling(dep, plan) {
+        return sibling.lib_ident();
+    }
+    dep.name.clone()
+}
+
+/// Render `dep` as a sibling-bridge dependency entry when its package name
+/// matches another bridged member of `plan`.
+///
+/// Without this redirection, the bridge's `[dependencies]` would point at
+/// the original member path/version while the aggregator's `[dependencies]`
+/// points at the sibling's bridge — cargo would then compile the same crate
+/// twice (different package IDs because the paths differ) and the aggregator
+/// would drown in `the trait bound X: Y is not satisfied` errors at link
+/// time.
 ///
 /// Matches against `member.package_name` (cargo's `[package].name`) so
-/// renamed deps (`alias = { package = "real-pkg", ... }`) still resolve
-/// to the right sibling — `dep.name` is already the post-rename real
-/// package name (see `apply_dev_dep_field`'s `package` branch).
-/// Features and `default-features` propagate using the same merge rules
-/// as the workspace-inherited / direct branches in `render_dev_dep`, so
-/// feature flags reach the bridge's mirrored `[features]` table.
+/// renamed deps (`alias = { package = "real-pkg", ... }`) still resolve to
+/// the right sibling — `dep.name` is already the post-rename real package
+/// name (see `apply_dev_dep_field`'s `package` branch). Features and
+/// `default-features` propagate using the same merge rules as the
+/// workspace-inherited / direct branches in `render_dev_dep`, so feature
+/// flags reach the bridge's mirrored `[features]` table.
 fn render_sibling_bridge_dep(dep: &DevDepSpec, plan: &Plan) -> Option<Item> {
-    let real_name = real_package_name(dep, plan);
-    let sibling = plan
-        .members
-        .iter()
-        .find(|member| member.package_name == real_name && bridge_applies_to(member))?;
+    let sibling = find_bridged_sibling(dep, plan)?;
 
     let mut tbl = InlineTable::new();
     tbl.insert(
