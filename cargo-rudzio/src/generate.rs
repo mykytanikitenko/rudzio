@@ -4609,6 +4609,22 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
     pkg.insert("version", value("0.0.0"));
     pkg.insert("edition", value(member.edition.as_str()));
     pkg.insert("publish", value(false));
+    // The bridge symlinks the member's whole tree (except the skip
+    // list) into its own directory, so `src/bin/*.rs`, `tests/*.rs`,
+    // `examples/*.rs` and `benches/*.rs` are all physically present
+    // under the bridge root. Cargo's default `autobins` /
+    // `autotests` / `autoexamples` / `autobenches` discovery would
+    // therefore promote every symlinked entry into an implicit target
+    // of the bridge — recompiling standalone `#[rudzio::main]` bins
+    // (which must link the REAL dep graph in their own crates) as
+    // bridge bins that link the test-only bridge siblings, leaking the
+    // whole workspace's linkme registry into each fixture binary. The
+    // bridge declares its targets explicitly (`[lib]` plus non-
+    // standalone `[[bin]]` entries), so all auto-discovery is off.
+    pkg.insert("autobins", value(false));
+    pkg.insert("autotests", value(false));
+    pkg.insert("autoexamples", value(false));
+    pkg.insert("autobenches", value(false));
     // Every bridge gets its own synthesised build.rs that emits
     // `cargo:rustc-cfg=rudzio_test` and the per-member
     // `CARGO_PKG_NAME` / `CARGO_MANIFEST_DIR` / `CARGO_BIN_EXE_<n>`
