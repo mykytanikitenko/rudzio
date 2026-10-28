@@ -22,9 +22,12 @@
 //!
 //! Supported entry shapes: a plain string, and an inline table with
 //! `value`, `force`, and `relative`. Any other shape or key is a hard error.
-//! Only `config.toml` files are read (not the legacy extensionless
-//! `config`), and `--config env.*` command-line overrides are not applied to
-//! the runner.
+//! The legacy extensionless `.cargo/config` is preferred over
+//! `config.toml` when both exist in the same directory (mirroring cargo's
+//! warning), and `--config` command-line overrides are applied as the
+//! highest-precedence layer: the string form `env.KEY="value"` and the
+//! file form `--config <path>`. Cargo rejects the inline-table form in
+//! `--config`, so it is rejected here too.
 
 use std::collections::BTreeMap;
 use std::env;
@@ -47,12 +50,19 @@ pub struct EnvVar {
 /// Resolve the consumer's effective `[env]` map under cargo's config
 /// precedence.
 ///
+/// `cli_config` is the list of `--config` argument values (the payload
+/// after the flag, already split from `--config`/`--config=`), each either
+/// a `KEY=VALUE` pair or a path to a config file.
+///
 /// Layering, lowest precedence first:
 ///
-/// 1. `$CARGO_HOME/config.toml` (`$HOME/.cargo/config.toml` when unset).
-/// 2. `.cargo/config.toml` files walking up from `workspace_root` to the
+/// 1. `$CARGO_HOME/config` (`$HOME/.cargo/config` when unset), with the
+///    extensionless `config` preferred over `config.toml` when both exist.
+/// 2. `.cargo/config` files walking up from `workspace_root` to the
 ///    filesystem root, farthest ancestor first so the closest directory
-///    wins per key.
+///    wins per key. Again, extensionless `config` beats `config.toml`.
+/// 3. `--config` command-line overrides (highest precedence): the string
+///    form `env.KEY="value"` and the file form `--config <path>`.
 ///
 /// Each layer's `[env]` table is merged with closer keys overriding farther
 /// ones (value *and* `force`), mirroring cargo's per-key merge.
@@ -60,23 +70,23 @@ pub struct EnvVar {
 /// # Errors
 ///
 /// Fails when a config file cannot be read or parsed, when `[env]` is not a
-/// table, or when an entry has an unsupported shape, type, or key.
+/// table, when an entry has an unsupported shape, type, or key, or when a
+/// `--config env.KEY=...` value is not a plain TOML string.
 #[inline]
-pub fn resolve(workspace_root: &Path) -> Result<BTreeMap<String, EnvVar>> {
+pub fn resolve(workspace_root: &Path, cli_config: &[String]) -> Result<BTreeMap<String, EnvVar>> {
     let mut merged: BTreeMap<String, EnvVar> = BTreeMap::new();
 
-    // Layer 1 (lowest): `$CARGO_HOME/config.toml`. `relative` paths there
+    // Layer 1 (lowest): `$CARGO_HOME/config(.toml)`. `relative` paths there
     // resolve against the parent of `$CARGO_HOME` (cargo treats CARGO_HOME
     // as the `.cargo` directory, so "parent of `.cargo`" is its parent).
-    if let Some(home) = cargo_home() {
-        let config = home.join("config.toml");
-        if config.is_file() {
-            let base = home.parent().map(Path::to_path_buf).unwrap_or_default();
-            merge_file(&mut merged, &config, &base)?;
-        }
+    if let Some(home) = cargo_home()
+        && let Some(config) = discover_config_file(&home)
+    {
+        let base = home.parent().map(Path::to_path_buf).unwrap_or_default();
+        merge_file(&mut merged, &config, &base)?;
     }
 
-    // Layer 2..N: `.cargo/config.toml` ancestors, farthest first so the
+    // Layer 2..N: `.cargo/config(.toml)` ancestors, farthest first so the
     // closest dir (workspace root) is applied last and wins.
     let mut chain: Vec<PathBuf> = Vec::new();
     let mut cursor = Some(workspace_root);
@@ -85,12 +95,15 @@ pub fn resolve(workspace_root: &Path) -> Result<BTreeMap<String, EnvVar>> {
         cursor = ancestor.parent();
     }
     for config_dir in chain.iter().rev() {
-        let config = config_dir.join(".cargo").join("config.toml");
-        if config.is_file() {
+        let cargo_dir = config_dir.join(".cargo");
+        if let Some(config) = discover_config_file(&cargo_dir) {
             // `relative` resolves against the parent of the `.cargo` dir.
             merge_file(&mut merged, &config, config_dir)?;
         }
     }
+
+    // Layer 3 (highest): `--config` command-line overrides.
+    merge_cli_config(&mut merged, cli_config, workspace_root)?;
 
     Ok(merged)
 }
@@ -104,6 +117,38 @@ fn cargo_home() -> Option<PathBuf> {
         return Some(PathBuf::from(home));
     }
     env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo"))
+}
+
+/// Write `text` to stderr, ignoring any I/O error.
+///
+/// The config-discovery ambiguity warning is advisory: a failed write must
+/// not turn a valid resolution into an error.
+fn warn(text: &str) {
+    use std::io::{self, Write as _};
+    let _io_result: io::Result<()> = io::stderr().lock().write_all(text.as_bytes());
+}
+
+/// Choose the config file cargo reads in `cargo_dir` (a `.cargo` directory
+/// or `$CARGO_HOME`).
+///
+/// Cargo prefers the legacy extensionless `config` over `config.toml` and,
+/// when both exist, warns that the extensionless file wins.
+fn discover_config_file(cargo_dir: &Path) -> Option<PathBuf> {
+    let extensionless = cargo_dir.join("config");
+    if extensionless.is_file() {
+        let toml = cargo_dir.join("config.toml");
+        if toml.is_file() {
+            warn(&format!(
+                "warning: both `{}` and `{}` exist. Using `{}`\n",
+                extensionless.display(),
+                toml.display(),
+                extensionless.display(),
+            ));
+        }
+        return Some(extensionless);
+    }
+    let toml = cargo_dir.join("config.toml");
+    toml.is_file().then_some(toml)
 }
 
 /// Merge the `[env]` table of a single config file into `merged`, with
@@ -134,6 +179,97 @@ fn merge_file(merged: &mut BTreeMap<String, EnvVar>, path: &Path, base: &Path) -
         let _previous = merged.insert(name.to_owned(), var);
     }
     Ok(())
+}
+
+/// Apply `--config` command-line overrides (cargo's highest-precedence
+/// layer) to `merged`.
+///
+/// Each value is either a `KEY=VALUE` pair or a path to a config file,
+/// mirroring cargo's `--config <KEY=VALUE|PATH>` grammar. Only `env.*`
+/// keys shape the runner environment; other keys (e.g. `build.rustflags`)
+/// are cargo's own concern and are already forwarded to the inner build.
+///
+/// A relative file path resolves against `workspace_root`, the CWD cargo's
+/// inner build is anchored at.
+fn merge_cli_config(
+    merged: &mut BTreeMap<String, EnvVar>,
+    cli_config: &[String],
+    workspace_root: &Path,
+) -> Result<()> {
+    for value in cli_config {
+        if let Some((key, raw)) = value.split_once('=') {
+            let trimmed_key = key.trim();
+            if let Some(name) = trimmed_key.strip_prefix("env.") {
+                if name.is_empty() {
+                    bail!("`--config {value}` sets an empty `[env]` variable name");
+                }
+                if name.contains('.') {
+                    bail!(
+                        "`--config {value}` uses a nested `[env]` sub-key, which is not \
+                         supported via `--config`; use the string form `env.NAME=\"value\"` \
+                         or a `--config <path>` file"
+                    );
+                }
+                let var = parse_cli_env_value(name, raw.trim())?;
+                let _previous = merged.insert(name.to_owned(), var);
+            }
+            // A non-`env.*` `--config` key does not shape the runner env.
+        } else {
+            let path = Path::new(value);
+            let abs = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                workspace_root.join(path)
+            };
+            // `relative` paths inside a `--config <path>` file resolve two
+            // levels up from the file itself (cargo's documented rule).
+            let base = abs
+                .parent()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf)
+                .unwrap_or_default();
+            merge_file(merged, &abs, &base)
+                .with_context(|| format!("loading `--config` file {value}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Parse a `--config env.NAME=<toml-value>` payload into an [`EnvVar`].
+///
+/// Cargo's `--config` accepts only scalar TOML values, so the only valid
+/// `[env]` form here is a quoted string (`env.NAME="value"`). The inline
+/// table (`env.NAME={ value = .., force = .. }`) and any non-string scalar
+/// are rejected with a hard error, matching cargo; `force`/`relative` are
+/// only expressible through config files.
+fn parse_cli_env_value(name: &str, raw: &str) -> Result<EnvVar> {
+    let doc: DocumentMut = format!("value = {raw}").parse().map_err(|err| {
+        anyhow::anyhow!("`--config env.{name}=...` value `{raw}` is not valid TOML: {err}")
+    })?;
+    let item = doc.get("value").ok_or_else(|| {
+        anyhow::anyhow!("`--config env.{name}=...` value `{raw}` produced no value")
+    })?;
+    match item {
+        Item::Value(Value::String(text)) => Ok(EnvVar {
+            force: false,
+            value: text.value().clone(),
+        }),
+        Item::Value(Value::InlineTable(_)) => bail!(
+            "--config argument `env.{name}={raw}` sets a value to an inline table, which is not accepted"
+        ),
+        rejected @ (Item::None
+        | Item::Value(
+            Value::Integer(_)
+            | Value::Float(_)
+            | Value::Boolean(_)
+            | Value::Datetime(_)
+            | Value::Array(_),
+        )
+        | Item::Table(_)
+        | Item::ArrayOfTables(_)) => {
+            bail!("--config argument `env.{name}={raw}` must be a string, got {rejected}")
+        }
+    }
 }
 
 /// Parse a single `[env]` entry into an [`EnvVar`].
@@ -241,7 +377,10 @@ mod tests {
 
     use toml_edit::DocumentMut;
 
-    use super::{EnvVar, merge_file, parse_entry};
+    use super::{
+        EnvVar, discover_config_file, merge_cli_config, merge_file, parse_cli_env_value,
+        parse_entry,
+    };
 
     const CONFIG: &str = "/ws/.cargo/config.toml";
 
@@ -357,6 +496,152 @@ mod tests {
             ),
         ]);
         assert_eq!(merged, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn discover_config_file_prefers_extensionless() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        fs::write(dir.path().join("config"), "[env]\nA = \"ext\"\n")?;
+        fs::write(dir.path().join("config.toml"), "[env]\nA = \"toml\"\n")?;
+        let chosen = discover_config_file(dir.path())
+            .ok_or_else(|| anyhow::anyhow!("expected an extensionless config"))?;
+        assert_eq!(chosen, dir.path().join("config"));
+        Ok(())
+    }
+
+    #[test]
+    fn discover_config_file_falls_back_to_toml() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        fs::write(dir.path().join("config.toml"), "[env]\nA = \"toml\"\n")?;
+        let chosen = discover_config_file(dir.path())
+            .ok_or_else(|| anyhow::anyhow!("expected a config.toml"))?;
+        assert_eq!(chosen, dir.path().join("config.toml"));
+        Ok(())
+    }
+
+    #[test]
+    fn discover_config_file_none_when_absent() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        assert!(discover_config_file(dir.path()).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn cli_env_string_form() -> anyhow::Result<()> {
+        assert_eq!(
+            parse_cli_env_value("FOO", "\"bar\"")?,
+            EnvVar {
+                value: "bar".to_owned(),
+                force: false,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cli_env_inline_table_rejected() -> anyhow::Result<()> {
+        let err = parse_cli_env_value("FOO", "{ value = \"bar\", force = true }")
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("expected the inline table to be rejected"))?;
+        assert!(format!("{err:#}").contains("inline table"), "{err:#}");
+        Ok(())
+    }
+
+    #[test]
+    fn cli_env_bare_value_rejected() -> anyhow::Result<()> {
+        let err = parse_cli_env_value("FOO", "bar")
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("expected the bare value to be rejected"))?;
+        assert!(format!("{err:#}").contains("not valid TOML"), "{err:#}");
+        Ok(())
+    }
+
+    #[test]
+    fn cli_env_non_string_scalar_rejected() -> anyhow::Result<()> {
+        let err = parse_cli_env_value("FOO", "42")
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("expected the integer to be rejected"))?;
+        assert!(format!("{err:#}").contains("must be a string"), "{err:#}");
+        Ok(())
+    }
+
+    #[test]
+    fn cli_env_nested_subkey_rejected() -> anyhow::Result<()> {
+        let mut merged: BTreeMap<String, EnvVar> = BTreeMap::new();
+        let err = merge_cli_config(
+            &mut merged,
+            &["env.FOO.value=\"bar\"".to_owned()],
+            Path::new("/ws"),
+        )
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("expected the nested sub-key to be rejected"))?;
+        assert!(
+            format!("{err:#}").contains("nested `[env]` sub-key"),
+            "{err:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cli_config_overrides_file_per_key() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("config.toml");
+        fs::write(&file, "[env]\nFOO = \"file\"\nKEEP = \"kept\"\n")?;
+        let mut merged: BTreeMap<String, EnvVar> = BTreeMap::new();
+        merge_file(&mut merged, &file, dir.path())?;
+        merge_cli_config(&mut merged, &["env.FOO=\"cli\"".to_owned()], dir.path())?;
+        let expected: BTreeMap<String, EnvVar> = BTreeMap::from([
+            (
+                "FOO".to_owned(),
+                EnvVar {
+                    value: "cli".to_owned(),
+                    force: false,
+                },
+            ),
+            (
+                "KEEP".to_owned(),
+                EnvVar {
+                    value: "kept".to_owned(),
+                    force: false,
+                },
+            ),
+        ]);
+        assert_eq!(merged, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn cli_config_file_form_merges_env() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let extra = dir.path().join("extra.toml");
+        fs::write(&extra, "[env]\nEXTRA = \"from-file\"\n")?;
+        let mut merged: BTreeMap<String, EnvVar> = BTreeMap::new();
+        merge_cli_config(
+            &mut merged,
+            &[extra.to_string_lossy().into_owned()],
+            dir.path(),
+        )?;
+        let expected: BTreeMap<String, EnvVar> = BTreeMap::from([(
+            "EXTRA".to_owned(),
+            EnvVar {
+                value: "from-file".to_owned(),
+                force: false,
+            },
+        )]);
+        assert_eq!(merged, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn cli_config_ignores_non_env_key() -> anyhow::Result<()> {
+        let mut merged: BTreeMap<String, EnvVar> = BTreeMap::new();
+        merge_cli_config(
+            &mut merged,
+            &["build.rustflags=\"--cfg foo\"".to_owned()],
+            Path::new("/ws"),
+        )?;
+        assert!(merged.is_empty());
         Ok(())
     }
 }

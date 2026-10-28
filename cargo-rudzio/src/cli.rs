@@ -189,6 +189,38 @@ pub fn aggregator_cargo_args(
     argv
 }
 
+/// Extract the raw values of every `--config` flag from `forwarded` (the
+/// already-parsed build-forwarder args), preserving order and the user's
+/// spelling.
+///
+/// Handles both the space form (`--config <value>`) and the equals form
+/// (`--config=<value>`), mirroring how [`parse_build_forwarder_flags`]
+/// records them. The returned values are the verbatim `--config` payloads
+/// (`KEY=VALUE` or a config-file path); the caller feeds them to
+/// `config_env::resolve` to mirror cargo's highest-precedence `[env]`
+/// layer on the directly-exec'd runner.
+#[inline]
+#[must_use]
+pub fn extract_config_values(forwarded: &[String]) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut idx = 0_usize;
+    while let Some(arg) = forwarded.get(idx) {
+        if arg == "--config" {
+            let next_idx = idx.saturating_add(1_usize);
+            if let Some(value) = forwarded.get(next_idx) {
+                values.push(value.clone());
+            }
+            idx = next_idx.saturating_add(1_usize);
+        } else if let Some(value) = arg.strip_prefix("--config=") {
+            values.push(value.to_owned());
+            idx = idx.saturating_add(1_usize);
+        } else {
+            idx = idx.saturating_add(1_usize);
+        }
+    }
+    values
+}
+
 /// Pull `--exclude <name>` / `--exclude=<name>` out of `args`.
 ///
 /// Returns the collected package names and the args list with those
