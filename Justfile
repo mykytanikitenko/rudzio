@@ -86,19 +86,6 @@ check-lints:
 test:
     cargo run -p cargo-rudzio -- test -- --threads-parallel-hardlimit=none
 
-# Run cargo-rudzio's OWN e2e suite (`cargo-rudzio/tests/*.rs`) against an
-# isolated per-run CARGO_TARGET_DIR, so `env!("CARGO_BIN_EXE_cargo-rudzio")`
-# — baked into the test binary at compile time — always resolves a
-# freshly-built binary rather than a stale/foreign artifact left in a
-# shared ambient target dir.
-#
-# This isolation is defense-in-depth, not the enforcement: every spawn in
-# the suite routes through `assert_fresh_binary`, which proves the binary
-# reports the live git HEAD before the suite exercises it. If a binary is
-# stale or foreign the test fails loudly instead of passing green.
-test-isolated:
-    CARGO_TARGET_DIR="$(mktemp -d)" cargo test -p cargo-rudzio -- --threads-parallel-hardlimit=none
-
 # Run the full rudzio suite under LLVM source-based coverage.
 #
 # Three-step flow (mirrors the Bug #3 repro): `cargo llvm-cov show-env`
@@ -114,7 +101,7 @@ coverage:
     #!/usr/bin/env bash
     set -euo pipefail
     eval "$(cargo llvm-cov show-env --sh)"
-    cargo run -p cargo-rudzio -- test -- --threads-parallel-hardlimit=none
+    just test
     cargo llvm-cov report
     cargo llvm-cov report --lcov --output-path target/lcov.info
 

@@ -75,6 +75,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+include!("build/source_fingerprint.rs");
+
 /// Sentinel for "no git identity resolvable".
 const UNKNOWN: &str = "unknown";
 
@@ -96,6 +98,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (head, dirty) = git_identity(&manifest_dir);
     println!("cargo::rustc-env=CARGO_RUDZIO_BUILD_GIT_HEAD={head}");
     println!("cargo::rustc-env=CARGO_RUDZIO_BUILD_GIT_DIRTY={dirty}");
+    let source_hash = source_fingerprint::of(&manifest_dir);
+    println!("cargo::rustc-env={}={}", source_fingerprint::ENV, source_hash);
     let profile = env::var("PROFILE").unwrap_or_else(|_| UNKNOWN.to_owned());
     println!("cargo::rustc-env=CARGO_RUDZIO_BUILD_PROFILE={profile}");
 
