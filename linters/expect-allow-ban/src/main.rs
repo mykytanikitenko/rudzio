@@ -36,11 +36,18 @@
 //! ```toml
 //! [[entry]]
 //! path = "src/runner.rs"        # repo-relative
-//! line = 794                    # 1-based attribute line
+//! key = "Terminal::size"        # `::`-joined enclosing-item path
 //! kind = "expect"               # "expect" | "allow"
 //! lints = ["unsafe_code"]       # exact set, order-insensitive
 //! reason = "<vetted explanation, not auto-extracted>"
 //! ```
+//!
+//! The `key` is structural, not positional: it is the `::`-joined
+//! path of enclosing items (mods, fns, structs, impl self-types,
+//! traits, and their associated items). A file-scope inner attribute
+//! (`#![allow(...)]` at crate root) has the empty key. Because the
+//! key is independent of line numbers, an allowlist entry survives
+//! unrelated edits above the suppressed site without re-pointing.
 //!
 //! Empty or missing allowlist → every detected attribute is a
 //! hazard.
@@ -62,7 +69,7 @@
 //! - No de-duplication when the same source file appears under
 //!   multiple workspace roots (symlinks).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
@@ -70,8 +77,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use serde::Deserialize;
-use syn::visit::Visit;
-use syn::{Attribute, spanned::Spanned as _};
+use syn::visit::{self, Visit};
+use syn::{Attribute, ImplItem, Item, TraitItem};
 use walkdir::WalkDir;
 
 const ALLOWLIST_PATH: &str = "linters/expect-allow-ban/allowlist.toml";
@@ -112,7 +119,11 @@ impl AttrKind {
 #[derive(Debug, Clone)]
 struct Hit {
     path: PathBuf,
-    line: usize,
+    /// Structural identity: the `::`-joined enclosing-item path
+    /// (`mod::fn`, `mod::Type::method`, or empty for a file-scope
+    /// inner attribute). Line-independent, so allowlist entries do not
+    /// drift when surrounding code moves.
+    key: String,
     kind: AttrKind,
     lints: Vec<String>,
     reason: Option<String>,
@@ -121,7 +132,9 @@ struct Hit {
 #[derive(Debug, Deserialize)]
 struct AllowlistEntry {
     path: String,
-    line: usize,
+    /// Structural key — same scheme as [`Hit::key`]. Empty string for
+    /// a file-scope inner attribute (`#![allow(...)]` at crate root).
+    key: String,
     kind: String,
     lints: Vec<String>,
     /// Human-authored justification; rendered into the orphan
@@ -148,12 +161,28 @@ impl Allowlist {
 
 struct AttrVisitor<'a> {
     path: &'a Path,
+    /// Stack of enclosing-item idents (mods, fns, structs, impl
+    /// self-types, trait names, and their associated items). Joined
+    /// with `::` to form each hit's structural [`Hit::key`].
+    stack: Vec<String>,
+    /// Per-`(kind, lints, item-path)` count of already-seen
+    /// attributes, used to disambiguate the structural key when one
+    /// item carries several identical suppressions (e.g. two
+    /// `#[expect(unsafe_code)]` blocks in a single fn). The first
+    /// occurrence keeps the bare path; subsequent ones get a `.N`
+    /// suffix in source order.
+    counts: HashMap<String, usize>,
     hits: Vec<Hit>,
 }
 
 impl<'a> AttrVisitor<'a> {
     fn new(path: &'a Path) -> Self {
-        Self { path, hits: Vec::new() }
+        Self {
+            path,
+            stack: Vec::new(),
+            counts: HashMap::new(),
+            hits: Vec::new(),
+        }
     }
 }
 
@@ -163,15 +192,111 @@ impl<'ast> Visit<'ast> for AttrVisitor<'_> {
             return;
         };
         let (lints, reason) = parse_nested(attr);
-        let line = attr.span().start().line;
+        let base_key = self.stack.join("::");
+        // Disambiguate identical suppressions under the same item.
+        let mut sorted_lints = lints.clone();
+        sorted_lints.sort();
+        let dedup_id = format!("{}|{}|{}", kind.as_str(), sorted_lints.join(","), base_key);
+        let n = self.counts.entry(dedup_id).or_insert(0);
+        let key = if *n == 0 {
+            base_key
+        } else {
+            format!("{base_key}.{}", *n)
+        };
+        *n += 1;
         self.hits.push(Hit {
             path: self.path.to_path_buf(),
-            line,
+            key,
             kind,
             lints,
             reason,
         });
     }
+
+    fn visit_item(&mut self, item: &'ast Item) {
+        let pushed = item_ident(item);
+        if let Some(ident) = &pushed {
+            self.stack.push(ident.clone());
+        }
+        visit::visit_item(self, item);
+        if pushed.is_some() {
+            let _popped = self.stack.pop();
+        }
+    }
+
+    fn visit_impl_item(&mut self, item: &'ast ImplItem) {
+        let pushed = impl_item_ident(item);
+        if let Some(ident) = &pushed {
+            self.stack.push(ident.clone());
+        }
+        visit::visit_impl_item(self, item);
+        if pushed.is_some() {
+            let _popped = self.stack.pop();
+        }
+    }
+
+    fn visit_trait_item(&mut self, item: &'ast TraitItem) {
+        let pushed = trait_item_ident(item);
+        if let Some(ident) = &pushed {
+            self.stack.push(ident.clone());
+        }
+        visit::visit_trait_item(self, item);
+        if pushed.is_some() {
+            let _popped = self.stack.pop();
+        }
+    }
+}
+
+/// Ident of a top-level item, used as one segment of the structural
+/// key. `None` for items with no name (`use`, `extern crate`,
+/// `foreign_mod`, verbatim) and for `impl` blocks, which are keyed by
+/// their self-type instead.
+fn item_ident(item: &Item) -> Option<String> {
+    match item {
+        Item::Const(i) => Some(i.ident.to_string()),
+        Item::Enum(i) => Some(i.ident.to_string()),
+        Item::Fn(i) => Some(i.sig.ident.to_string()),
+        Item::Mod(i) => Some(i.ident.to_string()),
+        Item::Static(i) => Some(i.ident.to_string()),
+        Item::Struct(i) => Some(i.ident.to_string()),
+        Item::Trait(i) => Some(i.ident.to_string()),
+        Item::Type(i) => Some(i.ident.to_string()),
+        Item::Union(i) => Some(i.ident.to_string()),
+        Item::Macro(i) => i.ident.as_ref().map(ToString::to_string),
+        Item::Impl(i) => impl_self_type_label(i),
+        _ => None,
+    }
+}
+
+/// Ident of an inherent/trait impl's associated item (method, const,
+/// associated type).
+fn impl_item_ident(item: &ImplItem) -> Option<String> {
+    match item {
+        ImplItem::Const(i) => Some(i.ident.to_string()),
+        ImplItem::Fn(i) => Some(i.sig.ident.to_string()),
+        ImplItem::Type(i) => Some(i.ident.to_string()),
+        _ => None,
+    }
+}
+
+/// Ident of a trait's associated item.
+fn trait_item_ident(item: &TraitItem) -> Option<String> {
+    match item {
+        TraitItem::Const(i) => Some(i.ident.to_string()),
+        TraitItem::Fn(i) => Some(i.sig.ident.to_string()),
+        TraitItem::Type(i) => Some(i.ident.to_string()),
+        _ => None,
+    }
+}
+
+/// Render an `impl` block's self type as a single label segment (the
+/// right-most path ident), so methods inside `impl Foo { … }` are
+/// addressable as `…::Foo::method`.
+fn impl_self_type_label(imp: &syn::ItemImpl) -> Option<String> {
+    if let syn::Type::Path(p) = imp.self_ty.as_ref() {
+        return p.path.segments.last().map(|seg| seg.ident.to_string());
+    }
+    None
 }
 
 /// Render a `syn::Path` as `seg1::seg2::seg3` (no generics, no leading `::`).
@@ -275,10 +400,10 @@ fn collect_hits(repo_root: &Path) -> anyhow::Result<Vec<Hit>> {
     Ok(hits)
 }
 
-/// True iff `hit` matches `entry`: same path, same line, same
-/// kind, same set of lints (order-insensitive).
+/// True iff `hit` matches `entry`: same path, same structural key,
+/// same kind, same set of lints (order-insensitive).
 fn matches(hit: &Hit, entry: &AllowlistEntry) -> bool {
-    if hit.line != entry.line {
+    if hit.key != entry.key {
         return false;
     }
     if hit.kind.as_str() != entry.kind {
@@ -320,15 +445,15 @@ fn format_hit(hit: &Hit) -> String {
     let lints_joined = hit.lints.join(",");
     let reason_summary = match hit.reason.as_deref() {
         Some(text) => {
-            let trimmed: String = text.chars().take(80).collect();
-            format!("\"{trimmed}\"")
+            let flattened: String = text.chars().map(|c| if c == '\n' { ' ' } else { c }).collect();
+            format!("\"{flattened}\"")
         }
         None => "<MISSING>".to_string(),
     };
     format!(
-        "{}:{} kind={} lints=[{lints_joined}] reason={reason_summary}",
+        "{} key={} kind={} lints=[{lints_joined}] reason={reason_summary}",
         hit.path.display(),
-        hit.line,
+        hit.key,
         hit.kind.as_str(),
     )
 }
@@ -367,8 +492,8 @@ fn write_report(
         if let Some(entry) = allowlist.entry.get(idx) {
             writeln!(
                 body,
-                "  {}:{} kind={} lints={:?} reason={:?}",
-                entry.path, entry.line, entry.kind, entry.lints, entry.reason
+                "  {} key={} kind={} lints={:?} reason={:?}",
+                entry.path, entry.key, entry.kind, entry.lints, entry.reason
             )?;
         }
     }
