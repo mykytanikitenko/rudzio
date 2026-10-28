@@ -18,4 +18,6 @@
 # added here with a reviewed reason. Empty file is the right initial
 # state per PLAN.md (D-EXP-equivalent for this gate).
 
-# Empty list — see comments above. Activate entries during M-2.
+[[allow]]
+path = "rudzio::shuffle::next_splitmix64"
+reason = "SplitMix64 PRNG step: `wrapping_add`/`wrapping_mul`/`>>` are the algorithm's spec, not masked overflow. A `const fn` returning the next u64 state; it cannot return `Result` without changing the PRNG's output sequence."

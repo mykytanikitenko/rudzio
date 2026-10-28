@@ -31,7 +31,7 @@ pub const GIT_DIRTY: &str = match option_env!("CARGO_RUDZIO_BUILD_GIT_DIRTY") {
 /// Crate version, mirroring `CARGO_PKG_VERSION`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// `<version>-<unix-epoch-seconds>` build stamp.
+/// `<version>-<unix-epoch-seconds>` build stamp emitted by `build.rs`.
 ///
 /// Distinct builds produce distinct stamps; the aggregator subdir name
 /// hashes this so a rebuilt `cargo-rudzio` forces a fresh consumer target
