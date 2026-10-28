@@ -191,6 +191,13 @@ ENVIRONMENT:
     RUST_LIB_BACKTRACE          Same shape as RUST_BACKTRACE but for
                                 library-level panics (anyhow, etc.). Also
                                 defaulted to 'full' by the runner.
+    RUDZIO_RUNNER_ARGS          Set by the runner to its resolved config as
+                                a space-separated `--flag=value` list.
+                                Descendant rudzio runners (nested
+                                `cargo rudzio test`, fixture bins spawned by
+                                e2e specs) apply it as LOW-precedence
+                                defaults: explicit CLI args on the child
+                                still win.
 
 EXAMPLES:
     Pipe-safe output for log capture, log-shippers, or AI agents
@@ -837,6 +844,36 @@ pub enum RunIgnoredMode {
     Only,
 }
 
+/// Environment variable carrying a parent rudzio runner's resolved config,
+/// serialized by [`Config::to_runner_args`] as a space-separated
+/// `--flag=value` list. [`Config::from_argv_and_env`] applies it as
+/// LOW-precedence defaults ahead of the real argv, so a nested
+/// `cargo rudzio test` (or a fixture bin spawned by an e2e spec) inherits
+/// the parent run's effective concurrency/timeout/presentation config while
+/// any explicit CLI arg on the child still wins.
+pub const RUNNER_ARGS_ENV: &str = "RUDZIO_RUNNER_ARGS";
+
+/// Split [`RUNNER_ARGS_ENV`] into a default-argv prefix (empty when the
+/// variable is absent). Tokens are space-separated and space-free by
+/// construction: [`Config::to_runner_args`] only emits `--flag=value`
+/// forms whose values are numbers or the keywords `none`/`threads`/
+/// `pretty`/`terse`/`auto`/`always`/`never`/`live`/`plain`.
+#[inline]
+#[must_use]
+fn runner_args_env_defaults(env: &BTreeMap<String, String>) -> Vec<String> {
+    env.get(RUNNER_ARGS_ENV)
+        .map(|raw| raw.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+/// Push `--flag=<secs>` onto `args` when `duration` is `Some`.
+#[inline]
+fn push_duration(args: &mut Vec<String>, flag: &str, duration: Option<Duration>) {
+    if let Some(value) = duration {
+        args.push(format!("{flag}={}", value.as_secs()));
+    }
+}
+
 impl Config {
     /// Acquire one permit from the process-wide parallel-execution gate.
     /// Intended for macro-generated per-test code — users shouldn't need
@@ -859,7 +896,16 @@ impl Config {
         env: BTreeMap<String, String>,
         cargo: CargoMeta,
     ) -> Self {
-        let parsed = parse_argv(argv);
+        // A parent rudzio runner serializes its resolved config into
+        // `RUNNER_ARGS_ENV` for descendant runners (see `to_runner_args`).
+        // Apply those as LOW-precedence defaults ahead of the real argv so
+        // a nested `cargo rudzio test` (or a fixture bin spawned by an e2e
+        // spec) inherits the parent's effective concurrency/timeout config,
+        // while any explicit CLI arg on the child still wins (later args
+        // override earlier ones in `parse_argv`).
+        let mut merged = runner_args_env_defaults(&env);
+        merged.extend(argv.iter().cloned());
+        let parsed = parse_argv(&merged);
 
         let resolved_threads = match parsed.threads.or_else(|| {
             env.get("RUST_TEST_THREADS")
@@ -939,6 +985,87 @@ impl Config {
         let argv: Vec<String> = env::args().skip(1).collect();
         let env_snapshot: BTreeMap<String, String> = env::vars().collect();
         Self::from_argv_and_env(&argv, env_snapshot, cargo)
+    }
+
+    /// Serialize this resolved config back into a canonical `--flag=value`
+    /// argv that a descendant rudzio runner re-applies as low-precedence
+    /// defaults (see [`RUNNER_ARGS_ENV`]).
+    ///
+    /// Emits the concurrency knobs unconditionally (they are always
+    /// resolved to concrete values) plus every timeout/grace/shuffle/
+    /// presentation knob whose value diverges from the no-flag default.
+    /// Run-scoped selections — the positional [`Self::filter`],
+    /// [`Self::skip_filters`] (space-bearing), [`Self::logfile`],
+    /// [`Self::print_only`] — are intentionally NOT emitted: they describe
+    /// this run's test selection and output sink, not portable config.
+    #[must_use]
+    pub fn to_runner_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+
+        args.push(format!("--test-threads={}", self.threads));
+        args.push(format!("--concurrency-limit={}", self.concurrency_limit));
+        match self.parallel_hardlimit {
+            Some(limit) => args.push(format!("--threads-parallel-hardlimit={}", limit.get())),
+            None => args.push("--threads-parallel-hardlimit=none".to_owned()),
+        }
+
+        if matches!(self.bench_mode, BenchMode::Full) {
+            args.push("--bench".to_owned());
+        } else if matches!(self.bench_mode, BenchMode::Skip) {
+            args.push("--no-bench".to_owned());
+        }
+
+        push_duration(&mut args, "--test-timeout", self.test_timeout);
+        push_duration(&mut args, "--run-timeout", self.run_timeout);
+        push_duration(&mut args, "--suite-setup-timeout", self.suite_setup_timeout);
+        push_duration(
+            &mut args,
+            "--suite-teardown-timeout",
+            self.suite_teardown_timeout,
+        );
+        push_duration(&mut args, "--test-setup-timeout", self.test_setup_timeout);
+        push_duration(
+            &mut args,
+            "--test-teardown-timeout",
+            self.test_teardown_timeout,
+        );
+        push_duration(&mut args, "--phase-hang-grace", self.phase_hang_grace);
+        push_duration(&mut args, "--cancel-grace-period", self.cancel_grace_period);
+
+        if self.shuffle {
+            args.push("--shuffle".to_owned());
+        }
+        if let Some(seed) = self.shuffle_seed {
+            args.push(format!("--shuffle-seed={seed}"));
+        }
+        if self.exact_match {
+            args.push("--exact".to_owned());
+        }
+        if matches!(self.run_ignored, RunIgnoredMode::Include) {
+            args.push("--include-ignored".to_owned());
+        } else if matches!(self.run_ignored, RunIgnoredMode::Only) {
+            args.push("--ignored".to_owned());
+        }
+        if matches!(self.format, Format::Terse) {
+            args.push("--format=terse".to_owned());
+        }
+        if matches!(self.color, ColorMode::Always) {
+            args.push("--color=always".to_owned());
+        } else if matches!(self.color, ColorMode::Never) {
+            args.push("--color=never".to_owned());
+        }
+        if matches!(self.output_mode, OutputMode::Plain) {
+            args.push("--output=plain".to_owned());
+        }
+        if let Some(times) = self.ensure_time {
+            args.push(format!(
+                "--ensure-time={},{}",
+                times.warn.as_millis(),
+                times.critical.as_millis()
+            ));
+        }
+
+        args
     }
 }
 

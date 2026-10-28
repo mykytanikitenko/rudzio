@@ -919,6 +919,73 @@ mod config_parser {
         Ok(())
     }
 
+    // ── `RUDZIO_RUNNER_ARGS` inheritance (nested-runner config) ──────────
+    //
+    // A parent rudzio runner serializes its resolved config into the
+    // `RUDZIO_RUNNER_ARGS` env var (see `Config::to_runner_args` /
+    // `runner::set_runner_args_env`). A descendant runner applies it as a
+    // LOW-precedence default layer: the inherited hardlimit is honoured when
+    // the child passes no explicit flag, and an explicit child flag wins.
+
+    #[rudzio::test]
+    fn runner_args_env_inherits_hardlimit_none(_ctx: &Test) -> anyhow::Result<()> {
+        let mut env = env_with(None);
+        let _inserted = env.insert(
+            rudzio::RUNNER_ARGS_ENV.to_owned(),
+            "--threads-parallel-hardlimit=none".to_owned(),
+        );
+        let cfg = Config::from_argv_and_env(&argv(&[]), env, rudzio::cargo_meta!());
+        anyhow::ensure!(
+            cfg.parallel_hardlimit.is_none(),
+            "expected inherited --threads-parallel-hardlimit=none, got {:?}",
+            cfg.parallel_hardlimit
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn runner_args_env_explicit_cli_wins(_ctx: &Test) -> anyhow::Result<()> {
+        let mut env = env_with(None);
+        let _inserted = env.insert(
+            rudzio::RUNNER_ARGS_ENV.to_owned(),
+            "--threads-parallel-hardlimit=none".to_owned(),
+        );
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--threads-parallel-hardlimit=2"]),
+            env,
+            rudzio::cargo_meta!(),
+        );
+        anyhow::ensure!(
+            cfg.parallel_hardlimit.map(NonZeroUsize::get) == Some(2),
+            "explicit CLI --threads-parallel-hardlimit=2 must win over the inherited =none, got {:?}",
+            cfg.parallel_hardlimit
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn to_runner_args_serializes_resolved_hardlimit(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--threads-parallel-hardlimit=none"]),
+            env_with(None),
+            rudzio::cargo_meta!(),
+        );
+        let args = cfg.to_runner_args();
+        anyhow::ensure!(
+            args.iter().any(|arg| arg == "--threads-parallel-hardlimit=none"),
+            "expected the resolved `none` hardlimit to be re-serialized, got {args:?}"
+        );
+        anyhow::ensure!(
+            args.iter().any(|arg| arg.starts_with("--test-threads=")),
+            "expected --test-threads to be re-serialized, got {args:?}"
+        );
+        anyhow::ensure!(
+            args.iter().any(|arg| arg.starts_with("--concurrency-limit=")),
+            "expected --concurrency-limit to be re-serialized, got {args:?}"
+        );
+        Ok(())
+    }
+
     #[rudzio::test]
     fn env_is_propagated_into_config(_ctx: &Test) -> anyhow::Result<()> {
         let cfg = Config::from_argv_and_env(&argv(&[]), env_with(Some("4")), rudzio::cargo_meta!());
