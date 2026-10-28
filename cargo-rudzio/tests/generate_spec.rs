@@ -509,10 +509,10 @@ mod tests {
     }
 
     #[rudzio::test]
-    fn main_rs_dedups_extern_crate_on_name_collision() -> anyhow::Result<()> {
-        // Two members whose normalised idents collide (cargo disallows
-        // this in a real workspace, but the dedup keeps the emitted file
-        // from containing a duplicate `extern crate foo_bar;`).
+    fn main_rs_disambiguates_extern_crate_on_name_collision() -> anyhow::Result<()> {
+        // Two members whose lib idents collide (distinct package names that
+        // normalise to the same lib name). The aggregator must give each a
+        // distinct extern-crate name rather than silently dropping one.
         let mut hyphen = member("foo-bar", Vec::new());
         hyphen.has_src_rudzio_suite = true;
         let mut underscore = member("foo_bar", Vec::new());
@@ -523,14 +523,13 @@ mod tests {
             Path::new("/nowhere/out"),
         );
 
-        let occurrences: Vec<&str> = rendered
-            .match_indices("extern crate foo_bar;")
-            .map(|(_, hit)| hit)
-            .collect();
         anyhow::ensure!(
-            occurrences.len() == 1,
-            "expected one extern crate foo_bar;, got {}:\n{rendered}",
-            occurrences.len(),
+            rendered.matches("extern crate foo_bar;").count() == 1,
+            "expected exactly one `extern crate foo_bar;`:\n{rendered}",
+        );
+        anyhow::ensure!(
+            rendered.matches("extern crate foo_bar_2;").count() == 1,
+            "expected exactly one disambiguated `extern crate foo_bar_2;`:\n{rendered}",
         );
         Ok(())
     }
