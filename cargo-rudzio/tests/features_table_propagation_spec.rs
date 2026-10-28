@@ -24,12 +24,12 @@
 //! disambiguated name when the same feature appears on multiple
 //! members — at minimum, `heavy` must be reachable).
 
-use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use cargo_rudzio::generate::{plan_from_manifest, write_runner};
+use cargo_rudzio_test_helpers::with_cargo_offline;
 use rudzio::common::context::Suite;
 use rudzio::runtime::tokio::Multithread as TokioMultithread;
 
@@ -74,52 +74,6 @@ fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
     )?;
     fs::write(member.join("src").join("lib.rs"), "// rudzio_test marker\n")?;
     Ok(())
-}
-
-/// `CARGO_NET_OFFLINE=true` guard.
-fn with_cargo_offline<F, T>(body: F) -> T
-where
-    F: FnOnce() -> T,
-{
-    /// RAII restore on drop.
-    struct Restore {
-        /// Pre-installation value; `None` = was unset.
-        prev: Option<String>,
-    }
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            if let Some(prev) = self.prev.take() {
-                #[expect(
-                    unsafe_code,
-                    reason = "std::env::set_var marked unsafe; guard owns the var"
-                )]
-                // SAFETY: see other specs.
-                unsafe {
-                    env::set_var("CARGO_NET_OFFLINE", prev);
-                }
-            } else {
-                #[expect(
-                    unsafe_code,
-                    reason = "std::env::remove_var marked unsafe; guard owns the var"
-                )]
-                // SAFETY: see other specs.
-                unsafe {
-                    env::remove_var("CARGO_NET_OFFLINE");
-                }
-            }
-        }
-    }
-    let prev = env::var("CARGO_NET_OFFLINE").ok();
-    let _guard = Restore { prev };
-    #[expect(
-        unsafe_code,
-        reason = "std::env::set_var marked unsafe; guard owns the var"
-    )]
-    // SAFETY: see Restore::drop.
-    unsafe {
-        env::set_var("CARGO_NET_OFFLINE", "true");
-    }
-    body()
 }
 
 #[rudzio::suite([

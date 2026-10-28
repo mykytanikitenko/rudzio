@@ -108,6 +108,58 @@ include!(concat!(
     "/../cargo-rudzio/build/source_fingerprint.rs"
 ));
 
+/// Run `body` with `CARGO_NET_OFFLINE=true` set in the process
+/// environment, restoring the prior value (or removing it, if it was
+/// unset) on the way out.
+///
+/// This is the single shared home for the RAII env-guard every
+/// `cargo-rudzio` spec previously hand-rolled — the duplication carried
+/// ~45 `#[expect(unsafe_code)]` sites that all collapse into the one
+/// documented site in [`apply_cargo_offline`].
+pub fn with_cargo_offline<F, T>(body: F) -> T
+where
+    F: FnOnce() -> T,
+{
+    struct Restore {
+        prev: Option<String>,
+    }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            apply_cargo_offline(self.prev.as_deref());
+        }
+    }
+    let prev = env::var("CARGO_NET_OFFLINE").ok();
+    apply_cargo_offline(Some("true"));
+    let _guard = Restore { prev };
+    body()
+}
+
+/// The single `unsafe` site for [`with_cargo_offline`]'s guard.
+/// `Some(value)` sets `CARGO_NET_OFFLINE=value`; `None` removes it.
+///
+/// # Safety
+///
+/// `env::set_var` / `env::remove_var` are `unsafe` (edition 2024)
+/// because they mutate process-global state another thread could be
+/// reading. This helper is reached only from [`with_cargo_offline`],
+/// whose guard scopes the mutation to a synchronous test body: specs
+/// call `with_cargo_offline` around an in-process `plan_from_manifest`
+/// / `cargo metadata` call, and the restore runs on the same thread
+/// that set the value. No concurrent env reader exists.
+fn apply_cargo_offline(value: Option<&str>) {
+    #[expect(
+        unsafe_code,
+        reason = "single-threaded env-guard: set/remove happen on the same thread around a synchronous body, no concurrent env reader"
+    )]
+    // SAFETY: see fn docstring.
+    unsafe {
+        match value {
+            Some(v) => env::set_var("CARGO_NET_OFFLINE", v),
+            None => env::remove_var("CARGO_NET_OFFLINE"),
+        }
+    }
+}
+
 /// Files inside `<CARGO_HOME>/registry/` that must NOT be hardlinked
 /// across per-test cargo homes. `.package-cache` is cargo's
 /// `fs2::FileExt`-backed flock target; sharing the inode across tests

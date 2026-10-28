@@ -21,12 +21,12 @@
 //!   collision when the same helper name appears in two binaries
 //!   against different files.
 
-use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use cargo_rudzio::generate::{plan_from_manifest, write_runner};
+use cargo_rudzio_test_helpers::with_cargo_offline;
 use rudzio::common::context::Suite;
 use rudzio::runtime::tokio::Multithread as TokioMultithread;
 
@@ -93,53 +93,6 @@ fn write_test_root(consumer_tests: &Path, name: &str, mod_decls: &str) -> io::Re
         ),
     )?;
     Ok(())
-}
-
-/// `CARGO_NET_OFFLINE=true` guard. Same RAII pattern as the other
-/// specs in this directory.
-fn with_cargo_offline<F, T>(body: F) -> T
-where
-    F: FnOnce() -> T,
-{
-    /// RAII restore.
-    struct Restore {
-        /// Previous value (`None` = was unset).
-        prev: Option<String>,
-    }
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            if let Some(prev) = self.prev.take() {
-                #[expect(
-                    unsafe_code,
-                    reason = "std::env::set_var marked unsafe; guard owns the var"
-                )]
-                // SAFETY: see other specs.
-                unsafe {
-                    env::set_var("CARGO_NET_OFFLINE", prev);
-                }
-            } else {
-                #[expect(
-                    unsafe_code,
-                    reason = "std::env::remove_var marked unsafe; guard owns the var"
-                )]
-                // SAFETY: see other specs.
-                unsafe {
-                    env::remove_var("CARGO_NET_OFFLINE");
-                }
-            }
-        }
-    }
-    let prev = env::var("CARGO_NET_OFFLINE").ok();
-    let _guard = Restore { prev };
-    #[expect(
-        unsafe_code,
-        reason = "std::env::set_var marked unsafe; guard owns the var"
-    )]
-    // SAFETY: see Restore::drop.
-    unsafe {
-        env::set_var("CARGO_NET_OFFLINE", "true");
-    }
-    body()
 }
 
 #[rudzio::suite([

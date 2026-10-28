@@ -34,13 +34,13 @@
 //! every registry-tagged dep retains its `registry = "fthm"` key.
 
 use std::collections::BTreeMap;
-use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use cargo_rudzio::generate::{plan_from_manifest, write_runner};
+use cargo_rudzio_test_helpers::with_cargo_offline;
 use rudzio::common::context::Suite;
 use rudzio::runtime::async_std::Runtime as AsyncStdRuntime;
 use rudzio::runtime::compio::Runtime as CompioRuntime;
@@ -194,65 +194,6 @@ fn write_fixture_with_rudzio_on_registry(root: &Path) -> io::Result<()> {
     )?;
 
     Ok(())
-}
-
-/// Set `CARGO_NET_OFFLINE=true` for the duration of `body`, restoring
-/// the previous value on exit. `cargo metadata` consults this var to
-/// avoid touching the network when resolving registry indexes — even
-/// with `--no-deps`, cargo will eagerly refresh sparse indexes the
-/// first time a registry name is mentioned, which would hang the test
-/// on `example.invalid`.
-fn with_cargo_offline<F, T>(body: F) -> T
-where
-    F: FnOnce() -> T,
-{
-    /// RAII guard that restores `CARGO_NET_OFFLINE` to its previous
-    /// value when dropped. Survives panics in `body`.
-    struct Restore {
-        /// The value of `CARGO_NET_OFFLINE` observed before the
-        /// guard was installed. `None` means the variable was unset.
-        prev: Option<String>,
-    }
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            if let Some(prev) = self.prev.take() {
-                // SAFETY: setting env vars is not unsafe per se on Unix
-                // / Windows, but `std::env::set_var` is marked unsafe
-                // since Rust 1.92 to discourage racy use. This test
-                // runs single-threaded with respect to env vars — the
-                // RAII drop runs on the same thread that set it — so
-                // no race exists.
-                #[expect(
-                    unsafe_code,
-                    reason = "std::env::set_var marked unsafe; this test owns the env var for the duration of the guard, no concurrent setters"
-                )]
-                // SAFETY: see above.
-                unsafe {
-                    env::set_var("CARGO_NET_OFFLINE", prev);
-                }
-            } else {
-                #[expect(
-                    unsafe_code,
-                    reason = "std::env::remove_var marked unsafe; this test owns the env var for the duration of the guard, no concurrent setters"
-                )]
-                // SAFETY: see above.
-                unsafe {
-                    env::remove_var("CARGO_NET_OFFLINE");
-                }
-            }
-        }
-    }
-    let prev = env::var("CARGO_NET_OFFLINE").ok();
-    let _guard = Restore { prev };
-    #[expect(
-        unsafe_code,
-        reason = "std::env::set_var marked unsafe; this test owns the env var for the duration of the guard, no concurrent setters"
-    )]
-    // SAFETY: see Restore::drop.
-    unsafe {
-        env::set_var("CARGO_NET_OFFLINE", "true");
-    }
-    body()
 }
 
 /// Parse a TOML file at `path` into a `BTreeMap<String, ...>` keyed by
