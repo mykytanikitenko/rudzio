@@ -86,6 +86,32 @@ the generated manifest + sources, or for CI configurations that want
 to build the aggregator once and run it many times. Default DIR is
 `<target-dir>/rudzio-auto-runner`.
 
+### `cargo rudzio --build-id` / `cargo rudzio --version`
+
+`cargo-rudzio` stamps its own build identity at compile time — git HEAD,
+dirty state, crate version, epoch stamp, and profile — and reports it via
+`--build-id` and `--version`. The e2e suite re-checks this identity before
+every spawn so a stale or foreign binary fails loudly instead of silently
+running the wrong code.
+
+The git HEAD is resolved with `git rev-parse HEAD` scoped to the source
+tree. When the binary is built from a source tree with no `.git` directory
+— a `fetchFromGitHub` / tarball / nix-store copy — pass the revision
+explicitly so the binary still reports a real identity:
+
+```sh
+export CARGO_RUDZIO_BUILD_GIT_HEAD="$REV"   # the pinned commit SHA
+export CARGO_RUDZIO_BUILD_GIT_DIRTY="clean"
+cargo build --release -p cargo-rudzio
+```
+
+`build.rs` honours `CARGO_RUDZIO_BUILD_GIT_HEAD` /
+`CARGO_RUDZIO_BUILD_GIT_DIRTY` over `git rev-parse`; an empty or unset
+value falls through to `git`, then to `unknown`. Downstream nix consumers
+should set these from `self.rev or self.dirtyRev` (or their
+`fetchFromGitHub` `rev`) so the produced binary reports the pinned
+revision instead of `unknown`.
+
 ## Relationship to per-crate `cargo test`
 
 `cargo rudzio test` and `cargo test -p <crate>` coexist:

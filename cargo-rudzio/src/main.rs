@@ -128,6 +128,8 @@ COMMANDS:
     --build-id                       Print the binary build identity
                                      (git HEAD, dirty state, version,
                                      stamp, profile) and exit.
+    --version, -V                    Print the crate version and build
+                                     identity, then exit.
     help, --help, -h                 Print this message.
 
 EXAMPLES:
@@ -185,6 +187,14 @@ fn dispatch(argv: &[String]) -> Result<ExitCode> {
         Some("migrate") => Ok(run_migrate(&rest)),
         Some("--build-id" | "build-id") => {
             write_stdout(&format!("{}\n", build_id::line()));
+            Ok(ExitCode::SUCCESS)
+        }
+        Some("--version" | "-V" | "version") => {
+            write_stdout(&format!(
+                "cargo-rudzio {}\n{}\n",
+                build_id::VERSION,
+                build_id::line()
+            ));
             Ok(ExitCode::SUCCESS)
         }
         Some(cmd) => {
@@ -313,6 +323,7 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
     if let Some(build_dir) = &dirs.build_dir {
         cmd.env("CARGO_BUILD_BUILD_DIR", build_dir);
     }
+    stamp_build_identity(&mut cmd);
     // Coverage part 2 (Bug #3): instrument the runner and remap the
     // bridge-local source copies (see `apply_coverage_build_env`).
     if coverage::is_active() {
@@ -437,6 +448,17 @@ fn runner_command(
         }
     }
     Ok(runner_cmd)
+}
+
+/// Seed the child cargo build's git identity from this process's stamp.
+///
+/// Members compile from copies under `CARGO_TARGET_DIR` that have no
+/// `.git`, so a member build script that stamps `git rev-parse HEAD`
+/// (cargo-rudzio itself, in the dogfood) would otherwise resolve
+/// `unknown` and fail the freshness guard.
+fn stamp_build_identity(cmd: &mut Command) {
+    cmd.env("CARGO_RUDZIO_BUILD_GIT_HEAD", build_id::GIT_HEAD);
+    cmd.env("CARGO_RUDZIO_BUILD_GIT_DIRTY", build_id::GIT_DIRTY);
 }
 
 /// Instrument the runner and remap bridge source copies under coverage.

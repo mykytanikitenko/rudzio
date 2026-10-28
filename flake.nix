@@ -14,6 +14,7 @@
 
   outputs =
     {
+      self,
       nixpkgs,
       flake-utils,
       opencode-flake,
@@ -73,6 +74,21 @@
             export SCCACHE_CACHE_DIR="$PWD/.cache/sccache-nix"
             export SCCACHE_DIRECT=true
             export SCCACHE_COMPRESS=true
+
+            # Stamp the source revision into the cargo-rudzio binary so a
+            # build from a git-less source tree (nix store copy, tarball)
+            # still reports a real git identity instead of `unknown`. The
+            # build script honours these over `git rev-parse`.
+            export CARGO_RUDZIO_BUILD_GIT_HEAD="${
+              if self ? rev then self.rev
+              else if self ? dirtyRev then self.dirtyRev
+              else ""
+            }"
+            export CARGO_RUDZIO_BUILD_GIT_DIRTY="${
+              if self ? rev then "clean"
+              else if self ? dirtyRev then "dirty"
+              else "unknown"
+            }"
 
             # Isolated opencode configuration (use nix-specific config)
             export OPENCODE_CONFIG_DIR="$PWD/.config/opencode"
