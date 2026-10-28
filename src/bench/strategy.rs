@@ -84,7 +84,10 @@ impl Strategy for Sequential {
         P: FnMut(ProgressSnapshot),
     {
         let iterations = self.0;
-        let stride = iterations.checked_div(100).unwrap_or(0).max(1);
+        let stride = match iterations.checked_div(100) {
+            Some(v) => v.max(1),
+            None => 1,
+        };
         let mut samples = Vec::with_capacity(iterations);
         let mut failures = Vec::new();
         let mut panics: usize = 0;
@@ -99,17 +102,23 @@ impl Strategy for Sequential {
             match result {
                 Ok(Ok(())) => samples.push(iter_elapsed),
                 Ok(Err(err)) => failures.push(err.to_string()),
-                Err(_payload) => panics = panics.saturating_add(1),
+                Err(_payload) => {
+                    panics = match panics.checked_add(1) {
+                        Some(v) => v,
+                        None => usize::MAX,
+                    }
+                }
             }
-            let done = idx.saturating_add(1);
+            let done = match idx.checked_add(1) {
+                Some(v) => v,
+                None => usize::MAX,
+            };
             if done.checked_rem(stride).is_some_and(|rem| rem == 0) || done == iterations {
-                // TODO(rs-cleanup): from_samples is currently infallible. When it
-                // gains real errors, Strategy::run must propagate them (it returns
-                // Report; consider Result<Report>). unwrap_or_else with a neutral
-                // initial snapshot keeps the hazard visible without a trait change.
-                let __snapshot = ProgressSnapshot::from_samples(&samples, done, iterations)
-                    .unwrap_or_else(|_| ProgressSnapshot::initial(iterations));
-                on_progress(__snapshot);
+                let snapshot = match ProgressSnapshot::from_samples(&samples, done, iterations) {
+                    Ok(snapshot) => snapshot,
+                    Err(_) => ProgressSnapshot::initial(iterations),
+                };
+                on_progress(snapshot);
             }
         }
         Report {
@@ -156,7 +165,10 @@ impl Strategy for Concurrent {
         P: FnMut(ProgressSnapshot),
     {
         let iterations = self.0;
-        let stride = iterations.checked_div(100).unwrap_or(0).max(1);
+        let stride = match iterations.checked_div(100) {
+            Some(v) => v.max(1),
+            None => 1,
+        };
         let start = Instant::now();
         // body() is `FnMut`; we call it sequentially up front, then
         // drive the resulting futures via `FuturesUnordered` so we can
@@ -184,17 +196,23 @@ impl Strategy for Concurrent {
             match result {
                 Ok(Ok(())) => samples.push(iter_elapsed),
                 Ok(Err(err)) => failures.push(err.to_string()),
-                Err(_payload) => panics = panics.saturating_add(1),
+                Err(_payload) => {
+                    panics = match panics.checked_add(1) {
+                        Some(v) => v,
+                        None => usize::MAX,
+                    }
+                }
             }
-            done = done.saturating_add(1);
+            done = match done.checked_add(1) {
+                Some(v) => v,
+                None => usize::MAX,
+            };
             if done.is_multiple_of(stride) || done == iterations {
-                // TODO(rs-cleanup): from_samples is currently infallible. When it
-                // gains real errors, Strategy::run must propagate them (it returns
-                // Report; consider Result<Report>). unwrap_or_else with a neutral
-                // initial snapshot keeps the hazard visible without a trait change.
-                let __snapshot = ProgressSnapshot::from_samples(&samples, done, iterations)
-                    .unwrap_or_else(|_| ProgressSnapshot::initial(iterations));
-                on_progress(__snapshot);
+                let snapshot = match ProgressSnapshot::from_samples(&samples, done, iterations) {
+                    Ok(snapshot) => snapshot,
+                    Err(_) => ProgressSnapshot::initial(iterations),
+                };
+                on_progress(snapshot);
             }
         }
         Report {

@@ -27,29 +27,29 @@ mod fmt_duration_unit {
 
     #[rudzio::test]
     async fn formats_seconds(_ctx: &Test) -> anyhow::Result<()> {
-        anyhow::ensure!(fmt_duration(Duration::from_millis(1_230)) == "1.23s");
-        anyhow::ensure!(fmt_duration(Duration::from_secs(42)) == "42.00s");
+        anyhow::ensure!(fmt_duration(Duration::from_millis(1_230))? == "1.23s");
+        anyhow::ensure!(fmt_duration(Duration::from_secs(42))? == "42.00s");
         Ok(())
     }
 
     #[rudzio::test]
     async fn formats_milliseconds(_ctx: &Test) -> anyhow::Result<()> {
-        anyhow::ensure!(fmt_duration(Duration::from_micros(45_670)) == "45.67ms");
-        anyhow::ensure!(fmt_duration(Duration::from_millis(1)) == "1.00ms");
+        anyhow::ensure!(fmt_duration(Duration::from_micros(45_670))? == "45.67ms");
+        anyhow::ensure!(fmt_duration(Duration::from_millis(1))? == "1.00ms");
         Ok(())
     }
 
     #[rudzio::test]
     async fn formats_microseconds(_ctx: &Test) -> anyhow::Result<()> {
-        anyhow::ensure!(fmt_duration(Duration::from_nanos(123_450)) == "123.45\u{b5}s");
-        anyhow::ensure!(fmt_duration(Duration::from_micros(1)) == "1.00\u{b5}s");
+        anyhow::ensure!(fmt_duration(Duration::from_nanos(123_450))? == "123.45\u{b5}s");
+        anyhow::ensure!(fmt_duration(Duration::from_micros(1))? == "1.00\u{b5}s");
         Ok(())
     }
 
     #[rudzio::test]
     async fn formats_nanoseconds(_ctx: &Test) -> anyhow::Result<()> {
-        anyhow::ensure!(fmt_duration(Duration::from_nanos(42)) == "42.00ns");
-        anyhow::ensure!(fmt_duration(Duration::from_nanos(0)) == "0.00ns");
+        anyhow::ensure!(fmt_duration(Duration::from_nanos(42))? == "42.00ns");
+        anyhow::ensure!(fmt_duration(Duration::from_nanos(0))? == "0.00ns");
         Ok(())
     }
 }

@@ -439,20 +439,22 @@ pub trait Reporter: Send + Sync {
 impl Summary {
     #[inline]
     #[must_use]
-    pub const fn merge(self, other: Self) -> Self {
-        Self {
-            passed: self.passed.saturating_add(other.passed),
-            failed: self.failed.saturating_add(other.failed),
-            panicked: self.panicked.saturating_add(other.panicked),
-            timed_out: self.timed_out.saturating_add(other.timed_out),
-            cancelled: self.cancelled.saturating_add(other.cancelled),
-            hung: self.hung.saturating_add(other.hung),
-            ignored: self.ignored.saturating_add(other.ignored),
-            total: self.total.saturating_add(other.total),
-            teardown_failures: self
-                .teardown_failures
-                .saturating_add(other.teardown_failures),
-        }
+    pub fn merge(self, other: Self) -> anyhow::Result<Self> {
+        let sum = |a: usize, b: usize| -> anyhow::Result<usize> {
+            a.checked_add(b)
+                .ok_or_else(|| anyhow::anyhow!("summary merge: counter overflow"))
+        };
+        Ok(Self {
+            passed: sum(self.passed, other.passed)?,
+            failed: sum(self.failed, other.failed)?,
+            panicked: sum(self.panicked, other.panicked)?,
+            timed_out: sum(self.timed_out, other.timed_out)?,
+            cancelled: sum(self.cancelled, other.cancelled)?,
+            hung: sum(self.hung, other.hung)?,
+            ignored: sum(self.ignored, other.ignored)?,
+            total: sum(self.total, other.total)?,
+            teardown_failures: sum(self.teardown_failures, other.teardown_failures)?,
+        })
     }
 
     /// Construct a `Summary` from the [`SummaryOutcomes`] sub-bundle

@@ -59,7 +59,7 @@ const RUNNING_HEADER: &str = "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u
 struct Harness {
     /// Join handle for the spawned drawer thread; consumed in
     /// `finish` so the drawer can wind down before the file is read.
-    drawer_thread: thread::JoinHandle<()>,
+    drawer_thread: thread::JoinHandle<anyhow::Result<()>>,
     /// Lifecycle event channel; sending on it is how a test
     /// announces synthetic `TestStarted`/`TestCompleted` to the drawer.
     life_tx: Sender<LifecycleEvent>,
@@ -385,7 +385,7 @@ mod tests {
         // 120 terminals plus the user's reported ~95.
         for cols in [40_usize, 60, 80, 95, 100, 120, 200] {
             let color = ColorPolicy::off();
-            let row = running_line("tokio::Multithread", &state, color, cols);
+            let row = running_line("tokio::Multithread", &state, color, cols)?;
             check_row_fits(&format!("running_line @ cols={cols}"), &row, cols)?;
 
             let height = 24_usize;

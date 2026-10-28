@@ -1498,7 +1498,10 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
         })
         .collect();
 
-    let filtered_out = all_tokens.len().saturating_sub(filtered_tokens.len());
+    let filtered_out = match all_tokens.len().checked_sub(filtered_tokens.len()) {
+        Some(v) => v,
+        None => 0,
+    };
 
     if matches!(config.print_only, PrintOnly::List) {
         drop(capture_guard);
