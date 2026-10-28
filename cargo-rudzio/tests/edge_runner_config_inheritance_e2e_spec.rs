@@ -83,6 +83,7 @@ anyhow = { workspace = true }
          \n\
          \x20\x20\x20\x20#[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
          \x20\x20\x20\x20mod inner {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20use rudzio::Test as _;\n\
          \x20\x20\x20\x20\x20\x20\x20\x20#[rudzio::test]\n\
          \x20\x20\x20\x20\x20\x20\x20\x20fn inherits_hardlimit_none(_t: &super::Test) -> anyhow::Result<()> {\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20anyhow::ensure!(\n\
