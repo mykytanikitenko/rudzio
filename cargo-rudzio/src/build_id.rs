@@ -33,8 +33,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// `<version>-<unix-epoch-seconds>` stamp emitted by `build.rs`.
 ///
-/// Distinct builds produce distinct stamps; the aggregator subdir name hashes
-/// this so a rebuilt `cargo-rudzio` forces a fresh consumer target dir.
+/// Distinct builds produce distinct stamps; the aggregator subdir name
+/// hashes this so a rebuilt `cargo-rudzio` forces a fresh consumer
+/// target dir.
 pub const BUILD_STAMP: &str = env!("CARGO_RUDZIO_BUILD_STAMP");
 
 /// Cargo profile the binary was compiled under (`debug`, `release`, …).

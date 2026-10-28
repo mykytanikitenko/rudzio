@@ -47,6 +47,7 @@ mod migration_bug_04_token_exact_e2e_spec;
 mod migration_bug_06_workspace_path_dep_duplicates_spec;
 mod migration_bug_06_workspace_path_dep_e2e_spec;
 mod migration_bug_07_extern_crate_self_collision_spec;
+mod migration_bug_07_operator_bytes_e2e_spec;
 mod migration_bug_07_self_named_module_e2e_spec;
 mod migration_bug_07_shapes_e2e_spec;
 mod migration_bug_08_bin_only_crates_spec;

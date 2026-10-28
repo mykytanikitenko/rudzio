@@ -4746,6 +4746,16 @@ fn build_bridge_lib_rs(member: &MemberPlan, proxies: &[&TestBinaryProxy]) -> Res
     // imports it into every proxied module, so `<member>::` resolves
     // by name lookup, including inside macro bodies and invocation
     // arguments that a syntax-tree rewrite cannot reach.
+    //
+    // The re-export is `#[allow(unused_imports)]` because whether any
+    // proxied test actually *uses* the `<member>` name is undecidable at
+    // generation time: a bare `<member>::` reference can hide inside a
+    // macro body, which the syntax-tree rewriter cannot inspect. Emitting
+    // the alias conservatively is correct, so the false-positive
+    // `unused import: crate as <member>` warning (when the test resolves
+    // the member through `crate::<member>` instead) is silenced on the
+    // generated code — the same allowance the companion
+    // `use crate::__rudzio_self_alias::*;` glob already carries.
     let self_named_root = proxies.iter().any(|proxy| proxy.member_has_self_named_root);
     if member.src_lib_path.is_some() {
         let lib_ident = member.lib_ident();
@@ -4755,6 +4765,7 @@ fn build_bridge_lib_rs(member: &MemberPlan, proxies: &[&TestBinaryProxy]) -> Res
                 "#[cfg(rudzio_test)]\n\
                  #[doc(hidden)]\n\
                  mod {SELF_ALIAS_MOD} {{\n\
+                 \x20   #[allow(unused_imports)]\n\
                  \x20   pub(crate) use crate as {lib_ident};\n\
                  }}\n"
             )
