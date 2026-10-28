@@ -3593,6 +3593,21 @@ pub fn write_runner(plan: &Plan, out_dir: &Path) -> Result<()> {
         }
     }
 
+    // Per-bin isolation fix: emit a standalone-bin crate for every
+    // self-aggregating `#[rudzio::main]` bin. Each crate links the REAL
+    // sibling dep graph (no `cfg(rudzio_test)`), so the fixture runs only
+    // its own linkme registrations rather than the whole workspace's.
+    for member in &plan.members {
+        for bin in collect_standalone_bin_targets(member) {
+            write_standalone_bin_crate(plan, member, bin, &members_dir).with_context(|| {
+                format!(
+                    "writing standalone-bin crate for `{}::{}`",
+                    member.package_name, bin.name
+                )
+            })?;
+        }
+    }
+
     // Bug #10 collision detection: two `[[test]]` binaries declaring
     // `mod <name>;` against DIFFERENT source files must fail loudly
     // here, not silently first-wins or transparently scope. The
@@ -3809,6 +3824,153 @@ fn write_bin_bridge_crate(
         build_bin_bridge_build_rs(member),
     )
     .with_context(|| format!("writing bin bridge build.rs at {}", bridge_dir.display()))?;
+    Ok(())
+}
+
+/// Build the standalone-bin crate's `[dependencies]` table.
+///
+/// A self-aggregating `#[rudzio::main]` fixture must link the REAL
+/// dependency graph, not the test-only bridges. Sibling members resolve
+/// to their real manifest dir via `render_build_dep` (which routes
+/// bridged siblings through `render_build_sibling_real_dep`), and
+/// `rudzio` resolves to the real rudzio spec — never the rudzio bridge.
+/// The crate is compiled WITHOUT `cfg(rudzio_test)`, so the bridged
+/// siblings' `#[cfg(any(test, rudzio_test))]` src tests stay out of the
+/// fixture binary and linkme only sees the fixture's own registrations.
+fn build_standalone_bin_dependencies(plan: &Plan, member: &MemberPlan) -> Result<Table> {
+    let mut deps = Table::new();
+
+    let mut merged: BTreeMap<String, DevDepSpec> = BTreeMap::new();
+    for dep in &member.dev_deps {
+        if dep.name == member.package_name {
+            continue;
+        }
+        let entry_name = dev_dep_entry_name(dep, plan);
+        merged
+            .entry(entry_name)
+            .and_modify(|existing| {
+                for feat in &dep.features {
+                    if !existing.features.contains(feat) {
+                        existing.features.push(feat.clone());
+                    }
+                }
+                existing.uses_default_features &= dep.uses_default_features;
+                existing.section = existing.section.merge(dep.section);
+            })
+            .or_insert_with(|| dep.clone());
+    }
+
+    for (entry_name, dep) in &merged {
+        let item = render_build_dep(dep, plan)?;
+        deps.insert(entry_name, item);
+    }
+
+    if member.package_name != RUDZIO_DEP && !deps.contains_key(RUDZIO_DEP) {
+        let tbl = build_rudzio_inline_table(&plan.rudzio_spec);
+        deps.insert(RUDZIO_DEP, Item::Value(Value::InlineTable(tbl)));
+    }
+
+    Ok(deps)
+}
+
+/// Render the standalone-bin crate's `Cargo.toml` for `bin` of `member`.
+///
+/// A standalone `#[rudzio::main]` bin is emitted as its own bin-only
+/// crate so it links the REAL sibling deps (not the test-only bridges).
+/// The crate declares exactly one `[[bin]]` (the fixture's source), the
+/// real dependency graph, and the member's `[features]` table (so
+/// feature-gated fixture source resolves identically to the bridge's).
+fn build_standalone_bin_cargo_toml(
+    plan: &Plan,
+    member: &MemberPlan,
+    bin: &MemberBin,
+) -> Result<String> {
+    let mut doc = DocumentMut::new();
+
+    let mut pkg = Table::new();
+    pkg.insert("name", value(standalone_bin_package_name(member, bin)));
+    pkg.insert("version", value("0.0.0"));
+    pkg.insert("edition", value(member.edition.as_str()));
+    pkg.insert("publish", value(false));
+    pkg.insert("build", value("build.rs"));
+    doc.insert("package", Item::Table(pkg));
+
+    let mut bins = ArrayOfTables::new();
+    let mut bin_table = Table::new();
+    bin_table.insert("name", value(bin.name.as_str()));
+    let path_str = bin.src_path.to_string_lossy().replace('\\', "/");
+    bin_table.insert("path", value(path_str));
+    bins.push(bin_table);
+    doc.insert("bin", Item::ArrayOfTables(bins));
+
+    let deps_tbl = build_standalone_bin_dependencies(plan, member)?;
+    doc.insert("dependencies", Item::Table(deps_tbl));
+
+    if let Some(features_tbl) = build_bridge_features(plan, member) {
+        doc.insert("features", Item::Table(features_tbl));
+    }
+
+    Ok(doc.to_string())
+}
+
+/// Synthesize the standalone-bin crate's `build.rs`.
+///
+/// Unlike the member bridge's build.rs, this does NOT emit
+/// `cargo:rustc-cfg=rudzio_test`: the standalone bin must compile its
+/// dependency graph WITHOUT that cfg so bridged siblings'
+/// `#[cfg(any(test, rudzio_test))]` src tests are NOT compiled in (they
+/// would leak their linkme registrations into the fixture's
+/// `TEST_TOKENS`). It emits the member's real `CARGO_MANIFEST_DIR` /
+/// `CARGO_PKG_*` / `CARGO_CRATE_NAME` overrides so `env!()` callsites in
+/// the bin source resolve exactly as they would under a real
+/// `cargo build --bin`. `CARGO_BIN_EXE_<n>` is emitted by the member
+/// bridge's build.rs (which the integration test runs under), not here.
+fn build_standalone_bin_build_rs(member: &MemberPlan) -> String {
+    let mut out = String::new();
+    out.push_str("fn main() {\n");
+    emit_member_env_overrides(&mut out, member);
+    out.push_str("}\n");
+    out
+}
+
+/// Emit a standalone-bin crate for `bin` under `out/<standalone_bin_dir_name>/`.
+///
+/// This is the per-`[[bin]]` isolation fix: a self-aggregating fixture
+/// bin is NOT compiled inside the member bridge (whose `[dependencies]`
+/// redirect siblings to their test-only bridges, leaking every bridged
+/// sibling's linkme registrations into the fixture binary). Instead it
+/// lives in its own bin-only crate that links the REAL dep graph.
+///
+/// # Errors
+///
+/// Returns an error when the crate directory cannot be wiped / recreated,
+/// or when the `Cargo.toml` / `build.rs` cannot be emitted.
+fn write_standalone_bin_crate(
+    plan: &Plan,
+    member: &MemberPlan,
+    bin: &MemberBin,
+    out: &Path,
+) -> Result<()> {
+    let crate_dir = out.join(standalone_bin_dir_name(member, bin));
+    if crate_dir.exists() {
+        fs::remove_dir_all(&crate_dir)
+            .with_context(|| format!("wiping stale standalone-bin dir {}", crate_dir.display()))?;
+    }
+    fs::create_dir_all(&crate_dir)
+        .with_context(|| format!("creating standalone-bin dir {}", crate_dir.display()))?;
+    let manifest = build_standalone_bin_cargo_toml(plan, member, bin).with_context(|| {
+        format!(
+            "rendering standalone-bin Cargo.toml at {}",
+            crate_dir.display()
+        )
+    })?;
+    fs::write(crate_dir.join("Cargo.toml"), manifest)
+        .with_context(|| format!("writing standalone-bin Cargo.toml at {}", crate_dir.display()))?;
+    fs::write(
+        crate_dir.join("build.rs"),
+        build_standalone_bin_build_rs(member),
+    )
+    .with_context(|| format!("writing standalone-bin build.rs at {}", crate_dir.display()))?;
     Ok(())
 }
 
@@ -4359,6 +4521,27 @@ fn bin_bridge_package_name(member: &MemberPlan, bin: &MemberBin) -> String {
     )
 }
 
+/// Subdirectory name (under the aggregator's `members/` dir) that holds
+/// the standalone-bin crate for `bin` of `member`.
+#[must_use]
+fn standalone_bin_dir_name(member: &MemberPlan, bin: &MemberBin) -> String {
+    format!(
+        "{member_ident}__standalone__{bin_ident}",
+        member_ident = crate_name_to_ident(&member.package_name),
+        bin_ident = crate_name_to_ident(&bin.name),
+    )
+}
+
+/// Cargo `[package] name` for `bin`'s standalone-bin crate of `member`.
+#[must_use]
+fn standalone_bin_package_name(member: &MemberPlan, bin: &MemberBin) -> String {
+    format!(
+        "{member_ident}__standalone__{bin_ident}_rudzio_bin",
+        member_ident = crate_name_to_ident(&member.package_name),
+        bin_ident = crate_name_to_ident(&bin.name),
+    )
+}
+
 /// Render the bridge crate's `Cargo.toml` for `member` as a TOML document string.
 ///
 /// Mirrors the merged `[dependencies]` ∪ `[dev-dependencies]` of the
@@ -4423,9 +4606,18 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
     // `env!()` / `rudzio::bin!()` callsites resolve to the compiled
     // artefact (which lands in the aggregator's target dir under the
     // bridge's normal cargo output convention).
-    if !member.bin_targets.is_empty() {
+    // Standalone `#[rudzio::main]` bins are NOT compiled here: they are
+    // emitted as their own crates (see `write_standalone_bin_crate`) so
+    // they link the REAL sibling deps instead of the test-only bridges,
+    // isolating each fixture's linkme registry from the bridged siblings'.
+    let non_standalone_bins: Vec<&MemberBin> = member
+        .bin_targets
+        .iter()
+        .filter(|bin| !bin_is_standalone(member, bin))
+        .collect();
+    if !non_standalone_bins.is_empty() {
         let mut bins = ArrayOfTables::new();
-        for bin in &member.bin_targets {
+        for bin in non_standalone_bins {
             let mut bin_table = Table::new();
             bin_table.insert("name", value(bin.name.as_str()));
             let path_str = bin.src_path.to_string_lossy().replace('\\', "/");
@@ -4832,6 +5024,45 @@ fn emit_proxy_mounts(out: &mut String, proxies: &[&TestBinaryProxy]) {
     }
 }
 
+/// True iff `bin` is a self-aggregating standalone `#[rudzio::main]`
+/// runner.
+///
+/// Directory-style bins (`src/bin/<n>/main.rs` whose parent differs
+/// from the `[lib]` dir) are checked by walking the bin's own subdir;
+/// flat-style bins are checked by scanning the single entry file.
+fn bin_is_standalone(member: &MemberPlan, bin: &MemberBin) -> bool {
+    let lib_dir = member.src_lib_path.as_ref().and_then(|lib| lib.parent());
+    let parent = bin.src_path.parent();
+    let is_directory_style_bin = bin
+        .src_path
+        .file_name()
+        .and_then(|os_name| os_name.to_str())
+        == Some("main.rs")
+        && parent != lib_dir;
+    if is_directory_style_bin {
+        parent.is_some_and(|parent_dir| walk_dir_for_test_markers_and_main(parent_dir).1)
+    } else {
+        rs_file_contains_rudzio_main(&bin.src_path)
+    }
+}
+
+/// Collect member bins that are self-aggregating standalone runners.
+///
+/// A standalone bin is a `#[rudzio::main]` fixture (the
+/// `fixtures/src/bin/*.rs` pattern): its own `#[rudzio::test]` /
+/// `#[rudzio::suite]` surface self-registers via linkme, so it must NOT
+/// be compiled as a `[[bin]]` of the member bridge (which would link the
+/// bridged siblings' test registries into it). Each standalone bin is
+/// instead compiled by its own crate that links the REAL dependency graph
+/// without `cfg(rudzio_test)`.
+fn collect_standalone_bin_targets<'member>(member: &'member MemberPlan) -> Vec<&'member MemberBin> {
+    member
+        .bin_targets
+        .iter()
+        .filter(|bin| bin_is_standalone(member, bin))
+        .collect()
+}
+
 /// Collect bin targets that need their own per-bin bridge crate (Bug #19 fix).
 ///
 /// Returns references to every `[[bin]]` in `member` whose source tree
@@ -4865,6 +5096,9 @@ fn collect_bridged_bin_targets<'member>(member: &'member MemberPlan) -> Vec<&'me
     // PLAN.md "Phase 0a — Bug #17 fix" edge-case coverage matrix.
     let lib_dir = member.src_lib_path.as_ref().and_then(|lib| lib.parent());
     for bin in &member.bin_targets {
+        if bin_is_standalone(member, bin) {
+            continue;
+        }
         let parent = bin.src_path.parent();
         let is_directory_style_bin = bin
             .src_path
@@ -4872,16 +5106,6 @@ fn collect_bridged_bin_targets<'member>(member: &'member MemberPlan) -> Vec<&'me
             .and_then(|os_name| os_name.to_str())
             == Some("main.rs")
             && parent != lib_dir;
-        let is_standalone = if is_directory_style_bin {
-            // Directory-style bin: walk the bin's own subdir.
-            parent.is_some_and(|parent_dir| walk_dir_for_test_markers_and_main(parent_dir).1)
-        } else {
-            // Flat-style bin: check only the entry file.
-            rs_file_contains_rudzio_main(&bin.src_path)
-        };
-        if is_standalone {
-            continue;
-        }
         let has_test_surface = if is_directory_style_bin {
             parent.is_some_and(|parent_dir| {
                 !walk_dir_for_test_markers_and_main(parent_dir).0.is_empty()
@@ -5809,6 +6033,17 @@ fn aggregator_workspace_table(plan: &Plan) -> Table {
             members_arr.push(Value::String(Formatted::new(format!(
                 "members/{}",
                 bin_bridge_dir_name(member, bin)
+            ))));
+        }
+    }
+    // Per-bin isolation fix: standalone-bin crates are workspace members
+    // too, so `cargo build --workspace --bins` compiles each fixture bin
+    // as its own binary.
+    for member in &plan.members {
+        for bin in collect_standalone_bin_targets(member) {
+            members_arr.push(Value::String(Formatted::new(format!(
+                "members/{}",
+                standalone_bin_dir_name(member, bin)
             ))));
         }
     }
