@@ -28,8 +28,13 @@ pub const GIT_DIRTY: &str = match option_env!("CARGO_RUDZIO_BUILD_GIT_DIRTY") {
     None => "unknown",
 };
 
-/// Crate version, mirroring `CARGO_PKG_VERSION`.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Crate version stamped by `build.rs` from the real package's
+/// `CARGO_PKG_VERSION`.
+///
+/// A bridge compiles this source under a synthesized package whose own
+/// `CARGO_PKG_VERSION` is `0.0.0`, so the value is taken from the build
+/// script, which sees the real member's version.
+pub const VERSION: &str = env!("CARGO_RUDZIO_BUILD_VERSION");
 
 /// `<version>-<unix-epoch-seconds>` build stamp emitted by `build.rs`.
 ///
