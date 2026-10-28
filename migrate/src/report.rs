@@ -51,10 +51,11 @@ impl Report {
     /// the report can't overflow if a run tries hard enough.
     #[inline]
     pub const fn add_converted(&mut self, count: usize) {
-        self.tests_converted = match self.tests_converted.checked_add(count) {
-            Some(v) => v,
-            None => usize::MAX,
-        };
+        if let Some(value) = self.tests_converted.checked_add(count) {
+            self.tests_converted = value;
+        } else {
+            self.tests_converted = usize::MAX;
+        }
     }
 
     /// Record that `path` was backed up (i.e. a sibling

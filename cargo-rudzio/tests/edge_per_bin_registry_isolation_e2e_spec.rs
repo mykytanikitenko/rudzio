@@ -200,11 +200,7 @@ fn write_bins_tests(bins_dir: &Path) -> io::Result<()> {
 }
 
 /// Spawn `cargo rudzio test` against `root` with the isolated cargo env.
-fn run_cargo_rudzio(
-    root: &Path,
-    cargo_home: &Path,
-    cargo_target_dir: &Path,
-) -> io::Result<Output> {
+fn run_cargo_rudzio(root: &Path, cargo_home: &Path, cargo_target_dir: &Path) -> io::Result<Output> {
     Command::new(
         cargo_rudzio_test_helpers::assert_fresh_binary(env!("CARGO_BIN_EXE_cargo-rudzio"))
             .map_err(io::Error::other)?,
@@ -271,7 +267,9 @@ mod tests {
         // The aggregator runs deps' two src tests plus the one integration
         // test that spawns alpha (and asserts alpha's own isolation).
         let passed = parse_passed_count(&stdout).ok_or_else(|| {
-            anyhow::anyhow!("could not parse `N passed;`\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}")
+            anyhow::anyhow!(
+                "could not parse `N passed;`\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+            )
         })?;
         anyhow::ensure!(
             passed == 3,

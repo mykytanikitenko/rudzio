@@ -125,9 +125,7 @@ pub fn extract_ignore_reason(func: &ItemFn) -> (TokenStream, TokenStream) {
     for attr in &func.attrs {
         if attr.path().is_ident("ignore") {
             ignored_terms.push(quote! { true });
-            if !reason_seen
-                && let Some(text) = meta_ignore_reason(&attr.meta)
-            {
+            if !reason_seen && let Some(text) = meta_ignore_reason(&attr.meta) {
                 reason_expr = quote! { #text };
                 reason_seen = true;
             }
@@ -137,9 +135,7 @@ pub fn extract_ignore_reason(func: &ItemFn) -> (TokenStream, TokenStream) {
         {
             let predicate = &cfg_attr_ignore.predicate;
             ignored_terms.push(quote! { cfg!(#predicate) });
-            if !reason_seen
-                && let Some(text) = cfg_attr_ignore.reason
-            {
+            if !reason_seen && let Some(text) = cfg_attr_ignore.reason {
                 reason_expr = quote! { if cfg!(#predicate) { #text } else { "" } };
                 reason_seen = true;
             }

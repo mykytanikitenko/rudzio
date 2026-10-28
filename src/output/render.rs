@@ -1179,7 +1179,9 @@ fn render_status_tag(label: StatusLabel, color: ColorPolicy) -> String {
 /// finished test.
 fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
     if let TestOutcome::Benched { elapsed, report } = outcome {
-        let median = report.median().map_or_else(String::new, |median| format!(", p50 {median:.2?}"));
+        let median = report
+            .median()
+            .map_or_else(String::new, |median| format!(", p50 {median:.2?}"));
         return format!(
             "<{runtime_name}, {elapsed:.2?}, {}{median}>",
             report.strategy,
@@ -1664,7 +1666,12 @@ pub fn bench_histogram_lines(
     if height_budget < 2 || cols < 20 || snap.done == 0 || snap.max == snap.min {
         return Ok(Vec::new());
     }
-    let max_count = snap.histogram.iter().copied().max().map_or(0, |count| count);
+    let max_count = snap
+        .histogram
+        .iter()
+        .copied()
+        .max()
+        .map_or(0, |count| count);
     if max_count == 0 {
         return Ok(Vec::new());
     }

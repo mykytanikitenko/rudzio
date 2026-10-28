@@ -183,13 +183,10 @@ pub fn require_clean_tree(repo_root: &Path) -> Result<(), Failure> {
 /// Strip a single trailing `\r\n` or `\n` from `input`. Used to
 /// normalise the acknowledgement line read from stdin.
 fn strip_one_newline(input: &str) -> &str {
-    match input
+    input
         .strip_suffix("\r\n")
         .or_else(|| input.strip_suffix('\n'))
-    {
-        Some(stripped) => stripped,
-        None => input,
-    }
+        .map_or(input, |stripped| stripped)
 }
 
 #[rudzio::suite([

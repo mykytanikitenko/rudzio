@@ -1213,10 +1213,10 @@ pub fn member_under_any_root(member_dir: &Path, roots: &[PathBuf]) -> bool {
 
 /// Canonicalize `path`, falling back to the input when the OS call fails.
 fn canonicalize_or_keep(path: &Path) -> PathBuf {
-    match fs::canonicalize(path) {
-        Ok(canonical) => canonical,
-        Err(_) => path.to_path_buf(),
+    if let Ok(canonical) = fs::canonicalize(path) {
+        return canonical;
     }
+    path.to_path_buf()
 }
 
 /// Reconcile the workspace's `cargo metadata` output into a `Plan` for the generator.
@@ -1512,44 +1512,21 @@ fn collect_features_map(pkg: &Package) -> BTreeMap<String, Vec<String>> {
 }
 
 /// Project a `cargo_metadata::Package` into the metadata-string bundle.
-fn collect_package_metadata_fields(pkg: &Package) -> PackageMetadataFields {
-    PackageMetadataFields {
-        // Cargo's documented `CARGO_PKG_AUTHORS` convention joins authors
-        // with `:` (colon).
+fn collect_package_metadata_fields(pkg: &Package) -> Result<PackageMetadataFields> {
+    Ok(PackageMetadataFields {
         authors: pkg.authors.join(":"),
-        description: match pkg.description.clone() {
-            Some(v) => v,
-            None => String::new(),
-        },
-        homepage: match pkg.homepage.clone() {
-            Some(v) => v,
-            None => String::new(),
-        },
-        license: match pkg.license.clone() {
-            Some(v) => v,
-            None => String::new(),
-        },
-        license_file: match pkg.license_file.as_ref() {
-            Some(v) => v.to_string(),
-            None => String::new(),
-        },
-        links: match pkg.links.clone() {
-            Some(v) => v,
-            None => String::new(),
-        },
-        readme: match pkg.readme.as_ref() {
-            Some(v) => v.to_string(),
-            None => String::new(),
-        },
-        repository: match pkg.repository.clone() {
-            Some(v) => v,
-            None => String::new(),
-        },
-        rust_version: match pkg.rust_version.as_ref() {
-            Some(v) => v.to_string(),
-            None => String::new(),
-        },
-    }
+        description: pkg.description.clone().unwrap_or_default(),
+        homepage: pkg.homepage.clone().unwrap_or_default(),
+        license: pkg.license.clone().unwrap_or_default(),
+        license_file: pkg.license_file.clone().unwrap_or_default().to_string(),
+        links: pkg.links.clone().unwrap_or_default(),
+        readme: pkg.readme.clone().unwrap_or_default().to_string(),
+        repository: pkg.repository.clone().unwrap_or_default(),
+        rust_version: pkg
+            .rust_version
+            .as_ref()
+            .map_or_else(String::new, ToString::to_string),
+    })
 }
 
 /// Project a `cargo_metadata::Package`'s semver fields into the
@@ -1650,7 +1627,7 @@ fn build_member_plan(pkg: &Package) -> Result<Option<MemberPlan>> {
     // MEMBER's manifest, not the bridge's synthetic shell. Cargo's
     // own convention treats absent manifest fields as empty strings;
     // both helpers mirror that.
-    let metadata_fields = collect_package_metadata_fields(pkg);
+    let metadata_fields = collect_package_metadata_fields(pkg)?;
     let version_fields = collect_package_version_fields(pkg);
     let PackageMetadataFields {
         authors,
@@ -4016,8 +3993,12 @@ fn write_standalone_bin_crate(
             crate_dir.display()
         )
     })?;
-    fs::write(crate_dir.join("Cargo.toml"), manifest)
-        .with_context(|| format!("writing standalone-bin Cargo.toml at {}", crate_dir.display()))?;
+    fs::write(crate_dir.join("Cargo.toml"), manifest).with_context(|| {
+        format!(
+            "writing standalone-bin Cargo.toml at {}",
+            crate_dir.display()
+        )
+    })?;
     fs::write(
         crate_dir.join("build.rs"),
         build_standalone_bin_build_rs(member),
@@ -4544,14 +4525,12 @@ fn member_bridge_lib_name(member: &MemberPlan, plan: &Plan) -> Result<String> {
         names.insert(entry.package_name.clone(), name);
     }
 
-    names
-        .remove(&member.package_name)
-        .ok_or_else(|| {
-            anyhow!(
-                "bridged member `{}` missing from bridge lib name table",
-                member.package_name
-            )
-        })
+    names.remove(&member.package_name).ok_or_else(|| {
+        anyhow!(
+            "bridged member `{}` missing from bridge lib name table",
+            member.package_name
+        )
+    })
 }
 
 /// Subdirectory name (under the aggregator's `members/` dir) that holds the per-bin bridge for `bin` of `member`.
@@ -5117,7 +5096,7 @@ fn bin_is_standalone(member: &MemberPlan, bin: &MemberBin) -> bool {
 /// bridged siblings' test registries into it). Each standalone bin is
 /// instead compiled by its own crate that links the REAL dependency graph
 /// without `cfg(rudzio_test)`.
-fn collect_standalone_bin_targets<'member>(member: &'member MemberPlan) -> Vec<&'member MemberBin> {
+fn collect_standalone_bin_targets(member: &MemberPlan) -> Vec<&MemberBin> {
     member
         .bin_targets
         .iter()
@@ -5567,19 +5546,16 @@ fn collect_test_binary_proxies(plan: &Plan, out_dir: &Path) -> Result<Vec<TestBi
 fn compute_test_binary_id(member: &MemberPlan, test_file: &Path) -> String {
     let member_part = sanitize_ident(&member.package_name);
     let parent_part = if test_file.file_name().and_then(|name| name.to_str()) == Some("mod.rs") {
-        match test_file
+        test_file
             .parent()
             .and_then(|parent| parent.file_name())
             .and_then(|name| name.to_str())
-        {
-            Some(part) => part,
-            None => "root",
-        }
+            .map_or("root", |part| part)
     } else {
-        match test_file.file_stem().and_then(|stem| stem.to_str()) {
-            Some(stem) => stem,
-            None => "test",
-        }
+        test_file
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map_or("test", |stem| stem)
     };
     format!("{member_part}__{}", sanitize_ident(parent_part))
 }
@@ -6020,14 +5996,11 @@ fn parse_top_level_mod_decl(raw_line: &str) -> Option<String> {
     if trimmed.starts_with("//") {
         return None;
     }
-    let after_vis = match trimmed
+    let after_vis = trimmed
         .strip_prefix("pub(crate) ")
         .or_else(|| trimmed.strip_prefix("pub(super) "))
         .or_else(|| trimmed.strip_prefix("pub "))
-    {
-        Some(v) => v,
-        None => trimmed,
-    };
+        .map_or(trimmed, |value| value);
     let rest = after_vis.strip_prefix("mod ")?;
     let semi_idx = rest.find(';')?;
     let brace_idx = rest.find('{');
@@ -6474,10 +6447,7 @@ fn render_sibling_bridge_dep(dep: &DevDepSpec, plan: &Plan) -> Option<Item> {
     } else {
         None
     };
-    let mut feats: Vec<String> = match ws_entry {
-        Some(ws) => ws.features.clone(),
-        None => Vec::new(),
-    };
+    let mut feats: Vec<String> = ws_entry.map_or_else(Vec::new, |ws| ws.features.clone());
     feats.extend(dep.features.iter().cloned());
     feats.sort();
     feats.dedup();
@@ -6545,10 +6515,7 @@ fn render_build_sibling_real_dep(dep: &DevDepSpec, plan: &Plan) -> Option<Item> 
     } else {
         None
     };
-    let mut feats: Vec<String> = match ws_entry {
-        Some(ws) => ws.features.clone(),
-        None => Vec::new(),
-    };
+    let mut feats: Vec<String> = ws_entry.map_or_else(Vec::new, |ws| ws.features.clone());
     feats.extend(dep.features.iter().cloned());
     feats.sort();
     feats.dedup();
@@ -6807,10 +6774,7 @@ pub fn build_build_rs(_plan: &Plan) -> String {
 /// forbid. Used by the bridge-lib codegen path that splices member-side
 /// proxy paths into `#[path = …]` attributes.
 fn escape_rust_string_literal(value: &str) -> String {
-    let mut buf = String::with_capacity(match value.len().checked_add(2) {
-        Some(v) => v,
-        None => 0,
-    });
+    let mut buf = String::with_capacity(value.len().checked_add(2).map_or(0, |count| count));
     buf.push('"');
     buf.push_str(&escape_str_literal(value));
     buf.push('"');
@@ -6869,19 +6833,15 @@ fn escape_str_literal(value: &str) -> String {
 /// Used by [`Plan::restrict_to_test_binaries`] to match `--test foo`
 /// against the workspace's `[[test]]` entries.
 fn test_binary_name_for(file: &Path) -> String {
-    let stem = match file.file_stem().and_then(|os_stem| os_stem.to_str()) {
-        Some(s) => s,
-        None => "test",
-    };
+    let stem = file
+        .file_stem()
+        .and_then(|os_stem| os_stem.to_str())
+        .map_or("test", |stem| stem);
     if matches!(stem, "mod" | "main" | "lib") {
-        match file
-            .parent()
+        file.parent()
             .and_then(|parent| parent.file_name())
             .and_then(|os_name| os_name.to_str())
-        {
-            Some(name) => name.to_owned(),
-            None => stem.to_owned(),
-        }
+            .map_or_else(|| stem.to_owned(), str::to_owned)
     } else {
         stem.to_owned()
     }
@@ -6912,18 +6872,13 @@ fn sanitize_ident(value: &str) -> String {
 /// Falls back to direct equality when canonicalization fails (the paths
 /// may not exist on disk yet — e.g. synthetic test fixtures).
 fn paths_equal(left: &Path, right: &Path) -> bool {
-    let left_canon = match fs::canonicalize(left) {
-        Ok(p) => Some(p),
-        Err(_) => None,
-    };
-    let right_canon = match fs::canonicalize(right) {
-        Ok(p) => Some(p),
-        Err(_) => None,
-    };
-    left_canon
-        .zip(right_canon)
-        .is_some_and(|(canonical_left, canonical_right)| canonical_left == canonical_right)
-        || left == right
+    if left == right {
+        return true;
+    }
+    if let (Ok(left_canon), Ok(right_canon)) = (fs::canonicalize(left), fs::canonicalize(right)) {
+        return left_canon == right_canon;
+    }
+    false
 }
 
 /// A workspace-root member is bridged like any other member, with one

@@ -866,13 +866,15 @@ impl Config {
         // `concurrency_limit` defaults to `threads` so the single-flag
         // `--test-threads=N` invocation keeps behaving the way libtest users
         // expect: N worker threads, N tests in-flight.
-        let resolved_concurrency_limit =
-            parsed.concurrency_limit.map_or(resolved_threads, |value| value);
+        let resolved_concurrency_limit = parsed
+            .concurrency_limit
+            .map_or(resolved_threads, |value| value);
 
         // `threads` is guaranteed >= 1 by the resolution chain above
         // (available_parallelism returns NonZeroUsize); the fallback is
         // unreachable in practice but keeps us off unwrap/expect.
-        let threads_nz = NonZeroUsize::new(resolved_threads).map_or(NonZeroUsize::MIN, |value| value);
+        let threads_nz =
+            NonZeroUsize::new(resolved_threads).map_or(NonZeroUsize::MIN, |value| value);
         let parallel_hardlimit =
             resolve_parallel_hardlimit(parsed.hardlimit_arg, parsed.bench_mode, threads_nz);
 
@@ -1025,9 +1027,9 @@ fn classify_hardlimit(text: &str) -> Option<HardlimitArg> {
     match text {
         "none" => Some(HardlimitArg::Disabled),
         "threads" => Some(HardlimitArg::Threads),
-        _ => text
-            .parse::<usize>()
-            .map_or(None, |count| NonZeroUsize::new(count).map(HardlimitArg::Explicit)),
+        _ => text.parse::<usize>().map_or(None, |count| {
+            NonZeroUsize::new(count).map(HardlimitArg::Explicit)
+        }),
     }
 }
 
@@ -1235,9 +1237,8 @@ fn handle_presentation_flag(
         return true;
     }
     if let Some(value) = arg.strip_prefix("--ensure-time=") {
-        state.ensure_time = Some(
-            parse_ensure_time_pair(value).map_or(EnsureTimeArg::Default, |parsed| parsed),
-        );
+        state.ensure_time =
+            Some(parse_ensure_time_pair(value).map_or(EnsureTimeArg::Default, |parsed| parsed));
         return true;
     }
     if let Some(value) = flag_value(arg, "--shuffle-seed", "--shuffle-seed=", argv, i) {
