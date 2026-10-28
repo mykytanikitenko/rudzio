@@ -56,17 +56,13 @@ check-udeps:
 # summary counts to stdout and write detailed reports to
 # `linters/*-report.txt`.
 #
-# Per Phase 0c (D-EXP.8): both linters run unconditionally even if a
-# predecessor exits non-zero, accumulating the worst status into the
-# recipe's exit code. This means a failing linter does NOT mask
-# failures in subsequent linters — the CI lints job sees the full
-# picture in one invocation.
+# Every linter runs unconditionally even if a predecessor exits
+# non-zero, accumulating the worst status into the recipe's exit code
+# so a failing linter does not mask failures in the ones that follow.
 #
-# Per Phase 0c (D-EXP.7/D-EXP.8): `check-lints` is intentionally NOT
-# in the `ci` aggregate below — the `lints` GitHub Actions job
-# invokes this recipe in parallel with `just ci`, so a linter
-# failure does not block `check-fmt` / `check-clippy` / `check-audit`
-# / `check-deny` / `test` from executing.
+# `check-lints` runs as part of the `ci` aggregate below: CI is strict
+# on purpose, so a linter failure blocks the pipeline like any other
+# gate.
 check-lints:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -75,6 +71,9 @@ check-lints:
     cargo run --manifest-path linters/Cargo.toml -p expect-allow-ban || status=$?
     cargo run --manifest-path linters/Cargo.toml -p no-default-impls || status=$?
     exit $status
+
+# Alias — `just lint` is the canonical linter-gate entry point.
+lint: check-lints
 
 # --- Testing ---
 
@@ -210,8 +209,6 @@ pre-commit: check-fmt check-taplo check check-clippy check-udeps test
 # publish creates a baseline (it errors with "not found in registry"
 # pre-publish). After v0.1.0 lands, add `check-semver` to this list.
 #
-# Per Phase 0c (D-EXP.8): `check-lints` is intentionally REMOVED
-# from this aggregate. The CI workflow runs `just check-lints` as a
-# separate parallel job (see `.github/workflows/ci.yml`) so a linter
-# failure cannot block any other gate from executing.
-ci: check-fmt check-taplo check-clippy check-audit check-deny test
+# `check-lints` is part of this aggregate because CI is strict on
+# purpose: a linter failure blocks the pipeline like any other gate.
+ci: check-fmt check-taplo check-clippy check-lints check-audit check-deny test
