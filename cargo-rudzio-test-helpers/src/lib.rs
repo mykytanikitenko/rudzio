@@ -108,6 +108,12 @@ include!(concat!(
     "/../cargo-rudzio/build/source_fingerprint.rs"
 ));
 
+mod summary;
+
+pub use summary::{
+    RunSummary, assert_exact_test_names, assert_summary, combined_output, parse_summary,
+};
+
 /// Run `body` with `CARGO_NET_OFFLINE=true` set in the process
 /// environment, restoring the prior value (or removing it, if it was
 /// unset) on the way out.

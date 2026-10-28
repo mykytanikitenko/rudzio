@@ -11,6 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
+use cargo_rudzio_test_helpers::{RunSummary, assert_exact_test_names, assert_summary};
 use rudzio::common::context::Suite;
 use rudzio::common::context::Test;
 use rudzio::runtime::futures::ThreadPool;
@@ -237,8 +238,9 @@ fn run_parallel(exe: &str, threads: u32) -> anyhow::Result<Output> {
 ])]
 mod tests {
     use super::{
-        Command, Duration, ExitStatus, Instant, IoResult, Test, log_of, run, run_parallel,
-        run_serial, run_serial_with_args, thread,
+        Command, Duration, ExitStatus, Instant, IoResult, RunSummary, Test,
+        assert_exact_test_names, assert_summary, log_of, run, run_parallel, run_serial,
+        run_serial_with_args, thread,
     };
 
     #[rudzio::test]
@@ -249,14 +251,29 @@ mod tests {
             out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("3 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("mutates_via_mut_borrow"), "output:\n{log}");
-        anyhow::ensure!(
-            log.contains("sync_mutates_via_mut_borrow"),
-            "output:\n{log}"
-        );
-        anyhow::ensure!(log.contains("fresh_ctx_per_test"), "output:\n{log}");
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 3,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 3,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(
+            &log,
+            &[
+                "mutates_via_mut_borrow",
+                "sync_mutates_via_mut_borrow",
+                "fresh_ctx_per_test",
+            ],
+        )?;
         Ok(())
     }
 
@@ -268,11 +285,22 @@ mod tests {
             out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("first_passes"), "output:\n{log}");
-        anyhow::ensure!(log.contains("second_passes"), "output:\n{log}");
-        anyhow::ensure!(log.contains("[OK]"), "output:\n{log}");
-        anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 2,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(&log, &["first_passes", "second_passes"])?;
         Ok(())
     }
 
@@ -288,13 +316,30 @@ mod tests {
             out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("macro_generated_a"), "output:\n{log}");
-        anyhow::ensure!(log.contains("macro_generated_b"), "output:\n{log}");
-        anyhow::ensure!(log.contains("direct_fn"), "output:\n{log}");
-        anyhow::ensure!(log.contains("macro_generated_ignored"), "output:\n{log}");
-        anyhow::ensure!(log.contains("3 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 ignored"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 3,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 1,
+                teardown_failed: 0,
+                measured: 0,
+                total: 4,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(
+            &log,
+            &[
+                "macro_generated_a",
+                "macro_generated_b",
+                "direct_fn",
+                "macro_generated_ignored",
+            ],
+        )?;
         Ok(())
     }
 
@@ -310,24 +355,35 @@ mod tests {
             out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
-        for name in [
-            "same_body_a",
-            "same_body_b",
-            "same_body_c",
-            "pair_first",
-            "pair_second",
-            "nested_inner",
-            "mut_ctx_test",
-            "no_ctx_test",
-            "calls_helper",
-        ] {
-            anyhow::ensure!(
-                log.contains(name),
-                "fixture must report test `{name}`, output:\n{log}"
-            );
-        }
-        anyhow::ensure!(log.contains("9 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 9,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 9,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(
+            &log,
+            &[
+                "same_body_a",
+                "same_body_b",
+                "same_body_c",
+                "pair_first",
+                "pair_second",
+                "nested_inner",
+                "mut_ctx_test",
+                "no_ctx_test",
+                "calls_helper",
+            ],
+        )?;
         Ok(())
     }
 
@@ -342,10 +398,22 @@ mod tests {
             out.status.code() == Some(1_i32),
             "expected exit 1 (one timed-out test), output:\n{log}"
         );
-        anyhow::ensure!(log.contains("attr_ignored"), "output:\n{log}");
-        anyhow::ensure!(log.contains("attr_timeout"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 ignored"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 timed out"), "output:\n{log}");
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 0,
+                failed: 0,
+                panicked: 0,
+                timed_out: 1,
+                cancelled: 0,
+                ignored: 1,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(&log, &["attr_ignored", "attr_timeout"])?;
         Ok(())
     }
 
@@ -363,14 +431,24 @@ mod tests {
         );
         anyhow::ensure!(log.contains("tokio::Multithread"), "output:\n{log}");
         anyhow::ensure!(log.contains("tokio::CurrentThread"), "output:\n{log}");
-        anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
-        // `shared_test` appears exactly twice (once per suite config), not
-        // four times (cross-registration).
-        anyhow::ensure!(
-            log.matches("shared_test").count() == 2,
-            "expected `shared_test` exactly twice, output:\n{log}"
-        );
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 2,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
+        // `shared_test` runs once per suite config (two total), never
+        // cross-registered into the sibling suite (which would yield four).
+        assert_exact_test_names(&log, &["shared_test", "shared_test"])?;
         Ok(())
     }
 
@@ -396,13 +474,15 @@ mod tests {
                 log.contains("cfg_gated_on"),
                 "feature on: gated test must register, output:\n{log}"
             );
-            anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
+            assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+            assert_exact_test_names(&log, &["always_on", "cfg_gated_on"])?;
         } else {
             anyhow::ensure!(
                 !log.contains("cfg_gated_on"),
                 "feature off: gated test must be absent, output:\n{log}"
             );
-            anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
+            assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+            assert_exact_test_names(&log, &["always_on"])?;
         }
         Ok(())
     }
@@ -425,8 +505,8 @@ mod tests {
             !log.contains("cfg_false_test"),
             "cfg-false test must be absent, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_exact_test_names(&log, &["cfg_true_test", "ungated_test"])?;
         Ok(())
     }
 
@@ -446,8 +526,8 @@ mod tests {
             !log.contains("cfg_gated_off"),
             "cfg-gated fn must be absent, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&log, &["always_on"])?;
         Ok(())
     }
 
@@ -463,9 +543,8 @@ mod tests {
         );
         anyhow::ensure!(log.contains("cfg_attr_ignored"), "output:\n{log}");
         anyhow::ensure!(log.contains("cfg_attr_runs"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 ignored"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 1, 0, 2))?;
+        assert_exact_test_names(&log, &["cfg_attr_ignored", "cfg_attr_runs"])?;
         Ok(())
     }
 
@@ -481,11 +560,8 @@ mod tests {
             out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("r#type"), "output:\n{log}");
-        anyhow::ensure!(log.contains("r#match"), "output:\n{log}");
-        anyhow::ensure!(log.contains("ordinary_name"), "output:\n{log}");
-        anyhow::ensure!(log.contains("3 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(3, 0, 0, 0, 0, 0, 0, 3))?;
+        assert_exact_test_names(&log, &["r#type", "r#match", "ordinary_name"])?;
         Ok(())
     }
 
@@ -503,8 +579,8 @@ mod tests {
         );
         anyhow::ensure!(log.contains("outer_direct"), "output:\n{log}");
         anyhow::ensure!(log.contains("inner_direct"), "output:\n{log}");
-        anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_exact_test_names(&log, &["outer::outer_direct", "outer::inner::inner_direct"])?;
         Ok(())
     }
 
@@ -526,15 +602,16 @@ mod tests {
                 log.contains("cfg_gated_suite_test"),
                 "feature on: gated suite must register, output:\n{log}"
             );
-            anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
+            assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+            assert_exact_test_names(&log, &["always_on", "cfg_gated_suite_test"])?;
         } else {
             anyhow::ensure!(
                 !log.contains("cfg_gated_suite_test"),
                 "feature off: gated suite must be absent, output:\n{log}"
             );
-            anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
+            assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+            assert_exact_test_names(&log, &["always_on"])?;
         }
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
         Ok(())
     }
 
@@ -554,8 +631,8 @@ mod tests {
             log.contains("passes_under_explicit_exitcode"),
             "output:\n{log}"
         );
-        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&log, &["passes_under_explicit_exitcode"])?;
         Ok(())
     }
 
