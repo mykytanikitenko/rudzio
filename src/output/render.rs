@@ -439,7 +439,7 @@ impl Drawer {
                 elapsed,
                 result,
             } => {
-                self.handle_suite_teardown_finished(runtime_name, suite, thread, elapsed, result)?
+                self.handle_suite_teardown_finished(runtime_name, suite, thread, elapsed, result)?;
             }
             LifecycleEvent::TestTeardownFailed {
                 module_path,
@@ -887,10 +887,10 @@ impl Drawer {
             .summary
             .failed
             .checked_add(self.summary.panicked)
-            .and_then(|v| v.checked_add(self.summary.timed_out))
-            .and_then(|v| v.checked_add(self.summary.hung))
-            .and_then(|v| v.checked_add(self.summary.cancelled))
-            .and_then(|v| v.checked_add(self.summary.teardown_failures))
+            .and_then(|value| value.checked_add(self.summary.timed_out))
+            .and_then(|value| value.checked_add(self.summary.hung))
+            .and_then(|value| value.checked_add(self.summary.cancelled))
+            .and_then(|value| value.checked_add(self.summary.teardown_failures))
             .ok_or_else(|| anyhow!("summary: failed total overflow"))?;
         let overall = if failed_total == 0 {
             self.color.green("ok")
@@ -987,10 +987,10 @@ impl Drawer {
     /// Return the `(cols, rows)` size to render against, honouring any
     /// test-only override before falling back to the ioctl probe.
     fn render_size(&self) -> (usize, usize) {
-        match self.size_override {
-            Some(sz) => sz,
-            None => (terminal_width(), terminal_height()),
+        if let Some(size) = self.size_override {
+            return size;
         }
+        (terminal_width(), terminal_height())
     }
 
     /// Main loop: `select!` over all input channels plus a redraw
@@ -1179,10 +1179,9 @@ fn render_status_tag(label: StatusLabel, color: ColorPolicy) -> String {
 /// finished test.
 fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
     if let TestOutcome::Benched { elapsed, report } = outcome {
-        let median = match report.median() {
-            Some(median) => format!(", p50 {median:.2?}"),
-            None => String::new(),
-        };
+        let median = report
+            .median()
+            .map_or_else(String::new, |median| format!(", p50 {median:.2?}"));
         return format!(
             "<{runtime_name}, {elapsed:.2?}, {}{median}>",
             report.strategy,
@@ -1201,21 +1200,15 @@ fn trailing_info(outcome: &TestOutcome, runtime_name: &str) -> String {
 fn render_line(lhs_naked: &str, lhs_rendered: &str, trailing: &str, term_cols: usize) -> String {
     let lhs_visible = lhs_naked.chars().count();
     let trailing_visible = trailing.chars().count();
-    let pad = match term_cols
+    let pad = term_cols
         .checked_sub(lhs_visible)
-        .and_then(|v| v.checked_sub(trailing_visible))
-    {
-        Some(v) => v.max(MIN_TRAILING_PAD),
-        None => MIN_TRAILING_PAD,
-    };
-    let capacity = match lhs_rendered
+        .and_then(|value| value.checked_sub(trailing_visible))
+        .map_or(MIN_TRAILING_PAD, |value| value.max(MIN_TRAILING_PAD));
+    let capacity = lhs_rendered
         .len()
         .checked_add(pad)
-        .and_then(|v| v.checked_add(trailing.len()))
-    {
-        Some(c) => c,
-        None => 0,
-    };
+        .and_then(|value| value.checked_add(trailing.len()))
+        .map_or(0, |count| count);
     let mut out = String::with_capacity(capacity);
     out.push_str(lhs_rendered);
     for _ in 0..pad {
@@ -1231,10 +1224,7 @@ fn render_line(lhs_naked: &str, lhs_rendered: &str, trailing: &str, term_cols: u
 #[cfg(unix)]
 fn terminal_width() -> usize {
     let (cols, _rows) = terminal_size_unix();
-    match cols {
-        Some(c) => c,
-        None => 100,
-    }
+    cols.map_or(100, |count| count)
 }
 
 /// Best-effort terminal height. Used to bound the live region so it
@@ -1245,10 +1235,7 @@ fn terminal_width() -> usize {
 #[cfg(unix)]
 fn terminal_height() -> usize {
     let (_cols, rows) = terminal_size_unix();
-    match rows {
-        Some(r) => r,
-        None => 24,
-    }
+    rows.map_or(24, |height| height)
 }
 
 /// Read the terminal `(cols, rows)` via `TIOCGWINSZ`, walking
@@ -1490,7 +1477,6 @@ fn bar_render(done: usize, total: usize, width: usize) -> Result<String> {
 ///
 /// `cov` is silently dropped when non-finite (n < 2 or mean = 0).
 #[doc(hidden)]
-#[must_use]
 #[inline]
 pub fn bench_progress_trailing(
     snap: &ProgressSnapshot,
@@ -1552,7 +1538,6 @@ pub fn bench_progress_trailing(
 /// invariant against synthetic widths; production callers go through
 /// the `Drawer` which queries the terminal via [`terminal_width`].
 #[doc(hidden)]
-#[must_use]
 #[inline]
 pub fn running_line(
     runtime: &str,
@@ -1588,17 +1573,14 @@ pub fn running_line(
         let raw = qualified_test_name(state.module_path, state.test_name);
         let prefix_visible = prefix.chars().count();
         let trailing_visible = trailing.chars().count();
-        let budget = match cols
+        let budget = cols
             .checked_sub(1) // 1 col of right-edge slack
-            .and_then(|v| v.checked_sub(prefix_visible))
-            .and_then(|v| v.checked_sub(STATUS_TAG_WIDTH))
-            .and_then(|v| v.checked_sub(1)) // space between tag and display
-            .and_then(|v| v.checked_sub(MIN_TRAILING_PAD))
-            .and_then(|v| v.checked_sub(trailing_visible))
-        {
-            Some(v) => v,
-            None => 0,
-        };
+            .and_then(|value| value.checked_sub(prefix_visible))
+            .and_then(|value| value.checked_sub(STATUS_TAG_WIDTH))
+            .and_then(|value| value.checked_sub(1)) // space between tag and display
+            .and_then(|value| value.checked_sub(MIN_TRAILING_PAD))
+            .and_then(|value| value.checked_sub(trailing_visible))
+            .map_or(0, |value| value);
         clip_to_cols(&raw, budget)
     };
     let lhs_naked = format!(
@@ -1610,10 +1592,7 @@ pub fn running_line(
         &lhs_naked,
         &lhs_rendered,
         &trailing,
-        match cols.checked_sub(1) {
-            Some(v) => v.max(1),
-            None => 1,
-        },
+        cols.checked_sub(1).map_or(1, |value| value.max(1)),
     ))
 }
 
@@ -1643,20 +1622,17 @@ pub fn running_output_lines(
     if state.recent_output.is_empty() {
         return Vec::new();
     }
-    let cap_rows = match height.checked_sub(LIVE_REGION_RESERVED_ROWS) {
-        Some(v) => v.max(1),
-        None => 1,
-    };
-    let start = match state.recent_output.len().checked_sub(cap_rows) {
-        Some(s) => s,
-        None => 0,
-    };
+    let cap_rows = height
+        .checked_sub(LIVE_REGION_RESERVED_ROWS)
+        .map_or(1, |value| value.max(1));
+    let start = state
+        .recent_output
+        .len()
+        .checked_sub(cap_rows)
+        .map_or(0, |value| value);
     // 1 col of right-edge slack — same DECAWM defence as
     // `running_line`'s display clip.
-    let line_budget = match cols.checked_sub(1) {
-        Some(v) => v.max(1),
-        None => 1,
-    };
+    let line_budget = cols.checked_sub(1).map_or(1, |value| value.max(1));
     let lines: &[String] = match state.recent_output.get(start..) {
         Some(lines) => lines,
         None => &[],
@@ -1680,7 +1656,6 @@ pub fn running_output_lines(
 /// test name, and clipped to `cols-1` (DECAWM rule) so a paint never
 /// strands a wrap-overflow row in scrollback.
 #[doc(hidden)]
-#[must_use]
 #[inline]
 pub fn bench_histogram_lines(
     snap: &ProgressSnapshot,
@@ -1691,25 +1666,23 @@ pub fn bench_histogram_lines(
     if height_budget < 2 || cols < 20 || snap.done == 0 || snap.max == snap.min {
         return Ok(Vec::new());
     }
-    let max_count = match snap.histogram.iter().copied().max() {
-        Some(m) => m,
-        None => 0,
-    };
+    let max_count = snap
+        .histogram
+        .iter()
+        .copied()
+        .max()
+        .map_or(0, |count| count);
     if max_count == 0 {
         return Ok(Vec::new());
     }
     let indent_width = RUNTIME_PREFIX_WIDTH
         .checked_add(STATUS_TAG_WIDTH)
-        .and_then(|v| v.checked_add(1))
+        .and_then(|value| value.checked_add(1))
         .ok_or_else(|| anyhow!("histogram: indent width overflow"))?;
-    let line_budget = match cols.checked_sub(1) {
-        Some(v) => v.max(1),
-        None => 1,
-    };
-    let body_budget = match line_budget.checked_sub(indent_width) {
-        Some(v) => v.max(1),
-        None => 1,
-    };
+    let line_budget = cols.checked_sub(1).map_or(1, |value| value.max(1));
+    let body_budget = line_budget
+        .checked_sub(indent_width)
+        .map_or(1, |value| value.max(1));
     let bars_width = body_budget.min(HISTOGRAM_BUCKETS);
     if bars_width == 0 {
         return Ok(Vec::new());
@@ -1726,10 +1699,7 @@ pub fn bench_histogram_lines(
             .checked_div(bars_width)
             .ok_or_else(|| anyhow!("histogram: zero bars width"))?
             .min(HISTOGRAM_BUCKETS - 1);
-        let count = match snap.histogram.get(bin).copied() {
-            Some(c) => c,
-            None => 0,
-        };
+        let count = snap.histogram.get(bin).copied().map_or(0, |count| count);
         if count == 0 {
             bars.push(' ');
         } else {
@@ -1739,17 +1709,11 @@ pub fn bench_histogram_lines(
                 .checked_div(max_count)
                 .ok_or_else(|| anyhow!("histogram: zero max count"))?
                 .min(8);
-            let level = match scaled.checked_sub(1) {
-                Some(l) => l,
-                None => 0,
-            };
-            let glyph = match levels
+            let level = scaled.checked_sub(1).map_or(0, |level| level);
+            let glyph = levels
                 .get(usize::try_from(level).unwrap_or(0).min(7))
                 .copied()
-            {
-                Some(g) => g,
-                None => ' ',
-            };
+                .map_or(' ', |glyph| glyph);
             bars.push(glyph);
         }
     }
@@ -1803,17 +1767,14 @@ fn lifecycle_line(
     let display = {
         let prefix_visible = prefix.chars().count();
         let trailing_visible = trailing.chars().count();
-        let budget = match cols
+        let budget = cols
             .checked_sub(1) // DECAWM right-edge slack
-            .and_then(|v| v.checked_sub(prefix_visible))
-            .and_then(|v| v.checked_sub(STATUS_TAG_WIDTH))
-            .and_then(|v| v.checked_sub(1))
-            .and_then(|v| v.checked_sub(MIN_TRAILING_PAD))
-            .and_then(|v| v.checked_sub(trailing_visible))
-        {
-            Some(v) => v,
-            None => 0,
-        };
+            .and_then(|value| value.checked_sub(prefix_visible))
+            .and_then(|value| value.checked_sub(STATUS_TAG_WIDTH))
+            .and_then(|value| value.checked_sub(1))
+            .and_then(|value| value.checked_sub(MIN_TRAILING_PAD))
+            .and_then(|value| value.checked_sub(trailing_visible))
+            .map_or(0, |value| value);
         clip_to_cols(&raw_display, budget)
     };
     let lhs_naked = format!(
@@ -1825,10 +1786,7 @@ fn lifecycle_line(
         &lhs_naked,
         &lhs_rendered,
         &trailing,
-        match cols.checked_sub(1) {
-            Some(v) => v.max(1),
-            None => 1,
-        },
+        cols.checked_sub(1).map_or(1, |value| value.max(1)),
     )
 }
 

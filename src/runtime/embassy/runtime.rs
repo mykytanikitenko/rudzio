@@ -87,7 +87,7 @@ impl Signaler {
         };
         while !*guard {
             guard = match self.condvar.wait(guard) {
-                Ok(guard) => guard,
+                Ok(new_guard) => new_guard,
                 Err(poisoned) => poisoned.into_inner(),
             };
         }

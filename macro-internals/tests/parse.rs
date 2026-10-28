@@ -122,9 +122,9 @@ mod tests {
             "( runtime = my_crate::nested::Multithread::new, suite = rudzio::common::context::Suite, test = rudzio::common::context::Test )",
         )?;
         anyhow::ensure!(
-            render(&config.runtime_type()) == "my_crate::nested::Multithread",
+            render(&config.runtime_type()?) == "my_crate::nested::Multithread",
             "runtime_type rendered as `{}`",
-            render(&config.runtime_type()),
+            render(&config.runtime_type()?),
         );
         Ok(())
     }

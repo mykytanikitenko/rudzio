@@ -239,10 +239,10 @@ pub fn render_bridge_impls(plan: &Plan) -> String {
 
 /// Last `::`-delimited segment of `path_str`.
 fn last_segment(path_str: &str) -> String {
-    match path_str.rsplit("::").next() {
-        Some(seg) => seg.to_owned(),
-        None => path_str.to_owned(),
+    if let Some(segment) = path_str.rsplit("::").next() {
+        return segment.to_owned();
     }
+    path_str.to_owned()
 }
 
 /// Compute `Some("crate::foo::bar")` when `impl_file` maps to a
@@ -281,7 +281,7 @@ fn infer_module_path(impl_file: &Path, pkg_root: &Path) -> Option<String> {
 /// genuinely private, in which case the caller passes through whatever
 /// the scanner saw.
 fn render_visibility(vis: Option<&Visibility>) -> String {
-    match vis
+    if let Some(text) = vis
         .map(|value| {
             quote::ToTokens::to_token_stream(value)
                 .to_string()
@@ -290,9 +290,9 @@ fn render_visibility(vis: Option<&Visibility>) -> String {
         })
         .filter(|text| !text.is_empty())
     {
-        Some(text) => text,
-        None => "pub(crate)".to_owned(),
+        return text;
     }
+    "pub(crate)".to_owned()
 }
 
 /// Render `crate::a::b::c` for a module whose impl file lies deeper
@@ -300,10 +300,7 @@ fn render_visibility(vis: Option<&Visibility>) -> String {
 /// the leaf doesn't end in `.rs`.
 fn render_deeper_module_path(components: &[&str]) -> Option<String> {
     let mut segments: Vec<String> = Vec::new();
-    let last_idx = match components.len().checked_sub(1) {
-        Some(v) => v,
-        None => 0,
-    };
+    let last_idx = components.len().checked_sub(1).map_or(0, |value| value);
     for (idx, comp) in components.iter().enumerate() {
         if idx == last_idx {
             if *comp == "mod.rs" {

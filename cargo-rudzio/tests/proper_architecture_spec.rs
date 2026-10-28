@@ -333,7 +333,7 @@ mod tests {
         let member = bridged_member("alpha", &root);
         let plan = make_plan(vec![member], &root);
         let out = root.join("aggregator");
-        let content = build_main_rs(&plan, &out);
+        let content = build_main_rs(&plan, &out)?;
 
         anyhow::ensure!(
             !content.contains("#[path"),
@@ -363,7 +363,7 @@ mod tests {
         member.test_files = vec![root.join("alpha").join("tests").join("integration.rs")];
         let plan = make_plan(vec![member], &root);
         let out = root.join("aggregator");
-        let content = build_main_rs(&plan, &out);
+        let content = build_main_rs(&plan, &out)?;
 
         anyhow::ensure!(
             !content.contains("register_member_manifest_dirs"),

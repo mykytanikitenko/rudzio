@@ -24,17 +24,15 @@ pub struct RuntimeConfig {
 impl RuntimeConfig {
     /// Drop the constructor segment (`::new`) and keep just the runtime type.
     #[inline]
-    #[must_use]
-    pub fn runtime_type(&self) -> Path {
-        let take_n = match self.runtime.segments.len().checked_sub(1) {
-            Some(v) => v,
-            None => 0,
-        };
+    pub fn runtime_type(&self) -> syn::Result<Path> {
+        let take_n = self.runtime.segments.len().checked_sub(1).ok_or_else(|| {
+            syn::Error::new_spanned(&self.runtime, "runtime path must have at least one segment")
+        })?;
         let segments = self.runtime.segments.iter().take(take_n).cloned().collect();
-        Path {
+        Ok(Path {
             leading_colon: self.runtime.leading_colon,
             segments,
-        }
+        })
     }
 }
 

@@ -20,8 +20,8 @@ use anyhow::{Context as _, Result, bail};
 use cargo_metadata::{Message, TargetKind};
 use cargo_rudzio::build_id;
 use cargo_rudzio::cli::{
-    RunnerExit, aggregator_cargo_args, extract_config_values, format_target_flag_warning,
-    parse_test_args, runner_exit,
+    ParsedTestArgs, RunnerExit, aggregator_cargo_args, extract_config_values,
+    format_target_flag_warning, parse_test_args, runner_exit,
 };
 use cargo_rudzio::config_env;
 use cargo_rudzio::coverage;
@@ -239,10 +239,7 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
     if let Some(warning) = format_target_flag_warning(&parsed.ignored_target_flags) {
         write_stderr(&format!("warning: {warning}\n"));
     }
-    let mut plan = match parsed.manifest_path.as_deref() {
-        Some(manifest) => generate::plan_from_manifest(manifest)?,
-        None => generate::plan_from_cwd()?,
-    };
+    let mut plan = resolve_plan(&parsed)?;
     if !parsed.filters.include_paths.is_empty() {
         plan.restrict_to_paths(&parsed.filters.include_paths)?;
     }
@@ -407,7 +404,7 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
     }
     // Direct exec: the runner is already built. Zero second cargo
     // subprocess. Decisions Log [C1] USER-RATIFIED.
-    let cli_config = extract_config_values(&parsed.forwarded_cargo_args);
+    let cli_config = extract_config_values(&parsed.forwarded_cargo_args)?;
     let mut runner_cmd = runner_command(&runner_path, &parsed.runner_args, &plan, &cli_config)?;
     let runner_status = runner_cmd.status().with_context(|| {
         format!(
@@ -564,12 +561,19 @@ fn emit_diagnostic_warnings(plan: &generate::Plan) {
     }
 }
 
+/// Resolve the workspace [`generate::Plan`] from the user's `--manifest-path`
+/// (or the current directory when absent).
+fn resolve_plan(parsed: &ParsedTestArgs) -> Result<generate::Plan> {
+    parsed
+        .manifest_path
+        .as_deref()
+        .map_or_else(generate::plan_from_cwd, generate::plan_from_manifest)
+}
+
 /// Handler for `cargo rudzio migrate`: forward every arg verbatim into `rudzio_migrate::run::entry_with_args`.
 fn run_migrate(rest: &[String]) -> ExitCode {
-    let mut argv: Vec<String> = Vec::with_capacity(match rest.len().checked_add(1) {
-        Some(c) => c,
-        None => 0,
-    });
+    let mut argv: Vec<String> =
+        Vec::with_capacity(rest.len().checked_add(1).map_or(0, |count| count));
     argv.push("rudzio-migrate".to_owned());
     argv.extend(rest.iter().cloned());
     rudzio_migrate_entry(argv)

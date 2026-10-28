@@ -438,10 +438,9 @@ pub trait Reporter: Send + Sync {
 
 impl Summary {
     #[inline]
-    #[must_use]
     pub fn merge(self, other: Self) -> anyhow::Result<Self> {
-        let sum = |a: usize, b: usize| -> anyhow::Result<usize> {
-            a.checked_add(b)
+        let sum = |left: usize, right: usize| -> anyhow::Result<usize> {
+            left.checked_add(right)
                 .ok_or_else(|| anyhow::anyhow!("summary merge: counter overflow"))
         };
         Ok(Self {

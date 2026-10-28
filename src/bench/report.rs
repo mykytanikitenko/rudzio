@@ -75,7 +75,6 @@ impl Report {
     /// Returns an empty string when there are no successful samples; the
     /// range is `[min, max]` split into equal-width linear buckets. Each
     /// line is `"  [lo..hi) |######  count"`.
-    #[must_use]
     #[inline]
     pub fn ascii_histogram(&self, buckets: usize, width: usize) -> anyhow::Result<String> {
         if self.samples.is_empty() || buckets == 0 {
@@ -94,7 +93,7 @@ impl Report {
             .ok_or_else(|| anyhow::anyhow!("histogram: span underflow"))?
             .max(1);
         let buckets_u128 = u128::try_from(buckets)
-            .map_err(|_| anyhow::anyhow!("histogram: bucket count overflows u128"))?;
+            .map_err(|_ignored| anyhow::anyhow!("histogram: bucket count overflows u128"))?;
         let bucket_span = span.div_ceil(buckets_u128).max(1);
 
         let mut counts = vec![0_usize; buckets];
@@ -108,7 +107,7 @@ impl Report {
                     .checked_div(bucket_span)
                     .ok_or_else(|| anyhow::anyhow!("histogram: zero bucket span"))?,
             )
-            .map_err(|_| anyhow::anyhow!("histogram: index overflows usize"))?
+            .map_err(|_ignored| anyhow::anyhow!("histogram: index overflows usize"))?
             .min(
                 buckets
                     .checked_sub(1)
@@ -130,12 +129,12 @@ impl Report {
         let mut out = String::new();
         for (i, count) in counts.iter().enumerate() {
             let lo_idx = u128::try_from(i)
-                .map_err(|_| anyhow::anyhow!("histogram: index overflows u128"))?;
+                .map_err(|_ignored| anyhow::anyhow!("histogram: index overflows u128"))?;
             let hi_idx = u128::try_from(
                 i.checked_add(1)
                     .ok_or_else(|| anyhow::anyhow!("histogram: index overflow"))?,
             )
-            .map_err(|_| anyhow::anyhow!("histogram: index overflows u128"))?;
+            .map_err(|_ignored| anyhow::anyhow!("histogram: index overflows u128"))?;
             let lo = Duration::from_nanos(
                 u64::try_from(
                     min_ns
@@ -146,7 +145,7 @@ impl Report {
                         )
                         .ok_or_else(|| anyhow::anyhow!("histogram: lo overflow"))?,
                 )
-                .map_err(|_| anyhow::anyhow!("histogram: lo overflows u64"))?,
+                .map_err(|_ignored| anyhow::anyhow!("histogram: lo overflows u64"))?,
             );
             let hi = Duration::from_nanos(
                 u64::try_from(
@@ -158,7 +157,7 @@ impl Report {
                         )
                         .ok_or_else(|| anyhow::anyhow!("histogram: hi overflow"))?,
                 )
-                .map_err(|_| anyhow::anyhow!("histogram: hi overflows u64"))?,
+                .map_err(|_ignored| anyhow::anyhow!("histogram: hi overflows u64"))?,
             );
             let bar_len = count
                 .checked_mul(width)
@@ -209,7 +208,6 @@ impl Report {
     /// max / range, mean / median, σ / MAD / coefficient of variation,
     /// p1 / p5 / p10 / p25 / p50 / p75 / p90 / p95 / p99 / p99.9, IQR,
     /// outlier count (>3σ), and failure / panic tallies when present.
-    #[must_use]
     #[inline]
     pub fn detailed_summary(&self) -> anyhow::Result<String> {
         let n = self.samples.len();
@@ -315,7 +313,7 @@ impl Report {
     pub fn iqr(&self) -> Option<Duration> {
         let p25 = self.percentile_permille(250_u32)?;
         let p75 = self.percentile_permille(750_u32)?;
-        Some(p75.checked_sub(p25)?)
+        p75.checked_sub(p25)
     }
 
     /// `true` when every iteration completed without errors or panics.
@@ -463,15 +461,15 @@ impl Report {
         let Ok(rank) = usize::try_from(rank_floor) else {
             return None;
         };
-        let rank = rank.min(sorted.len().checked_sub(1)?);
-        sorted.get(rank).copied()
+        let clamped_rank = rank.min(sorted.len().checked_sub(1)?);
+        sorted.get(clamped_rank).copied()
     }
 
     /// Range: max - min. `None` when there are no samples.
     #[must_use]
     #[inline]
     pub fn range(&self) -> Option<Duration> {
-        Some(self.max()?.checked_sub(self.min()?)?)
+        self.max()?.checked_sub(self.min()?)
     }
 
     /// Population standard deviation of the successful-iteration
@@ -500,7 +498,10 @@ impl Report {
             .iter()
             .map(Duration::as_nanos)
             .map(|nanos| nanos.checked_mul(nanos))
-            .try_fold(0_u128, |acc, sq| sq.and_then(|v| acc.checked_add(v)))?;
+            .try_fold(0_u128, |acc, sq| {
+                let value = sq?;
+                acc.checked_add(value)
+            })?;
         let n_sum_sq = n_u128.checked_mul(sum_sq)?;
         let total_sq = total_nanos.checked_mul(total_nanos)?;
         let var_times_n_sq = n_sum_sq.checked_sub(total_sq)?;
@@ -513,7 +514,6 @@ impl Report {
     }
 
     /// A single-line summary: `"min X, p50 Y, p95 Z, max W (N samples)"`.
-    #[must_use]
     #[inline]
     pub fn summary_line(&self) -> anyhow::Result<String> {
         let n = self.samples.len();

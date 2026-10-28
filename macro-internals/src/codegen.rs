@@ -119,15 +119,15 @@ pub fn extract_benchmark_expr(func: &ItemFn) -> syn::Result<Option<Expr>> {
 #[must_use]
 pub fn extract_ignore_reason(func: &ItemFn) -> (TokenStream, TokenStream) {
     let mut ignored_terms: Vec<TokenStream> = Vec::new();
-    let mut reason: Option<TokenStream> = None;
+    let mut reason_expr = quote! { "" };
+    let mut reason_seen = false;
 
     for attr in &func.attrs {
         if attr.path().is_ident("ignore") {
             ignored_terms.push(quote! { true });
-            if reason.is_none()
-                && let Some(text) = meta_ignore_reason(&attr.meta)
-            {
-                reason = Some(quote! { #text });
+            if !reason_seen && let Some(text) = meta_ignore_reason(&attr.meta) {
+                reason_expr = quote! { #text };
+                reason_seen = true;
             }
         }
         if attr.path().is_ident("cfg_attr")
@@ -135,25 +135,16 @@ pub fn extract_ignore_reason(func: &ItemFn) -> (TokenStream, TokenStream) {
         {
             let predicate = &cfg_attr_ignore.predicate;
             ignored_terms.push(quote! { cfg!(#predicate) });
-            if reason.is_none()
-                && let Some(text) = cfg_attr_ignore.reason
-            {
-                reason = Some(quote! { if cfg!(#predicate) { #text } else { "" } });
+            if !reason_seen && let Some(text) = cfg_attr_ignore.reason {
+                reason_expr = quote! { if cfg!(#predicate) { #text } else { "" } };
+                reason_seen = true;
             }
         }
     }
 
-    let ignored = match ignored_terms
+    let ignored = ignored_terms
         .into_iter()
-        .reduce(|acc, term| quote! { (#acc) || (#term) })
-    {
-        Some(v) => v,
-        None => quote! { false },
-    };
-    let reason_expr = match reason {
-        Some(v) => v,
-        None => quote! { "" },
-    };
+        .fold(quote! { false }, |acc, term| quote! { (#acc) || (#term) });
 
     (ignored, reason_expr)
 }
