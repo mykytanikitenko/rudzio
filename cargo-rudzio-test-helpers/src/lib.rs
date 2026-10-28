@@ -110,7 +110,9 @@ include!(concat!(
 
 mod summary;
 
-pub use summary::{RunSummary, assert_exact_test_names, assert_summary, combined_output, parse_summary};
+pub use summary::{
+    RunSummary, assert_exact_test_names, assert_summary, combined_output, parse_summary,
+};
 
 /// Files inside `<CARGO_HOME>/registry/` that must NOT be hardlinked
 /// across per-test cargo homes. `.package-cache` is cargo's
