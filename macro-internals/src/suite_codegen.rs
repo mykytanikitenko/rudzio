@@ -459,7 +459,7 @@ fn generate_per_config(
 ) -> syn::Result<()> {
     let cfg_attrs = cfg.attrs.as_slice();
     let runtime_ctor = &cfg.runtime;
-    let runtime_type = cfg.runtime_type();
+    let runtime_type = cfg.runtime_type()?;
     let suite_base = &cfg.suite;
 
     // Stable id derived from `TypeId::of::<R>()` and `TypeId::of::<S>()` —
@@ -1683,7 +1683,7 @@ fn generate_macro_registration_support(
     let mut type_aliases = Vec::new();
     for (cfg_idx, cfg) in args.configs.iter().enumerate() {
         let cfg_attrs = &cfg.attrs;
-        let runtime_type = cfg.runtime_type();
+        let runtime_type = cfg.runtime_type()?;
         let suite_base = &cfg.suite;
         let owner_static = format_ident!(
             "__RUDZIO_OWNER_{}_{}",

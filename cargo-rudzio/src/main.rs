@@ -407,7 +407,7 @@ fn run_test(rest: &[String]) -> Result<ExitCode> {
     }
     // Direct exec: the runner is already built. Zero second cargo
     // subprocess. Decisions Log [C1] USER-RATIFIED.
-    let cli_config = extract_config_values(&parsed.forwarded_cargo_args);
+    let cli_config = extract_config_values(&parsed.forwarded_cargo_args)?;
     let mut runner_cmd = runner_command(&runner_path, &parsed.runner_args, &plan, &cli_config)?;
     let runner_status = runner_cmd.status().with_context(|| {
         format!(

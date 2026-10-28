@@ -861,33 +861,28 @@ impl Config {
     ) -> Self {
         let parsed = parse_argv(argv);
 
-        let resolved_threads = match parsed.threads.or_else(|| {
-            env.get("RUST_TEST_THREADS")
-                .and_then(|val| match val.parse::<usize>() {
-                    Ok(count) => Some(count),
-                    Err(_) => None,
-                })
-                .filter(|count| *count > 0)
-        }) {
-            Some(v) => v,
-            None => thread::available_parallelism().map_or(1, NonZeroUsize::get),
-        };
+        let resolved_threads = parsed
+            .threads
+            .or_else(|| {
+                env.get("RUST_TEST_THREADS")
+                    .and_then(|val| val.parse::<usize>().map_or(None, Some))
+                    .filter(|count| *count > 0)
+            })
+            .map_or_else(
+                || thread::available_parallelism().map_or(1, NonZeroUsize::get),
+                |value| value,
+            );
 
         // `concurrency_limit` defaults to `threads` so the single-flag
         // `--test-threads=N` invocation keeps behaving the way libtest users
         // expect: N worker threads, N tests in-flight.
-        let resolved_concurrency_limit = match parsed.concurrency_limit {
-            Some(v) => v,
-            None => resolved_threads,
-        };
+        let resolved_concurrency_limit =
+            parsed.concurrency_limit.map_or(resolved_threads, |value| value);
 
         // `threads` is guaranteed >= 1 by the resolution chain above
         // (available_parallelism returns NonZeroUsize); the fallback is
         // unreachable in practice but keeps us off unwrap/expect.
-        let threads_nz = match NonZeroUsize::new(resolved_threads) {
-            Some(v) => v,
-            None => NonZeroUsize::MIN,
-        };
+        let threads_nz = NonZeroUsize::new(resolved_threads).map_or(NonZeroUsize::MIN, |value| value);
         let parallel_hardlimit =
             resolve_parallel_hardlimit(parsed.hardlimit_arg, parsed.bench_mode, threads_nz);
 
@@ -1018,10 +1013,9 @@ fn classify_hardlimit(text: &str) -> Option<HardlimitArg> {
     match text {
         "none" => Some(HardlimitArg::Disabled),
         "threads" => Some(HardlimitArg::Threads),
-        _ => match text.parse::<usize>() {
-            Ok(n) => NonZeroUsize::new(n).map(HardlimitArg::Explicit),
-            Err(_) => None,
-        },
+        _ => text
+            .parse::<usize>()
+            .map_or(None, |count| NonZeroUsize::new(count).map(HardlimitArg::Explicit)),
     }
 }
 
@@ -1064,10 +1058,7 @@ fn flag_value<'argv>(
         return Some(rest);
     }
     if arg == flag_name {
-        *i = match i.checked_add(1) {
-            Some(v) => v,
-            None => usize::MAX,
-        };
+        *i = i.checked_add(1).map_or(usize::MAX, |value| value);
         return argv.get(*i).map(String::as_str);
     }
     None
@@ -1101,10 +1092,9 @@ fn parse_duration_secs_flag(
     i: &mut usize,
 ) -> Option<Duration> {
     let value = flag_value(arg, flag_name, prefix_eq, argv, i)?;
-    match value.parse::<u64>() {
-        Ok(secs) => Some(Duration::from_secs(secs)),
-        Err(_) => None,
-    }
+    value
+        .parse::<u64>()
+        .map_or(None, |secs| Some(Duration::from_secs(secs)))
 }
 
 /// Parse a `--flag=<secs>` / `--flag <secs>` duration flag where `secs == 0`
@@ -1233,10 +1223,9 @@ fn handle_presentation_flag(
         return true;
     }
     if let Some(value) = arg.strip_prefix("--ensure-time=") {
-        state.ensure_time = Some(match parse_ensure_time_pair(value) {
-            Some(v) => v,
-            None => EnsureTimeArg::Default,
-        });
+        state.ensure_time = Some(
+            parse_ensure_time_pair(value).map_or(EnsureTimeArg::Default, |parsed| parsed),
+        );
         return true;
     }
     if let Some(value) = flag_value(arg, "--shuffle-seed", "--shuffle-seed=", argv, i) {
@@ -1372,10 +1361,7 @@ fn handle_filter_or_unparsed(
         return true;
     }
     if arg == "--skip" {
-        *i = match i.checked_add(1) {
-            Some(v) => v,
-            None => usize::MAX,
-        };
+        *i = i.checked_add(1).map_or(usize::MAX, |value| value);
         if let Some(next) = argv.get(*i) {
             state.skip_filters.push(next.clone());
         }
@@ -1413,10 +1399,7 @@ fn parse_argv(argv: &[String]) -> ParsedArgs {
             || handle_presentation_flag(&mut state, &arg, argv, &mut i)
             || handle_timeout_flag(&mut state, &arg, argv, &mut i)
             || handle_filter_or_unparsed(&mut state, &arg, argv, &mut i);
-        i = match i.checked_add(1) {
-            Some(v) => v,
-            None => usize::MAX,
-        };
+        i = i.checked_add(1).map_or(usize::MAX, |value| value);
     }
 
     state

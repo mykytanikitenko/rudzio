@@ -3712,7 +3712,7 @@ pub fn write_runner(plan: &Plan, out_dir: &Path) -> Result<()> {
     fs::write(out_dir.join("Cargo.toml"), cargo_toml)
         .with_context(|| format!("writing Cargo.toml under {}", out_dir.display()))?;
 
-    fs::write(src_dir.join("main.rs"), build_main_rs(plan, out_dir))
+    fs::write(src_dir.join("main.rs"), build_main_rs(plan, out_dir)?)
         .with_context(|| format!("writing src/main.rs under {}", out_dir.display()))?;
 
     fs::write(out_dir.join("build.rs"), build_build_rs(plan))
@@ -4517,7 +4517,10 @@ pub fn bridge_dir_name(member: &MemberPlan) -> String {
 /// in package-name order. The member's source still refers to its own lib by
 /// `lib_ident()` via the bridge's `extern crate self as <lib_ident>;` alias,
 /// which is independent of this name.
-fn member_bridge_lib_name(member: &MemberPlan, plan: &Plan) -> String {
+fn member_bridge_lib_name(member: &MemberPlan, plan: &Plan) -> Result<String> {
+    if !bridge_applies_to(member) {
+        return Ok(member.lib_ident());
+    }
     let mut bridged: Vec<&MemberPlan> = plan
         .members
         .iter()
@@ -4533,7 +4536,9 @@ fn member_bridge_lib_name(member: &MemberPlan, plan: &Plan) -> String {
         let mut suffix = 2_u32;
         while used.contains(&name) {
             name = format!("{base}_{suffix}");
-            suffix = suffix.saturating_add(1);
+            suffix = suffix
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("bridge lib name suffix overflow"))?;
         }
         used.insert(name.clone());
         names.insert(entry.package_name.clone(), name);
@@ -4541,7 +4546,12 @@ fn member_bridge_lib_name(member: &MemberPlan, plan: &Plan) -> String {
 
     names
         .remove(&member.package_name)
-        .unwrap_or_else(|| member.lib_ident())
+        .ok_or_else(|| {
+            anyhow!(
+                "bridged member `{}` missing from bridge lib name table",
+                member.package_name
+            )
+        })
 }
 
 /// Subdirectory name (under the aggregator's `members/` dir) that holds the per-bin bridge for `bin` of `member`.
@@ -4641,7 +4651,7 @@ pub fn build_bridge_cargo_toml(plan: &Plan, member: &MemberPlan) -> Result<Strin
     // bin-only members it carries a stub body. Either way the
     // aggregator's uniform `extern crate <bridge>;` ([C3]) resolves.
     let mut lib = Table::new();
-    lib.insert("name", value(member_bridge_lib_name(member, plan)));
+    lib.insert("name", value(member_bridge_lib_name(member, plan)?));
     // Path is bridge-local `src/lib.rs`. `materialize_bridge_src_dir`
     // creates `<bridge>/src/` as a real dir and writes the generated
     // lib.rs into it (or symlinks the member's source for lib-bearing
@@ -5286,8 +5296,7 @@ fn build_bridge_build_dependencies(plan: &Plan, member: &MemberPlan) -> Result<O
 /// because there's nothing to link from them; their bins compile as
 /// standalone binaries inside the bridge crate.
 #[inline]
-#[must_use]
-pub fn build_main_rs(plan: &Plan, _out_dir: &Path) -> String {
+pub fn build_main_rs(plan: &Plan, _out_dir: &Path) -> Result<String> {
     let mut out = String::from(
         "#![allow(
     non_snake_case,
@@ -5321,7 +5330,7 @@ pub fn build_main_rs(plan: &Plan, _out_dir: &Path) -> String {
         // `member_bridge_lib_name` is unique per bridged member, so the
         // `seen` guard no longer drops a member sharing a lib name; it only
         // cross-checks against the per-bin bridge idents below.
-        let ident = member_bridge_lib_name(member, plan);
+        let ident = member_bridge_lib_name(member, plan)?;
         if !seen.insert(ident.clone()) {
             continue;
         }
@@ -5346,7 +5355,7 @@ pub fn build_main_rs(plan: &Plan, _out_dir: &Path) -> String {
     }
 
     out.push_str("\n#[rudzio::main]\nfn main() {}\n");
-    out
+    Ok(out)
 }
 
 /// Bug #10 collision detection: when two `[[test]]` binaries declare
@@ -6262,7 +6271,7 @@ fn build_cargo_toml(plan: &Plan) -> Result<String> {
             );
         }
         deps.insert(
-            &member_bridge_lib_name(member, plan),
+            &member_bridge_lib_name(member, plan)?,
             Item::Value(Value::InlineTable(tbl)),
         );
     }
