@@ -27,7 +27,7 @@ pub use bench::{Report, Strategy};
 pub use bridge_meta::{__BRIDGE_OBSERVED_MANIFEST_DIR, __BRIDGE_PROC_MACRO_OBSERVED_MANIFEST_DIR};
 pub use config::{
     BenchMode, CargoMeta, ColorMode, Config, EnsureTimeViolation, EnsureTimes, Format, OutputMode,
-    PrintOnly, RunIgnoredMode,
+    PrintOnly, RUNNER_ARGS_ENV, RunIgnoredMode,
 };
 pub use context::{Suite, Test};
 pub use futures_util;

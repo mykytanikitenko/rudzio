@@ -824,6 +824,28 @@ fn enable_full_backtrace_default() {
     }
 }
 
+/// Re-export this run's resolved config to [`crate::config::RUNNER_ARGS_ENV`]
+/// so descendant rudzio runners (nested `cargo rudzio test` runs, fixture
+/// bins spawned by e2e specs) inherit the parent's effective concurrency and
+/// timeout config. A child's explicit CLI args still win — the env var is
+/// only the low-precedence default layer in `Config::from_argv_and_env`.
+fn set_runner_args_env(config: &Config) {
+    let args = config.to_runner_args();
+    if args.is_empty() {
+        return;
+    }
+    let joined = args.join(" ");
+    #[expect(
+        unsafe_code,
+        reason = "single-threaded entry point; see SAFETY comment below"
+    )]
+    // SAFETY: called from `run` before any test threads or runtimes spawn,
+    // so no other thread mutates the environment concurrently.
+    unsafe {
+        env::set_var(crate::config::RUNNER_ARGS_ENV, joined);
+    }
+}
+
 /// Format `elapsed` for the trailing `<runtime, …>` block using a
 /// short `1.23s`-style representation.
 fn format_elapsed(elapsed: Duration) -> String {
@@ -1446,6 +1468,7 @@ pub fn run(cargo: CargoMeta) -> ExitCode {
     enable_full_backtrace_default();
 
     let mut config = Config::parse(cargo);
+    set_runner_args_env(&config);
 
     // Surface anything the rudzio parser didn't recognise. The args are
     // still preserved in `Config::unparsed` for downstream consumers

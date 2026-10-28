@@ -26,6 +26,7 @@ mod edge_dep_rendering_e2e_spec;
 mod edge_per_bin_registry_isolation_e2e_spec;
 mod edge_duplicate_lib_name_e2e_spec;
 mod edge_profile_propagation_e2e_spec;
+mod edge_runner_config_inheritance_e2e_spec;
 mod edge_self_named_module_e2e_spec;
 mod edge_sibling_lib_name_override_e2e_spec;
 mod edge_test_discovery_e2e_spec;
