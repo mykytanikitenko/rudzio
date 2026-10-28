@@ -106,7 +106,7 @@ impl Strategy for Sequential {
             let done = idx.checked_add(1).map_or(usize::MAX, |value| value);
             if done.checked_rem(stride).is_some_and(|rem| rem == 0) || done == iterations {
                 let snapshot = ProgressSnapshot::from_samples(&samples, done, iterations)
-                    .map_or_else(|_| ProgressSnapshot::initial(iterations), |snapshot| snapshot);
+                    .map_or(ProgressSnapshot::initial(iterations), |snapshot| snapshot);
                 on_progress(snapshot);
             }
         }
@@ -189,7 +189,7 @@ impl Strategy for Concurrent {
             done = done.checked_add(1).map_or(usize::MAX, |value| value);
             if done.is_multiple_of(stride) || done == iterations {
                 let snapshot = ProgressSnapshot::from_samples(&samples, done, iterations)
-                    .map_or_else(|_| ProgressSnapshot::initial(iterations), |snapshot| snapshot);
+                    .map_or(ProgressSnapshot::initial(iterations), |snapshot| snapshot);
                 on_progress(snapshot);
             }
         }

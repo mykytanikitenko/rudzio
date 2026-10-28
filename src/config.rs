@@ -868,8 +868,8 @@ impl Config {
                     .and_then(|val| val.parse::<usize>().map_or(None, Some))
                     .filter(|count| *count > 0)
             })
-            .map_or_else(
-                || thread::available_parallelism().map_or(1, NonZeroUsize::get),
+            .map_or(
+                thread::available_parallelism().map_or(1, NonZeroUsize::get),
                 |value| value,
             );
 
