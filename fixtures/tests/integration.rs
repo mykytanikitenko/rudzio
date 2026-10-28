@@ -602,15 +602,16 @@ mod tests {
                 log.contains("cfg_gated_suite_test"),
                 "feature on: gated suite must register, output:\n{log}"
             );
-            anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
+            assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+            assert_exact_test_names(&log, &["always_on", "cfg_gated_suite_test"])?;
         } else {
             anyhow::ensure!(
                 !log.contains("cfg_gated_suite_test"),
                 "feature off: gated suite must be absent, output:\n{log}"
             );
-            anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
+            assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+            assert_exact_test_names(&log, &["always_on"])?;
         }
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
         Ok(())
     }
 
