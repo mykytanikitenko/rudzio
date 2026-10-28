@@ -35,6 +35,10 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 
 [dev-dependencies]
+# Shared runner-summary parser/assertions (`RunSummary`,
+# `assert_summary`, `assert_exact_test_names`) used by
+# `tests/integration.rs` to assert exact per-fixture counts.
+cargo-rudzio-test-helpers = { path = "../cargo-rudzio-test-helpers" }
 trybuild = { workspace = true }
 
 # Opt-in feature toggling the `#[cfg(feature = "edge-cfg-macro")]`-gated

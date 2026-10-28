@@ -1286,6 +1286,7 @@ name = "rudzio-fixtures"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cargo-rudzio-test-helpers",
  "libc",
  "rudzio",
  "tokio",

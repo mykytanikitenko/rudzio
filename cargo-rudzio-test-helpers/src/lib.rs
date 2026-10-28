@@ -108,6 +108,10 @@ include!(concat!(
     "/../cargo-rudzio/build/source_fingerprint.rs"
 ));
 
+mod summary;
+
+pub use summary::{RunSummary, assert_exact_test_names, assert_summary, combined_output, parse_summary};
+
 /// Files inside `<CARGO_HOME>/registry/` that must NOT be hardlinked
 /// across per-test cargo homes. `.package-cache` is cargo's
 /// `fs2::FileExt`-backed flock target; sharing the inode across tests

@@ -11,6 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
+use cargo_rudzio_test_helpers::{RunSummary, assert_exact_test_names, assert_summary};
 use rudzio::common::context::Suite;
 use rudzio::common::context::Test;
 use rudzio::runtime::futures::ThreadPool;
@@ -237,8 +238,9 @@ fn run_parallel(exe: &str, threads: u32) -> anyhow::Result<Output> {
 ])]
 mod tests {
     use super::{
-        Command, Duration, ExitStatus, Instant, IoResult, Test, log_of, run, run_parallel,
-        run_serial, run_serial_with_args, thread,
+        Command, Duration, ExitStatus, Instant, IoResult, RunSummary, Test,
+        assert_exact_test_names, assert_summary, log_of, run, run_parallel, run_serial,
+        run_serial_with_args, thread,
     };
 
     #[rudzio::test]
@@ -249,14 +251,29 @@ mod tests {
             out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("3 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("mutates_via_mut_borrow"), "output:\n{log}");
-        anyhow::ensure!(
-            log.contains("sync_mutates_via_mut_borrow"),
-            "output:\n{log}"
-        );
-        anyhow::ensure!(log.contains("fresh_ctx_per_test"), "output:\n{log}");
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 3,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 3,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(
+            &log,
+            &[
+                "mutates_via_mut_borrow",
+                "sync_mutates_via_mut_borrow",
+                "fresh_ctx_per_test",
+            ],
+        )?;
         Ok(())
     }
 
@@ -268,11 +285,22 @@ mod tests {
             out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("first_passes"), "output:\n{log}");
-        anyhow::ensure!(log.contains("second_passes"), "output:\n{log}");
-        anyhow::ensure!(log.contains("[OK]"), "output:\n{log}");
-        anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 2,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(&log, &["first_passes", "second_passes"])?;
         Ok(())
     }
 
@@ -288,13 +316,30 @@ mod tests {
             out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("macro_generated_a"), "output:\n{log}");
-        anyhow::ensure!(log.contains("macro_generated_b"), "output:\n{log}");
-        anyhow::ensure!(log.contains("direct_fn"), "output:\n{log}");
-        anyhow::ensure!(log.contains("macro_generated_ignored"), "output:\n{log}");
-        anyhow::ensure!(log.contains("3 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 ignored"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 3,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 1,
+                teardown_failed: 0,
+                measured: 0,
+                total: 4,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(
+            &log,
+            &[
+                "macro_generated_a",
+                "macro_generated_b",
+                "direct_fn",
+                "macro_generated_ignored",
+            ],
+        )?;
         Ok(())
     }
 
@@ -310,24 +355,35 @@ mod tests {
             out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
-        for name in [
-            "same_body_a",
-            "same_body_b",
-            "same_body_c",
-            "pair_first",
-            "pair_second",
-            "nested_inner",
-            "mut_ctx_test",
-            "no_ctx_test",
-            "calls_helper",
-        ] {
-            anyhow::ensure!(
-                log.contains(name),
-                "fixture must report test `{name}`, output:\n{log}"
-            );
-        }
-        anyhow::ensure!(log.contains("9 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 9,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 9,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(
+            &log,
+            &[
+                "same_body_a",
+                "same_body_b",
+                "same_body_c",
+                "pair_first",
+                "pair_second",
+                "nested_inner",
+                "mut_ctx_test",
+                "no_ctx_test",
+                "calls_helper",
+            ],
+        )?;
         Ok(())
     }
 
