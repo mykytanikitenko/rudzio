@@ -89,10 +89,13 @@ to build the aggregator once and run it many times. Default DIR is
 ### `cargo rudzio --build-id` / `cargo rudzio --version`
 
 `cargo-rudzio` stamps its own build identity at compile time — git HEAD,
-dirty state, crate version, epoch stamp, and profile — and reports it via
-`--build-id` and `--version`. The e2e suite re-checks this identity before
-every spawn so a stale or foreign binary fails loudly instead of silently
-running the wrong code.
+dirty state, crate version, epoch stamp, profile, and a content fingerprint
+of its own sources (`src/`, `build.rs`, `Cargo.toml`) — and reports it via
+`--build-id` and `--version`. The e2e suite re-checks the source fingerprint
+before every spawn so a stale or foreign binary fails loudly instead of
+silently running the wrong code. The fingerprint compares source content,
+not git HEAD, so a commit that does not touch the sources leaves the binary
+legitimately fresh.
 
 The git HEAD is resolved with `git rev-parse HEAD` scoped to the source
 tree. When the binary is built from a source tree with no `.git` directory

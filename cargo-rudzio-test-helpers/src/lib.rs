@@ -91,8 +91,6 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::str;
-use std::time::SystemTime;
 
 use anyhow::{Context as _, Result};
 use rudzio::Config;
@@ -101,6 +99,14 @@ use rudzio::runtime::Runtime;
 use rudzio::tokio_util::sync::CancellationToken;
 use rudzio::tokio_util::task::TaskTracker;
 use tempfile::TempDir;
+
+// Canonical content-fingerprint implementation, shared verbatim with
+// `cargo-rudzio/build.rs` via `include!` so the compile-time stamp and the
+// runtime freshness check can never drift apart.
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../cargo-rudzio/build/source_fingerprint.rs"
+));
 
 /// Files inside `<CARGO_HOME>/registry/` that must NOT be hardlinked
 /// across per-test cargo homes. `.package-cache` is cargo's
@@ -1043,26 +1049,28 @@ pub fn current_git_head() -> Option<String> {
     Some(stdout.trim().to_owned())
 }
 
-/// Proves `binary` is the freshly-built cargo-rudzio for the current
-/// checkout and returns its path on success.
+/// Proves `binary` was built from the current `cargo-rudzio` sources and
+/// returns its path on success.
 ///
 /// # Why
 ///
 /// `env!("CARGO_BIN_EXE_cargo-rudzio")` is baked into the test binary at
 /// compile time and resolved against the ambient `CARGO_TARGET_DIR`. A
 /// shared target dir can hand the suite a binary built from a different
-/// HEAD than the test source, so fixes report green against a binary
-/// that never carried them. This guard fails loudly instead of letting
-/// the suite exercise the wrong binary.
+/// source tree than the test source, so fixes report green against a binary
+/// that never carried them. This guard fails loudly instead of letting the
+/// suite exercise the wrong binary.
 ///
-/// # Checks
+/// # Check
 ///
-/// 1. The binary exists and reports a `--build-id` identity whose
-///    `git-head` matches [`current_git_head`]. A binary that predates
-///    `--build-id`, or reports `unknown` while the checkout has a real
-///    HEAD, is a hard error.
-/// 2. The binary's mtime is no older than its source tree, catching a
-///    stale artifact that HEAD equality cannot see (an uncommitted edit).
+/// The binary reports a `--build-id` identity whose `source-hash` (a content
+/// fingerprint of `cargo-rudzio`'s own `src/`, `build.rs`, and `Cargo.toml`,
+/// stamped at compile time) matches the fingerprint of the live sources. The
+/// comparison is against source content, not git HEAD: a HEAD move that does
+/// not touch the sources leaves the binary legitimately fresh, while a binary
+/// built from different source bytes is still rejected. Dependency sources
+/// are out of scope because cargo's own fingerprint rebuilds on any
+/// dependency change.
 ///
 /// # Errors
 ///
@@ -1090,47 +1098,21 @@ pub fn assert_fresh_binary(binary: impl AsRef<Path>) -> Result<PathBuf> {
         String::from_utf8_lossy(&output.stderr).trim(),
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // `unknown` is the build script's "no identity" sentinel, not a SHA.
-    let reported_head = build_id_field(&stdout, "git-head").filter(|head| head != "unknown");
+    // `unknown` is the build script's "no content readable" sentinel, not a
+    // fingerprint.
+    let reported_hash =
+        build_id_field(&stdout, "source-hash").filter(|hash| hash != source_fingerprint::UNKNOWN);
+    let current_hash = source_fingerprint::of(&repo_root().join("cargo-rudzio"));
 
-    let checkout_head = current_git_head();
-    match (reported_head.as_deref(), checkout_head.as_deref()) {
-        (Some(reported), Some(checkout)) => anyhow::ensure!(
-            reported == checkout,
-            "stale/foreign cargo-rudzio binary: `{}` reports git-head {} but this checkout is at \
-             {} -- rebuild with `just test-isolated` (or `cargo clean -p cargo-rudzio`)",
-            binary.display(),
-            reported,
-            checkout,
-        ),
-        (None, Some(checkout)) => anyhow::bail!(
-            "cargo-rudzio binary `{}` reports no git-head (unknown/foreign build) while this \
-             checkout is at {}",
-            binary.display(),
-            checkout,
-        ),
-        // `(Some, None)`: binary has an identity but the checkout has no
-        // HEAD (git absent / not a repo) -- nothing to compare; the mtime
-        // check below still applies.
-        // `(None, None)`: neither side has a git identity.
-        _ => {}
-    }
-
-    if let Some(newest_source) = newest_source_mtime() {
-        let binary_mtime = binary
-            .metadata()
-            .with_context(|| format!("stat'ing {}", binary.display()))?
-            .modified()
-            .with_context(|| format!("reading mtime of {}", binary.display()))?;
-        anyhow::ensure!(
-            binary_mtime >= newest_source,
-            "stale cargo-rudzio binary: `{}` (mtime {:?}) is older than its newest source \
-             (mtime {:?}) -- rebuild with `just test-isolated`",
-            binary.display(),
-            binary_mtime,
-            newest_source,
-        );
-    }
+    anyhow::ensure!(
+        reported_hash.as_deref() == Some(current_hash.as_str()),
+        "stale/foreign cargo-rudzio binary: `{}` reports source-hash {:?} but this checkout's \
+         cargo-rudzio sources fingerprint to {}. Rebuild the cargo-rudzio binary from the \
+         current sources.",
+        binary.display(),
+        reported_hash,
+        current_hash,
+    );
 
     Ok(binary)
 }
@@ -1140,53 +1122,4 @@ fn build_id_field(line: &str, key: &str) -> Option<String> {
     let prefix = format!("{key}=");
     line.split_whitespace()
         .find_map(|tok| tok.strip_prefix(&prefix).map(str::to_owned))
-}
-
-/// Newest mtime among cargo-rudzio's own source inputs (the files that
-/// determine the binary's content), or `None` when the set cannot be
-/// enumerated (git unavailable).
-fn newest_source_mtime() -> Option<SystemTime> {
-    let root = repo_root();
-    let output = match Command::new("git")
-        .arg("-C")
-        .arg(&root)
-        .args([
-            "ls-files",
-            "-z",
-            "--",
-            "cargo-rudzio/src",
-            "cargo-rudzio/build.rs",
-            "cargo-rudzio/Cargo.toml",
-        ])
-        .output()
-    {
-        Ok(output) => output,
-        Err(_) => return None,
-    };
-    if !output.status.success() {
-        return None;
-    }
-    let mut newest: Option<SystemTime> = None;
-    for path in output
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|p| !p.is_empty())
-    {
-        let Ok(rel) = str::from_utf8(path) else {
-            continue;
-        };
-        let full = root.join(rel);
-        let Ok(meta) = full.metadata() else {
-            continue;
-        };
-        let Ok(mtime) = meta.modified() else {
-            continue;
-        };
-        match newest {
-            None => newest = Some(mtime),
-            Some(current) if mtime > current => newest = Some(mtime),
-            Some(_) => {}
-        }
-    }
-    newest
 }

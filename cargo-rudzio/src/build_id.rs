@@ -49,6 +49,17 @@ pub const PROFILE: &str = match option_env!("CARGO_RUDZIO_BUILD_PROFILE") {
     None => "unknown",
 };
 
+/// Content fingerprint of this crate's own build inputs (`src/`, `build.rs`,
+/// `Cargo.toml`), stamped by `build.rs` and compared against the live sources
+/// by `cargo-rudzio-test-helpers::assert_fresh_binary`. Unlike `GIT_HEAD`,
+/// this is invariant under a HEAD move that does not touch the sources, so a
+/// commit of empty harness/doco commits does not falsely mark the binary
+/// stale.
+pub const SOURCE_HASH: &str = match option_env!("CARGO_RUDZIO_BUILD_SOURCE_HASH") {
+    Some(value) => value,
+    None => "unknown",
+};
+
 /// Single-line, space-separated `key=value` identity report.
 ///
 /// The `git-head=` and `git-dirty=` token shapes are a cross-crate
@@ -58,6 +69,6 @@ pub const PROFILE: &str = match option_env!("CARGO_RUDZIO_BUILD_PROFILE") {
 #[must_use]
 pub fn line() -> String {
     format!(
-        "cargo-rudzio-build-id git-head={GIT_HEAD} git-dirty={GIT_DIRTY} version={VERSION} build-stamp={BUILD_STAMP} profile={PROFILE}"
+        "cargo-rudzio-build-id git-head={GIT_HEAD} git-dirty={GIT_DIRTY} version={VERSION} build-stamp={BUILD_STAMP} profile={PROFILE} source-hash={SOURCE_HASH}"
     )
 }
