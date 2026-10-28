@@ -28,12 +28,12 @@
 //! against the member, assert the helper-only mod produces zero
 //! diagnostics, and the test-bearing mod produces exactly one.
 
-use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use cargo_rudzio::generate::{plan_from_manifest, scan_unbroadened_cfg_test_mods_in_plan};
+use cargo_rudzio_test_helpers::with_cargo_offline;
 use rudzio::common::context::Suite;
 use rudzio::runtime::tokio::Multithread as TokioMultithread;
 
@@ -132,52 +132,6 @@ fn warnings_for(root: &Path) -> anyhow::Result<Vec<String>> {
     let manifest = root.join("Cargo.toml");
     let plan = with_cargo_offline(|| plan_from_manifest(&manifest))?;
     Ok(scan_unbroadened_cfg_test_mods_in_plan(&plan))
-}
-
-/// Set `CARGO_NET_OFFLINE=true` for the duration of `body`.
-fn with_cargo_offline<F, T>(body: F) -> T
-where
-    F: FnOnce() -> T,
-{
-    /// RAII guard restoring `CARGO_NET_OFFLINE` on drop.
-    struct Restore {
-        /// Value observed before installation; `None` = was unset.
-        prev: Option<String>,
-    }
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            if let Some(prev) = self.prev.take() {
-                #[expect(
-                    unsafe_code,
-                    reason = "std::env::set_var marked unsafe; this test owns the env var for the duration of the guard, no concurrent setters"
-                )]
-                // SAFETY: see other tests in this dir.
-                unsafe {
-                    env::set_var("CARGO_NET_OFFLINE", prev);
-                }
-            } else {
-                #[expect(
-                    unsafe_code,
-                    reason = "std::env::remove_var marked unsafe; this test owns the env var for the duration of the guard, no concurrent setters"
-                )]
-                // SAFETY: see other tests in this dir.
-                unsafe {
-                    env::remove_var("CARGO_NET_OFFLINE");
-                }
-            }
-        }
-    }
-    let prev = env::var("CARGO_NET_OFFLINE").ok();
-    let _guard = Restore { prev };
-    #[expect(
-        unsafe_code,
-        reason = "std::env::set_var marked unsafe; this test owns the env var for the duration of the guard, no concurrent setters"
-    )]
-    // SAFETY: see Restore::drop.
-    unsafe {
-        env::set_var("CARGO_NET_OFFLINE", "true");
-    }
-    body()
 }
 
 #[rudzio::suite([
