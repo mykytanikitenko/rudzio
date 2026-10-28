@@ -26,7 +26,10 @@ use std::io;
 use std::path::Path;
 use std::process::{Command, Output};
 
-use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
+use cargo_rudzio_test_helpers::{
+    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary,
+    combined_output,
+};
 use rudzio::runtime::tokio::Multithread as TokioMultithread;
 use tempfile::TempDir;
 
@@ -173,54 +176,12 @@ fn run_cargo_rudzio(
     .output()
 }
 
-/// Extract the `N` from the runner's `test result: ok. N passed; ...` line.
-fn parse_passed_count(stdout: &str) -> Option<usize> {
-    let line = stdout
-        .lines()
-        .find(|candidate| candidate.contains("test result:") && candidate.contains("passed;"))?;
-    let (head, _tail) = line.split_once(" passed;")?;
-    head.rsplit(|ch: char| !ch.is_ascii_digit())
-        .next()?
-        .parse()
-        .ok()
-}
-
-/// Assert the run exited 0 AND reported exactly `expected` as the passed
-/// test set: summary count equals `expected.len()` and every expected name
-/// appears in stdout.
-fn assert_exact_passed(output: &Output, expected: &[&str]) -> anyhow::Result<()> {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    anyhow::ensure!(
-        output.status.success(),
-        "cargo rudzio test must exit 0; exit = {:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        output.status.code(),
-    );
-    let passed = parse_passed_count(&stdout).ok_or_else(|| {
-        anyhow::anyhow!(
-            "could not parse `N passed;` from the runner summary\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-        )
-    })?;
-    anyhow::ensure!(
-        passed == expected.len(),
-        "runner summary reports {passed} passed, expected exactly {} ({expected:?})\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        expected.len(),
-    );
-    for name in expected {
-        anyhow::ensure!(
-            stdout.contains(name),
-            "test `{name}` must be reported in runner stdout\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        );
-    }
-    Ok(())
-}
-
 #[rudzio::suite([(runtime = TokioMultithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest)])]
 mod tests {
     use super::{
-        IsolatedCargoTest, Path, TempDir, assert_exact_passed, bin_source_with_test_source, fs,
-        integration_test_source, run_cargo_rudzio, write_bin_only_manifest,
-        write_workspace_manifest,
+        IsolatedCargoTest, Path, RunSummary, TempDir, assert_exact_test_names, assert_summary,
+        bin_source_with_test_source, combined_output, fs, integration_test_source,
+        run_cargo_rudzio, write_bin_only_manifest, write_workspace_manifest,
     };
 
     #[rudzio::test]
@@ -242,7 +203,11 @@ mod tests {
         )?;
 
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
-        assert_exact_passed(&output, &["bin_only_single_test"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["bin_only_single_test"])?;
+        Ok(())
     }
 
     #[rudzio::test]
@@ -268,7 +233,11 @@ mod tests {
         )?;
 
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
-        assert_exact_passed(&output, &["flat_a_test", "flat_b_test"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_exact_test_names(&text, &["flat_a_test", "flat_b_test"])?;
+        Ok(())
     }
 
     #[rudzio::test]
@@ -319,7 +288,11 @@ mod tests {
         )?;
 
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
-        assert_exact_passed(&output, &["directory_test_root_uses_helper"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["directory_test_root_uses_helper"])?;
+        Ok(())
     }
 
     #[rudzio::test]
@@ -343,7 +316,11 @@ mod tests {
         )?;
 
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
-        assert_exact_passed(&output, &["bin_exe_env_resolves"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["bin_exe_env_resolves"])?;
+        Ok(())
     }
 
     #[rudzio::test]
@@ -372,7 +349,11 @@ mod tests {
         )?;
 
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
-        assert_exact_passed(&output, &["bin_source_test", "integration_test"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_exact_test_names(&text, &["inner::bin_source_test", "integration_test"])?;
+        Ok(())
     }
 
     #[rudzio::test]
@@ -409,6 +390,10 @@ mod tests {
         // Workspace-wide (no `-p`): `noop` contributes nothing, `tested`
         // contributes exactly one test.
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
-        assert_exact_passed(&output, &["tested_member_test"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["tested_member_test"])?;
+        Ok(())
     }
 }
