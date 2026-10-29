@@ -125,10 +125,7 @@ fn run_cargo_rudzio(
         .env("RUSTC_WRAPPER", "")
         .env("SCCACHE_DISABLE", "1")
         .env("NO_COLOR", "1")
-        .env(
-            rudzio::RUNNER_ARGS_ENV,
-            "--threads-parallel-hardlimit=none",
-        )
+        .env(rudzio::RUNNER_ARGS_ENV, "--threads-parallel-hardlimit=none")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let output = cmd.output().map_err(io::Error::other)?;
@@ -141,7 +138,9 @@ fn run_cargo_rudzio(
     test = IsolatedCargoTest,
 )])]
 mod tests {
-    use super::{IsolatedCargoTest, Output, Path, fs, rudzio_source_root, run_cargo_rudzio, write_fixture};
+    use super::{
+        IsolatedCargoTest, Output, Path, fs, rudzio_source_root, run_cargo_rudzio, write_fixture,
+    };
 
     /// Repo root of the rudzio workspace under test (parent of `cargo-rudzio/`).
     fn rudzio_root() -> anyhow::Result<&'static Path> {

@@ -27,7 +27,14 @@
 
 /// Module wrapping the fingerprint so `include!`-ing this file never
 /// collides with the including crate's own `use` statements or item names.
+#[expect(
+    clippy::inline_modules,
+    reason = "shared via `include!` into `build.rs` and `cargo-rudzio-test-helpers`; the module wrapper namespaces items so they never collide with each including crate's own names"
+)]
 pub mod source_fingerprint {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
     /// rustc-env key the fingerprint is stamped under.
     pub const ENV: &str = "CARGO_RUDZIO_BUILD_SOURCE_HASH";
 
@@ -54,20 +61,21 @@ pub mod source_fingerprint {
     /// fully specified so the value is stable across rustc versions and
     /// across the two include sites. Returns [`UNKNOWN`] when nothing is
     /// readable.
-    pub fn of(manifest_dir: &std::path::Path) -> String {
+    #[must_use]
+    #[inline]
+    pub fn of(manifest_dir: &Path) -> String {
         let mut files = Vec::new();
         for entry in SOURCE_ENTRIES {
-            collect(manifest_dir, std::path::Path::new(entry), &mut files);
+            collect(manifest_dir, Path::new(entry), &mut files);
         }
         files.sort();
 
         let mut hash = FNV_OFFSET;
-        let mut counted = 0usize;
+        let mut counted = 0_usize;
         for rel in files {
             let full = manifest_dir.join(&rel);
-            let content = match std::fs::read(&full) {
-                Ok(bytes) => bytes,
-                Err(_) => continue,
+            let Ok(content) = fs::read(&full) else {
+                continue;
             };
             hash = fold(hash, rel.to_string_lossy().as_bytes());
             hash = fold(hash, &[0]);
@@ -95,7 +103,7 @@ pub mod source_fingerprint {
     /// to `root`. Directories are traversed; unreadable or absent entries are
     /// skipped so a standalone build script against a bare temp dir still
     /// yields a well-defined (possibly empty) set.
-    fn collect(root: &std::path::Path, rel: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    fn collect(root: &Path, rel: &Path, out: &mut Vec<PathBuf>) {
         let full = root.join(rel);
         if full.is_file() {
             out.push(rel.to_path_buf());
@@ -104,15 +112,13 @@ pub mod source_fingerprint {
         if !full.is_dir() {
             return;
         }
-        let entries = match std::fs::read_dir(&full) {
-            Ok(entries) => entries,
-            Err(_) => return,
+        let Ok(entries) = fs::read_dir(&full) else {
+            return;
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let relative = match path.strip_prefix(root) {
-                Ok(relative) => relative,
-                Err(_) => continue,
+            let Ok(relative) = path.strip_prefix(root) else {
+                continue;
             };
             if path.is_dir() {
                 collect(root, relative, out);

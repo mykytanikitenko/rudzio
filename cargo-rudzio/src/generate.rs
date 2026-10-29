@@ -6790,7 +6790,7 @@ pub fn build_build_rs(_plan: &Plan) -> String {
 /// forbid. Used by the bridge-lib codegen path that splices member-side
 /// proxy paths into `#[path = …]` attributes.
 fn escape_rust_string_literal(value: &str) -> String {
-    let mut buf = String::with_capacity(value.len().checked_add(2).map_or(0, |count| count));
+    let mut buf = String::with_capacity(value.len().checked_add(2).unwrap_or(0));
     buf.push('"');
     buf.push_str(&escape_str_literal(value));
     buf.push('"');
