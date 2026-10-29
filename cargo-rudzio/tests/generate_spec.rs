@@ -807,11 +807,11 @@ mod tests {
         dev_consumer.manifest_dir = PathBuf::from("/abs/a");
         dev_consumer.bin_targets = vec![new_bin()];
 
-        let plan = plan_with_members(vec![dev_consumer.clone(), sibling.clone()], "/tmp");
-        let toml = build_standalone_bin_cargo_toml(&plan, &dev_consumer, &new_bin())?;
+        let dev_plan = plan_with_members(vec![dev_consumer.clone(), sibling.clone()], "/tmp");
+        let dev_toml = build_standalone_bin_cargo_toml(&dev_plan, &dev_consumer, &new_bin())?;
         anyhow::ensure!(
-            !toml.contains("foo-helpers") && !toml.contains("foo_helpers"),
-            "dev-only sibling must not leak into standalone bin deps:\n{toml}"
+            !dev_toml.contains("foo-helpers") && !dev_toml.contains("foo_helpers"),
+            "dev-only sibling must not leak into standalone bin deps:\n{dev_toml}"
         );
 
         // REGULAR dep must be keyed by package name.
@@ -823,15 +823,15 @@ mod tests {
         reg_consumer.manifest_dir = PathBuf::from("/abs/a");
         reg_consumer.bin_targets = vec![new_bin()];
 
-        let plan = plan_with_members(vec![reg_consumer.clone(), sibling], "/tmp");
-        let toml = build_standalone_bin_cargo_toml(&plan, &reg_consumer, &new_bin())?;
+        let reg_plan = plan_with_members(vec![reg_consumer.clone(), sibling], "/tmp");
+        let reg_toml = build_standalone_bin_cargo_toml(&reg_plan, &reg_consumer, &new_bin())?;
         anyhow::ensure!(
-            toml.contains("foo-helpers"),
-            "regular sibling must be keyed by package name `foo-helpers`:\n{toml}"
+            reg_toml.contains("foo-helpers"),
+            "regular sibling must be keyed by package name `foo-helpers`:\n{reg_toml}"
         );
         anyhow::ensure!(
-            !toml.contains("foo_helpers"),
-            "regular sibling must not be keyed by lib ident `foo_helpers`:\n{toml}"
+            !reg_toml.contains("foo_helpers"),
+            "regular sibling must not be keyed by lib ident `foo_helpers`:\n{reg_toml}"
         );
         Ok(())
     }
@@ -2395,12 +2395,8 @@ opt-level = 0
 
         let found = discover_test_root_helpers(&tests.join("foo.rs"));
         anyhow::ensure!(
-            found.len() == 1,
-            "flat entry must discover exactly one helper, got {found:?}"
-        );
-        anyhow::ensure!(
-            found[0].0 == "helper" && found[0].1 == helper,
-            "flat entry `mod helper;` must resolve to `tests/foo/helper.rs`, got {found:?}"
+            found == [("helper".to_owned(), helper)],
+            "flat entry `mod helper;` must resolve to exactly `tests/foo/helper.rs`, got {found:?}"
         );
         Ok(())
     }

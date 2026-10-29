@@ -34,32 +34,6 @@ use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
 use rudzio::runtime::tokio::Multithread as TokioMultithread;
 use tempfile::TempDir;
 
-/// Repo root = parent of `cargo-rudzio/`. Fixtures point their `rudzio`
-/// workspace dependency here so they exercise the in-tree code.
-fn rudzio_source_root() -> Option<&'static Path> {
-    Path::new(env!("CARGO_MANIFEST_DIR")).parent()
-}
-
-/// Workspace root manifest (minimal: no panic/profile overrides, no
-/// deny-warnings) so the standalone bin compiles without the
-/// panic-abort-propagation or clippy-deny interactions.
-fn workspace_manifest(rudzio: &Path, members: &str) -> String {
-    format!(
-        "[workspace]\nmembers = {members}\nresolver = \"2\"\n\n\
-         [workspace.dependencies]\n\
-         rudzio = {{ path = \"{rudzio}\", features = [\"common\", \"runtime-tokio-multi-thread\"] }}\n\
-         anyhow = \"=1.0.104\"\n",
-        rudzio = rudzio.display(),
-    )
-}
-
-/// Materialise the workspace root manifest.
-fn write_workspace(root: &Path, members: &str) -> io::Result<()> {
-    let rudzio = rudzio_source_root()
-        .ok_or_else(|| io::Error::other("cargo-rudzio/tests must live under the workspace root"))?;
-    fs::write(root.join("Cargo.toml"), workspace_manifest(rudzio, members))
-}
-
 /// A bridged sibling whose package name (`foo-helpers`) differs from its
 /// lib identifier (`foo_helpers`) — the shape that trips the lib-ident
 /// key defect.
@@ -77,6 +51,9 @@ const FOO_HELPERS_MANIFEST: &str = "[package]\n\
      rudzio = { workspace = true }\n\
      anyhow = { workspace = true }\n";
 
+/// Source of the bridged sibling lib: its crate name (`foo_helpers`)
+/// diverges from the package name (`foo-helpers`), exercising the
+/// lib-ident keying path during aggregation.
 const FOO_HELPERS_LIB: &str = "//! sibling lib whose crate name != package name
 pub fn answer() -> u32 {
     42
@@ -136,6 +113,32 @@ mod tests {
 #[rudzio::main]
 fn main() {}
 ";
+
+/// Repo root = parent of `cargo-rudzio/`. Fixtures point their `rudzio`
+/// workspace dependency here so they exercise the in-tree code.
+fn rudzio_source_root() -> Option<&'static Path> {
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent()
+}
+
+/// Workspace root manifest (minimal: no panic/profile overrides, no
+/// deny-warnings) so the standalone bin compiles without the
+/// panic-abort-propagation or clippy-deny interactions.
+fn workspace_manifest(rudzio: &Path, members: &str) -> String {
+    format!(
+        "[workspace]\nmembers = {members}\nresolver = \"2\"\n\n\
+         [workspace.dependencies]\n\
+         rudzio = {{ path = \"{rudzio}\", features = [\"common\", \"runtime-tokio-multi-thread\"] }}\n\
+         anyhow = \"=1.0.104\"\n",
+        rudzio = rudzio.display(),
+    )
+}
+
+/// Materialise the workspace root manifest.
+fn write_workspace(root: &Path, members: &str) -> io::Result<()> {
+    let rudzio = rudzio_source_root()
+        .ok_or_else(|| io::Error::other("cargo-rudzio/tests must live under the workspace root"))?;
+    fs::write(root.join("Cargo.toml"), workspace_manifest(rudzio, members))
+}
 
 /// Member `a` manifest. `foo_helpers_in_dev` places `foo-helpers` in
 /// `[dev-dependencies]` (DEV-only) vs `[dependencies]` (REGULAR).

@@ -2721,10 +2721,7 @@ mod unix_tests {
                 filtered_out: 0,
             },
         )?;
-        assert_exact_test_names(
-            &log,
-            &["in_first_mod", "in_second_mod"],
-        )?;
+        assert_exact_test_names(&log, &["in_first_mod", "in_second_mod"])?;
         Ok(())
     }
 
