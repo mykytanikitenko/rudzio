@@ -10,8 +10,9 @@ use cargo_rudzio::generate::{
     WorkspaceDepSpec, bridge_applies_to, bridge_dir_name, bridge_package_name,
     build_bridge_build_rs, build_bridge_cargo_toml, build_main_rs, build_rudzio_inline_table,
     build_standalone_bin_cargo_toml, collect_rudzio_spec, detect_src_rudzio_suite,
-    load_rudzio_activated_features, member_under_any_root, scan_unbroadened_cfg_test_mods,
-    scan_unbroadened_cfg_test_mods_in_plan, write_bridge_crate, write_runner,
+    discover_test_root_helpers, load_rudzio_activated_features, member_under_any_root,
+    scan_unbroadened_cfg_test_mods, scan_unbroadened_cfg_test_mods_in_plan, write_bridge_crate,
+    write_runner,
 };
 use rudzio::common::context::Suite;
 use rudzio::runtime::async_std::Runtime as AsyncStdRuntime;
@@ -125,8 +126,8 @@ mod tests {
         WorkspaceDepSpec, bridge_applies_to, bridge_dir_name, bridge_package_name,
         build_bridge_build_rs, build_bridge_cargo_toml, build_main_rs, build_rudzio_inline_table,
         build_standalone_bin_cargo_toml, collect_rudzio_spec, detect_src_rudzio_suite,
-        load_rudzio_activated_features, materialise_member, member, member_under_any_root,
-        plan_with_members, rudzio_dep, scan_unbroadened_cfg_test_mods,
+        discover_test_root_helpers, load_rudzio_activated_features, materialise_member, member,
+        member_under_any_root, plan_with_members, rudzio_dep, scan_unbroadened_cfg_test_mods,
         scan_unbroadened_cfg_test_mods_in_plan, write_bridge_crate, write_runner, ws_root,
     };
     use std::fs;
@@ -2335,6 +2336,71 @@ opt-level = 0
         anyhow::ensure!(
             message.contains("excluded every"),
             "error should explain the empty result, got: {message}",
+        );
+        Ok(())
+    }
+
+    /// A workspace-level rename (`[workspace.dependencies] bee = { package = "b", … }`)
+    /// inherited via `bee = { workspace = true }` must keep the member's key (`bee`)
+    /// as the bridge `[dependencies]` entry name (the extern name the consumer's
+    /// `use bee::…` spells), with `package` re-emitted to the sibling's bridge
+    /// package — never re-keyed to the sibling's lib ident `b`.
+    #[rudzio::test]
+    fn bridge_dependencies_key_workspace_renamed_dep_by_extern_name() -> anyhow::Result<()> {
+        let mut sibling = member("b", Vec::new());
+        sibling.manifest_dir = PathBuf::from("/abs/b");
+        sibling.has_src_rudzio_suite = true;
+
+        let mut bee = DevDepSpec::new("bee".to_owned());
+        bee.workspace_inherited = true;
+        bee.section = Section::Regular;
+
+        let consumer = member("a", vec![bee]);
+
+        let mut plan = plan_with_members(vec![consumer.clone(), sibling], "/tmp");
+        let mut ws = WorkspaceDepSpec::empty();
+        ws.package = Some("b".to_owned());
+        ws.path = Some(PathBuf::from("/abs/b"));
+        let _previous = plan.workspace_deps.insert("bee".to_owned(), ws);
+
+        let toml = build_bridge_cargo_toml(&plan, &consumer)?;
+        anyhow::ensure!(
+            toml.contains("bee = {"),
+            "workspace-renamed sibling dep must be keyed by its extern name `bee`:\n{toml}"
+        );
+        anyhow::ensure!(
+            toml.contains("package = \"b_rudzio_bridge\""),
+            "workspace-renamed sibling dep must re-emit the sibling bridge `package`:\n{toml}"
+        );
+        anyhow::ensure!(
+            !toml.contains("b = {"),
+            "workspace-renamed sibling dep must not be re-keyed to the sibling lib ident `b`:\n{toml}"
+        );
+        Ok(())
+    }
+
+    /// A flat integration-test entry (`tests/foo.rs`) is a non-mod-rs file, so
+    /// cargo resolves its `mod helper;` in a subdir named after the entry stem
+    /// (`tests/foo/helper.rs`), not the shared `tests/` dir. Helper discovery
+    /// must mirror that split or the helper's `#[rudzio::test]` surface silently
+    /// disappears from the aggregator.
+    #[rudzio::test]
+    fn discover_test_root_helpers_resolves_flat_entry_subdir_helper() -> anyhow::Result<()> {
+        let tmp = tempdir()?;
+        let tests = tmp.path().join("tests");
+        fs::create_dir_all(tests.join("foo"))?;
+        fs::write(tests.join("foo.rs"), "mod helper;\n")?;
+        let helper = tests.join("foo").join("helper.rs");
+        fs::write(&helper, "// rudzio_test marker\n")?;
+
+        let found = discover_test_root_helpers(&tests.join("foo.rs"));
+        anyhow::ensure!(
+            found.len() == 1,
+            "flat entry must discover exactly one helper, got {found:?}"
+        );
+        anyhow::ensure!(
+            found[0].0 == "helper" && found[0].1 == helper,
+            "flat entry `mod helper;` must resolve to `tests/foo/helper.rs`, got {found:?}"
         );
         Ok(())
     }

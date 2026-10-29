@@ -3924,6 +3924,7 @@ fn build_standalone_bin_dependencies(plan: &Plan, member: &MemberPlan) -> Result
 /// The crate declares exactly one `[[bin]]` (the fixture's source), the
 /// real dependency graph, and the member's `[features]` table (so
 /// feature-gated fixture source resolves identically to the bridge's).
+#[inline]
 pub fn build_standalone_bin_cargo_toml(
     plan: &Plan,
     member: &MemberPlan,
@@ -5937,33 +5938,20 @@ fn use_tree_binds_ident(tree: &syn::UseTree, ident: &str) -> bool {
     }
 }
 
-/// Parse `test_file` (the `[[test]] path = "..."` entry-point of a
-/// member's integration test binary) for top-level `mod <name>;`
-/// declarations and resolve each to the sibling file. Returns
+/// Discover the sibling-file helpers a test entry declares via `mod <name>;`.
+///
+/// Parses `test_file` (a member's integration-test entry point) for top-level
+/// `mod <name>;` declarations and resolves each to its source file, returning
 /// `(name, abs_path)` pairs in declaration order.
 ///
-/// Fires for both directory-style entries (`<dir>/mod.rs`,
-/// `<dir>/main.rs`, `<dir>/lib.rs`) AND flat entries
-/// (`tests/<name>.rs`). Cargo's module resolution differs by
-/// entry kind, and the resolution base used to find each
-/// `mod X;` source file mirrors cargo's rules:
+/// Cargo resolves a test entry's `mod X;` in the entry's own directory
+/// (`<dir>/X.rs` / `<dir>/X/mod.rs`), because a test entry is a crate root. As
+/// a fallback for fixtures that place a flat entry's helper in a subdir named
+/// after the entry's stem (`tests/foo/helper.rs`), that subdir is also probed
+/// so the helper is discovered instead of left dangling (E0583).
 ///
-///   * directory-style entry (`<dir>/mod.rs`, `main.rs`, `lib.rs`):
-///     submods live as siblings of the entry — `mod foo;` →
-///     `<dir>/foo.rs` or `<dir>/foo/mod.rs`.
-///   * flat entry (`tests/foo.rs`): submods live in a subdir
-///     matching the entry's stem — `mod helper;` →
-///     `tests/foo/helper.rs` or `tests/foo/helper/mod.rs`.
-///
-/// Pre-Bug-#16-step-B only directory-style entries were
-/// supported; the flat-entry case silently disappeared because
-/// `discover_test_root_helpers` returned empty AND the proxy
-/// generation stripped `mod helper;` from the proxy entry, so
-/// the helper's `#[rudzio::test]` markers never reached any
-/// compile unit and the dispatcher couldn't see them.
-///
-/// Detection is line-based, not syn-driven, so the patterns
-/// recognised are intentionally narrow:
+/// Detection is line-based, not syn-driven, so the patterns recognised are
+/// intentionally narrow:
 ///
 ///   `mod foo;`            (private)
 ///   `pub mod foo;`        (re-exported)
@@ -5976,20 +5964,24 @@ fn use_tree_binds_ident(tree: &syn::UseTree, ident: &str) -> bool {
 /// the aggregator root, which is the right semantics: cfg-gated
 /// helpers were already opt-in at the test-binary level, and the
 /// aggregator's `--cfg rudzio_test` activation broadens that gate).
-fn discover_test_root_helpers(test_file: &Path) -> Vec<(String, PathBuf)> {
+#[inline]
+#[must_use]
+pub fn discover_test_root_helpers(test_file: &Path) -> Vec<(String, PathBuf)> {
     let Some(dir) = test_file.parent() else {
         return Vec::new();
     };
-    // Determine cargo's mod-resolution base for `mod X;` declarations
-    // in this entry. Every file cargo compiles as an integration-test
-    // crate root — flat `tests/<name>.rs` files AND directory-style
-    // `tests/<name>/mod.rs` entries — resolves its `mod X;` children in
-    // its own directory (`<dir>/X.rs` / `<dir>/X/mod.rs`). A flat test
-    // root is a crate root, not a submodule, so it follows the same
-    // same-directory rule as the canonical `tests/common/mod.rs`
-    // pattern rather than the subdir rule for non-mod-rs submodules
-    // (Bug #10).
+    // Cargo resolves `mod X;` in a test entry (flat `tests/<name>.rs` or
+    // directory-style `tests/<name>/mod.rs`) to the entry's own directory
+    // (`<dir>/X.rs` / `<dir>/X/mod.rs`), because a test entry is a crate
+    // root, not a submodule. Some fixtures also place a flat entry's helper
+    // in a subdir named after the entry's stem (`tests/foo/helper.rs`);
+    // probe that as a fallback so those helpers are discovered instead of
+    // leaving a dangling `mod helper;` that cargo cannot resolve (E0583).
     let resolution_base: PathBuf = dir.to_path_buf();
+    let subdir_base = test_file
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(|stem| dir.join(stem));
     let Ok(text) = fs::read_to_string(test_file) else {
         return Vec::new();
     };
@@ -6005,11 +5997,25 @@ fn discover_test_root_helpers(test_file: &Path) -> Vec<(String, PathBuf)> {
         } else if child_dir_mod.is_file() {
             child_dir_mod
         } else {
-            // `mod foo;` with no matching file — either a typo in the
-            // member's source or the file is generated at build.rs
-            // time. Either way the re-export would point at a missing
-            // file and break the aggregator build, so skip it.
-            continue;
+            match &subdir_base {
+                Some(base) => {
+                    let sub_file = base.join(format!("{name}.rs"));
+                    let sub_mod = base.join(&name).join("mod.rs");
+                    if sub_file.is_file() {
+                        sub_file
+                    } else if sub_mod.is_file() {
+                        sub_mod
+                    } else {
+                        // `mod foo;` with no matching file — either a typo
+                        // in the member's source or the file is generated at
+                        // build.rs time. Either way the re-export would point
+                        // at a missing file and break the aggregator build, so
+                        // skip it.
+                        continue;
+                    }
+                }
+                None => continue,
+            }
         };
         out.push((name, resolved));
     }
@@ -6436,6 +6442,21 @@ fn find_bridged_sibling<'plan>(dep: &DevDepSpec, plan: &'plan Plan) -> Option<&'
 fn dev_dep_entry_name(dep: &DevDepSpec, plan: &Plan) -> String {
     if let Some(rename) = &dep.rename {
         return rename.clone();
+    }
+    // A workspace-level rename (`[workspace.dependencies] bee = { package = "b", … }`
+    // inherited via `bee = { workspace = true }`) keeps the member's key (`bee`) as
+    // the extern name. `find_bridged_sibling` resolves the real package (`b`) through
+    // `real_package_name`, but the bridge's `[dependencies]` key must match the
+    // `use bee::…` the consumer's test source spells — i.e. `dep.name`, not the
+    // sibling's lib ident.
+    if dep.workspace_inherited
+        && plan
+            .workspace_deps
+            .get(&dep.name)
+            .and_then(|ws| ws.package.as_deref())
+            .is_some_and(|pkg| pkg != dep.name.as_str())
+    {
+        return dep.name.clone();
     }
     if let Some(sibling) = find_bridged_sibling(dep, plan) {
         return sibling.lib_ident();
