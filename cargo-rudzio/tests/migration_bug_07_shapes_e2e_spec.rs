@@ -209,6 +209,7 @@ mod tests {
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
         assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
         assert_exact_test_names(&text, &["self_named_shape_answer"])?;
+        Ok(())
     }
 
     /// GREEN control: a plain parseable private `mod selfmod;` — the
@@ -224,5 +225,6 @@ mod tests {
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
         assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
         assert_exact_test_names(&text, &["self_named_shape_answer"])?;
+        Ok(())
     }
 }

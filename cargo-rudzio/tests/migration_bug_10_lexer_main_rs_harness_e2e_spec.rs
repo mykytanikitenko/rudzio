@@ -295,13 +295,9 @@ fn run_cargo_rudzio(
 mod tests {
     use std::path::{Path, PathBuf};
     use super::{
-        IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary, combined_output,
-        prepopulate_git_dep, rudzio_git_rev, run_cargo_rudzio, write_fixture,
+        IsolatedCargoTest, Output, RunSummary, assert_exact_test_names, assert_summary,
+        combined_output, prepopulate_git_dep, rudzio_git_rev, run_cargo_rudzio, write_fixture,
     };
-
-    /// The four `#[rudzio::test]` fns the operator's sibling test files declare
-    /// (`asm_common_lexes_words`, `code_lexes_words`, `code_lexes_std_numeric`,
-    /// `cursor_lexes_words`).
 
     /// Build a task-local cargo build dir beside the cargo target dir.
     fn cargo_build_dir_for(cargo_target_dir: &Path) -> anyhow::Result<PathBuf> {
@@ -364,6 +360,7 @@ mod tests {
                 "cursor::tests::cursor_lexes_words",
             ],
         )?;
+        Ok(())
     }
 
     /// **Bug #10 (operator's exact shape, workspace-wide)** — the same workspace
@@ -396,5 +393,6 @@ mod tests {
                 "cursor::tests::cursor_lexes_words",
             ],
         )?;
+        Ok(())
     }
 }
