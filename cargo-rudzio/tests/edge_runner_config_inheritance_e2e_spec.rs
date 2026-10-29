@@ -144,7 +144,10 @@ fn run_cargo_rudzio(
     test = IsolatedCargoTest,
 )])]
 mod tests {
-    use super::{IsolatedCargoTest, Path, fs, rudzio_source_root, run_cargo_rudzio, write_fixture};
+    use super::{
+        IsolatedCargoTest, Path, RunSummary, assert_exact_test_names, assert_summary,
+        combined_output, fs, rudzio_source_root, run_cargo_rudzio, write_fixture,
+    };
 
     /// Repo root of the rudzio workspace under test (parent of `cargo-rudzio/`).
     fn rudzio_root() -> anyhow::Result<&'static Path> {

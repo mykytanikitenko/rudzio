@@ -269,6 +269,7 @@ mod tests {
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
         assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
         assert_exact_test_names(&text, &["control_non_self_named_answer"])?;
+        Ok(())
     }
 
     /// **`#[path]` attribute** — a self-named module declared via a
@@ -302,6 +303,7 @@ mod tests {
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
         assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
         assert_exact_test_names(&text, &["path_attr_self_named_answer"])?;
+        Ok(())
     }
 
     /// **cfg-gated self-named item** — `#[cfg(not(rudzio_test))] mod project;`
@@ -332,6 +334,7 @@ mod tests {
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
         assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
         assert_exact_test_names(&text, &["cfg_gated_self_named_answer"])?;
+        Ok(())
     }
 
     /// **UTF-8 BOM** — a `src/lib.rs` that begins with a UTF-8 byte-order
@@ -362,6 +365,7 @@ mod tests {
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
         assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
         assert_exact_test_names(&text, &["bom_self_named_answer"])?;
+        Ok(())
     }
 
     /// **CRLF line endings** — a `src/lib.rs` whose lines end in `\r\n` is
@@ -391,6 +395,7 @@ mod tests {
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
         assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
         assert_exact_test_names(&text, &["crlf_self_named_answer"])?;
+        Ok(())
     }
 
     /// **Raw identifier** — a crate root that also carries a raw-ident item
@@ -425,6 +430,7 @@ mod tests {
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
         assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
         assert_exact_test_names(&text, &["raw_ident_self_named_answer"])?;
+        Ok(())
     }
 
     /// **`tests/main.rs` shim** — a self-named member whose `[[test]]` entry
@@ -490,6 +496,7 @@ mod tests {
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
         assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
         assert_exact_test_names(&text, &["shim_self_named_answer"])?;
+        Ok(())
     }
 
     /// **Self-named macro** — a `macro_rules! project` at the crate root is a
@@ -520,6 +527,7 @@ mod tests {
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
         assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
         assert_exact_test_names(&text, &["macro_self_named_answer"])?;
+        Ok(())
     }
 
     /// **Every crate-path spelling** — a self-named crate `x` (root `foo()`
@@ -570,6 +578,7 @@ mod tests {
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
         assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
         assert_exact_test_names(&text, &["every_form_references_crate"])?;
+        Ok(())
     }
 
     /// **Hyphenated package, lib name overridden** — package `my-crate` with
@@ -608,6 +617,7 @@ mod tests {
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
         assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
         assert_exact_test_names(&text, &["hyphenated_lib_name_override_answer"])?;
+        Ok(())
     }
 
     /// **Control — hyphenated package, no `[lib] name` override** — package
@@ -673,6 +683,7 @@ mod tests {
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
         assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
         assert_exact_test_names(&text, &["hyphenated_default_lib_name_answer"])?;
+        Ok(())
     }
 
     /// **Cross-crate self-named dependency** — crate `a` depends on the
@@ -767,6 +778,7 @@ mod tests {
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
         assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
         assert_exact_test_names(&text, &["cross_crate_self_named_item"])?;
+        Ok(())
     }
 
     /// **Self-named crate + bin target** — a self-named lib crate `x` that
@@ -843,5 +855,6 @@ mod tests {
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
         assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
         assert_exact_test_names(&text, &["bin_coexists_self_named_answer"])?;
+        Ok(())
     }
 }

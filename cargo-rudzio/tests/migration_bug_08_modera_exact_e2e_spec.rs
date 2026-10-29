@@ -312,8 +312,6 @@ fn write_modera_crate(root: &Path, git_rev: &str) -> io::Result<()> {
 ])]
 mod tests {
     use std::path::{Path, PathBuf};
-    use std::process::Output;
-
     use super::{
         IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary,
         cargo_home_with_full_graph, combined_output, current_git_head, run_cargo_rudzio_fresh,
@@ -365,6 +363,7 @@ mod tests {
                 "cli::tests::help_flag",
             ],
         )?;
+        Ok(())
     }
 
     /// **Bug #8 (operator's exact shape, workspace-wide)** — the same workspace
@@ -403,5 +402,6 @@ mod tests {
                 "cli::tests::help_flag",
             ],
         )?;
+        Ok(())
     }
 }

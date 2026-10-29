@@ -142,8 +142,9 @@ mod tests {
     use std::os::unix::process::ExitStatusExt as _;
 
     use super::{
-        Command, IsolatedCargoTest, Output, Path, TempDir, env, fs, generated_aggregator_manifest,
-        io, rudzio_source_root, write_e2e_fixture, write_unit_fixture,
+        Command, IsolatedCargoTest, Output, Path, RunSummary, TempDir, assert_exact_test_names,
+        assert_summary, combined_output, env, fs, generated_aggregator_manifest, io,
+        rudzio_source_root, write_e2e_fixture, write_unit_fixture,
     };
 
     /// Spawn `cargo rudzio test` against the fixture at `root` with the
