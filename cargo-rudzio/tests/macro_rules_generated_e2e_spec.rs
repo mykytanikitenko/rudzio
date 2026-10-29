@@ -10,7 +10,10 @@ use std::io;
 use std::path::Path;
 use std::process::{Command, Output};
 
-use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
+use cargo_rudzio_test_helpers::{
+    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary,
+    combined_output,
+};
 use rudzio::runtime::tokio::Multithread as TokioMultithread;
 use tempfile::TempDir;
 
@@ -102,8 +105,8 @@ mod tests {
 )])]
 mod tests {
     use super::{
-        Command, IsolatedCargoTest, Output, Path, TempDir, env, io, rudzio_source_root,
-        write_fixture,
+        Command, IsolatedCargoTest, Output, Path, RunSummary, TempDir, assert_exact_test_names,
+        assert_summary, combined_output, env, io, rudzio_source_root, write_fixture,
     };
 
     /// Spawn `cargo rudzio test` against the fixture at `root` with the
@@ -141,28 +144,17 @@ mod tests {
         write_fixture(root, rudzio_root)?;
 
         let output = run_cargo_rudzio(ctx.cargo_home(), ctx.cargo_target_dir(), root)?;
-        let combined = format!(
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        anyhow::ensure!(
-            output.status.success(),
-            "expected macro-generated tests to run and pass through cargo rudzio test, but it \
-             exited {:?}.\n{combined}",
-            output.status.code(),
-        );
-        anyhow::ensure!(
-            combined.contains("macro_generated_a"),
-            "output:\n{combined}"
-        );
-        anyhow::ensure!(
-            combined.contains("macro_generated_b"),
-            "output:\n{combined}"
-        );
-        anyhow::ensure!(combined.contains("direct_fn"), "output:\n{combined}");
-        anyhow::ensure!(combined.contains("3 passed"), "output:\n{combined}");
-        anyhow::ensure!(combined.contains("0 failed"), "output:\n{combined}");
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(3, 0, 0, 0, 0, 0, 0, 3))?;
+        assert_exact_test_names(
+            &text,
+            &[
+                "inner::macro_generated_a",
+                "inner::macro_generated_b",
+                "inner::direct_fn",
+            ],
+        )?;
         Ok(())
     }
 }
