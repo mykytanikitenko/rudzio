@@ -137,10 +137,10 @@ fn write_bins_manifest(bins_dir: &Path) -> io::Result<()> {
          \n\
          [dependencies]\n\
          deps = { path = \"../deps\" }\n\
+         anyhow = { workspace = true }\n\
          \n\
          [dev-dependencies]\n\
-         rudzio = { workspace = true }\n\
-         anyhow = { workspace = true }\n",
+         rudzio = { workspace = true }\n",
     )
 }
 

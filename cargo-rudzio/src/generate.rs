@@ -3871,10 +3871,25 @@ fn build_standalone_bin_dependencies(plan: &Plan, member: &MemberPlan) -> Result
 
     let mut merged: BTreeMap<String, DevDepSpec> = BTreeMap::new();
     for dep in &member.dev_deps {
+        // A standalone bin gets NO dev-deps: plain `cargo build --bin`
+        // links only `[dependencies]`. `member.dev_deps` is the merged
+        // union of `[dependencies]` (Regular) and `[dev-dependencies]`
+        // (DevOnly); dropping DevOnly here keeps the standalone bin's
+        // graph identical to what a normal bin sees.
+        if dep.section.is_dev_only() {
+            continue;
+        }
         if dep.name == member.package_name {
             continue;
         }
-        let entry_name = dev_dep_entry_name(dep, plan);
+        // Key by the package name (or the rename for an
+        // `alias = { package = "real" }` entry). `render_build_dep` →
+        // `render_build_sibling_real_dep` emits `path = ...` with NO
+        // `package =` for a non-renamed sibling, so the key must be the
+        // package name — not `dev_dep_entry_name`'s `lib_ident()`
+        // (underscored extern name), which made cargo hunt for a package
+        // literally named e.g. `foo_helpers` and fail resolution.
+        let entry_name = dep.rename.as_deref().unwrap_or(&dep.name).to_owned();
         merged
             .entry(entry_name)
             .and_modify(|existing| {
@@ -3909,7 +3924,7 @@ fn build_standalone_bin_dependencies(plan: &Plan, member: &MemberPlan) -> Result
 /// The crate declares exactly one `[[bin]]` (the fixture's source), the
 /// real dependency graph, and the member's `[features]` table (so
 /// feature-gated fixture source resolves identically to the bridge's).
-fn build_standalone_bin_cargo_toml(
+pub fn build_standalone_bin_cargo_toml(
     plan: &Plan,
     member: &MemberPlan,
     bin: &MemberBin,

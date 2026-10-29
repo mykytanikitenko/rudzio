@@ -9,9 +9,9 @@ use cargo_rudzio::generate::{
     DevDepSpec, GitRef, MemberBin, MemberPlan, Plan, RudzioLocation, RudzioSpec, Section,
     WorkspaceDepSpec, bridge_applies_to, bridge_dir_name, bridge_package_name,
     build_bridge_build_rs, build_bridge_cargo_toml, build_main_rs, build_rudzio_inline_table,
-    collect_rudzio_spec, detect_src_rudzio_suite, load_rudzio_activated_features,
-    member_under_any_root, scan_unbroadened_cfg_test_mods, scan_unbroadened_cfg_test_mods_in_plan,
-    write_bridge_crate, write_runner,
+    build_standalone_bin_cargo_toml, collect_rudzio_spec, detect_src_rudzio_suite,
+    load_rudzio_activated_features, member_under_any_root, scan_unbroadened_cfg_test_mods,
+    scan_unbroadened_cfg_test_mods_in_plan, write_bridge_crate, write_runner,
 };
 use rudzio::common::context::Suite;
 use rudzio::runtime::async_std::Runtime as AsyncStdRuntime;
@@ -124,10 +124,10 @@ mod tests {
         BTreeMap, DevDepSpec, GitRef, MemberBin, Path, RudzioLocation, RudzioSpec, Section,
         WorkspaceDepSpec, bridge_applies_to, bridge_dir_name, bridge_package_name,
         build_bridge_build_rs, build_bridge_cargo_toml, build_main_rs, build_rudzio_inline_table,
-        collect_rudzio_spec, detect_src_rudzio_suite, load_rudzio_activated_features,
-        materialise_member, member, member_under_any_root, plan_with_members, rudzio_dep,
-        scan_unbroadened_cfg_test_mods, scan_unbroadened_cfg_test_mods_in_plan, write_bridge_crate,
-        write_runner, ws_root,
+        build_standalone_bin_cargo_toml, collect_rudzio_spec, detect_src_rudzio_suite,
+        load_rudzio_activated_features, materialise_member, member, member_under_any_root,
+        plan_with_members, rudzio_dep, scan_unbroadened_cfg_test_mods,
+        scan_unbroadened_cfg_test_mods_in_plan, write_bridge_crate, write_runner, ws_root,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -773,6 +773,64 @@ mod tests {
         anyhow::ensure!(
             !toml.contains("b_rudzio_bridge"),
             "build-dep must not resolve to the test-only bridge package:\n{toml}"
+        );
+        Ok(())
+    }
+
+    /// Standalone `#[rudzio::main]` bins render their own `[dependencies]`:
+    /// a DEV-only sibling dep is dropped (plain `cargo build --bin` links
+    /// no dev-deps), and a REGULAR sibling dep is keyed by its PACKAGE
+    /// name (`foo-helpers`) — never its underscored lib ident
+    /// (`foo_helpers`) — so `render_build_sibling_real_dep`'s bare
+    /// `path = …` (no `package = …`) resolves.
+    #[rudzio::test]
+    fn standalone_bin_drops_dev_only_and_keys_regular_by_package_name() -> anyhow::Result<()> {
+        // Sibling: package `foo-helpers`, lib ident `foo_helpers`, bridged.
+        let mut sibling = member("foo-helpers", Vec::new());
+        sibling.manifest_dir = PathBuf::from("/abs/foo-helpers");
+        sibling.has_src_rudzio_suite = true;
+
+        let new_bin = || {
+            MemberBin::new(
+                "runner".to_owned(),
+                PathBuf::from("/abs/a/src/bin/runner.rs"),
+            )
+        };
+
+        // DEV-only dep must be dropped.
+        let mut dev_only = DevDepSpec::new("foo-helpers".to_owned());
+        dev_only.path = Some(PathBuf::from("/abs/a/../foo-helpers"));
+        dev_only.section = Section::DevOnly;
+
+        let mut dev_consumer = member("a", vec![dev_only]);
+        dev_consumer.manifest_dir = PathBuf::from("/abs/a");
+        dev_consumer.bin_targets = vec![new_bin()];
+
+        let plan = plan_with_members(vec![dev_consumer.clone(), sibling.clone()], "/tmp");
+        let toml = build_standalone_bin_cargo_toml(&plan, &dev_consumer, &new_bin())?;
+        anyhow::ensure!(
+            !toml.contains("foo-helpers") && !toml.contains("foo_helpers"),
+            "dev-only sibling must not leak into standalone bin deps:\n{toml}"
+        );
+
+        // REGULAR dep must be keyed by package name.
+        let mut regular = DevDepSpec::new("foo-helpers".to_owned());
+        regular.path = Some(PathBuf::from("/abs/a/../foo-helpers"));
+        regular.section = Section::Regular;
+
+        let mut reg_consumer = member("a", vec![regular]);
+        reg_consumer.manifest_dir = PathBuf::from("/abs/a");
+        reg_consumer.bin_targets = vec![new_bin()];
+
+        let plan = plan_with_members(vec![reg_consumer.clone(), sibling], "/tmp");
+        let toml = build_standalone_bin_cargo_toml(&plan, &reg_consumer, &new_bin())?;
+        anyhow::ensure!(
+            toml.contains("foo-helpers"),
+            "regular sibling must be keyed by package name `foo-helpers`:\n{toml}"
+        );
+        anyhow::ensure!(
+            !toml.contains("foo_helpers"),
+            "regular sibling must not be keyed by lib ident `foo_helpers`:\n{toml}"
         );
         Ok(())
     }
