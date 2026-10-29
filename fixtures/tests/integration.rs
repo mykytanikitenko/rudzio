@@ -472,14 +472,42 @@ mod tests {
                 log.contains("cfg_gated_on"),
                 "feature on: gated test must register, output:\n{log}"
             );
-            assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+            assert_summary(
+                &log,
+                RunSummary {
+                    passed: 2,
+                    failed: 0,
+                    panicked: 0,
+                    timed_out: 0,
+                    cancelled: 0,
+                    ignored: 0,
+                    teardown_failed: 0,
+                    measured: 0,
+                    total: 2,
+                    filtered_out: 0,
+                },
+            )?;
             assert_exact_test_names(&log, &["always_on", "cfg_gated_on"])?;
         } else {
             anyhow::ensure!(
                 !log.contains("cfg_gated_on"),
                 "feature off: gated test must be absent, output:\n{log}"
             );
-            assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+            assert_summary(
+                &log,
+                RunSummary {
+                    passed: 1,
+                    failed: 0,
+                    panicked: 0,
+                    timed_out: 0,
+                    cancelled: 0,
+                    ignored: 0,
+                    teardown_failed: 0,
+                    measured: 0,
+                    total: 1,
+                    filtered_out: 0,
+                },
+            )?;
             assert_exact_test_names(&log, &["always_on"])?;
         }
         Ok(())
@@ -503,7 +531,21 @@ mod tests {
             !log.contains("cfg_false_test"),
             "cfg-false test must be absent, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 2,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["cfg_true_test", "ungated_test"])?;
         Ok(())
     }
@@ -524,7 +566,21 @@ mod tests {
             !log.contains("cfg_gated_off"),
             "cfg-gated fn must be absent, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["always_on"])?;
         Ok(())
     }
@@ -541,7 +597,21 @@ mod tests {
         );
         anyhow::ensure!(log.contains("cfg_attr_ignored"), "output:\n{log}");
         anyhow::ensure!(log.contains("cfg_attr_runs"), "output:\n{log}");
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 1, 0, 2))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 1,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["cfg_attr_ignored", "cfg_attr_runs"])?;
         Ok(())
     }
@@ -558,7 +628,21 @@ mod tests {
             out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(3, 0, 0, 0, 0, 0, 0, 3))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 3,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 3,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["r#type", "r#match", "ordinary_name"])?;
         Ok(())
     }
@@ -577,7 +661,21 @@ mod tests {
         );
         anyhow::ensure!(log.contains("outer_direct"), "output:\n{log}");
         anyhow::ensure!(log.contains("inner_direct"), "output:\n{log}");
-        assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 2,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["outer::outer_direct", "outer::inner::inner_direct"])?;
         Ok(())
     }
@@ -600,14 +698,42 @@ mod tests {
                 log.contains("cfg_gated_suite_test"),
                 "feature on: gated suite must register, output:\n{log}"
             );
-            assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+            assert_summary(
+                &log,
+                RunSummary {
+                    passed: 2,
+                    failed: 0,
+                    panicked: 0,
+                    timed_out: 0,
+                    cancelled: 0,
+                    ignored: 0,
+                    teardown_failed: 0,
+                    measured: 0,
+                    total: 2,
+                    filtered_out: 0,
+                },
+            )?;
             assert_exact_test_names(&log, &["always_on", "cfg_gated_suite_test"])?;
         } else {
             anyhow::ensure!(
                 !log.contains("cfg_gated_suite_test"),
                 "feature off: gated suite must be absent, output:\n{log}"
             );
-            assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+            assert_summary(
+                &log,
+                RunSummary {
+                    passed: 1,
+                    failed: 0,
+                    panicked: 0,
+                    timed_out: 0,
+                    cancelled: 0,
+                    ignored: 0,
+                    teardown_failed: 0,
+                    measured: 0,
+                    total: 1,
+                    filtered_out: 0,
+                },
+            )?;
             assert_exact_test_names(&log, &["always_on"])?;
         }
         Ok(())
@@ -629,7 +755,21 @@ mod tests {
             log.contains("passes_under_explicit_exitcode"),
             "output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["passes_under_explicit_exitcode"])?;
         Ok(())
     }
@@ -650,7 +790,21 @@ mod tests {
             log.contains("macro-generated cfg_attr ignore"),
             "ignore reason must be reported, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(0, 0, 0, 0, 0, 1, 0, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 0,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 1,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["cfg_attr_ignored_via_macro"])?;
         Ok(())
     }
@@ -663,7 +817,21 @@ mod tests {
             out.status.code() == Some(1_i32),
             "expected exit 1, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(1, 1, 0, 0, 0, 0, 0, 2))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 1,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["passes", "fails"])?;
         Ok(())
     }
@@ -679,7 +847,21 @@ mod tests {
         anyhow::ensure!(log.contains("[IGNORE]"), "output:\n{log}");
         anyhow::ensure!(log.contains("takes too long"), "output:\n{log}");
         anyhow::ensure!(!log.contains("must not run"), "output:\n{log}");
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 2, 0, 3))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 2,
+                teardown_failed: 0,
+                measured: 0,
+                total: 3,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["runs", "ignored_bare", "ignored_with_reason"])?;
         Ok(())
     }
@@ -693,7 +875,21 @@ mod tests {
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("yields_then_passes"), "output:\n{log}");
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["yields_then_passes"])?;
         Ok(())
     }
@@ -707,7 +903,21 @@ mod tests {
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("passes_under_compio"), "output:\n{log}");
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["passes_under_compio"])?;
         Ok(())
     }
@@ -721,7 +931,21 @@ mod tests {
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("futures::ThreadPool"), "output:\n{log}");
-        assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 2,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["passes_under_futures", "spawn_works_under_futures"])?;
         Ok(())
     }
@@ -736,7 +960,21 @@ mod tests {
         );
         anyhow::ensure!(log.contains("Multithread"), "output:\n{log}");
         anyhow::ensure!(log.contains("compio::Runtime"), "output:\n{log}");
-        assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 2,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["runs_on_every_runtime", "runs_on_every_runtime"])?;
         Ok(())
     }
@@ -753,7 +991,21 @@ mod tests {
             log.contains("after_panic"),
             "after_panic never ran — panic killed the whole thread. output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(2, 0, 1, 0, 0, 0, 0, 3))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 2,
+                failed: 0,
+                panicked: 1,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 3,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["before_panic", "panics", "after_panic"])?;
         Ok(())
     }
@@ -770,7 +1022,21 @@ mod tests {
         anyhow::ensure!(log.contains("sync_passes"), "output:\n{log}");
         anyhow::ensure!(log.contains("sync_returns_err"), "output:\n{log}");
         anyhow::ensure!(log.contains("sync_panics"), "output:\n{log}");
-        assert_summary(&log, RunSummary::plain(1, 1, 1, 0, 0, 0, 0, 3))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 1,
+                panicked: 1,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 3,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["sync_passes", "sync_returns_err", "sync_panics"])?;
         Ok(())
     }
@@ -784,7 +1050,21 @@ mod tests {
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("runs_on_custom_context"), "output:\n{log}");
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["runs_on_custom_context"])?;
         Ok(())
     }
@@ -805,7 +1085,21 @@ mod tests {
         // No test emits an [OK] tag; setup failed before teardown ran, so
         // the [OK] teardown line never gets emitted either.
         anyhow::ensure!(!log.contains("[OK]"), "output:\n{log}");
-        assert_summary(&log, RunSummary::plain(0, 0, 0, 0, 1, 0, 0, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 0,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 1,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["never_runs"])?;
         Ok(())
     }
@@ -830,7 +1124,21 @@ mod tests {
         );
         // SetupFailed counts toward the `failed` bucket (it's a kind of
         // failure), preserving the summary-stat semantics.
-        assert_summary(&log, RunSummary::plain(0, 2, 0, 0, 0, 0, 0, 2))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 0,
+                failed: 2,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["first", "second"])?;
         Ok(())
     }
@@ -862,7 +1170,21 @@ mod tests {
             log.matches("[OK]").count() >= 2,
             "expected at least 2 [OK] occurrences (setup + teardown), got:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 2,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["first_passes", "second_passes"])?;
         Ok(())
     }
@@ -893,7 +1215,21 @@ mod tests {
             log.contains("body_runs_then_teardown_fails"),
             "output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 1, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 1,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["body_runs_then_teardown_fails"])?;
         Ok(())
     }
@@ -922,7 +1258,21 @@ mod tests {
             !log.contains("runtime thread panicked"),
             "panic escaped catch_unwind, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(0, 0, 0, 0, 1, 0, 0, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 0,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 1,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["never_runs"])?;
         Ok(())
     }
@@ -950,7 +1300,21 @@ mod tests {
             !log.contains("runtime thread panicked"),
             "panic escaped catch_unwind, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 1, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 1,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["body_runs_then_teardown_panics"])?;
         Ok(())
     }
@@ -976,7 +1340,21 @@ mod tests {
             !log.contains("runtime thread panicked"),
             "panic escaped catch_unwind, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(0, 1, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 0,
+                failed: 1,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["body_never_runs"])?;
         Ok(())
     }
@@ -1006,7 +1384,21 @@ mod tests {
             !log.contains("runtime thread panicked"),
             "panic escaped catch_unwind, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 1, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 1,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["body_runs_then_teardown_panics"])?;
         Ok(())
     }
@@ -1023,7 +1415,21 @@ mod tests {
             log.contains("runs_via_plain_test_attribute"),
             "output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["runs_via_plain_test_attribute"])?;
         Ok(())
     }
@@ -1041,7 +1447,21 @@ mod tests {
             out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(5, 0, 0, 0, 0, 0, 0, 5))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 5,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 5,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(
             &log,
             &[
@@ -1065,7 +1485,21 @@ mod tests {
             out.status.code() == Some(1_i32),
             "expected exit 1, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(3, 0, 2, 0, 0, 0, 0, 5))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 3,
+                failed: 0,
+                panicked: 2,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 5,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(
             &log,
             &[
@@ -1113,7 +1547,21 @@ mod tests {
             log.contains("tracker_drain_marker"),
             "tracker did not drain the spawned task; output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["returns_before_tracked_task_completes"])?;
         Ok(())
     }
@@ -1130,7 +1578,21 @@ mod tests {
             log.contains("cancel_propagation_marker"),
             "teardown did not cancel the token; output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["cancel_token_wakes_on_teardown"])?;
         Ok(())
     }
@@ -1145,7 +1607,21 @@ mod tests {
         );
         anyhow::ensure!(log.contains("spawn_awaits_result"), "output:\n{log}");
         anyhow::ensure!(log.contains("cancel_token_is_child"), "output:\n{log}");
-        assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 2,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["spawn_awaits_result", "cancel_token_is_child"])?;
         Ok(())
     }
@@ -1166,7 +1642,21 @@ mod tests {
             log.contains("spawn_blocking_uses_a_different_thread"),
             "output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 2,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(
             &log,
             &[
@@ -1187,7 +1677,21 @@ mod tests {
             out.status.code() == Some(0_i32),
             "expected exit 0 under parallel dispatch, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(3, 0, 0, 0, 0, 0, 0, 3))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 3,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 3,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(
             &log,
             &[
@@ -1214,7 +1718,21 @@ mod tests {
         );
         anyhow::ensure!(log.contains("Multithread"), "output:\n{log}");
         anyhow::ensure!(log.contains("compio::Runtime"), "output:\n{log}");
-        assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 2,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(
             &log,
             &[
@@ -1252,7 +1770,21 @@ mod tests {
             log.contains("teardown_suite_marker"),
             "suite teardown must run after timeout, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(0, 0, 0, 1, 0, 0, 0, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 0,
+                failed: 0,
+                panicked: 0,
+                timed_out: 1,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["body_times_out"])?;
         Ok(())
     }
@@ -1279,7 +1811,21 @@ mod tests {
             log.contains("still_runs_after_previous_timeout_marker"),
             "subsequent test must still run, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 1, 0, 0, 0, 2))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 1,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(
             &log,
             &["hangs_until_timeout", "still_runs_after_previous_timeout"],
@@ -1318,7 +1864,21 @@ mod tests {
             !log.contains("never_starts_first_unreached_marker"),
             "cancelled test body must not run, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 2, 0, 0, 3))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 2,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 3,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(
             &log,
             &[
@@ -1359,7 +1919,21 @@ mod tests {
             !log.contains("teardown_must_not_run_marker"),
             "suite teardown must not run when setup never finished, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(0, 0, 0, 0, 1, 0, 0, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 0,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 1,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["never_runs"])?;
         Ok(())
     }
@@ -1386,7 +1960,21 @@ mod tests {
             !log.contains("hanging_suite_teardown_unreached_marker"),
             "teardown future must be dropped, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 1, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 1,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["body_passes_then_suite_teardown_times_out"])?;
         Ok(())
     }
@@ -1417,7 +2005,21 @@ mod tests {
             !log.contains("test_teardown_must_not_run_marker"),
             "per-test teardown must skip when context never built, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(0, 1, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 0,
+                failed: 1,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["body_never_runs"])?;
         Ok(())
     }
@@ -1444,7 +2046,21 @@ mod tests {
             !log.contains("hanging_test_teardown_unreached_marker"),
             "teardown future must be dropped, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 1, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 1,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["body_passes_then_teardown_times_out"])?;
         Ok(())
     }
@@ -1471,7 +2087,21 @@ mod tests {
             log.contains("unbounded_sibling_marker"),
             "sibling test must run unbounded, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 1, 0, 0, 0, 2))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 1,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(
             &log,
             &["attr_body_times_out", "unbounded_sibling_still_runs"],
@@ -1500,7 +2130,21 @@ mod tests {
             log.contains("setup timed out"),
             "expected setup-timeout diagnostic, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(0, 1, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 0,
+                failed: 1,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["attr_setup_times_out"])?;
         Ok(())
     }
@@ -1522,7 +2166,21 @@ mod tests {
             log.contains("[TIMEOUT]") && log.contains("teardown"),
             "expected [TIMEOUT] teardown line, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 1, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 1,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["attr_teardown_times_out"])?;
         Ok(())
     }
@@ -1714,7 +2372,21 @@ mod tests {
             log.contains("gradual_cancel_cleanup_marker"),
             "cleanup marker missing — runner did not wait for graceful cancel, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["task_cleans_up_on_cancel"])?;
         Ok(())
     }
@@ -1729,7 +2401,21 @@ mod tests {
             out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(4, 0, 0, 0, 0, 0, 0, 4))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 4,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 4,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(
             &log,
             &[
@@ -1813,7 +2499,21 @@ mod unix_tests {
             !log.contains("never_runs_after_sigint_unreached_marker"),
             "queued test must not start after SIGINT, output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 1, 0, 0, 2))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 1,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["waits_for_sigint", "never_runs_after_sigint"])?;
         Ok(())
     }
@@ -1838,7 +2538,21 @@ mod unix_tests {
             out.status.code() == Some(1_i32),
             "expected exit 1 (one panic)\nstdout:\n{stdout}\nstderr:\n{stderr}",
         );
-        assert_summary(&stdout, RunSummary::plain(2, 0, 1, 0, 0, 0, 0, 3))?;
+        assert_summary(
+            &stdout,
+            RunSummary {
+                passed: 2,
+                failed: 0,
+                panicked: 1,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 3,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&stdout, &["alpha", "beta", "gamma_panics"])?;
 
         // stdout stream: each test's stdout lines appear between its
@@ -1935,7 +2649,21 @@ mod unix_tests {
             out.status.code() == Some(1_i32),
             "expected exit 1 (fail + panic by design), output:\n{log}",
         );
-        assert_summary(&log, RunSummary::plain(1, 1, 1, 0, 0, 0, 0, 3))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 1,
+                panicked: 1,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 3,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["passing", "failing", "panicking"])?;
         let line = log
             .lines()
@@ -1978,7 +2706,21 @@ mod unix_tests {
             log.contains("in_first_mod") && log.contains("in_second_mod"),
             "both tests must have run under the collapsed group, output:\n{log}",
         );
-        assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 2,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(
             &log,
             &["first_mod::in_first_mod", "second_mod::in_second_mod"],
@@ -2012,7 +2754,21 @@ mod unix_tests {
             !log.contains("never_runs_after_sigint_unreached_marker"),
             "output:\n{log}"
         );
-        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 1, 0, 0, 2))?;
+        assert_summary(
+            &log,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 1,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&log, &["waits_for_sigint", "never_runs_after_sigint"])?;
         Ok(())
     }

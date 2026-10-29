@@ -63,38 +63,6 @@ pub struct RunSummary {
     pub filtered_out: usize,
 }
 
-impl RunSummary {
-    /// Construct a plain-mode summary for the common case: no CLI test
-    /// filter and no benchmarks, so `filtered_out` and `measured` are
-    /// both zero. Every outcome counter is a named argument — no field
-    /// can be silently omitted, and the two always-zero counters are
-    /// set explicitly rather than defaulted.
-    #[must_use]
-    pub const fn plain(
-        passed: usize,
-        failed: usize,
-        panicked: usize,
-        timed_out: usize,
-        cancelled: usize,
-        ignored: usize,
-        teardown_failed: usize,
-        total: usize,
-    ) -> Self {
-        Self {
-            passed,
-            failed,
-            panicked,
-            timed_out,
-            cancelled,
-            ignored,
-            teardown_failed,
-            measured: 0,
-            total,
-            filtered_out: 0,
-        }
-    }
-}
-
 /// Merge a child's stdout and stderr into one lossy string — the
 /// runner prints the summary and result lines to stdout, while some
 /// diagnostics land on stderr, so exact-summary lookups scan the union.

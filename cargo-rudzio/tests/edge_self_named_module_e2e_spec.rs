@@ -184,7 +184,21 @@ mod tests {
             "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
             output.status.code(),
         );
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&text, &["project::integration::self_named_module_answer"])
     }
 
@@ -233,7 +247,21 @@ mod tests {
             "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
             output.status.code(),
         );
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&text, &["project::integration::struct_self_named_resolves"])
     }
 
@@ -272,7 +300,21 @@ mod tests {
             "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
             output.status.code(),
         );
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(
             &text,
             &["project::integration::use_binding_self_named_answer"],
@@ -329,7 +371,21 @@ mod tests {
             "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
             output.status.code(),
         );
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(
             &text,
             &["project::integration::macro_import_answer_resolves"],
@@ -366,7 +422,21 @@ mod tests {
             "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
             output.status.code(),
         );
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(
             &text,
             &["my_project::integration::hyphenated_self_named_answer"],
@@ -402,7 +472,21 @@ mod tests {
             "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
             output.status.code(),
         );
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&text, &["project::integration::control_alias_answer"])
     }
 
@@ -433,7 +517,21 @@ mod tests {
             "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
             output.status.code(),
         );
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&text, &["project::integration::leading_colon_answer"])
     }
 
@@ -480,7 +578,21 @@ mod tests {
             "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
             output.status.code(),
         );
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(
             &text,
             &["project::integration::macro_argument_answer_resolves"],
@@ -543,7 +655,21 @@ mod tests {
             "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
             output.status.code(),
         );
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(
             &text,
             &["project::integration::helper_macro_answer_resolves"],
@@ -600,7 +726,21 @@ mod tests {
             "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
             output.status.code(),
         );
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&text, &["project::integration::local_module_shadows_alias"])
     }
 }

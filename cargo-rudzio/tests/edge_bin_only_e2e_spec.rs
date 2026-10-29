@@ -205,8 +205,22 @@ mod tests {
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&text, &["bin_only_single_test"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(&text, &["mybin::integration::bin_only_single_test"])?;
         Ok(())
     }
 
@@ -235,8 +249,22 @@ mod tests {
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
-        assert_exact_test_names(&text, &["flat_a_test", "flat_b_test"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 2,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(&text, &["mybin::a::flat_a_test", "mybin::b::flat_b_test"])?;
         Ok(())
     }
 
@@ -290,8 +318,22 @@ mod tests {
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&text, &["directory_test_root_uses_helper"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(&text, &["mybin::x::directory_test_root_uses_helper"])?;
         Ok(())
     }
 
@@ -318,8 +360,22 @@ mod tests {
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&text, &["bin_exe_env_resolves"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(&text, &["mybin::binexe::bin_exe_env_resolves"])?;
         Ok(())
     }
 
@@ -351,8 +407,25 @@ mod tests {
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
-        assert_exact_test_names(&text, &["inner::bin_source_test", "integration_test"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 2,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(
+            &text,
+            &["bin_source_test", "mybin::integration::integration_test"],
+        )?;
         Ok(())
     }
 
@@ -392,8 +465,22 @@ mod tests {
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&text, &["tested_member_test"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(&text, &["tested::integration::tested_member_test"])?;
         Ok(())
     }
 }

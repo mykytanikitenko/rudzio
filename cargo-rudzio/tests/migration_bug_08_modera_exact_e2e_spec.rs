@@ -311,12 +311,12 @@ fn write_modera_crate(root: &Path, git_rev: &str) -> io::Result<()> {
     (runtime = Multithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
 ])]
 mod tests {
-    use std::path::{Path, PathBuf};
     use super::{
         IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary,
         cargo_home_with_full_graph, combined_output, current_git_head, run_cargo_rudzio_fresh,
         write_modera_crate,
     };
+    use std::path::{Path, PathBuf};
 
     /// Build a task-local cargo build dir beside the cargo target dir.
     fn cargo_build_dir_for(cargo_target_dir: &Path) -> anyhow::Result<PathBuf> {
@@ -354,13 +354,27 @@ mod tests {
              exited {:?}.\n--- output ---\n{text}",
             output.status.code(),
         );
-        assert_summary(&text, RunSummary::plain(3, 0, 0, 0, 0, 0, 0, 3))?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 3,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 3,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(
             &text,
             &[
-                "cli::tests::version_short_flag",
-                "cli::tests::version_long_flag",
-                "cli::tests::help_flag",
+                "modera::cli::version_short_flag",
+                "modera::cli::version_long_flag",
+                "modera::cli::help_flag",
             ],
         )?;
         Ok(())
@@ -393,13 +407,27 @@ mod tests {
              exited {:?}.\n--- output ---\n{text}",
             output.status.code(),
         );
-        assert_summary(&text, RunSummary::plain(3, 0, 0, 0, 0, 0, 0, 3))?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 3,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 3,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(
             &text,
             &[
-                "cli::tests::version_short_flag",
-                "cli::tests::version_long_flag",
-                "cli::tests::help_flag",
+                "modera::cli::version_short_flag",
+                "modera::cli::version_long_flag",
+                "modera::cli::help_flag",
             ],
         )?;
         Ok(())

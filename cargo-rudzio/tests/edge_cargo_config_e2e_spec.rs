@@ -230,7 +230,21 @@ mod tests {
             "expected the test to pass, but cargo rudzio exited {:?}.\n{text}",
             output.status.code(),
         );
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(&text, &[test_name])
     }
 

@@ -1640,7 +1640,18 @@ mod tests {
         assert_run_reached_summary_and_not_sigkilled(&run, "summary-count primary run")?;
         assert_summary(
             &run.combined(),
-            RunSummary::plain(200, 0, 0, 0, 0, 0, 0, 200),
+            RunSummary {
+                passed: 200,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 200,
+                filtered_out: 0,
+            },
         )?;
         Ok(())
     }
@@ -1757,7 +1768,18 @@ mod tests {
         // alpha alone has 100 tests; beta should be filtered out.
         assert_summary(
             &run.combined(),
-            RunSummary::plain(100, 0, 0, 0, 0, 0, 0, 100),
+            RunSummary {
+                passed: 100,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 100,
+                filtered_out: 0,
+            },
         )?;
         Ok(())
     }
@@ -1774,7 +1796,18 @@ mod tests {
         assert_run_reached_summary_and_not_sigkilled(&run, "--test beta filter")?;
         assert_summary(
             &run.combined(),
-            RunSummary::plain(100, 0, 0, 0, 0, 0, 0, 100),
+            RunSummary {
+                passed: 100,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 100,
+                filtered_out: 0,
+            },
         )?;
         Ok(())
     }
