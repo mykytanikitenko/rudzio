@@ -73,7 +73,9 @@ use std::time::{Duration, Instant};
 
 use rudzio::runtime::futures::ThreadPool;
 
-use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
+use cargo_rudzio_test_helpers::{
+    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_summary,
+};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use rudzio::runtime::monoio;
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
@@ -1072,8 +1074,9 @@ mod tests {
 
     use super::{
         BinaryOpts, Child, ChildWriteMode, Command, Duration, FixtureOpts, HostRuntime, Instant,
-        IsolatedCargoTest, Path, PipeMode, SetupKind, Stdio, SuiteKind, TempDir, current_pgid,
-        kill_pgroup, rudzio_source_root, write_fixture, write_fixture_with_opts,
+        IsolatedCargoTest, Path, PipeMode, RunSummary, SetupKind, Stdio, SuiteKind, TempDir,
+        assert_summary, current_pgid, kill_pgroup, rudzio_source_root, write_fixture,
+        write_fixture_with_opts,
     };
 
     /// Spawn cargo-rudzio against `$root`, then await the wait-thread's
@@ -1635,21 +1638,10 @@ mod tests {
         write_fixture(workspace.path(), &rudzio_source_root())?;
         let run = run_cargo_rudzio_against!(ctx, workspace.path(), &[]);
         assert_run_reached_summary_and_not_sigkilled(&run, "summary-count primary run")?;
-        let combined = run.combined();
-        anyhow::ensure!(
-            combined.contains("200 total"),
-            "summary line must report `200 total` (100 alpha + 100 beta). \n\
-             --- captured stdout ---\n{}\n--- captured stderr ---\n{}",
-            run.stdout,
-            run.stderr,
-        );
-        anyhow::ensure!(
-            combined.contains("200 passed"),
-            "summary line must report `200 passed` for the trivial-test fixture.\n\
-             --- captured stdout ---\n{}\n--- captured stderr ---\n{}",
-            run.stdout,
-            run.stderr,
-        );
+        assert_summary(
+            &run.combined(),
+            RunSummary::plain(200, 0, 0, 0, 0, 0, 0, 200),
+        )?;
         Ok(())
     }
 
@@ -1763,14 +1755,10 @@ mod tests {
         let run = run_cargo_rudzio_against!(ctx, workspace.path(), &["--test", "alpha"]);
         assert_run_reached_summary_and_not_sigkilled(&run, "--test alpha filter")?;
         // alpha alone has 100 tests; beta should be filtered out.
-        let combined = run.combined();
-        anyhow::ensure!(
-            combined.contains("100 total") || combined.contains("100 passed"),
-            "--test alpha must run exactly 100 tests (alpha's count); summary suggests \
-             different count.\n--- captured stdout ---\n{}\n--- captured stderr ---\n{}",
-            run.stdout,
-            run.stderr,
-        );
+        assert_summary(
+            &run.combined(),
+            RunSummary::plain(100, 0, 0, 0, 0, 0, 0, 100),
+        )?;
         Ok(())
     }
 
@@ -1784,14 +1772,10 @@ mod tests {
         write_fixture(workspace.path(), &rudzio_source_root())?;
         let run = run_cargo_rudzio_against!(ctx, workspace.path(), &["--test", "beta"]);
         assert_run_reached_summary_and_not_sigkilled(&run, "--test beta filter")?;
-        let combined = run.combined();
-        anyhow::ensure!(
-            combined.contains("100 total") || combined.contains("100 passed"),
-            "--test beta must run exactly 100 tests.\n\
-             --- captured stdout ---\n{}\n--- captured stderr ---\n{}",
-            run.stdout,
-            run.stderr,
-        );
+        assert_summary(
+            &run.combined(),
+            RunSummary::plain(100, 0, 0, 0, 0, 0, 0, 100),
+        )?;
         Ok(())
     }
 

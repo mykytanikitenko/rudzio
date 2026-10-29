@@ -59,7 +59,10 @@ use std::io;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
-use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
+use cargo_rudzio_test_helpers::{
+    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary,
+    combined_output,
+};
 use rudzio::runtime::tokio::Multithread;
 
 /// Trivial `#[rudzio::test]` block shared by both lib and bin
@@ -330,9 +333,9 @@ fn customize_test_4_nested(workspace: &Path) -> io::Result<()> {
 ])]
 mod tests {
     use super::{
-        Command, IsolatedCargoTest, Output, Path, Stdio, customize_test_1,
-        customize_test_2_mismatched_name, customize_test_3_default_bin_shared_mod,
-        customize_test_4_nested, io,
+        Command, IsolatedCargoTest, Output, Path, RunSummary, Stdio, assert_exact_test_names,
+        assert_summary, combined_output, customize_test_1, customize_test_2_mismatched_name,
+        customize_test_3_default_bin_shared_mod, customize_test_4_nested, io,
     };
     use anyhow::Context as _;
 
@@ -393,32 +396,15 @@ mod tests {
             output.status.code(),
         );
 
-        anyhow::ensure!(
-            stdout.contains("deeply_nested_test"),
-            "`deeply_nested_test` (defined at depth 3 in \
-             src/bin/server/api/handler.rs) never appeared in \
-             cargo-rudzio's output. The recursive walk in \
-             walk_dir_for_test_markers_and_main must reach depth 3+ \
-             to surface this test.\n\
-             --- captured stdout ---\n{stdout}\n\
-             --- captured stderr ---\n{stderr}",
-        );
-
-        anyhow::ensure!(
-            stdout.contains("lib_baseline_test"),
-            "`lib_baseline_test` (lib baseline) is missing from the \
-             output — the fixture itself is broken, not the bug.\n\
-             --- captured stdout ---\n{stdout}\n\
-             --- captured stderr ---\n{stderr}",
-        );
-
-        anyhow::ensure!(
-            stdout.contains(" 2 passed;"),
-            "summary line must report exactly 2 passed (1 lib + 1 \
-             deeply-nested bin).\n\
-             --- captured stdout ---\n{stdout}\n\
-             --- captured stderr ---\n{stderr}",
-        );
+        let text = combined_output(&output);
+        assert_summary(&text, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_exact_test_names(
+            &text,
+            &[
+                "lib_baseline_test",
+                "api::handler::tests::deeply_nested_test",
+            ],
+        )?;
 
         Ok(())
     }
@@ -450,34 +436,9 @@ mod tests {
             output.status.code(),
         );
 
-        anyhow::ensure!(
-            stdout.contains("bin_source_test"),
-            "`bin_source_test` (defined in src/bin/server/ops.rs) \
-             never appeared in cargo-rudzio's output. Bug #16: \
-             #[rudzio::test] inside a [[bin]] source file is \
-             silently invisible to the dispatcher.\n\
-             --- captured stdout ---\n{stdout}\n\
-             --- captured stderr ---\n{stderr}",
-        );
-
-        anyhow::ensure!(
-            stdout.contains("lib_baseline_test"),
-            "`lib_baseline_test` (lib baseline) is missing from the \
-             output — the fixture itself is broken, not the bug.\n\
-             --- captured stdout ---\n{stdout}\n\
-             --- captured stderr ---\n{stderr}",
-        );
-
-        // Summary line shape:
-        //   `test result: ok. N passed; 0 failed; ...`
-        // Pre-fix N=1, post-fix N=2.
-        anyhow::ensure!(
-            stdout.contains(" 2 passed;"),
-            "summary line must report exactly 2 passed (1 lib + 1 bin). \
-             Pre-fix this fails with `1 passed`.\n\
-             --- captured stdout ---\n{stdout}\n\
-             --- captured stderr ---\n{stderr}",
-        );
+        let text = combined_output(&output);
+        assert_summary(&text, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_exact_test_names(&text, &["lib_baseline_test", "ops::tests::bin_source_test"])?;
 
         Ok(())
     }
@@ -507,33 +468,9 @@ mod tests {
             output.status.code(),
         );
 
-        anyhow::ensure!(
-            stdout.contains("bin_source_test"),
-            "Bug #17: `bin_source_test` absent from cargo rudzio \
-             test output. The Phase 0a fix must mount \
-             src/bin/server/ops.rs regardless of the `[[bin]] \
-             name` attribute. The directory-style classification \
-             keys on `file_name == \"main.rs\"`, not on \
-             `parent.file_name() == bin.name`.\n\
-             --- captured stdout ---\n{stdout}\n\
-             --- captured stderr ---\n{stderr}",
-        );
-
-        anyhow::ensure!(
-            stdout.contains("lib_baseline_test"),
-            "`lib_baseline_test` (lib baseline) is missing from the \
-             output — the fixture itself is broken, not the bug.\n\
-             --- captured stdout ---\n{stdout}\n\
-             --- captured stderr ---\n{stderr}",
-        );
-
-        anyhow::ensure!(
-            stdout.contains(" 2 passed;"),
-            "summary line must report exactly 2 passed (1 lib + 1 \
-             bin). Pre-Phase-0a this fails with `1 passed`.\n\
-             --- captured stdout ---\n{stdout}\n\
-             --- captured stderr ---\n{stderr}",
-        );
+        let text = combined_output(&output);
+        assert_summary(&text, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_exact_test_names(&text, &["lib_baseline_test", "ops::tests::bin_source_test"])?;
 
         Ok(())
     }
@@ -563,26 +500,9 @@ mod tests {
             output.status.code(),
         );
 
-        let occurrences = stdout.matches("common_shared_test").count();
-        anyhow::ensure!(
-            occurrences == 1,
-            "`common_shared_test` ran {occurrences} times; expected \
-             exactly 1. If 2: double-mount via shared mod indicates \
-             the `parent != lib_dir` guard regressed and the bin \
-             synth mount now recurses into `src/` (the lib's \
-             parent dir). If 0: lib mount path is broken.\n\
-             --- captured stdout ---\n{stdout}\n\
-             --- captured stderr ---\n{stderr}",
-        );
-
-        anyhow::ensure!(
-            stdout.contains(" 1 passed;"),
-            "summary line must report exactly 1 passed. A double-\
-             mount would yield ` 2 passed;` here; a broken lib \
-             mount would yield ` 0 passed;`.\n\
-             --- captured stdout ---\n{stdout}\n\
-             --- captured stderr ---\n{stderr}",
-        );
+        let text = combined_output(&output);
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["common::tests::common_shared_test"])?;
 
         Ok(())
     }

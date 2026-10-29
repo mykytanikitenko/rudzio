@@ -46,7 +46,6 @@
 //! | 9 | shim `mod suite_a;` → `suite_a/inner.rs` holds the suite (no silent drop) |
 //! | 10 | `autotests = true`, `tests/a.rs` declares `mod common;` (`common/mod.rs`) |
 
-use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::io;
@@ -54,7 +53,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use cargo_rudzio_test_helpers::{
-    IsolatedCargoSuite, IsolatedCargoTest, assert_fresh_binary, current_git_head, repo_root,
+    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_exact_test_names,
+    assert_fresh_binary, assert_summary, combined_output, current_git_head, repo_root,
 };
 use rudzio::runtime::tokio::Multithread;
 
@@ -287,71 +287,6 @@ fn run_cargo_rudzio(
         .output()
         .map_err(io::Error::other)?;
     Ok(output)
-}
-
-/// Parse the runner's `[OK]` result lines into the set of passed test
-/// names (the final `::` segment of each qualified name), skipping the
-/// `setup <suite>` / `teardown <suite>` lifecycle lines.
-fn passed_test_names(stdout: &str) -> BTreeSet<String> {
-    stdout
-        .lines()
-        .filter_map(|line| {
-            let rest = line.trim_start().strip_prefix("[OK]")?;
-            let display = rest.trim();
-            if display.starts_with("setup ") || display.starts_with("teardown ") {
-                return None;
-            }
-            let name = display.split('<').next()?.trim();
-            let leaf = name.rsplit("::").next()?;
-            if leaf.is_empty() {
-                None
-            } else {
-                Some(leaf.to_owned())
-            }
-        })
-        .collect()
-}
-
-/// Extract the `N` from the runner's `test result: ok. N passed; …` line.
-fn parse_passed_count(stdout: &str) -> Option<usize> {
-    let line = stdout
-        .lines()
-        .find(|candidate| candidate.contains("test result:") && candidate.contains("passed;"))?;
-    let (head, _tail) = line.split_once(" passed;")?;
-    head.rsplit(|ch: char| !ch.is_ascii_digit())
-        .next()?
-        .parse()
-        .ok()
-}
-
-/// Assert the run exited 0 AND reported exactly `expected` as the passed
-/// test set (exact `[OK]`-line set equality) AND the `N passed` summary
-/// count equals `expected.len()`.
-fn assert_exact_passed(output: &Output, expected: &[&str]) -> anyhow::Result<()> {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    anyhow::ensure!(
-        output.status.success(),
-        "cargo rudzio test must exit 0; exit = {:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        output.status.code(),
-    );
-    let names = passed_test_names(&stdout);
-    let expected_set: BTreeSet<String> = expected.iter().map(|item| (*item).to_owned()).collect();
-    anyhow::ensure!(
-        names == expected_set,
-        "exact passed-test set mismatch.\n  got:      {names:?}\n  expected: {expected_set:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-    );
-    let passed = parse_passed_count(&stdout).ok_or_else(|| {
-        anyhow::anyhow!(
-            "could not parse `N passed;` from the runner summary\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-        )
-    })?;
-    anyhow::ensure!(
-        passed == expected.len(),
-        "runner summary reports {passed} passed, expected exactly {}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        expected.len(),
-    );
-    Ok(())
 }
 
 /// Classify a `cargo rudzio test` run against the surface-visibility
@@ -771,9 +706,10 @@ fn write_case10(root: &Path, rev: &str) -> io::Result<PathBuf> {
 ])]
 mod tests {
     use super::{
-        InvariantOutcome, IsolatedCargoTest, assert_exact_passed, classify, drive, rudzio_git_rev,
-        silent_disappearance_failure, write_case1, write_case2, write_case3, write_case4,
-        write_case5, write_case6, write_case7, write_case8, write_case9, write_case10,
+        InvariantOutcome, IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary,
+        classify, combined_output, drive, rudzio_git_rev, silent_disappearance_failure,
+        write_case1, write_case2, write_case3, write_case4, write_case5, write_case6, write_case7,
+        write_case8, write_case9, write_case10,
     };
 
     /// Case 1: shim-declared single directory helper hoists.
@@ -782,7 +718,14 @@ mod tests {
         let rev = rudzio_git_rev()?;
         let root = write_case1(&ctx.suite_tempdir().join("case1"), &rev)?;
         let output = drive(ctx.cargo_home(), ctx.cargo_target_dir(), &root)?;
-        assert_exact_passed(&output, &["smoke_uses_harness"])
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["consumer::smoke::smoke_uses_harness"])
     }
 
     /// Case 2: shim-declared two directory helpers both hoist.
@@ -791,7 +734,14 @@ mod tests {
         let rev = rudzio_git_rev()?;
         let root = write_case2(&ctx.suite_tempdir().join("case2"), &rev)?;
         let output = drive(ctx.cargo_home(), ctx.cargo_target_dir(), &root)?;
-        assert_exact_passed(&output, &["smoke_uses_two_helpers"])
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["consumer::smoke::smoke_uses_two_helpers"])
     }
 
     /// Case 3: non-Rust binary fixture inside a helper is copied verbatim.
@@ -802,7 +752,14 @@ mod tests {
         let rev = rudzio_git_rev()?;
         let root = write_case3(&ctx.suite_tempdir().join("case3"), &rev)?;
         let output = drive(ctx.cargo_home(), ctx.cargo_target_dir(), &root)?;
-        assert_exact_passed(&output, &["smoke_reads_binary_fixture"])
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["consumer::smoke::smoke_reads_binary_fixture"])
     }
 
     /// Case 4: flat `tests/other.rs` root (no shim) discovers its sibling helper.
@@ -811,7 +768,14 @@ mod tests {
         let rev = rudzio_git_rev()?;
         let root = write_case4(&ctx.suite_tempdir().join("case4"), &rev)?;
         let output = drive(ctx.cargo_home(), ctx.cargo_target_dir(), &root)?;
-        assert_exact_passed(&output, &["flat_root_uses_helper"])
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["consumer::other::flat_root_uses_helper"])
     }
 
     /// Case 5: two sibling test files under one shim aggregate exactly.
@@ -820,7 +784,14 @@ mod tests {
         let rev = rudzio_git_rev()?;
         let root = write_case5(&ctx.suite_tempdir().join("case5"), &rev)?;
         let output = drive(ctx.cargo_home(), ctx.cargo_target_dir(), &root)?;
-        assert_exact_passed(&output, &["a_test", "b_test"])
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_exact_test_names(&text, &["consumer::a::a_test", "consumer::b::b_test"])
     }
 
     /// Case 6: helper with a nested submodule carries its submodule through hoisting.
@@ -829,7 +800,14 @@ mod tests {
         let rev = rudzio_git_rev()?;
         let root = write_case6(&ctx.suite_tempdir().join("case6"), &rev)?;
         let output = drive(ctx.cargo_home(), ctx.cargo_target_dir(), &root)?;
-        assert_exact_passed(&output, &["smoke_uses_nested_helper"])
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["consumer::smoke::smoke_uses_nested_helper"])
     }
 
     /// Case 7: bin-only shim declares a test module AND a helper.
@@ -840,7 +818,14 @@ mod tests {
         let rev = rudzio_git_rev()?;
         let root = write_case7(&ctx.suite_tempdir().join("case7"), &rev)?;
         let output = drive(ctx.cargo_home(), ctx.cargo_target_dir(), &root)?;
-        assert_exact_passed(&output, &["cli_uses_harness_and_bin"])
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["consumer::cli::cli_uses_harness_and_bin"])
     }
 
     /// Case 8: lib+bin+`src/bin/extra.rs`; integration test resolves
@@ -850,7 +835,20 @@ mod tests {
         let rev = rudzio_git_rev()?;
         let root = write_case8(&ctx.suite_tempdir().join("case8"), &rev)?;
         let output = drive(ctx.cargo_home(), ctx.cargo_target_dir(), &root)?;
-        assert_exact_passed(&output, &["lib_suite_test", "integration_runs_extra_bin"])
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_exact_test_names(
+            &text,
+            &[
+                "lib_suite_test",
+                "mixed::integration::integration_runs_extra_bin",
+            ],
+        )
     }
 
     /// Case 9: `mod suite_a;` whose nested `suite_a/inner.rs` holds the suite —
@@ -879,6 +877,13 @@ mod tests {
         let rev = rudzio_git_rev()?;
         let root = write_case10(&ctx.suite_tempdir().join("case10"), &rev)?;
         let output = drive(ctx.cargo_home(), ctx.cargo_target_dir(), &root)?;
-        assert_exact_passed(&output, &["autotests_a_uses_common"])
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["consumer::a::autotests_a_uses_common"])
     }
 }

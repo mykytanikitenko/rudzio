@@ -27,7 +27,10 @@ use std::io;
 use std::path::Path;
 use std::process::{Command, Output};
 
-use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
+use cargo_rudzio_test_helpers::{
+    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary,
+    combined_output,
+};
 use rudzio::runtime::tokio::Multithread as TokioMultithread;
 use tempfile::TempDir;
 
@@ -146,52 +149,12 @@ fn run_cargo_rudzio(
     .output()
 }
 
-/// Extract the `N` from the runner's `test result: ok. N passed; ...` line.
-fn parse_passed_count(stdout: &str) -> Option<usize> {
-    let line = stdout
-        .lines()
-        .find(|candidate| candidate.contains("test result:") && candidate.contains("passed;"))?;
-    let (head, _tail) = line.split_once(" passed;")?;
-    head.rsplit(|ch: char| !ch.is_ascii_digit())
-        .next()?
-        .parse()
-        .ok()
-}
-
-/// Assert exit 0 and that exactly `expected` is the passed test set:
-/// summary count equals `expected.len()` and every name is in stdout.
-fn assert_exact_passed(output: &Output, expected: &[&str]) -> anyhow::Result<()> {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    anyhow::ensure!(
-        output.status.success(),
-        "cargo rudzio test must exit 0; exit = {:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        output.status.code(),
-    );
-    let passed = parse_passed_count(&stdout).ok_or_else(|| {
-        anyhow::anyhow!(
-            "could not parse `N passed;` from the runner summary\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-        )
-    })?;
-    anyhow::ensure!(
-        passed == expected.len(),
-        "runner summary reports {passed} passed, expected exactly {} ({expected:?})\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        expected.len(),
-    );
-    for name in expected {
-        anyhow::ensure!(
-            stdout.contains(name),
-            "test `{name}` must be reported in runner stdout\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        );
-    }
-    Ok(())
-}
-
 #[rudzio::suite([(runtime = TokioMultithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest)])]
 mod tests {
     use super::{
-        IsolatedCargoTest, Path, TempDir, assert_exact_passed, fs, run_cargo_rudzio,
-        self_named_test_source, write_lib_member_manifest, write_workspace_manifest,
+        IsolatedCargoTest, Path, RunSummary, TempDir, assert_exact_test_names, assert_summary,
+        combined_output, fs, run_cargo_rudzio, self_named_test_source, write_lib_member_manifest,
+        write_workspace_manifest,
     };
 
     #[rudzio::test]
@@ -215,7 +178,14 @@ mod tests {
         )?;
 
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
-        assert_exact_passed(&output, &["self_named_module_answer"])
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["project::integration::self_named_module_answer"])
     }
 
     #[rudzio::test]
@@ -257,7 +227,14 @@ mod tests {
         )?;
 
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
-        assert_exact_passed(&output, &["struct_self_named_resolves"])
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["project::integration::struct_self_named_resolves"])
     }
 
     #[rudzio::test]
@@ -289,7 +266,17 @@ mod tests {
         )?;
 
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
-        assert_exact_passed(&output, &["use_binding_self_named_answer"])
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(
+            &text,
+            &["project::integration::use_binding_self_named_answer"],
+        )
     }
 
     #[rudzio::test]
@@ -336,7 +323,17 @@ mod tests {
         )?;
 
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
-        assert_exact_passed(&output, &["macro_import_answer_resolves"])
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(
+            &text,
+            &["project::integration::macro_import_answer_resolves"],
+        )
     }
 
     #[rudzio::test]
@@ -363,7 +360,17 @@ mod tests {
         )?;
 
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
-        assert_exact_passed(&output, &["hyphenated_self_named_answer"])
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(
+            &text,
+            &["my_project::integration::hyphenated_self_named_answer"],
+        )
     }
 
     #[rudzio::test]
@@ -389,7 +396,14 @@ mod tests {
         )?;
 
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
-        assert_exact_passed(&output, &["control_alias_answer"])
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["project::integration::control_alias_answer"])
     }
 
     #[rudzio::test]
@@ -413,7 +427,14 @@ mod tests {
         )?;
 
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
-        assert_exact_passed(&output, &["leading_colon_answer"])
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["project::integration::leading_colon_answer"])
     }
 
     #[rudzio::test]
@@ -453,7 +474,17 @@ mod tests {
         )?;
 
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
-        assert_exact_passed(&output, &["macro_argument_answer_resolves"])
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(
+            &text,
+            &["project::integration::macro_argument_answer_resolves"],
+        )
     }
 
     #[rudzio::test]
@@ -506,7 +537,17 @@ mod tests {
         )?;
 
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
-        assert_exact_passed(&output, &["helper_macro_answer_resolves"])
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(
+            &text,
+            &["project::integration::helper_macro_answer_resolves"],
+        )
     }
 
     #[rudzio::test]
@@ -553,6 +594,13 @@ mod tests {
         )?;
 
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
-        assert_exact_passed(&output, &["local_module_shadows_alias"])
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["project::integration::local_module_shadows_alias"])
     }
 }

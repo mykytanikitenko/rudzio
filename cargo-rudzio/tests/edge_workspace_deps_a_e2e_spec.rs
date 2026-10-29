@@ -15,14 +15,16 @@
 //! count).
 #![cfg(unix)]
 
-use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::io;
 use std::path::Path;
 use std::process::{Command, Output};
 
-use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
+use cargo_rudzio_test_helpers::{
+    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary,
+    combined_output,
+};
 use rudzio::runtime::tokio::Multithread as TokioMultithread;
 use tempfile::TempDir;
 
@@ -334,68 +336,40 @@ fn run_workspace_wide(
     )
 }
 
-/// Parse the passed leaf names and the `N passed` count from plain-mode
-/// stdout.
-fn parse_passed(stdout: &str) -> (BTreeSet<String>, Option<usize>) {
-    let mut leaves = BTreeSet::new();
-    for line in stdout.lines() {
-        let Some(rest) = line.trim_start().strip_prefix("[OK]") else {
-            continue;
-        };
-        let Some(first) = rest.split_whitespace().next() else {
-            continue;
-        };
-        if first == "setup" || first == "teardown" {
-            continue;
-        }
-        let leaf = first.rsplit("::").next().unwrap_or(first);
-        let _newly_inserted: bool = leaves.insert(leaf.to_owned());
-    }
-    let count = stdout.lines().find_map(parse_passed_count);
-    (leaves, count)
-}
-
-/// Extract the `N` from a `test result: ok. N passed; …` summary line.
-fn parse_passed_count(line: &str) -> Option<usize> {
-    let head = line.split(" passed;").next()?;
-    head.rsplit(' ').next()?.parse::<usize>().ok()
-}
-
-/// Compute the expected passed leaf-name set for `members`.
-fn expected_leaves(members: &[Member]) -> BTreeSet<String> {
-    let mut leaves = BTreeSet::new();
+/// Compute the expected passed test names for `members`.
+fn expected_names(members: &[Member]) -> Vec<String> {
+    let mut names = Vec::new();
     for member in members {
         if !member.bridged {
             continue;
         }
         if member.deps.is_empty() {
-            let _newly_inserted: bool = leaves.insert(format!("{}_self", member.name));
+            names.push(format!("{}_self", member.name));
         } else {
             for dep in &member.deps {
-                let _newly_inserted: bool =
-                    leaves.insert(format!("{}_uses_{}", member.name, dep.extern_name));
+                names.push(format!("{}_uses_{}", member.name, dep.extern_name));
             }
         }
     }
-    leaves
+    names.sort();
+    names
 }
 
-/// Require exit 0 and the exact expected passed leaf set.
+/// Require exit 0 and the exact expected passed test set.
 fn assert_passed(output: &Output, members: &[Member]) -> anyhow::Result<()> {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let text = combined_output(output);
     anyhow::ensure!(
         output.status.success(),
-        "workspace-wide `cargo rudzio test` must exit 0; exit {:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+        "workspace-wide `cargo rudzio test` must exit 0; exit {:?}\n--- output ---\n{text}",
         output.status,
     );
-    let (leaves, passed_count) = parse_passed(&stdout);
-    let expected = expected_leaves(members);
-    anyhow::ensure!(
-        leaves == expected && passed_count == Some(expected.len()),
-        "expected passed leaf set {expected:?} (count {}), got {leaves:?} (count {passed_count:?})\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        expected.len(),
-    );
+    let expected = expected_names(members);
+    let names: Vec<&str> = expected.iter().map(String::as_str).collect();
+    assert_summary(
+        &text,
+        RunSummary::plain(expected.len(), 0, 0, 0, 0, 0, 0, expected.len()),
+    )?;
+    assert_exact_test_names(&text, &names)?;
     Ok(())
 }
 
