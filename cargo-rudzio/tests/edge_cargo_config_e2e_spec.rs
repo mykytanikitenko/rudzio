@@ -51,7 +51,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest, assert_fresh_binary};
+use cargo_rudzio_test_helpers::{
+    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_exact_test_names,
+    assert_fresh_binary, assert_summary,
+};
 use rudzio::runtime::tokio::Multithread;
 
 /// Repo root = parent of `cargo-rudzio/` (where this spec lives). Used as
@@ -189,8 +192,9 @@ mod tests {
     use std::os::unix::process::ExitStatusExt as _;
 
     use super::{
-        IsolatedCargoTest, Output, Path, PathBuf, env, fs, rudzio_source_root, run_cargo_rudzio,
-        write_ancestor_config, write_fixture,
+        IsolatedCargoTest, Output, Path, PathBuf, RunSummary, assert_exact_test_names,
+        assert_summary, env, fs, rudzio_source_root, run_cargo_rudzio, write_ancestor_config,
+        write_fixture,
     };
 
     /// Repo root of the rudzio workspace under test (parent of `cargo-rudzio/`).
@@ -226,12 +230,8 @@ mod tests {
             "expected the test to pass, but cargo rudzio exited {:?}.\n{text}",
             output.status.code(),
         );
-        anyhow::ensure!(
-            text.contains(test_name),
-            "expected the passed-test-name `{test_name}` in output:\n{text}",
-        );
-        anyhow::ensure!(text.contains("1 passed"), "output:\n{text}");
-        Ok(())
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &[test_name])
     }
 
     // ── 1. `[profile.dev] debug-assertions` + `overflow-checks` ─────────

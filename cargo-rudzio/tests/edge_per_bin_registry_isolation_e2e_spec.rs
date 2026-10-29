@@ -30,7 +30,10 @@ use std::io;
 use std::path::Path;
 use std::process::{Command, Output};
 
-use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
+use cargo_rudzio_test_helpers::{
+    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary,
+    combined_output,
+};
 use rudzio::runtime::tokio::Multithread as TokioMultithread;
 use tempfile::TempDir;
 
@@ -218,24 +221,12 @@ fn run_cargo_rudzio(root: &Path, cargo_home: &Path, cargo_target_dir: &Path) -> 
     .output()
 }
 
-/// Extract the `N` from `test result: ok. N passed; ...`.
-fn parse_passed_count(stdout: &str) -> Option<usize> {
-    let line = stdout
-        .lines()
-        .find(|candidate| candidate.contains("test result:") && candidate.contains("passed;"))?;
-    let (head, _tail) = line.split_once(" passed;")?;
-    head.rsplit(|ch: char| !ch.is_ascii_digit())
-        .next()?
-        .parse()
-        .ok()
-}
-
 #[rudzio::suite([(runtime = TokioMultithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest)])]
 mod tests {
     use super::{
-        IsolatedCargoTest, Path, TempDir, fs, parse_passed_count, run_cargo_rudzio,
-        write_alpha_bin, write_bins_manifest, write_bins_tests, write_deps_lib,
-        write_deps_manifest, write_workspace_manifest,
+        IsolatedCargoTest, Path, RunSummary, TempDir, assert_exact_test_names, assert_summary,
+        combined_output, fs, run_cargo_rudzio, write_alpha_bin, write_bins_manifest,
+        write_bins_tests, write_deps_lib, write_deps_manifest, write_workspace_manifest,
     };
 
     #[rudzio::test]
@@ -256,31 +247,24 @@ mod tests {
         write_bins_tests(&bins)?;
 
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir())?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let text = combined_output(&output);
         anyhow::ensure!(
             output.status.success(),
-            "cargo rudzio test must exit 0; exit = {:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+            "cargo rudzio test must exit 0; exit = {:?}\n--- output ---\n{text}",
             output.status.code(),
         );
 
         // The aggregator runs deps' two src tests plus the one integration
         // test that spawns alpha (and asserts alpha's own isolation).
-        let passed = parse_passed_count(&stdout).ok_or_else(|| {
-            anyhow::anyhow!(
-                "could not parse `N passed;`\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-            )
-        })?;
-        anyhow::ensure!(
-            passed == 3,
-            "aggregator must run deps_test_a + deps_test_b + alpha_is_isolated = 3 passed, got {passed}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        );
-        for name in ["deps_test_a", "deps_test_b", "alpha_is_isolated"] {
-            anyhow::ensure!(
-                stdout.contains(name),
-                "test `{name}` must be reported\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-            );
-        }
+        assert_summary(&text, RunSummary::plain(3, 0, 0, 0, 0, 0, 0, 3))?;
+        assert_exact_test_names(
+            &text,
+            &[
+                "deps_test_a",
+                "deps_test_b",
+                "bins::integration::alpha_is_isolated",
+            ],
+        )?;
         Ok(())
     }
 }

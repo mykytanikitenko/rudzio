@@ -83,7 +83,10 @@ use std::io;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
-use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
+use cargo_rudzio_test_helpers::{
+    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary,
+    combined_output,
+};
 use rudzio::runtime::tokio::Multithread;
 
 /// **Test 1 fixture** — user's exact Bug #19 repro:
@@ -552,7 +555,8 @@ fn customize_test_6_default_bin_shared_mod(workspace: &Path) -> io::Result<()> {
 ])]
 mod tests {
     use super::{
-        Command, IsolatedCargoTest, Output, Path, Stdio, customize_test_1_crate_api_helper,
+        Command, IsolatedCargoTest, Output, Path, RunSummary, Stdio, assert_exact_test_names,
+        assert_summary, combined_output, customize_test_1_crate_api_helper,
         customize_test_2_multi_bin_crate_isolation, customize_test_3_deep_crate_paths,
         customize_test_4_bin_uses_member_lib, customize_test_5_standalone_bin,
         customize_test_6_default_bin_shared_mod, io,
@@ -580,17 +584,10 @@ mod tests {
             "Run failed (member-lib use scenario): status={:?}\nstdout={stdout}\nstderr={stderr}",
             output.status.code(),
         );
-        anyhow::ensure!(
-            stdout.contains("bin_can_use_member_lib"),
-            "`bin_can_use_member_lib` test did not appear in stdout. \
-             The per-bin bridge's deps table must mirror the member's deps \
-             (including the path-rename to the member's bridge crate) so the \
-             bin's `use consumer::lib_helper` resolves.\nstdout={stdout}\nstderr={stderr}",
-        );
-        anyhow::ensure!(
-            stdout.contains(" 1 passed;"),
-            "Expected exactly 1 passed (1 bin test). stdout={stdout}",
-        );
+        let text = combined_output(&output);
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["bin_can_use_member_lib"])?;
+
         Ok(())
     }
 
@@ -624,15 +621,10 @@ mod tests {
              --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
             output.status.code(),
         );
-        anyhow::ensure!(
-            stdout.contains("helper_returns_42"),
-            "`helper_returns_42` test did not appear in stdout -- bin source \
-             with `crate::*` paths failed to compile or register.\nstdout={stdout}",
-        );
-        anyhow::ensure!(
-            stdout.contains(" 1 passed;"),
-            "Expected exactly 1 passed (the bin test). stdout={stdout}",
-        );
+        let text = combined_output(&output);
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["api::tests::helper_returns_42"])?;
+
         Ok(())
     }
 
@@ -659,15 +651,13 @@ mod tests {
             "Run failed (deep crate paths scenario): status={:?}\nstdout={stdout}\nstderr={stderr}",
             output.status.code(),
         );
-        anyhow::ensure!(
-            stdout.contains("deep_crate_path_resolves"),
-            "`deep_crate_path_resolves` test did not appear in stdout. \
-             Per-bin bridge must support depth-3+ `crate::*` paths.\nstdout={stdout}",
-        );
-        anyhow::ensure!(
-            stdout.contains(" 1 passed;"),
-            "Expected exactly 1 passed. stdout={stdout}",
-        );
+        let text = combined_output(&output);
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(
+            &text,
+            &["api::handler::create::tests::deep_crate_path_resolves"],
+        )?;
+
         Ok(())
     }
 
@@ -697,18 +687,10 @@ mod tests {
             output.status.code(),
         );
 
-        let occurrences = stdout.matches("common_shared_test").count();
-        anyhow::ensure!(
-            occurrences == 1,
-            "`common_shared_test` ran {occurrences} times; expected exactly 1. \
-             If 2: the lib_dir guard regressed (a per-bin bridge was synthesised \
-             for `src/main.rs` whose parent equals lib_dir). \
-             If 0: the lib mount path is broken.\nstdout={stdout}",
-        );
-        anyhow::ensure!(
-            stdout.contains(" 1 passed;"),
-            "Expected exactly 1 passed (1 shared-mod test). stdout={stdout}",
-        );
+        let text = combined_output(&output);
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["common::tests::common_shared_test"])?;
+
         Ok(())
     }
 
@@ -735,18 +717,13 @@ mod tests {
             "Run failed (multi-bin scenario): status={:?}\nstdout={stdout}\nstderr={stderr}",
             output.status.code(),
         );
-        anyhow::ensure!(
-            stdout.contains("bin_one_sees_its_own_api"),
-            "bin_one_sees_its_own_api missing -- per-bin bridge for bin one didn't compile/register.\nstdout={stdout}",
-        );
-        anyhow::ensure!(
-            stdout.contains("bin_two_sees_its_own_api"),
-            "bin_two_sees_its_own_api missing -- per-bin bridge for bin two didn't compile/register.\nstdout={stdout}",
-        );
-        anyhow::ensure!(
-            stdout.contains(" 2 passed;"),
-            "Expected exactly 2 passed (1 per bin). stdout={stdout}",
-        );
+        let text = combined_output(&output);
+        assert_summary(&text, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_exact_test_names(
+            &text,
+            &["bin_one_sees_its_own_api", "bin_two_sees_its_own_api"],
+        )?;
+
         Ok(())
     }
 
