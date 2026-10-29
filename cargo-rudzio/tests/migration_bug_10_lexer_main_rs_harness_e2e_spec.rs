@@ -59,7 +59,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use cargo_rudzio_test_helpers::{
-    IsolatedCargoSuite, IsolatedCargoTest, assert_fresh_binary, current_git_head, repo_root,
+    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_exact_test_names,
+    assert_fresh_binary, assert_summary, combined_output, current_git_head, repo_root,
 };
 use rudzio::runtime::tokio::Multithread;
 
@@ -293,45 +294,14 @@ fn run_cargo_rudzio(
 ])]
 mod tests {
     use std::path::{Path, PathBuf};
-    use std::process::Output;
-
     use super::{
-        IsolatedCargoTest, prepopulate_git_dep, rudzio_git_rev, run_cargo_rudzio, write_fixture,
+        IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary, combined_output,
+        prepopulate_git_dep, rudzio_git_rev, run_cargo_rudzio, write_fixture,
     };
 
     /// The four `#[rudzio::test]` fns the operator's sibling test files declare
     /// (`asm_common_lexes_words`, `code_lexes_words`, `code_lexes_std_numeric`,
     /// `cursor_lexes_words`).
-    const EXPECTED_TESTS: [&str; 4] = [
-        "asm_common_lexes_words",
-        "code_lexes_words",
-        "code_lexes_std_numeric",
-        "cursor_lexes_words",
-    ];
-
-    /// Assert a successful `cargo rudzio test` run reported exactly the four
-    /// lexer tests.
-    fn assert_lexer_tests(output: &Output) -> anyhow::Result<()> {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::ensure!(
-            output.status.success(),
-            "lexer member must run its shim-declared harness tests (exit 0), but the runner \
-             exited {:?}.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-            output.status.code(),
-        );
-        for expected in EXPECTED_TESTS {
-            anyhow::ensure!(
-                stdout.contains(expected),
-                "runner stdout must name the aggregated test `{expected}`.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-            );
-        }
-        anyhow::ensure!(
-            stdout.contains("4 passed"),
-            "runner must report exactly 4 passing tests, but stdout did not contain \"4 passed\".\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        );
-        Ok(())
-    }
 
     /// Build a task-local cargo build dir beside the cargo target dir.
     fn cargo_build_dir_for(cargo_target_dir: &Path) -> anyhow::Result<PathBuf> {
@@ -377,7 +347,23 @@ mod tests {
             ctx.suite_tempdir(),
             &["-p", "lexer"],
         )?;
-        assert_lexer_tests(&output)
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "lexer member must run its shim-declared harness tests (exit 0), but the runner \
+             exited {:?}.\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(4, 0, 0, 0, 0, 0, 0, 4))?;
+        assert_exact_test_names(
+            &text,
+            &[
+                "asm_common::tests::asm_common_lexes_words",
+                "code::tests::code_lexes_words",
+                "code::tests::code_lexes_std_numeric",
+                "cursor::tests::cursor_lexes_words",
+            ],
+        )?;
     }
 
     /// **Bug #10 (operator's exact shape, workspace-wide)** — the same workspace
@@ -393,6 +379,22 @@ mod tests {
             ctx.suite_tempdir(),
             &[],
         )?;
-        assert_lexer_tests(&output)
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "lexer member must run its shim-declared harness tests (exit 0), but the runner \
+             exited {:?}.\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(4, 0, 0, 0, 0, 0, 0, 4))?;
+        assert_exact_test_names(
+            &text,
+            &[
+                "asm_common::tests::asm_common_lexes_words",
+                "code::tests::code_lexes_words",
+                "code::tests::code_lexes_std_numeric",
+                "cursor::tests::cursor_lexes_words",
+            ],
+        )?;
     }
 }
