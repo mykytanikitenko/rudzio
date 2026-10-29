@@ -30,8 +30,8 @@ use rudzio::runtime::{async_std, compio, embassy, smol};
 use rudzio::suite::SummaryOutcomes;
 use rudzio::test_case::{BoxError, box_error};
 use rudzio::{
-    BenchMode, Config, EnsureTimeViolation, EnsureTimes, Format, RunIgnoredMode, SuiteSummary,
-    TestSummary, normalize_module_path, qualified_test_name, token_passes_filters,
+    BenchMode, Config, EnsureTimeViolation, EnsureTimes, Format, PrintOnly, RunIgnoredMode,
+    SuiteSummary, TestSummary, normalize_module_path, qualified_test_name, token_passes_filters,
 };
 
 /// Build a `Vec<String>` argv from string slices — the `Config`
@@ -75,7 +75,8 @@ mod config_parser {
 
     use super::{
         BenchMode, Config, Duration, EnsureTimeViolation, EnsureTimes, Format, NonZeroUsize,
-        PathBuf, SuiteSummary, SummaryOutcomes, Test, TestSummary, argv, env_with,
+        PathBuf, PrintOnly, RunIgnoredMode, SuiteSummary, SummaryOutcomes, Test, TestSummary, argv,
+        env_with,
     };
 
     // `#[rudzio::test]` accepts fns that don't take a context parameter
@@ -964,26 +965,129 @@ mod config_parser {
     }
 
     #[rudzio::test]
-    fn to_runner_args_serializes_resolved_hardlimit(_ctx: &Test) -> anyhow::Result<()> {
+    fn runner_args_carry_only_explicit_operator_flags(_ctx: &Test) -> anyhow::Result<()> {
         let cfg = Config::from_argv_and_env(
             &argv(&["--threads-parallel-hardlimit=none"]),
             env_with(None),
             rudzio::cargo_meta!(),
         );
-        let args = cfg.to_runner_args();
+        let expected = vec!["--threads-parallel-hardlimit=none".to_owned()];
         anyhow::ensure!(
-            args.iter()
-                .any(|arg| arg == "--threads-parallel-hardlimit=none"),
-            "expected the resolved `none` hardlimit to be re-serialized, got {args:?}"
+            cfg.runner_args == expected.as_slice(),
+            "only the explicit operator flag may propagate (resolved thread \
+             count, concurrency limit and default grace stay local), got {:?}",
+            cfg.runner_args
         );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn runner_args_are_empty_without_operator_flags(_ctx: &Test) -> anyhow::Result<()> {
+        let cfg = Config::from_argv_and_env(&argv(&[]), env_with(Some("3")), rudzio::cargo_meta!());
         anyhow::ensure!(
-            args.iter().any(|arg| arg.starts_with("--test-threads=")),
-            "expected --test-threads to be re-serialized, got {args:?}"
+            cfg.runner_args.is_empty(),
+            "RUST_TEST_THREADS and defaults are local resolution, not operator flags, got {:?}",
+            cfg.runner_args
         );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn runner_args_merge_inherited_and_own_flags(_ctx: &Test) -> anyhow::Result<()> {
+        let mut env = env_with(None);
+        let _inserted = env.insert(
+            rudzio::RUNNER_ARGS_ENV.to_owned(),
+            "--threads-parallel-hardlimit=none --test-timeout=30".to_owned(),
+        );
+        let cfg = Config::from_argv_and_env(
+            &argv(&["--test-timeout=7", "--run-timeout=9"]),
+            env,
+            rudzio::cargo_meta!(),
+        );
+        let expected = vec![
+            "--threads-parallel-hardlimit=none".to_owned(),
+            "--test-timeout=7".to_owned(),
+            "--run-timeout=9".to_owned(),
+        ];
         anyhow::ensure!(
-            args.iter()
-                .any(|arg| arg.starts_with("--concurrency-limit=")),
-            "expected --concurrency-limit to be re-serialized, got {args:?}"
+            cfg.runner_args == expected.as_slice(),
+            "own argv must override the inherited value and both layers must \
+             reach the next descendant, got {:?}",
+            cfg.runner_args
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn runner_args_env_drops_run_scoped_selections(_ctx: &Test) -> anyhow::Result<()> {
+        let mut env = env_with(None);
+        let _inserted = env.insert(
+            rudzio::RUNNER_ARGS_ENV.to_owned(),
+            "--threads-parallel-hardlimit=none some_filter --skip=x --ignored --exact --list"
+                .to_owned(),
+        );
+        let cfg = Config::from_argv_and_env(&argv(&[]), env, rudzio::cargo_meta!());
+        anyhow::ensure!(cfg.filter.is_none(), "filter leaked: {:?}", cfg.filter);
+        anyhow::ensure!(
+            cfg.skip_filters.is_empty(),
+            "skip leaked: {:?}",
+            cfg.skip_filters
+        );
+        anyhow::ensure!(cfg.run_ignored == RunIgnoredMode::Normal);
+        anyhow::ensure!(!cfg.exact_match);
+        anyhow::ensure!(cfg.print_only == PrintOnly::None);
+        anyhow::ensure!(cfg.parallel_hardlimit.is_none());
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn runner_args_env_threads_yield_to_child_rust_test_threads(_ctx: &Test) -> anyhow::Result<()> {
+        let mut env = env_with(Some("1"));
+        let _inserted = env.insert(
+            rudzio::RUNNER_ARGS_ENV.to_owned(),
+            "--test-threads=16 --concurrency-limit=16".to_owned(),
+        );
+        let cfg = Config::from_argv_and_env(&argv(&[]), env, rudzio::cargo_meta!());
+        anyhow::ensure!(
+            (cfg.threads, cfg.concurrency_limit) == (1, 1),
+            "the child's own RUST_TEST_THREADS=1 must outrank the inherited \
+             --test-threads/--concurrency-limit, got threads={} concurrency={}",
+            cfg.threads,
+            cfg.concurrency_limit
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn runner_args_env_threads_apply_without_child_config(_ctx: &Test) -> anyhow::Result<()> {
+        let mut env = env_with(None);
+        let _inserted = env.insert(
+            rudzio::RUNNER_ARGS_ENV.to_owned(),
+            "--test-threads=3 --concurrency-limit=5".to_owned(),
+        );
+        let cfg = Config::from_argv_and_env(&argv(&[]), env, rudzio::cargo_meta!());
+        anyhow::ensure!(
+            (cfg.threads, cfg.concurrency_limit) == (3, 5),
+            "inherited thread config applies when the child sets none, got threads={} concurrency={}",
+            cfg.threads,
+            cfg.concurrency_limit
+        );
+        Ok(())
+    }
+
+    #[rudzio::test]
+    fn runner_args_env_run_timeout_yields_to_child_cli(_ctx: &Test) -> anyhow::Result<()> {
+        let mut env = env_with(None);
+        let _inserted = env.insert(
+            rudzio::RUNNER_ARGS_ENV.to_owned(),
+            "--run-timeout=3600".to_owned(),
+        );
+        let cfg =
+            Config::from_argv_and_env(&argv(&["--run-timeout=1"]), env, rudzio::cargo_meta!());
+        anyhow::ensure!(
+            cfg.run_timeout == Some(Duration::from_secs(1)),
+            "child CLI --run-timeout=1 must win, got {:?}",
+            cfg.run_timeout
         );
         Ok(())
     }
