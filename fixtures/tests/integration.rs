@@ -676,7 +676,7 @@ mod tests {
                 filtered_out: 0,
             },
         )?;
-        assert_exact_test_names(&log, &["outer::outer_direct", "outer::inner::inner_direct"])?;
+        assert_exact_test_names(&log, &["outer_direct", "outer::inner_direct"])?;
         Ok(())
     }
 
@@ -2419,10 +2419,10 @@ mod tests {
         assert_exact_test_names(
             &log,
             &[
-                "module_a::tests_a::module_a_first",
-                "module_a::tests_a::module_a_second",
-                "module_b::tests_b::module_b_first",
-                "module_b::tests_b::module_b_second",
+                "module_a::module_a_first",
+                "module_a::module_a_second",
+                "module_b::module_b_first",
+                "module_b::module_b_second",
             ],
         )?;
         Ok(())
@@ -2723,7 +2723,7 @@ mod unix_tests {
         )?;
         assert_exact_test_names(
             &log,
-            &["first_mod::in_first_mod", "second_mod::in_second_mod"],
+            &["in_first_mod", "in_second_mod"],
         )?;
         Ok(())
     }
