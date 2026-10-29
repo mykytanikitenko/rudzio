@@ -234,8 +234,22 @@ mod tests {
             "expected the debug-assertions-false test to pass, but it exited {:?}.\n{combined}",
             output.status.code(),
         );
-        assert_summary(&combined, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&combined, &["inner::profile_test"])?;
+        assert_summary(
+            &combined,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(&combined, &["profile_test"])?;
         Ok(())
     }
 
@@ -260,8 +274,22 @@ mod tests {
              exited {:?}.\n{combined}",
             output.status.code(),
         );
-        assert_summary(&combined, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&combined, &["inner::profile_test"])?;
+        assert_summary(
+            &combined,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(&combined, &["profile_test"])?;
         Ok(())
     }
 

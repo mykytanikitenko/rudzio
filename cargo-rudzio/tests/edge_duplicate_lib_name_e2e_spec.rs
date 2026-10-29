@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use cargo_rudzio_test_helpers::{
-    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_fresh_binary,
-    assert_summary, combined_output, current_git_head, repo_root,
+    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_exact_test_names,
+    assert_fresh_binary, assert_summary, combined_output, current_git_head, repo_root,
 };
 use rudzio::runtime::tokio::Multithread;
 
@@ -172,9 +172,9 @@ fn run_cargo_rudzio(
 #[rudzio::suite([(runtime = Multithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest)])]
 mod tests {
     use super::{
-        IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary, cargo_build_dir_for,
-        combined_output, fs, rudzio_git_rev, run_cargo_rudzio, write_lib_member_manifest,
-        write_test_source, write_workspace_manifest,
+        IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary,
+        cargo_build_dir_for, combined_output, fs, rudzio_git_rev, run_cargo_rudzio,
+        write_lib_member_manifest, write_test_source, write_workspace_manifest,
     };
 
     /// Packages `p1` and `p2` both declare `[lib] name = "shared"`; each has
@@ -221,8 +221,28 @@ mod tests {
         )?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
-        assert_exact_test_names(&text, &["p1_shared_one", "p2_shared_two"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 2,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 2,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(
+            &text,
+            &[
+                "shared::p1__integration::p1_shared_one",
+                "shared_2::p2__integration::p2_shared_two",
+            ],
+        )?;
         Ok(())
     }
 }

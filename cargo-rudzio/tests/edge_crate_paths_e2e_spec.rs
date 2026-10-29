@@ -233,9 +233,9 @@ fn run_cargo_rudzio(
 #[rudzio::suite([(runtime = Multithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest)])]
 mod tests {
     use super::{
-        IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary, cargo_build_dir_for,
-        combined_output, fs, rudzio_git_rev, run_cargo_rudzio, simple_body, write_member,
-        write_suite_only_source, write_test_source, write_workspace_manifest,
+        IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary,
+        cargo_build_dir_for, combined_output, fs, rudzio_git_rev, run_cargo_rudzio, simple_body,
+        write_member, write_suite_only_source, write_test_source, write_workspace_manifest,
     };
 
     /// The `answer() -> 42` self-named module body shared by most cases.
@@ -267,8 +267,25 @@ mod tests {
         )?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&text, &["control_non_self_named_answer"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(
+            &text,
+            &["plain::integration::control_non_self_named_answer"],
+        )?;
         Ok(())
     }
 
@@ -301,8 +318,25 @@ mod tests {
         )?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&text, &["path_attr_self_named_answer"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(
+            &text,
+            &["project::integration::path_attr_self_named_answer"],
+        )?;
         Ok(())
     }
 
@@ -332,8 +366,25 @@ mod tests {
         )?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&text, &["cfg_gated_self_named_answer"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(
+            &text,
+            &["project::integration::cfg_gated_self_named_answer"],
+        )?;
         Ok(())
     }
 
@@ -363,8 +414,22 @@ mod tests {
         )?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&text, &["bom_self_named_answer"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(&text, &["project::integration::bom_self_named_answer"])?;
         Ok(())
     }
 
@@ -393,8 +458,22 @@ mod tests {
         )?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&text, &["crlf_self_named_answer"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(&text, &["project::integration::crlf_self_named_answer"])?;
         Ok(())
     }
 
@@ -428,8 +507,25 @@ mod tests {
         )?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&text, &["raw_ident_self_named_answer"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(
+            &text,
+            &["project::integration::raw_ident_self_named_answer"],
+        )?;
         Ok(())
     }
 
@@ -494,8 +590,22 @@ mod tests {
         )?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&text, &["shim_self_named_answer"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(&text, &["project::integration::shim_self_named_answer"])?;
         Ok(())
     }
 
@@ -525,8 +635,22 @@ mod tests {
         )?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&text, &["macro_self_named_answer"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(&text, &["project::integration::macro_self_named_answer"])?;
         Ok(())
     }
 
@@ -576,8 +700,22 @@ mod tests {
         )?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&text, &["every_form_references_crate"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(&text, &["x::integration::every_form_references_crate"])?;
         Ok(())
     }
 
@@ -615,8 +753,25 @@ mod tests {
         )?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&text, &["hyphenated_lib_name_override_answer"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(
+            &text,
+            &["renamed_lib::my_crate__integration::hyphenated_lib_name_override_answer"],
+        )?;
         Ok(())
     }
 
@@ -681,8 +836,25 @@ mod tests {
         )?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&text, &["hyphenated_default_lib_name_answer"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(
+            &text,
+            &["my_crate::integration::hyphenated_default_lib_name_answer"],
+        )?;
         Ok(())
     }
 
@@ -776,8 +948,22 @@ mod tests {
         )?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&text, &["cross_crate_self_named_item"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(&text, &["a::integration::cross_crate_self_named_item"])?;
         Ok(())
     }
 
@@ -853,8 +1039,22 @@ mod tests {
         )?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&text, &["bin_coexists_self_named_answer"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(&text, &["x::integration::bin_coexists_self_named_answer"])?;
         Ok(())
     }
 }

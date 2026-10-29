@@ -367,7 +367,18 @@ fn assert_passed(output: &Output, members: &[Member]) -> anyhow::Result<()> {
     let names: Vec<&str> = expected.iter().map(String::as_str).collect();
     assert_summary(
         &text,
-        RunSummary::plain(expected.len(), 0, 0, 0, 0, 0, 0, expected.len()),
+        RunSummary {
+            passed: expected.len(),
+            failed: 0,
+            panicked: 0,
+            timed_out: 0,
+            cancelled: 0,
+            ignored: 0,
+            teardown_failed: 0,
+            measured: 0,
+            total: expected.len(),
+            filtered_out: 0,
+        },
     )?;
     assert_exact_test_names(&text, &names)?;
     Ok(())

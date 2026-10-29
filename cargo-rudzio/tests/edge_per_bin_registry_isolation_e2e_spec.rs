@@ -256,7 +256,21 @@ mod tests {
 
         // The aggregator runs deps' two src tests plus the one integration
         // test that spawns alpha (and asserts alpha's own isolation).
-        assert_summary(&text, RunSummary::plain(3, 0, 0, 0, 0, 0, 0, 3))?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 3,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 3,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(
             &text,
             &[

@@ -293,11 +293,11 @@ fn run_cargo_rudzio(
     (runtime = Multithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest),
 ])]
 mod tests {
-    use std::path::{Path, PathBuf};
     use super::{
         IsolatedCargoTest, Output, RunSummary, assert_exact_test_names, assert_summary,
         combined_output, prepopulate_git_dep, rudzio_git_rev, run_cargo_rudzio, write_fixture,
     };
+    use std::path::{Path, PathBuf};
 
     /// Build a task-local cargo build dir beside the cargo target dir.
     fn cargo_build_dir_for(cargo_target_dir: &Path) -> anyhow::Result<PathBuf> {
@@ -350,14 +350,28 @@ mod tests {
              exited {:?}.\n--- output ---\n{text}",
             output.status.code(),
         );
-        assert_summary(&text, RunSummary::plain(4, 0, 0, 0, 0, 0, 0, 4))?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 4,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 4,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(
             &text,
             &[
-                "asm_common::tests::asm_common_lexes_words",
-                "code::tests::code_lexes_words",
-                "code::tests::code_lexes_std_numeric",
-                "cursor::tests::cursor_lexes_words",
+                "lexer::asm_common::asm_common_lexes_words",
+                "lexer::code::code_lexes_words",
+                "lexer::code::code_lexes_std_numeric",
+                "lexer::cursor::cursor_lexes_words",
             ],
         )?;
         Ok(())
@@ -383,14 +397,28 @@ mod tests {
              exited {:?}.\n--- output ---\n{text}",
             output.status.code(),
         );
-        assert_summary(&text, RunSummary::plain(4, 0, 0, 0, 0, 0, 0, 4))?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 4,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 4,
+                filtered_out: 0,
+            },
+        )?;
         assert_exact_test_names(
             &text,
             &[
-                "asm_common::tests::asm_common_lexes_words",
-                "code::tests::code_lexes_words",
-                "code::tests::code_lexes_std_numeric",
-                "cursor::tests::cursor_lexes_words",
+                "lexer::asm_common::asm_common_lexes_words",
+                "lexer::code::code_lexes_words",
+                "lexer::code::code_lexes_std_numeric",
+                "lexer::cursor::cursor_lexes_words",
             ],
         )?;
         Ok(())

@@ -207,8 +207,22 @@ mod tests {
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&text, &["self_named_shape_answer"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(&text, &["selfmod::x::self_named_shape_answer"])?;
         Ok(())
     }
 
@@ -223,8 +237,22 @@ mod tests {
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
         let text = combined_output(&output);
         anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&text, &["self_named_shape_answer"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(&text, &["selfmod::x::self_named_shape_answer"])?;
         Ok(())
     }
 }

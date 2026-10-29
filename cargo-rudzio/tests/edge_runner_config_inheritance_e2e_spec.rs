@@ -27,8 +27,8 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 use cargo_rudzio_test_helpers::{
-    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_fresh_binary,
-    assert_summary, combined_output,
+    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_exact_test_names,
+    assert_fresh_binary, assert_summary, combined_output,
 };
 use rudzio::runtime::tokio::Multithread;
 
@@ -175,8 +175,22 @@ mod tests {
              but cargo rudzio exited {:?}.\n{text}",
             output.status.code(),
         );
-        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
-        assert_exact_test_names(&text, &["inner::inherits_hardlimit_none"])?;
+        assert_summary(
+            &text,
+            RunSummary {
+                passed: 1,
+                failed: 0,
+                panicked: 0,
+                timed_out: 0,
+                cancelled: 0,
+                ignored: 0,
+                teardown_failed: 0,
+                measured: 0,
+                total: 1,
+                filtered_out: 0,
+            },
+        )?;
+        assert_exact_test_names(&text, &["inherits_hardlimit_none"])?;
         Ok(())
     }
 }
