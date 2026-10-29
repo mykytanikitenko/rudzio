@@ -27,7 +27,10 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use cargo_rudzio::generate::{plan_from_manifest, write_runner};
-use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
+use cargo_rudzio_test_helpers::{
+    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary,
+    combined_output,
+};
 use rudzio::runtime::tokio::Multithread as TokioMultithread;
 use tempfile::TempDir;
 
@@ -139,8 +142,9 @@ mod tests {
     use std::os::unix::process::ExitStatusExt as _;
 
     use super::{
-        Command, IsolatedCargoTest, Output, Path, TempDir, env, fs, generated_aggregator_manifest,
-        io, rudzio_source_root, write_e2e_fixture, write_unit_fixture,
+        Command, IsolatedCargoTest, Output, Path, RunSummary, TempDir, assert_exact_test_names,
+        assert_summary, combined_output, env, fs, generated_aggregator_manifest, io,
+        rudzio_source_root, write_e2e_fixture, write_unit_fixture,
     };
 
     /// Spawn `cargo rudzio test` against the fixture at `root` with the
@@ -224,17 +228,14 @@ mod tests {
         )?;
 
         let output = run_cargo_rudzio(ctx.cargo_home(), ctx.cargo_target_dir(), root, &[])?;
-        let combined = format!(
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let combined = combined_output(&output);
         anyhow::ensure!(
             output.status.success(),
             "expected the debug-assertions-false test to pass, but it exited {:?}.\n{combined}",
             output.status.code(),
         );
-        anyhow::ensure!(combined.contains("1 passed"), "output:\n{combined}");
+        assert_summary(&combined, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&combined, &["inner::profile_test"])?;
         Ok(())
     }
 
@@ -252,18 +253,15 @@ mod tests {
         )?;
 
         let output = run_cargo_rudzio(ctx.cargo_home(), ctx.cargo_target_dir(), root, &[])?;
-        let combined = format!(
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let combined = combined_output(&output);
         anyhow::ensure!(
             output.status.success(),
             "expected the overflow-checks-false test to pass (wraparound, no panic), but it \
              exited {:?}.\n{combined}",
             output.status.code(),
         );
-        anyhow::ensure!(combined.contains("1 passed"), "output:\n{combined}");
+        assert_summary(&combined, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&combined, &["inner::profile_test"])?;
         Ok(())
     }
 

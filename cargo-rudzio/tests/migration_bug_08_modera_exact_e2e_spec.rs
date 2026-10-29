@@ -48,7 +48,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use cargo_rudzio_test_helpers::current_git_head;
-use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
+use cargo_rudzio_test_helpers::{
+    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary,
+    combined_output,
+};
 use rudzio::runtime::tokio::Multithread;
 
 /// The runner shim: declares the `cli` submodule and the `#[rudzio::main]`
@@ -309,39 +312,11 @@ fn write_modera_crate(root: &Path, git_rev: &str) -> io::Result<()> {
 ])]
 mod tests {
     use std::path::{Path, PathBuf};
-    use std::process::Output;
-
     use super::{
-        IsolatedCargoTest, cargo_home_with_full_graph, current_git_head, run_cargo_rudzio_fresh,
+        IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary,
+        cargo_home_with_full_graph, combined_output, current_git_head, run_cargo_rudzio_fresh,
         write_modera_crate,
     };
-
-    /// The three `#[rudzio::test]` fns the operator's `tests/cli.rs` declares.
-    const EXPECTED_TESTS: [&str; 3] = ["version_short_flag", "version_long_flag", "help_flag"];
-
-    /// Assert a successful `cargo rudzio test` run reported exactly the three
-    /// `modera` tests.
-    fn assert_three_tests(output: &Output) -> anyhow::Result<()> {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::ensure!(
-            output.status.success(),
-            "bin-only member `modera` must run its `tests/cli.rs` tests (exit 0), but the runner \
-             exited {:?}.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-            output.status.code(),
-        );
-        for expected in EXPECTED_TESTS {
-            anyhow::ensure!(
-                stdout.contains(expected),
-                "runner stdout must name the aggregated test `{expected}`.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-            );
-        }
-        anyhow::ensure!(
-            stdout.contains("3 passed"),
-            "runner must report exactly 3 passing tests, but stdout did not contain \"3 passed\".\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        );
-        Ok(())
-    }
 
     /// Build a task-local cargo build dir beside the cargo target dir.
     fn cargo_build_dir_for(cargo_target_dir: &Path) -> anyhow::Result<PathBuf> {
@@ -372,7 +347,23 @@ mod tests {
             &cargo_build_dir,
             &["--manifest-path", &workspace_manifest, "-p", "modera"],
         )?;
-        assert_three_tests(&output)
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "bin-only member `modera` must run its `tests/cli.rs` tests (exit 0), but the runner \
+             exited {:?}.\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(3, 0, 0, 0, 0, 0, 0, 3))?;
+        assert_exact_test_names(
+            &text,
+            &[
+                "cli::tests::version_short_flag",
+                "cli::tests::version_long_flag",
+                "cli::tests::help_flag",
+            ],
+        )?;
+        Ok(())
     }
 
     /// **Bug #8 (operator's exact shape, workspace-wide)** — the same workspace
@@ -395,6 +386,22 @@ mod tests {
             &cargo_build_dir,
             &["--manifest-path", &workspace_manifest],
         )?;
-        assert_three_tests(&output)
+        let text = combined_output(&output);
+        anyhow::ensure!(
+            output.status.success(),
+            "bin-only member `modera` must run its `tests/cli.rs` tests (exit 0), but the runner \
+             exited {:?}.\n--- output ---\n{text}",
+            output.status.code(),
+        );
+        assert_summary(&text, RunSummary::plain(3, 0, 0, 0, 0, 0, 0, 3))?;
+        assert_exact_test_names(
+            &text,
+            &[
+                "cli::tests::version_short_flag",
+                "cli::tests::version_long_flag",
+                "cli::tests::help_flag",
+            ],
+        )?;
+        Ok(())
     }
 }

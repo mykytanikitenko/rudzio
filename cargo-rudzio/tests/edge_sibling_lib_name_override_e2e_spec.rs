@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use cargo_rudzio_test_helpers::{
-    IsolatedCargoSuite, IsolatedCargoTest, assert_fresh_binary, current_git_head, repo_root,
+    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_fresh_binary,
+    assert_summary, combined_output, current_git_head, repo_root,
 };
 use rudzio::runtime::tokio::Multithread;
 
@@ -169,33 +170,12 @@ fn run_cargo_rudzio(
 
 /// Assert exit 0 and that the runner reported exactly the `expected` test
 /// set (every name present, summary count equals `expected.len()`).
-fn assert_exact_passed(output: &Output, expected: &[&str]) -> anyhow::Result<()> {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    anyhow::ensure!(
-        output.status.success(),
-        "cargo rudzio test must exit 0; exit = {:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        output.status.code(),
-    );
-    for name in expected {
-        anyhow::ensure!(
-            stdout.contains(name),
-            "runner stdout must name the aggregated test `{name}`.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        );
-    }
-    anyhow::ensure!(
-        stdout.contains(&format!("{} passed", expected.len())),
-        "runner must report exactly {} passed.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        expected.len(),
-    );
-    Ok(())
-}
-
 #[rudzio::suite([(runtime = Multithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest)])]
 mod tests {
     use super::{
-        IsolatedCargoTest, assert_exact_passed, cargo_build_dir_for, fs, rudzio_git_rev,
-        run_cargo_rudzio, write_lib_member_manifest, write_test_source, write_workspace_manifest,
+        IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary, cargo_build_dir_for,
+        combined_output, fs, rudzio_git_rev, run_cargo_rudzio, write_lib_member_manifest,
+        write_test_source, write_workspace_manifest,
     };
 
     /// Consumer `a` dev-depends on sibling `b` (`[lib] name = "renamed_lib"`)
@@ -286,6 +266,10 @@ mod tests {
             &workspace,
             &[],
         )?;
-        assert_exact_passed(&output, &["a_uses_sibling_by_lib_name", "b_own_answer"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_exact_test_names(&text, &["a_uses_sibling_by_lib_name", "b_own_answer"])?;
+        Ok(())
     }
 }

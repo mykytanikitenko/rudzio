@@ -25,7 +25,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use cargo_rudzio_test_helpers::{
-    IsolatedCargoSuite, IsolatedCargoTest, assert_fresh_binary, current_git_head, repo_root,
+    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_exact_test_names,
+    assert_fresh_binary, assert_summary, combined_output, current_git_head, repo_root,
 };
 use rudzio::runtime::tokio::Multithread;
 
@@ -229,37 +230,12 @@ fn run_cargo_rudzio(
     Ok(output)
 }
 
-/// Assert exit 0 and that the runner reported exactly the `expected` test
-/// set (every name present, summary count equals `expected.len()`).
-fn assert_exact_passed(output: &Output, expected: &[&str]) -> anyhow::Result<()> {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    anyhow::ensure!(
-        output.status.success(),
-        "cargo rudzio test must exit 0; exit = {:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        output.status.code(),
-    );
-    for name in expected {
-        anyhow::ensure!(
-            stdout.contains(name),
-            "runner stdout must name the aggregated test `{name}`.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        );
-    }
-    anyhow::ensure!(
-        stdout.contains(&format!("{} passed", expected.len())),
-        "runner must report exactly {} passed, but stdout did not contain \"{} passed\".\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        expected.len(),
-        expected.len(),
-    );
-    Ok(())
-}
-
 #[rudzio::suite([(runtime = Multithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest)])]
 mod tests {
     use super::{
-        IsolatedCargoTest, assert_exact_passed, cargo_build_dir_for, fs, rudzio_git_rev,
-        run_cargo_rudzio, simple_body, write_member, write_suite_only_source, write_test_source,
-        write_workspace_manifest,
+        IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary, cargo_build_dir_for,
+        combined_output, fs, rudzio_git_rev, run_cargo_rudzio, simple_body, write_member,
+        write_suite_only_source, write_test_source, write_workspace_manifest,
     };
 
     /// The `answer() -> 42` self-named module body shared by most cases.
@@ -289,7 +265,11 @@ mod tests {
             &workspace,
             &[],
         )?;
-        assert_exact_passed(&output, &["control_non_self_named_answer"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["control_non_self_named_answer"])?;
+        Ok(())
     }
 
     /// **`#[path]` attribute** — a self-named module declared via a
@@ -319,7 +299,11 @@ mod tests {
             &workspace,
             &[],
         )?;
-        assert_exact_passed(&output, &["path_attr_self_named_answer"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["path_attr_self_named_answer"])?;
+        Ok(())
     }
 
     /// **cfg-gated self-named item** — `#[cfg(not(rudzio_test))] mod project;`
@@ -346,7 +330,11 @@ mod tests {
             &workspace,
             &[],
         )?;
-        assert_exact_passed(&output, &["cfg_gated_self_named_answer"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["cfg_gated_self_named_answer"])?;
+        Ok(())
     }
 
     /// **UTF-8 BOM** — a `src/lib.rs` that begins with a UTF-8 byte-order
@@ -373,7 +361,11 @@ mod tests {
             &workspace,
             &[],
         )?;
-        assert_exact_passed(&output, &["bom_self_named_answer"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["bom_self_named_answer"])?;
+        Ok(())
     }
 
     /// **CRLF line endings** — a `src/lib.rs` whose lines end in `\r\n` is
@@ -399,7 +391,11 @@ mod tests {
             &workspace,
             &[],
         )?;
-        assert_exact_passed(&output, &["crlf_self_named_answer"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["crlf_self_named_answer"])?;
+        Ok(())
     }
 
     /// **Raw identifier** — a crate root that also carries a raw-ident item
@@ -430,7 +426,11 @@ mod tests {
             &workspace,
             &[],
         )?;
-        assert_exact_passed(&output, &["raw_ident_self_named_answer"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["raw_ident_self_named_answer"])?;
+        Ok(())
     }
 
     /// **`tests/main.rs` shim** — a self-named member whose `[[test]]` entry
@@ -492,7 +492,11 @@ mod tests {
             &workspace,
             &[],
         )?;
-        assert_exact_passed(&output, &["shim_self_named_answer"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["shim_self_named_answer"])?;
+        Ok(())
     }
 
     /// **Self-named macro** — a `macro_rules! project` at the crate root is a
@@ -519,7 +523,11 @@ mod tests {
             &workspace,
             &[],
         )?;
-        assert_exact_passed(&output, &["macro_self_named_answer"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["macro_self_named_answer"])?;
+        Ok(())
     }
 
     /// **Every crate-path spelling** — a self-named crate `x` (root `foo()`
@@ -566,7 +574,11 @@ mod tests {
             &workspace,
             &[],
         )?;
-        assert_exact_passed(&output, &["every_form_references_crate"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["every_form_references_crate"])?;
+        Ok(())
     }
 
     /// **Hyphenated package, lib name overridden** — package `my-crate` with
@@ -601,7 +613,11 @@ mod tests {
             &workspace,
             &[],
         )?;
-        assert_exact_passed(&output, &["hyphenated_lib_name_override_answer"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["hyphenated_lib_name_override_answer"])?;
+        Ok(())
     }
 
     /// **Control — hyphenated package, no `[lib] name` override** — package
@@ -663,7 +679,11 @@ mod tests {
             &workspace,
             &[],
         )?;
-        assert_exact_passed(&output, &["hyphenated_default_lib_name_answer"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["hyphenated_default_lib_name_answer"])?;
+        Ok(())
     }
 
     /// **Cross-crate self-named dependency** — crate `a` depends on the
@@ -754,7 +774,11 @@ mod tests {
             &workspace,
             &[],
         )?;
-        assert_exact_passed(&output, &["cross_crate_self_named_item"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["cross_crate_self_named_item"])?;
+        Ok(())
     }
 
     /// **Self-named crate + bin target** — a self-named lib crate `x` that
@@ -827,6 +851,10 @@ mod tests {
             &workspace,
             &[],
         )?;
-        assert_exact_passed(&output, &["bin_coexists_self_named_answer"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["bin_coexists_self_named_answer"])?;
+        Ok(())
     }
 }
