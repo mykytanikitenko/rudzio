@@ -32,8 +32,8 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use cargo_rudzio_test_helpers::{
-    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_exact_test_names,
-    assert_summary, combined_output,
+    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_exact_test_names, assert_summary,
+    combined_output,
 };
 use rudzio::runtime::tokio::Multithread as TokioMultithread;
 use tempfile::TempDir;
@@ -147,87 +147,6 @@ fn run_cargo_rudzio(
     .env("CARGO_NET_OFFLINE", "true")
     .env("NO_COLOR", "1")
     .output()
-}
-
-#[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
-         mod tests {{\n\
-         \x20\x20\x20\x20{import_line}\n\
-         \n\
-         \x20\x20\x20\x20#[rudzio::test]\n\
-         \x20\x20\x20\x20fn {test_name}() -> anyhow::Result<()> {{\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20anyhow::ensure!(answer() == 42, \"expected answer() == 42\");\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
-         \x20\x20\x20\x20}}\n\
-         }}\n\
-         \n\
-         #[rudzio::main]\n\
-         fn main() {{}}\n",
-    )
-}
-
-/// Spawn `cargo rudzio test` against `root` with the isolated cargo env.
-fn run_cargo_rudzio(
-    root: &Path,
-    cargo_home: &Path,
-    cargo_target_dir: &Path,
-    args: &[&str],
-) -> io::Result<Output> {
-    Command::new(
-        cargo_rudzio_test_helpers::assert_fresh_binary(env!("CARGO_BIN_EXE_cargo-rudzio"))
-            .map_err(io::Error::other)?,
-    )
-    .arg("test")
-    .args(args)
-    .current_dir(root)
-    .env(
-        "CARGO",
-        env::var_os("CARGO").unwrap_or_else(|| "cargo".into()),
-    )
-    .env("CARGO_HOME", cargo_home)
-    .env("CARGO_TARGET_DIR", cargo_target_dir)
-    .env("CARGO_NET_OFFLINE", "true")
-    .env("NO_COLOR", "1")
-    .output()
-}
-
-/// Extract the `N` from the runner's `test result: ok. N passed; ...` line.
-fn parse_passed_count(stdout: &str) -> Option<usize> {
-    let line = stdout
-        .lines()
-        .find(|candidate| candidate.contains("test result:") && candidate.contains("passed;"))?;
-    let (head, _tail) = line.split_once(" passed;")?;
-    head.rsplit(|ch: char| !ch.is_ascii_digit())
-        .next()?
-        .parse()
-        .ok()
-}
-
-/// Assert exit 0 and that exactly `expected` is the passed test set.
-fn assert_exact_passed(output: &Output, expected: &[&str]) -> anyhow::Result<()> {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    anyhow::ensure!(
-        output.status.success(),
-        "cargo rudzio test must exit 0; exit = {:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        output.status.code(),
-    );
-    let passed = parse_passed_count(&stdout).ok_or_else(|| {
-        anyhow::anyhow!(
-            "could not parse `N passed;` from the runner summary\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-        )
-    })?;
-    anyhow::ensure!(
-        passed == expected.len(),
-        "runner summary reports {passed} passed, expected exactly {} ({expected:?})\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        expected.len(),
-    );
-    for name in expected {
-        anyhow::ensure!(
-            stdout.contains(name),
-            "test `{name}` must be reported in runner stdout\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        );
-    }
-    Ok(())
 }
 
 /// Lay down a workspace whose single `selfmod` member exposes
