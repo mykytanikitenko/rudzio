@@ -128,10 +128,7 @@ fn run_cargo_rudzio(
         .env("RUSTC_WRAPPER", "")
         .env("SCCACHE_DISABLE", "1")
         .env("NO_COLOR", "1")
-        .env(
-            rudzio::RUNNER_ARGS_ENV,
-            "--threads-parallel-hardlimit=none",
-        )
+        .env(rudzio::RUNNER_ARGS_ENV, "--threads-parallel-hardlimit=none")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let output = cmd.output().map_err(io::Error::other)?;

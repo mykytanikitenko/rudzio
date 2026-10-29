@@ -50,10 +50,10 @@ pub fn permute_with_seed<T>(items: &mut [T], seed: u64) -> anyhow::Result<()> {
             idx.checked_add(1_usize)
                 .ok_or_else(|| anyhow::anyhow!("shuffle: index overflow"))?,
         )
-        .map_err(|_| anyhow::anyhow!("shuffle: index overflows u64"))?;
+        .map_err(|_ignored| anyhow::anyhow!("shuffle: index overflows u64"))?;
         let bucket = state.rem_euclid(modulus);
         let pick = usize::try_from(bucket)
-            .map_err(|_| anyhow::anyhow!("shuffle: pick overflows usize"))?;
+            .map_err(|_ignored| anyhow::anyhow!("shuffle: pick overflows usize"))?;
         items.swap(idx, pick);
         idx = idx
             .checked_sub(1_usize)

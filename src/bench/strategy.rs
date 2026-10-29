@@ -100,10 +100,10 @@ impl Strategy for Sequential {
                 Ok(Ok(())) => samples.push(iter_elapsed),
                 Ok(Err(err)) => failures.push(err.to_string()),
                 Err(_payload) => {
-                    panics = panics.checked_add(1).map_or(usize::MAX, |value| value);
+                    panics = panics.saturating_add(1);
                 }
             }
-            let done = idx.checked_add(1).map_or(usize::MAX, |value| value);
+            let done = idx.saturating_add(1);
             if done.checked_rem(stride).is_some_and(|rem| rem == 0) || done == iterations {
                 let snapshot = snapshot_or_initial(&samples, done, iterations);
                 on_progress(snapshot);
@@ -182,10 +182,10 @@ impl Strategy for Concurrent {
                 Ok(Ok(())) => samples.push(iter_elapsed),
                 Ok(Err(err)) => failures.push(err.to_string()),
                 Err(_payload) => {
-                    panics = panics.checked_add(1).map_or(usize::MAX, |value| value);
+                    panics = panics.saturating_add(1);
                 }
             }
-            done = done.checked_add(1).map_or(usize::MAX, |value| value);
+            done = done.saturating_add(1);
             if done.is_multiple_of(stride) || done == iterations {
                 let snapshot = snapshot_or_initial(&samples, done, iterations);
                 on_progress(snapshot);

@@ -19,6 +19,8 @@ use rudzio::runtime::futures::ThreadPool;
 use rudzio::runtime::monoio;
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
 use rudzio::runtime::{async_std, compio, embassy, smol};
+#[cfg(unix)]
+use rustix::process::{Pid, Signal, kill_process};
 
 /// RAII cleanup of the temp log file the Bug #13 fixture writes to.
 /// Kept at module scope (not nested inside the test fn) per clippy's
@@ -90,11 +92,7 @@ fn run(exe: &str) -> anyhow::Result<Output> {
 /// in `Output`. Unix-only; the fixture must print a deterministic
 /// readiness marker so the integration test can race-free signal it.
 #[cfg(unix)]
-fn run_and_signal(
-    exe: &str,
-    ready_marker: &str,
-    signal: rustix::process::Signal,
-) -> anyhow::Result<Output> {
+fn run_and_signal(exe: &str, ready_marker: &str, signal: Signal) -> anyhow::Result<Output> {
     use std::os::unix::process::ExitStatusExt as _;
 
     let mut child = Command::new(exe)
@@ -142,9 +140,9 @@ fn run_and_signal(
 
     let pid_raw = i32::try_from(child.id())
         .with_context(|| format!("child pid {} does not fit in pid_t", child.id()))?;
-    let pid = rustix::process::Pid::from_raw(pid_raw)
-        .ok_or_else(|| anyhow::anyhow!("child pid 0 is not a valid pid"))?;
-    rustix::process::kill_process(pid, signal).with_context(|| format!("kill({signal:?})"))?;
+    let pid =
+        Pid::from_raw(pid_raw).ok_or_else(|| anyhow::anyhow!("child pid 0 is not a valid pid"))?;
+    kill_process(pid, signal).with_context(|| format!("kill({signal:?})"))?;
 
     // Drain the rest of stdout concurrently with stderr.
     let mut stderr = child
@@ -652,8 +650,8 @@ mod tests {
             log.contains("macro-generated cfg_attr ignore"),
             "ignore reason must be reported, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("1 ignored"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(0, 0, 0, 0, 0, 1, 0, 1))?;
+        assert_exact_test_names(&log, &["cfg_attr_ignored_via_macro"])?;
         Ok(())
     }
 
@@ -665,9 +663,8 @@ mod tests {
             out.status.code() == Some(1_i32),
             "expected exit 1, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("[FAIL]"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 failed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 1, 0, 0, 0, 0, 0, 2))?;
+        assert_exact_test_names(&log, &["passes", "fails"])?;
         Ok(())
     }
 
@@ -681,9 +678,9 @@ mod tests {
         );
         anyhow::ensure!(log.contains("[IGNORE]"), "output:\n{log}");
         anyhow::ensure!(log.contains("takes too long"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("2 ignored"), "output:\n{log}");
         anyhow::ensure!(!log.contains("must not run"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 2, 0, 3))?;
+        assert_exact_test_names(&log, &["runs", "ignored_bare", "ignored_with_reason"])?;
         Ok(())
     }
 
@@ -696,7 +693,8 @@ mod tests {
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("yields_then_passes"), "output:\n{log}");
-        anyhow::ensure!(log.contains("[OK]"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&log, &["yields_then_passes"])?;
         Ok(())
     }
 
@@ -709,7 +707,8 @@ mod tests {
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("passes_under_compio"), "output:\n{log}");
-        anyhow::ensure!(log.contains("[OK]"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&log, &["passes_under_compio"])?;
         Ok(())
     }
 
@@ -721,10 +720,9 @@ mod tests {
             out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("passes_under_futures"), "output:\n{log}");
-        anyhow::ensure!(log.contains("spawn_works_under_futures"), "output:\n{log}");
         anyhow::ensure!(log.contains("futures::ThreadPool"), "output:\n{log}");
-        anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_exact_test_names(&log, &["passes_under_futures", "spawn_works_under_futures"])?;
         Ok(())
     }
 
@@ -738,7 +736,8 @@ mod tests {
         );
         anyhow::ensure!(log.contains("Multithread"), "output:\n{log}");
         anyhow::ensure!(log.contains("compio::Runtime"), "output:\n{log}");
-        anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_exact_test_names(&log, &["runs_on_every_runtime", "runs_on_every_runtime"])?;
         Ok(())
     }
 
@@ -754,9 +753,8 @@ mod tests {
             log.contains("after_panic"),
             "after_panic never ran — panic killed the whole thread. output:\n{log}"
         );
-        anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 panicked"), "output:\n{log}");
-        anyhow::ensure!(log.contains("3 total"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(2, 0, 1, 0, 0, 0, 0, 3))?;
+        assert_exact_test_names(&log, &["before_panic", "panics", "after_panic"])?;
         Ok(())
     }
 
@@ -772,10 +770,8 @@ mod tests {
         anyhow::ensure!(log.contains("sync_passes"), "output:\n{log}");
         anyhow::ensure!(log.contains("sync_returns_err"), "output:\n{log}");
         anyhow::ensure!(log.contains("sync_panics"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 failed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 panicked"), "output:\n{log}");
-        anyhow::ensure!(log.contains("3 total"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 1, 1, 0, 0, 0, 0, 3))?;
+        assert_exact_test_names(&log, &["sync_passes", "sync_returns_err", "sync_panics"])?;
         Ok(())
     }
 
@@ -788,8 +784,8 @@ mod tests {
             "expected exit 0, output:\n{log}"
         );
         anyhow::ensure!(log.contains("runs_on_custom_context"), "output:\n{log}");
-        anyhow::ensure!(log.contains("[OK]"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&log, &["runs_on_custom_context"])?;
         Ok(())
     }
 
@@ -806,11 +802,11 @@ mod tests {
         anyhow::ensure!(log.contains("setup "), "output:\n{log}");
         anyhow::ensure!(log.contains("setup_failed_by_design"), "output:\n{log}");
         // Tests that never ran are reported as Cancelled, not Panicked.
-        anyhow::ensure!(log.contains("1 cancelled"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 panicked"), "output:\n{log}");
         // No test emits an [OK] tag; setup failed before teardown ran, so
         // the [OK] teardown line never gets emitted either.
         anyhow::ensure!(!log.contains("[OK]"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(0, 0, 0, 0, 1, 0, 0, 1))?;
+        assert_exact_test_names(&log, &["never_runs"])?;
         Ok(())
     }
 
@@ -834,9 +830,8 @@ mod tests {
         );
         // SetupFailed counts toward the `failed` bucket (it's a kind of
         // failure), preserving the summary-stat semantics.
-        anyhow::ensure!(log.contains("2 failed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 panicked"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(0, 2, 0, 0, 0, 0, 0, 2))?;
+        assert_exact_test_names(&log, &["first", "second"])?;
         Ok(())
     }
 
@@ -867,6 +862,8 @@ mod tests {
             log.matches("[OK]").count() >= 2,
             "expected at least 2 [OK] occurrences (setup + teardown), got:\n{log}"
         );
+        assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_exact_test_names(&log, &["first_passes", "second_passes"])?;
         Ok(())
     }
 
@@ -896,8 +893,8 @@ mod tests {
             log.contains("body_runs_then_teardown_fails"),
             "output:\n{log}"
         );
-        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 teardown failed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 1, 1))?;
+        assert_exact_test_names(&log, &["body_runs_then_teardown_fails"])?;
         Ok(())
     }
 
@@ -925,7 +922,8 @@ mod tests {
             !log.contains("runtime thread panicked"),
             "panic escaped catch_unwind, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("1 cancelled"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(0, 0, 0, 0, 1, 0, 0, 1))?;
+        assert_exact_test_names(&log, &["never_runs"])?;
         Ok(())
     }
 
@@ -952,8 +950,8 @@ mod tests {
             !log.contains("runtime thread panicked"),
             "panic escaped catch_unwind, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 teardown failed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 1, 1))?;
+        assert_exact_test_names(&log, &["body_runs_then_teardown_panics"])?;
         Ok(())
     }
 
@@ -978,7 +976,8 @@ mod tests {
             !log.contains("runtime thread panicked"),
             "panic escaped catch_unwind, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("1 failed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(0, 1, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&log, &["body_never_runs"])?;
         Ok(())
     }
 
@@ -1007,8 +1006,8 @@ mod tests {
             !log.contains("runtime thread panicked"),
             "panic escaped catch_unwind, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 teardown failed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 1, 1))?;
+        assert_exact_test_names(&log, &["body_runs_then_teardown_panics"])?;
         Ok(())
     }
 
@@ -1024,8 +1023,8 @@ mod tests {
             log.contains("runs_via_plain_test_attribute"),
             "output:\n{log}"
         );
-        anyhow::ensure!(log.contains("[OK]"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&log, &["runs_via_plain_test_attribute"])?;
         Ok(())
     }
 
@@ -1042,19 +1041,17 @@ mod tests {
             out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
-        for name in [
-            "bare_sync_void",
-            "explicit_unit_return",
-            "bare_async_void",
-            "result_returning",
-            "result_display_only",
-        ] {
-            anyhow::ensure!(
-                log.contains(name),
-                "fixture must report test `{name}`, output:\n{log}"
-            );
-        }
-        anyhow::ensure!(log.contains("5 passed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(5, 0, 0, 0, 0, 0, 0, 5))?;
+        assert_exact_test_names(
+            &log,
+            &[
+                "bare_sync_void",
+                "explicit_unit_return",
+                "bare_async_void",
+                "result_returning",
+                "result_display_only",
+            ],
+        )?;
         Ok(())
     }
 
@@ -1068,10 +1065,17 @@ mod tests {
             out.status.code() == Some(1_i32),
             "expected exit 1, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("3 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("2 panicked"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("5 total"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(3, 0, 2, 0, 0, 0, 0, 5))?;
+        assert_exact_test_names(
+            &log,
+            &[
+                "step_1_pass",
+                "step_2_panic",
+                "step_3_pass",
+                "step_4_panic",
+                "step_5_pass",
+            ],
+        )?;
 
         // Sequential source-order execution: each test name must come before the next.
         let mut positions: Vec<usize> = Vec::new();
@@ -1104,12 +1108,13 @@ mod tests {
             out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("[OK]"), "output:\n{log}");
         // The marker only appears if suite teardown waited for the tracked task.
         anyhow::ensure!(
             log.contains("tracker_drain_marker"),
             "tracker did not drain the spawned task; output:\n{log}"
         );
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&log, &["returns_before_tracked_task_completes"])?;
         Ok(())
     }
 
@@ -1121,11 +1126,12 @@ mod tests {
             out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("[OK]"), "output:\n{log}");
         anyhow::ensure!(
             log.contains("cancel_propagation_marker"),
             "teardown did not cancel the token; output:\n{log}"
         );
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&log, &["cancel_token_wakes_on_teardown"])?;
         Ok(())
     }
 
@@ -1139,7 +1145,8 @@ mod tests {
         );
         anyhow::ensure!(log.contains("spawn_awaits_result"), "output:\n{log}");
         anyhow::ensure!(log.contains("cancel_token_is_child"), "output:\n{log}");
-        anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_exact_test_names(&log, &["spawn_awaits_result", "cancel_token_is_child"])?;
         Ok(())
     }
 
@@ -1159,8 +1166,14 @@ mod tests {
             log.contains("spawn_blocking_uses_a_different_thread"),
             "output:\n{log}"
         );
-        anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_exact_test_names(
+            &log,
+            &[
+                "runs_sync_fn_via_spawn_blocking",
+                "spawn_blocking_uses_a_different_thread",
+            ],
+        )?;
         Ok(())
     }
 
@@ -1174,8 +1187,15 @@ mod tests {
             out.status.code() == Some(0_i32),
             "expected exit 0 under parallel dispatch, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("3 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(3, 0, 0, 0, 0, 0, 0, 3))?;
+        assert_exact_test_names(
+            &log,
+            &[
+                "first_hits_barrier",
+                "second_hits_barrier",
+                "third_hits_barrier",
+            ],
+        )?;
         Ok(())
     }
 
@@ -1194,7 +1214,14 @@ mod tests {
         );
         anyhow::ensure!(log.contains("Multithread"), "output:\n{log}");
         anyhow::ensure!(log.contains("compio::Runtime"), "output:\n{log}");
-        anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_exact_test_names(
+            &log,
+            &[
+                "waits_on_cross_runtime_barrier",
+                "waits_on_cross_runtime_barrier",
+            ],
+        )?;
         Ok(())
     }
 
@@ -1225,6 +1252,8 @@ mod tests {
             log.contains("teardown_suite_marker"),
             "suite teardown must run after timeout, output:\n{log}"
         );
+        assert_summary(&log, RunSummary::plain(0, 0, 0, 1, 0, 0, 0, 1))?;
+        assert_exact_test_names(&log, &["body_times_out"])?;
         Ok(())
     }
 
@@ -1250,8 +1279,11 @@ mod tests {
             log.contains("still_runs_after_previous_timeout_marker"),
             "subsequent test must still run, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 timed out"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 1, 0, 0, 0, 2))?;
+        assert_exact_test_names(
+            &log,
+            &["hangs_until_timeout", "still_runs_after_previous_timeout"],
+        )?;
         Ok(())
     }
 
@@ -1286,7 +1318,15 @@ mod tests {
             !log.contains("never_starts_first_unreached_marker"),
             "cancelled test body must not run, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("2 cancelled"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 2, 0, 0, 3))?;
+        assert_exact_test_names(
+            &log,
+            &[
+                "waits_for_run_cancel",
+                "never_starts_first",
+                "never_starts_second",
+            ],
+        )?;
         Ok(())
     }
 
@@ -1319,6 +1359,8 @@ mod tests {
             !log.contains("teardown_must_not_run_marker"),
             "suite teardown must not run when setup never finished, output:\n{log}"
         );
+        assert_summary(&log, RunSummary::plain(0, 0, 0, 0, 1, 0, 0, 1))?;
+        assert_exact_test_names(&log, &["never_runs"])?;
         Ok(())
     }
 
@@ -1344,8 +1386,8 @@ mod tests {
             !log.contains("hanging_suite_teardown_unreached_marker"),
             "teardown future must be dropped, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 teardown failed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 1, 1))?;
+        assert_exact_test_names(&log, &["body_passes_then_suite_teardown_times_out"])?;
         Ok(())
     }
 
@@ -1375,6 +1417,8 @@ mod tests {
             !log.contains("test_teardown_must_not_run_marker"),
             "per-test teardown must skip when context never built, output:\n{log}"
         );
+        assert_summary(&log, RunSummary::plain(0, 1, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&log, &["body_never_runs"])?;
         Ok(())
     }
 
@@ -1400,8 +1444,8 @@ mod tests {
             !log.contains("hanging_test_teardown_unreached_marker"),
             "teardown future must be dropped, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 teardown failed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 1, 1))?;
+        assert_exact_test_names(&log, &["body_passes_then_teardown_times_out"])?;
         Ok(())
     }
 
@@ -1427,8 +1471,11 @@ mod tests {
             log.contains("unbounded_sibling_marker"),
             "sibling test must run unbounded, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("1 timed out"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 1, 0, 0, 0, 2))?;
+        assert_exact_test_names(
+            &log,
+            &["attr_body_times_out", "unbounded_sibling_still_runs"],
+        )?;
         Ok(())
     }
 
@@ -1453,6 +1500,8 @@ mod tests {
             log.contains("setup timed out"),
             "expected setup-timeout diagnostic, output:\n{log}"
         );
+        assert_summary(&log, RunSummary::plain(0, 1, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&log, &["attr_setup_times_out"])?;
         Ok(())
     }
 
@@ -1473,8 +1522,8 @@ mod tests {
             log.contains("[TIMEOUT]") && log.contains("teardown"),
             "expected [TIMEOUT] teardown line, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("1 teardown failed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 1, 1))?;
+        assert_exact_test_names(&log, &["attr_teardown_times_out"])?;
         Ok(())
     }
 
@@ -1665,7 +1714,8 @@ mod tests {
             log.contains("gradual_cancel_cleanup_marker"),
             "cleanup marker missing — runner did not wait for graceful cancel, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("1 passed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&log, &["task_cleans_up_on_cancel"])?;
         Ok(())
     }
 
@@ -1679,13 +1729,16 @@ mod tests {
             out.status.code() == Some(0_i32),
             "expected exit 0, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("module_a_first"), "output:\n{log}");
-        anyhow::ensure!(log.contains("module_a_second"), "output:\n{log}");
-        anyhow::ensure!(log.contains("module_b_first"), "output:\n{log}");
-        anyhow::ensure!(log.contains("module_b_second"), "output:\n{log}");
-        anyhow::ensure!(log.contains("4 passed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("0 failed"), "output:\n{log}");
-        anyhow::ensure!(log.contains("4 total"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(4, 0, 0, 0, 0, 0, 0, 4))?;
+        assert_exact_test_names(
+            &log,
+            &[
+                "module_a::tests_a::module_a_first",
+                "module_a::tests_a::module_a_second",
+                "module_b::tests_b::module_b_first",
+                "module_b::tests_b::module_b_second",
+            ],
+        )?;
         Ok(())
     }
 
@@ -1730,16 +1783,18 @@ mod unix_tests {
     use anyhow::Context as _;
 
     use super::{
-        Command, Duration, ExitStatus, Instant, IoResult, LogPathGuard, Stdio, Test, log_of,
-        ordered, run, run_and_signal, thread,
+        Command, Duration, ExitStatus, Instant, IoResult, LogPathGuard, RunSummary, Stdio, Test,
+        assert_exact_test_names, assert_summary, log_of, ordered, run, run_and_signal, thread,
     };
+
+    use rustix::process::{Pid, Signal, kill_process};
 
     #[rudzio::test]
     fn sigint_cancels_run_gracefully(_ctx: &Test) -> anyhow::Result<()> {
         let out = run_and_signal(
             env!("CARGO_BIN_EXE_sigint_cancel_tokio_mt"),
             "sigint_cancel_ready_marker",
-            rustix::process::Signal::INT,
+            Signal::INT,
         )?;
         let log = log_of(&out);
         anyhow::ensure!(
@@ -1758,7 +1813,8 @@ mod unix_tests {
             !log.contains("never_runs_after_sigint_unreached_marker"),
             "queued test must not start after SIGINT, output:\n{log}"
         );
-        anyhow::ensure!(log.contains("1 cancelled"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 1, 0, 0, 2))?;
+        assert_exact_test_names(&log, &["waits_for_sigint", "never_runs_after_sigint"])?;
         Ok(())
     }
 
@@ -1782,6 +1838,8 @@ mod unix_tests {
             out.status.code() == Some(1_i32),
             "expected exit 1 (one panic)\nstdout:\n{stdout}\nstderr:\n{stderr}",
         );
+        assert_summary(&stdout, RunSummary::plain(2, 0, 1, 0, 0, 0, 0, 3))?;
+        assert_exact_test_names(&stdout, &["alpha", "beta", "gamma_panics"])?;
 
         // stdout stream: each test's stdout lines appear between its
         // own lifecycle start and the next test's lifecycle start,
@@ -1877,6 +1935,8 @@ mod unix_tests {
             out.status.code() == Some(1_i32),
             "expected exit 1 (fail + panic by design), output:\n{log}",
         );
+        assert_summary(&log, RunSummary::plain(1, 1, 1, 0, 0, 0, 0, 3))?;
+        assert_exact_test_names(&log, &["passing", "failing", "panicking"])?;
         let line = log
             .lines()
             .find(|line| line.contains("INVARIANTS_CHECK"))
@@ -1918,7 +1978,11 @@ mod unix_tests {
             log.contains("in_first_mod") && log.contains("in_second_mod"),
             "both tests must have run under the collapsed group, output:\n{log}",
         );
-        anyhow::ensure!(log.contains("2 passed"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(2, 0, 0, 0, 0, 0, 0, 2))?;
+        assert_exact_test_names(
+            &log,
+            &["first_mod::in_first_mod", "second_mod::in_second_mod"],
+        )?;
         Ok(())
     }
 
@@ -1929,7 +1993,7 @@ mod unix_tests {
         let out = run_and_signal(
             env!("CARGO_BIN_EXE_sigint_cancel_tokio_mt"),
             "sigint_cancel_ready_marker",
-            rustix::process::Signal::TERM,
+            Signal::TERM,
         )?;
         let log = log_of(&out);
         anyhow::ensure!(
@@ -1948,7 +2012,8 @@ mod unix_tests {
             !log.contains("never_runs_after_sigint_unreached_marker"),
             "output:\n{log}"
         );
-        anyhow::ensure!(log.contains("1 cancelled"), "output:\n{log}");
+        assert_summary(&log, RunSummary::plain(1, 0, 0, 0, 1, 0, 0, 2))?;
+        assert_exact_test_names(&log, &["waits_for_sigint", "never_runs_after_sigint"])?;
         Ok(())
     }
 
@@ -2061,8 +2126,8 @@ mod unix_tests {
         {
             // SIGKILL the inherited child; pid is a one-shot value harvested
             // from the fixture's own log. `rustix` wraps `kill(2)` safely.
-            if let Some(pid) = rustix::process::Pid::from_raw(pid) {
-                let _killed = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+            if let Some(child_pid) = Pid::from_raw(pid) {
+                let _killed = kill_process(child_pid, Signal::KILL);
             }
         }
     }

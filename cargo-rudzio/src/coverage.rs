@@ -252,13 +252,15 @@ mod tests {
         let dirs = resolve_aggregator_dirs(false, None, None, Path::new(BASE))?;
         assert_eq!(
             dirs.target_dir,
-            Path::new("/outer/target/rudzio-auto-runner-0123456789abcdef-0123456789abcdef/target")
+            Path::new("/outer/target/rudzio-auto-runner-0123456789abcdef-0123456789abcdef/target"),
+            "target dir is BASE + `target` suffix"
         );
         assert_eq!(
             dirs.build_dir.as_deref(),
             Some(Path::new(
                 "/outer/target/rudzio-auto-runner-0123456789abcdef-0123456789abcdef/build-dir"
-            ))
+            )),
+            "build dir is BASE + `build-dir` suffix"
         );
         Ok(())
     }
@@ -279,11 +281,13 @@ mod tests {
         )?;
         assert_eq!(
             dirs.target_dir,
-            Path::new("/var/mnt/data-cache/cargo-target")
+            Path::new("/var/mnt/data-cache/cargo-target"),
+            "coverage overrides the target dir with the llvm-cov one"
         );
         assert_eq!(
             dirs.build_dir.as_deref(),
-            Some(Path::new("/var/mnt/data-cache/cargo/build-dir"))
+            Some(Path::new("/var/mnt/data-cache/cargo/build-dir")),
+            "coverage overrides the build dir with the llvm-cov one"
         );
         Ok(())
     }
@@ -294,8 +298,15 @@ mod tests {
     ) -> anyhow::Result<()> {
         let dirs =
             resolve_aggregator_dirs(true, Some(OsStr::new("/cov-target")), None, Path::new(BASE))?;
-        assert_eq!(dirs.target_dir, Path::new("/cov-target"));
-        assert_eq!(dirs.build_dir, None);
+        assert_eq!(
+            dirs.target_dir,
+            Path::new("/cov-target"),
+            "coverage target dir wins"
+        );
+        assert_eq!(
+            dirs.build_dir, None,
+            "build dir stays unset when not provided"
+        );
         Ok(())
     }
 
@@ -338,7 +349,8 @@ mod tests {
         let generated = vec!["rudzio_auto_runner".to_owned()];
         assert_eq!(
             augment_crate_names(existing, &generated),
-            "consumer,rudzio_auto_runner"
+            "consumer,rudzio_auto_runner",
+            "already-present generated name is not re-appended"
         );
         Ok(())
     }
@@ -351,11 +363,13 @@ mod tests {
         ];
         assert_eq!(
             augment_crate_names("", &generated),
-            "rudzio_auto_runner,a_bin_rudzio_bridge_lib"
+            "rudzio_auto_runner,a_bin_rudzio_bridge_lib",
+            "empty existing yields just the generated names"
         );
         assert_eq!(
             augment_crate_names("  consumer ,, consumer ", &generated),
-            "consumer,rudzio_auto_runner,a_bin_rudzio_bridge_lib"
+            "consumer,rudzio_auto_runner,a_bin_rudzio_bridge_lib",
+            "whitespace and duplicates are trimmed and collapsed"
         );
         Ok(())
     }
@@ -367,8 +381,8 @@ mod tests {
             Path::new("/ws/consumer"),
         )?;
         assert_eq!(
-            flag,
-            "--remap-path-prefix=/out/members/consumer=/ws/consumer"
+            flag, "--remap-path-prefix=/out/members/consumer=/ws/consumer",
+            "flag is a single whitespace-free `--remap-path-prefix` token"
         );
         assert!(
             !flag.contains(' '),
@@ -384,7 +398,10 @@ mod tests {
         let Err(err) = remap_prefix_flag(&bad, Path::new("/ws/consumer")) else {
             anyhow::bail!("expected remap flag construction to fail on non-UTF-8 source");
         };
-        assert!(format!("{err:#}").contains("not valid UTF-8"));
+        assert!(
+            format!("{err:#}").contains("not valid UTF-8"),
+            "non-UTF-8 source path is rejected"
+        );
         Ok(())
     }
 

@@ -89,121 +89,19 @@ impl ProgressSnapshot {
             .copied()
             .ok_or_else(|| anyhow::anyhow!("progress snapshot: no samples"))?;
 
-        // Nearest-rank percentile in integer math: rank = ceil(p * n) - 1,
-        // expressed as ceil(permille * n / 1000) - 1 with permille = p * 1000.
-        let n_u128 = u128::try_from(n)
-            .map_err(|_| anyhow::anyhow!("progress snapshot: sample count overflows u128"))?;
-        let rank = |permille: u32| -> anyhow::Result<usize> {
-            let permille_u128 = u128::from(permille);
-            let numerator = permille_u128
-                .checked_mul(n_u128)
-                .and_then(|v| v.checked_add(999_u128))
-                .ok_or_else(|| {
-                    anyhow::anyhow!("progress snapshot: percentile numerator overflow")
-                })?;
-            let ceiling = numerator
-                .checked_div(1000_u128)
-                .ok_or_else(|| anyhow::anyhow!("progress snapshot: percentile division by 1000"))?;
-            let rank_before_clamp = ceiling
-                .checked_sub(1_u128)
-                .ok_or_else(|| anyhow::anyhow!("progress snapshot: percentile rank underflow"))?;
-            let upper_bound = n
-                .checked_sub(1)
-                .ok_or_else(|| anyhow::anyhow!("progress snapshot: percentile rank underflow"))?;
-            Ok(usize::try_from(rank_before_clamp)
-                .map_err(|_| anyhow::anyhow!("progress snapshot: percentile rank overflows usize"))?
-                .min(upper_bound))
-        };
+        let n_u128 = u128::try_from(n).map_err(|_ignored| {
+            anyhow::anyhow!("progress snapshot: sample count overflows u128")
+        })?;
         let p50 = sorted
-            .get(rank(500_u32)?)
+            .get(percentile_index(n, n_u128, 500_u32)?)
             .copied()
             .ok_or_else(|| anyhow::anyhow!("progress snapshot: p50 index out of range"))?;
         let p95 = sorted
-            .get(rank(950_u32)?)
+            .get(percentile_index(n, n_u128, 950_u32)?)
             .copied()
             .ok_or_else(|| anyhow::anyhow!("progress snapshot: p95 index out of range"))?;
-
-        // Coefficient of variation σ/mean computed entirely in integer
-        // domain via the shortcut formula
-        //   cov² = (n·Σx² − (Σx)²) / (Σx)²
-        // and carried as parts-per-thousand (cov × 1000) in a u16. We
-        // never widen to floats — the renderer formats `xx.x%` directly
-        // out of the permille integer. `None` when n < 2 or mean = 0.
-        let cov_permille = if n < 2 {
-            None
-        } else {
-            let total_nanos: u128 = sorted.iter().map(Duration::as_nanos).sum();
-            if total_nanos == 0_u128 {
-                None
-            } else {
-                let mut sum_sq: u128 = 0;
-                for nanos in sorted.iter().map(Duration::as_nanos) {
-                    sum_sq = sum_sq
-                        .checked_add(nanos.checked_mul(nanos).ok_or_else(|| {
-                            anyhow::anyhow!("progress snapshot: sample squared overflow")
-                        })?)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("progress snapshot: sum of squares overflow")
-                        })?;
-                }
-                let total_sq = total_nanos
-                    .checked_mul(total_nanos)
-                    .ok_or_else(|| anyhow::anyhow!("progress snapshot: total squared overflow"))?;
-                let n_sum_sq = n_u128.checked_mul(sum_sq).ok_or_else(|| {
-                    anyhow::anyhow!("progress snapshot: n * sum of squares overflow")
-                })?;
-                // Variance numerator (n·Σx² − (Σx)²); 0 when all samples equal.
-                let var_numerator = n_sum_sq.checked_sub(total_sq).ok_or_else(|| {
-                    anyhow::anyhow!("progress snapshot: variance numerator underflow")
-                })?;
-                // cov² × 10^6 = var_numerator × 10^6 / (Σx)².
-                let cov_milli_sq = var_numerator
-                    .checked_mul(1_000_000_u128)
-                    .and_then(|v| v.checked_div(total_sq))
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("progress snapshot: cov computation overflow")
-                    })?;
-                let cov_milli_u128 = cov_milli_sq.isqrt();
-                Some(
-                    u16::try_from(cov_milli_u128)
-                        .map_err(|_| anyhow::anyhow!("progress snapshot: cov overflows u16"))?,
-                )
-            }
-        };
-
-        // Linear binning over [min, max] into HISTOGRAM_BUCKETS bins.
-        let mut histogram = [0_u32; HISTOGRAM_BUCKETS];
-        let min_ns = min.as_nanos();
-        let max_ns = max.as_nanos();
-        let span = max_ns
-            .checked_sub(min_ns)
-            .ok_or_else(|| anyhow::anyhow!("progress snapshot: histogram span underflow"))?
-            .max(1);
-        let buckets_u128 = u128::try_from(HISTOGRAM_BUCKETS)
-            .map_err(|_| anyhow::anyhow!("progress snapshot: bucket count overflows u128"))?;
-        let bucket_span = span.div_ceil(buckets_u128).max(1);
-        for sample in &sorted {
-            let offset = sample
-                .as_nanos()
-                .checked_sub(min_ns)
-                .ok_or_else(|| anyhow::anyhow!("progress snapshot: sample below min"))?;
-            let idx = usize::try_from(
-                offset
-                    .checked_div(bucket_span)
-                    .ok_or_else(|| anyhow::anyhow!("progress snapshot: zero bucket span"))?,
-            )
-            .map_err(|_| anyhow::anyhow!("progress snapshot: index overflows usize"))?
-            .min(
-                HISTOGRAM_BUCKETS
-                    .checked_sub(1)
-                    .ok_or_else(|| anyhow::anyhow!("progress snapshot: zero buckets"))?,
-            );
-            if let Some(slot) = histogram.get_mut(idx) {
-                *slot = slot.checked_add(1).ok_or_else(|| {
-                    anyhow::anyhow!("progress snapshot: histogram count overflow")
-                })?;
-            }
-        }
+        let cov_permille = coefficient_of_variation(&sorted, n, n_u128)?;
+        let histogram = bin_histogram(&sorted, min, max)?;
 
         Ok(Self {
             cov_permille,
@@ -262,4 +160,117 @@ impl ProgressSnapshot {
             total,
         }
     }
+}
+
+/// Compute the `permille`-th nearest-rank percentile index into a sorted
+/// sample slice of length `n`, in pure integer math (`rank = ceil(p·n) −
+/// 1`, expressed as `ceil(permille·n/1000) − 1`). `permille` is `percent ×
+/// 10` (e.g. `500` = p50, `950` = p95).
+fn percentile_index(n: usize, n_u128: u128, permille: u32) -> anyhow::Result<usize> {
+    let permille_u128 = u128::from(permille);
+    let numerator = permille_u128
+        .checked_mul(n_u128)
+        .and_then(|value| value.checked_add(999_u128))
+        .ok_or_else(|| anyhow::anyhow!("progress snapshot: percentile numerator overflow"))?;
+    let ceiling = numerator
+        .checked_div(1000_u128)
+        .ok_or_else(|| anyhow::anyhow!("progress snapshot: percentile division by 1000"))?;
+    let rank_before_clamp = ceiling
+        .checked_sub(1_u128)
+        .ok_or_else(|| anyhow::anyhow!("progress snapshot: percentile rank underflow"))?;
+    let upper_bound = n
+        .checked_sub(1)
+        .ok_or_else(|| anyhow::anyhow!("progress snapshot: percentile rank underflow"))?;
+    Ok(usize::try_from(rank_before_clamp)
+        .map_err(|_ignored| anyhow::anyhow!("progress snapshot: percentile rank overflows usize"))?
+        .min(upper_bound))
+}
+
+/// Coefficient of variation σ/mean computed entirely in integer domain via
+/// the shortcut formula `cov² = (n·Σx² − (Σx)²) / (Σx)²`, carried as
+/// parts-per-thousand (cov × 1000) in a `u16`. We never widen to floats —
+/// the renderer formats `xx.x%` directly out of the permille integer.
+/// `None` when `n < 2` or the mean is zero.
+fn coefficient_of_variation(
+    sorted: &[Duration],
+    n: usize,
+    n_u128: u128,
+) -> anyhow::Result<Option<u16>> {
+    if n < 2 {
+        return Ok(None);
+    }
+    let total_nanos: u128 = sorted.iter().map(Duration::as_nanos).sum();
+    if total_nanos == 0_u128 {
+        return Ok(None);
+    }
+    let mut sum_sq: u128 = 0;
+    for nanos in sorted.iter().map(Duration::as_nanos) {
+        sum_sq = sum_sq
+            .checked_add(
+                nanos
+                    .checked_mul(nanos)
+                    .ok_or_else(|| anyhow::anyhow!("progress snapshot: sample squared overflow"))?,
+            )
+            .ok_or_else(|| anyhow::anyhow!("progress snapshot: sum of squares overflow"))?;
+    }
+    let total_sq = total_nanos
+        .checked_mul(total_nanos)
+        .ok_or_else(|| anyhow::anyhow!("progress snapshot: total squared overflow"))?;
+    let n_sum_sq = n_u128
+        .checked_mul(sum_sq)
+        .ok_or_else(|| anyhow::anyhow!("progress snapshot: n * sum of squares overflow"))?;
+    // Variance numerator (n·Σx² − (Σx)²); 0 when all samples equal.
+    let var_numerator = n_sum_sq
+        .checked_sub(total_sq)
+        .ok_or_else(|| anyhow::anyhow!("progress snapshot: variance numerator underflow"))?;
+    // cov² × 10^6 = var_numerator × 10^6 / (Σx)².
+    let cov_milli_sq = var_numerator
+        .checked_mul(1_000_000_u128)
+        .and_then(|value| value.checked_div(total_sq))
+        .ok_or_else(|| anyhow::anyhow!("progress snapshot: cov computation overflow"))?;
+    let cov_milli_u128 = cov_milli_sq.isqrt();
+    Ok(Some(u16::try_from(cov_milli_u128).map_err(|_ignored| {
+        anyhow::anyhow!("progress snapshot: cov overflows u16")
+    })?))
+}
+
+/// Linear binning over `[min, max]` into `HISTOGRAM_BUCKETS` buckets.
+fn bin_histogram(
+    sorted: &[Duration],
+    min: Duration,
+    max: Duration,
+) -> anyhow::Result<[u32; HISTOGRAM_BUCKETS]> {
+    let mut histogram = [0_u32; HISTOGRAM_BUCKETS];
+    let min_ns = min.as_nanos();
+    let max_ns = max.as_nanos();
+    let span = max_ns
+        .checked_sub(min_ns)
+        .ok_or_else(|| anyhow::anyhow!("progress snapshot: histogram span underflow"))?
+        .max(1);
+    let buckets_u128 = u128::try_from(HISTOGRAM_BUCKETS)
+        .map_err(|_ignored| anyhow::anyhow!("progress snapshot: bucket count overflows u128"))?;
+    let bucket_span = span.div_ceil(buckets_u128).max(1);
+    for sample in sorted {
+        let offset = sample
+            .as_nanos()
+            .checked_sub(min_ns)
+            .ok_or_else(|| anyhow::anyhow!("progress snapshot: sample below min"))?;
+        let idx = usize::try_from(
+            offset
+                .checked_div(bucket_span)
+                .ok_or_else(|| anyhow::anyhow!("progress snapshot: zero bucket span"))?,
+        )
+        .map_err(|_ignored| anyhow::anyhow!("progress snapshot: index overflows usize"))?
+        .min(
+            HISTOGRAM_BUCKETS
+                .checked_sub(1)
+                .ok_or_else(|| anyhow::anyhow!("progress snapshot: zero buckets"))?,
+        );
+        if let Some(slot) = histogram.get_mut(idx) {
+            *slot = slot
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("progress snapshot: histogram count overflow"))?;
+        }
+    }
+    Ok(histogram)
 }

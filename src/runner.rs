@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use crate::common::time::fmt_duration;
 use crate::config::{
     CargoMeta, ColorMode, Config, EnsureTimeViolation, EnsureTimes, Format, OutputMode, PrintOnly,
-    RunIgnoredMode, USAGE,
+    RUNNER_ARGS_ENV, RunIgnoredMode, USAGE,
 };
 use crate::output;
 use crate::output::events::LifecycleEvent;
@@ -841,7 +841,7 @@ fn set_runner_args_env(config: &Config) {
     // SAFETY: called from `run` before any test threads or runtimes spawn,
     // so no other thread mutates the environment concurrently.
     unsafe {
-        env::set_var(crate::config::RUNNER_ARGS_ENV, joined);
+        env::set_var(RUNNER_ARGS_ENV, joined);
     }
 }
 
@@ -1167,7 +1167,7 @@ fn render_status_line(
         .len()
         .checked_add(pad)
         .and_then(|value| value.checked_add(trailing.len()))
-        .map_or(0, |count| count);
+        .unwrap_or(0);
     let mut out = String::with_capacity(capacity);
     out.push_str(lhs_rendered);
     for _ in 0..pad {
@@ -1448,10 +1448,7 @@ fn collect_filtered_tokens(config: &Config) -> (Vec<&'static TestToken>, usize) 
             )
         })
         .collect();
-    let filtered_out = all_tokens
-        .len()
-        .checked_sub(filtered_tokens.len())
-        .map_or(0, |value| value);
+    let filtered_out = all_tokens.len().saturating_sub(filtered_tokens.len());
     (filtered_tokens, filtered_out)
 }
 

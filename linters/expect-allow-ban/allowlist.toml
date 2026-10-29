@@ -782,3 +782,10 @@ key = "extend_phase_future_lifetime"
 kind = "expect"
 lints = ["unsafe_code"]
 reason = "scoped spawn — see fn docstring"
+
+[[entry]]
+path = "cargo-rudzio/build/source_fingerprint.rs"
+key = "source_fingerprint"
+kind = "expect"
+lints = ["clippy::inline_modules"]
+reason = "shared via include! into build.rs and cargo-rudzio-test-helpers; the module wrapper namespaces items so they never collide with each including crate's own names"

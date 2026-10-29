@@ -1208,7 +1208,7 @@ fn render_line(lhs_naked: &str, lhs_rendered: &str, trailing: &str, term_cols: u
         .len()
         .checked_add(pad)
         .and_then(|value| value.checked_add(trailing.len()))
-        .map_or(0, |count| count);
+        .unwrap_or(0);
     let mut out = String::with_capacity(capacity);
     out.push_str(lhs_rendered);
     for _ in 0..pad {
@@ -1224,7 +1224,7 @@ fn render_line(lhs_naked: &str, lhs_rendered: &str, trailing: &str, term_cols: u
 #[cfg(unix)]
 fn terminal_width() -> usize {
     let (cols, _rows) = terminal_size_unix();
-    cols.map_or(100, |count| count)
+    cols.unwrap_or(100)
 }
 
 /// Best-effort terminal height. Used to bound the live region so it
@@ -1235,7 +1235,7 @@ fn terminal_width() -> usize {
 #[cfg(unix)]
 fn terminal_height() -> usize {
     let (_cols, rows) = terminal_size_unix();
-    rows.map_or(24, |height| height)
+    rows.unwrap_or(24)
 }
 
 /// Read the terminal `(cols, rows)` via `TIOCGWINSZ`, walking
@@ -1580,7 +1580,7 @@ pub fn running_line(
             .and_then(|value| value.checked_sub(1)) // space between tag and display
             .and_then(|value| value.checked_sub(MIN_TRAILING_PAD))
             .and_then(|value| value.checked_sub(trailing_visible))
-            .map_or(0, |value| value);
+            .unwrap_or(0);
         clip_to_cols(&raw, budget)
     };
     let lhs_naked = format!(
@@ -1625,11 +1625,7 @@ pub fn running_output_lines(
     let cap_rows = height
         .checked_sub(LIVE_REGION_RESERVED_ROWS)
         .map_or(1, |value| value.max(1));
-    let start = state
-        .recent_output
-        .len()
-        .checked_sub(cap_rows)
-        .map_or(0, |value| value);
+    let start = state.recent_output.len().saturating_sub(cap_rows);
     // 1 col of right-edge slack — same DECAWM defence as
     // `running_line`'s display clip.
     let line_budget = cols.checked_sub(1).map_or(1, |value| value.max(1));
@@ -1666,12 +1662,7 @@ pub fn bench_histogram_lines(
     if height_budget < 2 || cols < 20 || snap.done == 0 || snap.max == snap.min {
         return Ok(Vec::new());
     }
-    let max_count = snap
-        .histogram
-        .iter()
-        .copied()
-        .max()
-        .map_or(0, |count| count);
+    let max_count = snap.histogram.iter().copied().max().unwrap_or(0);
     if max_count == 0 {
         return Ok(Vec::new());
     }
@@ -1699,7 +1690,7 @@ pub fn bench_histogram_lines(
             .checked_div(bars_width)
             .ok_or_else(|| anyhow!("histogram: zero bars width"))?
             .min(HISTOGRAM_BUCKETS - 1);
-        let count = snap.histogram.get(bin).copied().map_or(0, |count| count);
+        let count = snap.histogram.get(bin).copied().unwrap_or(0);
         if count == 0 {
             bars.push(' ');
         } else {
@@ -1709,11 +1700,11 @@ pub fn bench_histogram_lines(
                 .checked_div(max_count)
                 .ok_or_else(|| anyhow!("histogram: zero max count"))?
                 .min(8);
-            let level = scaled.checked_sub(1).map_or(0, |level| level);
+            let level = scaled.saturating_sub(1);
             let glyph = levels
                 .get(usize::try_from(level).unwrap_or(0).min(7))
                 .copied()
-                .map_or(' ', |glyph| glyph);
+                .unwrap_or(' ');
             bars.push(glyph);
         }
     }
@@ -1774,7 +1765,7 @@ fn lifecycle_line(
             .and_then(|value| value.checked_sub(1))
             .and_then(|value| value.checked_sub(MIN_TRAILING_PAD))
             .and_then(|value| value.checked_sub(trailing_visible))
-            .map_or(0, |value| value);
+            .unwrap_or(0);
         clip_to_cols(&raw_display, budget)
     };
     let lhs_naked = format!(

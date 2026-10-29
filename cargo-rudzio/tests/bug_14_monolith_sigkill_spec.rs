@@ -78,6 +78,7 @@ use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
 use rudzio::runtime::monoio;
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
 use rudzio::runtime::{async_std, compio, embassy, smol};
+use rustix::process::{Pid, Signal, getpgrp, kill_process_group};
 use tempfile::TempDir;
 
 /// Number of trivial `#[rudzio::test]` fns generated per test
@@ -1026,14 +1027,14 @@ fn write_fixture(root: &Path, rudzio_root: &Path) -> io::Result<()> {
 fn kill_pgroup(pgid: libc::pid_t) {
     // `Pid::from_raw` yields `None` for pgid 0; a spawned process group is
     // never 0, so the guard is defensive-only and the skip is harmless.
-    if let Some(pid) = rustix::process::Pid::from_raw(pgid) {
-        let _ignored = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+    if let Some(pid) = Pid::from_raw(pgid) {
+        let _ignored = kill_process_group(pid, Signal::KILL);
     }
 }
 
 /// Query the calling process's process-group id.
 fn current_pgid() -> libc::pid_t {
-    rustix::process::getpgrp().as_raw_nonzero().get()
+    getpgrp().as_raw_nonzero().get()
 }
 
 // Full 9-runtime matrix mirroring the rudzio-wide convention for
