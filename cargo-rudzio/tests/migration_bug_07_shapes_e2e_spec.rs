@@ -31,7 +31,10 @@ use std::io;
 use std::path::Path;
 use std::process::{Command, Output};
 
-use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
+use cargo_rudzio_test_helpers::{
+    IsolatedCargoSuite, IsolatedCargoTest, RunSummary, assert_exact_test_names,
+    assert_summary, combined_output,
+};
 use rudzio::runtime::tokio::Multithread as TokioMultithread;
 use tempfile::TempDir;
 
@@ -106,6 +109,47 @@ fn self_named_test_source(test_name: &str, import_line: &str) -> String {
          use rudzio::runtime::tokio::Multithread as TokioMultithread;\n\
          \n\
          #[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
+         mod tests {{\n\
+         \x20\x20\x20\x20{import_line}\n\
+         \n\
+         \x20\x20\x20\x20#[rudzio::test]\n\
+         \x20\x20\x20\x20fn {test_name}() -> anyhow::Result<()> {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20anyhow::ensure!(answer() == 42, \"expected answer() == 42\");\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20Ok(())\n\
+         \x20\x20\x20\x20}}\n\
+         }}\n\
+         \n\
+         #[rudzio::main]\n\
+         fn main() {{}}\n",
+    )
+}
+
+/// Spawn `cargo rudzio test` against `root` with the isolated cargo env.
+fn run_cargo_rudzio(
+    root: &Path,
+    cargo_home: &Path,
+    cargo_target_dir: &Path,
+    args: &[&str],
+) -> io::Result<Output> {
+    Command::new(
+        cargo_rudzio_test_helpers::assert_fresh_binary(env!("CARGO_BIN_EXE_cargo-rudzio"))
+            .map_err(io::Error::other)?,
+    )
+    .arg("test")
+    .args(args)
+    .current_dir(root)
+    .env(
+        "CARGO",
+        env::var_os("CARGO").unwrap_or_else(|| "cargo".into()),
+    )
+    .env("CARGO_HOME", cargo_home)
+    .env("CARGO_TARGET_DIR", cargo_target_dir)
+    .env("CARGO_NET_OFFLINE", "true")
+    .env("NO_COLOR", "1")
+    .output()
+}
+
+#[rudzio::suite([(runtime = TokioMultithread::new, suite = Suite, test = Test)])]\n\
          mod tests {{\n\
          \x20\x20\x20\x20{import_line}\n\
          \n\
@@ -223,8 +267,8 @@ fn write_self_named_fixture(root: &Path, lib_extra: &str) -> io::Result<()> {
 #[rudzio::suite([(runtime = TokioMultithread::new, suite = IsolatedCargoSuite, test = IsolatedCargoTest)])]
 mod tests {
     use super::{
-        IsolatedCargoTest, Path, TempDir, assert_exact_passed, fs, run_cargo_rudzio,
-        write_self_named_fixture,
+        IsolatedCargoTest, Path, RunSummary, TempDir, assert_exact_test_names, assert_summary,
+        combined_output, fs, run_cargo_rudzio, write_self_named_fixture,
     };
 
     /// Operator's faithful shape: a short `src/lib.rs` whose first line is
@@ -242,7 +286,10 @@ mod tests {
         fs::write(&lib, format!("#!/usr/bin/env rust\n{body}"))?;
 
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
-        assert_exact_passed(&output, &["self_named_shape_answer"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["self_named_shape_answer"])?;
     }
 
     /// GREEN control: a plain parseable private `mod selfmod;` — the
@@ -254,6 +301,9 @@ mod tests {
         write_self_named_fixture(root, "")?;
 
         let output = run_cargo_rudzio(root, ctx.cargo_home(), ctx.cargo_target_dir(), &[])?;
-        assert_exact_passed(&output, &["self_named_shape_answer"])
+        let text = combined_output(&output);
+        anyhow::ensure!(output.status.success(), "expected exit 0, output:\n{text}");
+        assert_summary(&text, RunSummary::plain(1, 0, 0, 0, 0, 0, 0, 1))?;
+        assert_exact_test_names(&text, &["self_named_shape_answer"])?;
     }
 }
