@@ -251,6 +251,16 @@ on startup so that typos of known flags don't silently no-op, but they
 do not abort the run.
 ";
 
+/// Environment variable carrying a parent rudzio runner's resolved config.
+///
+/// Serialized by [`Config::to_runner_args`] as a space-separated
+/// `--flag=value` list; [`Config::from_argv_and_env`] applies it as
+/// LOW-precedence defaults ahead of the real argv. A nested `cargo rudzio
+/// test` (or a fixture bin spawned by an e2e spec) inherits the parent
+/// run's effective concurrency/timeout/presentation config while any
+/// explicit CLI arg on the child still wins.
+pub const RUNNER_ARGS_ENV: &str = "RUDZIO_RUNNER_ARGS";
+
 /// How `#[rudzio::test(benchmark = ...)]`-annotated tests should be run.
 ///
 /// The annotation is deliberately additive: a bench-annotated test is a
@@ -844,36 +854,6 @@ pub enum RunIgnoredMode {
     Only,
 }
 
-/// Environment variable carrying a parent rudzio runner's resolved config,
-/// serialized by [`Config::to_runner_args`] as a space-separated
-/// `--flag=value` list. [`Config::from_argv_and_env`] applies it as
-/// LOW-precedence defaults ahead of the real argv, so a nested
-/// `cargo rudzio test` (or a fixture bin spawned by an e2e spec) inherits
-/// the parent run's effective concurrency/timeout/presentation config while
-/// any explicit CLI arg on the child still wins.
-pub const RUNNER_ARGS_ENV: &str = "RUDZIO_RUNNER_ARGS";
-
-/// Split [`RUNNER_ARGS_ENV`] into a default-argv prefix (empty when the
-/// variable is absent). Tokens are space-separated and space-free by
-/// construction: [`Config::to_runner_args`] only emits `--flag=value`
-/// forms whose values are numbers or the keywords `none`/`threads`/
-/// `pretty`/`terse`/`auto`/`always`/`never`/`live`/`plain`.
-#[inline]
-#[must_use]
-fn runner_args_env_defaults(env: &BTreeMap<String, String>) -> Vec<String> {
-    env.get(RUNNER_ARGS_ENV)
-        .map(|raw| raw.split_whitespace().map(str::to_owned).collect())
-        .unwrap_or_default()
-}
-
-/// Push `--flag=<secs>` onto `args` when `duration` is `Some`.
-#[inline]
-fn push_duration(args: &mut Vec<String>, flag: &str, duration: Option<Duration>) {
-    if let Some(value) = duration {
-        args.push(format!("{flag}={}", value.as_secs()));
-    }
-}
-
 impl Config {
     /// Acquire one permit from the process-wide parallel-execution gate.
     /// Intended for macro-generated per-test code — users shouldn't need
@@ -912,15 +892,12 @@ impl Config {
         // `concurrency_limit` defaults to `threads` so the single-flag
         // `--test-threads=N` invocation keeps behaving the way libtest users
         // expect: N worker threads, N tests in-flight.
-        let resolved_concurrency_limit = parsed
-            .concurrency_limit
-            .map_or(resolved_threads, |value| value);
+        let resolved_concurrency_limit = parsed.concurrency_limit.unwrap_or(resolved_threads);
 
         // `threads` is guaranteed >= 1 by the resolution chain above
         // (available_parallelism returns NonZeroUsize); the fallback is
         // unreachable in practice but keeps us off unwrap/expect.
-        let threads_nz =
-            NonZeroUsize::new(resolved_threads).map_or(NonZeroUsize::MIN, |value| value);
+        let threads_nz = NonZeroUsize::new(resolved_threads).unwrap_or(NonZeroUsize::MIN);
         let parallel_hardlimit =
             resolve_parallel_hardlimit(parsed.hardlimit_arg, parsed.bench_mode, threads_nz);
 
@@ -986,6 +963,7 @@ impl Config {
     /// [`Self::print_only`] — are intentionally NOT emitted: they describe
     /// this run's test selection and output sink, not portable config.
     #[must_use]
+    #[inline]
     pub fn to_runner_args(&self) -> Vec<String> {
         let mut args = Vec::new();
 
@@ -1000,6 +978,8 @@ impl Config {
             args.push("--bench".to_owned());
         } else if matches!(self.bench_mode, BenchMode::Skip) {
             args.push("--no-bench".to_owned());
+        } else {
+            // `BenchMode::None`: emit no bench flag.
         }
 
         push_duration(&mut args, "--test-timeout", self.test_timeout);
@@ -1032,6 +1012,8 @@ impl Config {
             args.push("--include-ignored".to_owned());
         } else if matches!(self.run_ignored, RunIgnoredMode::Only) {
             args.push("--ignored".to_owned());
+        } else {
+            // `RunIgnoredMode::Normal`: emit no run-ignored flag.
         }
         if matches!(self.format, Format::Terse) {
             args.push("--format=terse".to_owned());
@@ -1040,6 +1022,8 @@ impl Config {
             args.push("--color=always".to_owned());
         } else if matches!(self.color, ColorMode::Never) {
             args.push("--color=never".to_owned());
+        } else {
+            // `ColorMode::Auto`: emit no color flag.
         }
         if matches!(self.output_mode, OutputMode::Plain) {
             args.push("--output=plain".to_owned());
@@ -1074,6 +1058,27 @@ impl OutputMode {
         } else {
             Self::Plain
         }
+    }
+}
+
+/// Split [`RUNNER_ARGS_ENV`] into a default-argv prefix (empty when the
+/// variable is absent). Tokens are space-separated and space-free by
+/// construction: [`Config::to_runner_args`] only emits `--flag=value`
+/// forms whose values are numbers or the keywords `none`/`threads`/
+/// `pretty`/`terse`/`auto`/`always`/`never`/`live`/`plain`.
+#[inline]
+#[must_use]
+fn runner_args_env_defaults(env: &BTreeMap<String, String>) -> Vec<String> {
+    env.get(RUNNER_ARGS_ENV)
+        .map(|raw| raw.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+/// Push `--flag=<secs>` onto `args` when `duration` is `Some`.
+#[inline]
+fn push_duration(args: &mut Vec<String>, flag: &str, duration: Option<Duration>) {
+    if let Some(value) = duration {
+        args.push(format!("{flag}={}", value.as_secs()));
     }
 }
 
@@ -1199,7 +1204,7 @@ fn flag_value<'argv>(
         return Some(rest);
     }
     if arg == flag_name {
-        *i = i.checked_add(1).map_or(usize::MAX, |value| value);
+        *i = i.checked_add(1).unwrap_or(usize::MAX);
         return argv.get(*i).map(String::as_str);
     }
     None
@@ -1364,8 +1369,7 @@ fn handle_presentation_flag(
         return true;
     }
     if let Some(value) = arg.strip_prefix("--ensure-time=") {
-        state.ensure_time =
-            Some(parse_ensure_time_pair(value).map_or(EnsureTimeArg::Default, |parsed| parsed));
+        state.ensure_time = Some(parse_ensure_time_pair(value).unwrap_or(EnsureTimeArg::Default));
         return true;
     }
     if let Some(value) = flag_value(arg, "--shuffle-seed", "--shuffle-seed=", argv, i) {
@@ -1501,7 +1505,7 @@ fn handle_filter_or_unparsed(
         return true;
     }
     if arg == "--skip" {
-        *i = i.checked_add(1).map_or(usize::MAX, |value| value);
+        *i = i.checked_add(1).unwrap_or(usize::MAX);
         if let Some(next) = argv.get(*i) {
             state.skip_filters.push(next.clone());
         }
@@ -1539,7 +1543,7 @@ fn parse_argv(argv: &[String]) -> ParsedArgs {
             || handle_presentation_flag(&mut state, &arg, argv, &mut i)
             || handle_timeout_flag(&mut state, &arg, argv, &mut i)
             || handle_filter_or_unparsed(&mut state, &arg, argv, &mut i);
-        i = i.checked_add(1).map_or(usize::MAX, |value| value);
+        i = i.saturating_add(1);
     }
 
     state

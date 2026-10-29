@@ -972,7 +972,8 @@ mod config_parser {
         );
         let args = cfg.to_runner_args();
         anyhow::ensure!(
-            args.iter().any(|arg| arg == "--threads-parallel-hardlimit=none"),
+            args.iter()
+                .any(|arg| arg == "--threads-parallel-hardlimit=none"),
             "expected the resolved `none` hardlimit to be re-serialized, got {args:?}"
         );
         anyhow::ensure!(
@@ -980,7 +981,8 @@ mod config_parser {
             "expected --test-threads to be re-serialized, got {args:?}"
         );
         anyhow::ensure!(
-            args.iter().any(|arg| arg.starts_with("--concurrency-limit=")),
+            args.iter()
+                .any(|arg| arg.starts_with("--concurrency-limit=")),
             "expected --concurrency-limit to be re-serialized, got {args:?}"
         );
         Ok(())

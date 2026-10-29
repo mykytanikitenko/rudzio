@@ -300,7 +300,7 @@ fn render_visibility(vis: Option<&Visibility>) -> String {
 /// the leaf doesn't end in `.rs`.
 fn render_deeper_module_path(components: &[&str]) -> Option<String> {
     let mut segments: Vec<String> = Vec::new();
-    let last_idx = components.len().checked_sub(1).map_or(0, |value| value);
+    let last_idx = components.len().saturating_sub(1);
     for (idx, comp) in components.iter().enumerate() {
         if idx == last_idx {
             if *comp == "mod.rs" {

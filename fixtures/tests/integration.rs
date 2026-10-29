@@ -19,6 +19,8 @@ use rudzio::runtime::futures::ThreadPool;
 use rudzio::runtime::monoio;
 use rudzio::runtime::tokio::{CurrentThread, Local, Multithread};
 use rudzio::runtime::{async_std, compio, embassy, smol};
+#[cfg(unix)]
+use rustix::process::{Pid, Signal, kill_process};
 
 /// RAII cleanup of the temp log file the Bug #13 fixture writes to.
 /// Kept at module scope (not nested inside the test fn) per clippy's
@@ -90,11 +92,7 @@ fn run(exe: &str) -> anyhow::Result<Output> {
 /// in `Output`. Unix-only; the fixture must print a deterministic
 /// readiness marker so the integration test can race-free signal it.
 #[cfg(unix)]
-fn run_and_signal(
-    exe: &str,
-    ready_marker: &str,
-    signal: rustix::process::Signal,
-) -> anyhow::Result<Output> {
+fn run_and_signal(exe: &str, ready_marker: &str, signal: Signal) -> anyhow::Result<Output> {
     use std::os::unix::process::ExitStatusExt as _;
 
     let mut child = Command::new(exe)
@@ -142,9 +140,9 @@ fn run_and_signal(
 
     let pid_raw = i32::try_from(child.id())
         .with_context(|| format!("child pid {} does not fit in pid_t", child.id()))?;
-    let pid = rustix::process::Pid::from_raw(pid_raw)
-        .ok_or_else(|| anyhow::anyhow!("child pid 0 is not a valid pid"))?;
-    rustix::process::kill_process(pid, signal).with_context(|| format!("kill({signal:?})"))?;
+    let pid =
+        Pid::from_raw(pid_raw).ok_or_else(|| anyhow::anyhow!("child pid 0 is not a valid pid"))?;
+    kill_process(pid, signal).with_context(|| format!("kill({signal:?})"))?;
 
     // Drain the rest of stdout concurrently with stderr.
     let mut stderr = child
@@ -1789,12 +1787,14 @@ mod unix_tests {
         assert_exact_test_names, assert_summary, log_of, ordered, run, run_and_signal, thread,
     };
 
+    use rustix::process::{Pid, Signal, kill_process};
+
     #[rudzio::test]
     fn sigint_cancels_run_gracefully(_ctx: &Test) -> anyhow::Result<()> {
         let out = run_and_signal(
             env!("CARGO_BIN_EXE_sigint_cancel_tokio_mt"),
             "sigint_cancel_ready_marker",
-            rustix::process::Signal::INT,
+            Signal::INT,
         )?;
         let log = log_of(&out);
         anyhow::ensure!(
@@ -1993,7 +1993,7 @@ mod unix_tests {
         let out = run_and_signal(
             env!("CARGO_BIN_EXE_sigint_cancel_tokio_mt"),
             "sigint_cancel_ready_marker",
-            rustix::process::Signal::TERM,
+            Signal::TERM,
         )?;
         let log = log_of(&out);
         anyhow::ensure!(
@@ -2126,8 +2126,8 @@ mod unix_tests {
         {
             // SIGKILL the inherited child; pid is a one-shot value harvested
             // from the fixture's own log. `rustix` wraps `kill(2)` safely.
-            if let Some(pid) = rustix::process::Pid::from_raw(pid) {
-                let _killed = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+            if let Some(child_pid) = Pid::from_raw(pid) {
+                let _killed = kill_process(child_pid, Signal::KILL);
             }
         }
     }

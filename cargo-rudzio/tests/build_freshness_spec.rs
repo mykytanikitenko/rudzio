@@ -103,8 +103,11 @@ mod tests {
 
     #[rudzio::test]
     fn foreign_source_hash_binary_is_rejected(ctx: &IsolatedCargoTest) -> anyhow::Result<()> {
-        let message =
-            rejection_message(ctx.suite_tempdir(), "fake-foreign", FOREIGN_SOURCE_HASH_SCRIPT)?;
+        let message = rejection_message(
+            ctx.suite_tempdir(),
+            "fake-foreign",
+            FOREIGN_SOURCE_HASH_SCRIPT,
+        )?;
         anyhow::ensure!(
             message.contains("stale/foreign"),
             "expected a stale/foreign rejection, got: {message}",
@@ -114,7 +117,8 @@ mod tests {
 
     #[rudzio::test]
     fn missing_source_hash_binary_is_rejected(ctx: &IsolatedCargoTest) -> anyhow::Result<()> {
-        let message = rejection_message(ctx.suite_tempdir(), "fake-no-hash", NO_SOURCE_HASH_SCRIPT)?;
+        let message =
+            rejection_message(ctx.suite_tempdir(), "fake-no-hash", NO_SOURCE_HASH_SCRIPT)?;
         anyhow::ensure!(
             message.contains("stale/foreign"),
             "expected a stale/foreign rejection, got: {message}",
@@ -124,8 +128,11 @@ mod tests {
 
     #[rudzio::test]
     fn unknown_source_hash_binary_is_rejected(ctx: &IsolatedCargoTest) -> anyhow::Result<()> {
-        let message =
-            rejection_message(ctx.suite_tempdir(), "fake-unknown", UNKNOWN_SOURCE_HASH_SCRIPT)?;
+        let message = rejection_message(
+            ctx.suite_tempdir(),
+            "fake-unknown",
+            UNKNOWN_SOURCE_HASH_SCRIPT,
+        )?;
         anyhow::ensure!(
             message.contains("stale/foreign"),
             "expected a stale/foreign rejection, got: {message}",

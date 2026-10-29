@@ -424,7 +424,8 @@ mod tests {
             EnvVar {
                 value: "consumer".to_owned(),
                 force: false,
-            }
+            },
+            "plain `KEY = \"value\"` string parses to a non-force EnvVar"
         );
         Ok(())
     }
@@ -436,7 +437,8 @@ mod tests {
             EnvVar {
                 value: "secret".to_owned(),
                 force: true,
-            }
+            },
+            "inline table with `force = true` parses to a force EnvVar"
         );
         Ok(())
     }
@@ -453,7 +455,8 @@ mod tests {
             EnvVar {
                 value: "/ws/vendor/openssl".to_owned(),
                 force: false,
-            }
+            },
+            "relative inline-table value resolves against the parent of the cargo dir"
         );
         Ok(())
     }
@@ -520,7 +523,10 @@ mod tests {
                 },
             ),
         ]);
-        assert_eq!(merged, expected);
+        assert_eq!(
+            merged, expected,
+            "later file overrides value and clears force per key"
+        );
         Ok(())
     }
 
@@ -531,7 +537,11 @@ mod tests {
         fs::write(dir.path().join("config.toml"), "[env]\nA = \"toml\"\n")?;
         let chosen = discover_config_file(dir.path())
             .ok_or_else(|| anyhow::anyhow!("expected an extensionless config"))?;
-        assert_eq!(chosen, dir.path().join("config"));
+        assert_eq!(
+            chosen,
+            dir.path().join("config"),
+            "extensionless `config` is preferred over `config.toml`"
+        );
         Ok(())
     }
 
@@ -541,14 +551,21 @@ mod tests {
         fs::write(dir.path().join("config.toml"), "[env]\nA = \"toml\"\n")?;
         let chosen = discover_config_file(dir.path())
             .ok_or_else(|| anyhow::anyhow!("expected a config.toml"))?;
-        assert_eq!(chosen, dir.path().join("config.toml"));
+        assert_eq!(
+            chosen,
+            dir.path().join("config.toml"),
+            "falls back to `config.toml` when no extensionless `config`"
+        );
         Ok(())
     }
 
     #[rudzio::test]
     async fn discover_config_file_none_when_absent(_ctx: &Test) -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
-        assert!(discover_config_file(dir.path()).is_none());
+        assert!(
+            discover_config_file(dir.path()).is_none(),
+            "no config file present yields `None`"
+        );
         Ok(())
     }
 
@@ -559,7 +576,8 @@ mod tests {
             EnvVar {
                 value: "bar".to_owned(),
                 force: false,
-            }
+            },
+            "`--env FOO=\"bar\"` string form parses to a non-force EnvVar"
         );
         Ok(())
     }
@@ -632,7 +650,10 @@ mod tests {
                 },
             ),
         ]);
-        assert_eq!(merged, expected);
+        assert_eq!(
+            merged, expected,
+            "CLI config overrides file per key and keeps unrelated keys"
+        );
         Ok(())
     }
 
@@ -654,7 +675,7 @@ mod tests {
                 force: false,
             },
         )]);
-        assert_eq!(merged, expected);
+        assert_eq!(merged, expected, "CLI file form merges its env entries");
         Ok(())
     }
 
@@ -666,7 +687,7 @@ mod tests {
             &["build.rustflags=\"--cfg foo\"".to_owned()],
             Path::new("/ws"),
         )?;
-        assert!(merged.is_empty());
+        assert!(merged.is_empty(), "a non-`env` CLI key contributes nothing");
         Ok(())
     }
 }

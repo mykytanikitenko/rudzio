@@ -210,15 +210,12 @@ fn backward_scan_to_attrs(text: &str, const_pos: usize) -> Result<usize> {
 /// covers the outermost attribute through the closing brace.
 fn capture_item_source(item: &syn::Item, source: &str) -> Result<Option<String>> {
     let start = if let syn::Item::Impl(impl_block) = item {
-        match impl_block
+        impl_block
             .attrs
             .iter()
             .map(|attr| attr.span().byte_range().start)
             .min()
-        {
-            Some(start) => start,
-            None => impl_block.impl_token.span.byte_range().start,
-        }
+            .unwrap_or_else(|| impl_block.impl_token.span.byte_range().start)
     } else {
         item.span().byte_range().start
     };
@@ -270,16 +267,13 @@ fn normalize_snippet_indent(snippet: &str) -> Result<String> {
     }
     // The first line starts at the attribute byte, so it has no leading
     // indent; ignore it when computing common indent.
-    let min_indent: usize = match lines
+    let min_indent: usize = lines
         .iter()
         .skip(1)
         .filter(|line| !line.trim().is_empty())
         .map(|line| leading_space_count(line))
         .min()
-    {
-        Some(indent) => indent,
-        None => 0,
-    };
+        .unwrap_or_default();
     let mut out = String::with_capacity(snippet.len());
     for (idx, line) in lines.iter().enumerate() {
         if idx == 0 {
@@ -312,10 +306,7 @@ fn parse_sentinel_line(line: &str) -> Option<(&str, usize)> {
     let trimmed = line.trim_end_matches(['\n', '\r']);
     // TODO(rs-cleanup): masking_arith — saturating_sub of two trimmed
     // lengths cannot underflow; intentional.
-    let leading_len = trimmed
-        .len()
-        .checked_sub(trimmed.trim_start().len())
-        .map_or(0, |value| value);
+    let leading_len = trimmed.len().saturating_sub(trimmed.trim_start().len());
     let indent = trimmed.get(..leading_len).map_or("", |value| value);
     let body = trimmed.get(leading_len..).map_or("", |value| value);
     // Accept both `/// <sentinel>` and `///<sentinel>` forms; the
@@ -434,10 +425,8 @@ fn salvage_verbatim_impls_in_items(
             false
         };
         if impl_has_verbatim {
-            let original_source = match capture_item_source(item, source)? {
-                Some(source) => source,
-                None => quote::ToTokens::to_token_stream(item).to_string(),
-            };
+            let original_source = capture_item_source(item, source)?
+                .unwrap_or_else(|| quote::ToTokens::to_token_stream(item).to_string());
             let index = out.len();
             out.push(SalvagedImpl {
                 index,
@@ -529,7 +518,7 @@ fn splice_preserved_originals(output: &str, originals: &[String]) -> Result<Stri
     let capacity = output
         .len()
         .checked_add(total_originals)
-        .and_then(|v| v.checked_add(256))
+        .and_then(|value| value.checked_add(256))
         .context("splice_preserved_originals: capacity overflow")?;
     let mut out = String::with_capacity(capacity);
     for line in output.split_inclusive('\n') {
