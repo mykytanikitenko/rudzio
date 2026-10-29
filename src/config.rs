@@ -191,13 +191,14 @@ ENVIRONMENT:
     RUST_LIB_BACKTRACE          Same shape as RUST_BACKTRACE but for
                                 library-level panics (anyhow, etc.). Also
                                 defaulted to 'full' by the runner.
-    RUDZIO_RUNNER_ARGS          Set by the runner to its resolved config as
-                                a space-separated `--flag=value` list.
-                                Descendant rudzio runners (nested
-                                `cargo rudzio test`, fixture bins spawned by
-                                e2e specs) apply it as LOW-precedence
-                                defaults: explicit CLI args on the child
-                                still win.
+    RUDZIO_RUNNER_ARGS          Set by the runner to the portable flags the
+                                operator passed explicitly (concurrency,
+                                timeouts, presentation), as a space-separated
+                                `--flag=value` list. Descendant rudzio runners
+                                (nested `cargo rudzio test`, fixture bins
+                                spawned by e2e specs) apply it as their
+                                LOWEST-precedence layer: the child's own CLI
+                                args and RUST_TEST_THREADS win over it.
 
 EXAMPLES:
     Pipe-safe output for log capture, log-shippers, or AI agents
@@ -251,16 +252,22 @@ on startup so that typos of known flags don't silently no-op, but they
 do not abort the run.
 ";
 
-/// Environment variable carrying a parent rudzio runner's resolved config.
+/// Environment variable carrying the ancestor runners' explicit flags.
 ///
-/// Serialized by [`Config::to_runner_args`] as a space-separated
-/// `--flag=value` list; [`Config::from_argv_and_env`] applies it as
-/// LOW-precedence defaults ahead of the real argv. A nested `cargo rudzio
-/// test` (or a fixture bin spawned by an e2e spec) inherits the parent
-/// run's effective concurrency/timeout/presentation config while any
-/// explicit CLI arg on the child still wins.
+/// The value is the space-separated `--flag=value` list held in
+/// [`Config::runner_args`]. [`Config::from_argv_and_env`] applies it as
+/// the lowest-precedence configuration layer, so an operator flag such as
+/// `--threads-parallel-hardlimit=none` reaches a nested `cargo rudzio test`
+/// (or a fixture bin spawned by an e2e spec) while the child's own argv and
+/// its own `RUST_TEST_THREADS` still decide its configuration.
+///
+/// Precedence, highest first: child argv > child environment
+/// (`RUST_TEST_THREADS`) > inherited [`RUNNER_ARGS_ENV`] > built-in default.
 pub const RUNNER_ARGS_ENV: &str = "RUDZIO_RUNNER_ARGS";
 
+/// Built-in Layer-1 process-exit grace applied when no
+/// `--cancel-grace-period` flag is given.
+const DEFAULT_CANCEL_GRACE_PERIOD: Duration = Duration::from_secs(5);
 /// How `#[rudzio::test(benchmark = ...)]`-annotated tests should be run.
 ///
 /// The annotation is deliberately additive: a bench-annotated test is a
@@ -505,6 +512,11 @@ pub struct Config {
     pub run_ignored: RunIgnoredMode,
     /// `--run-timeout=<secs>`. `None` = unbounded.
     pub run_timeout: Option<Duration>,
+    /// Canonical `--flag=value` tokens this runner hands to descendant
+    /// runners through [`RUNNER_ARGS_ENV`]: every portable flag the
+    /// operator set explicitly, either on this runner's argv or on an
+    /// ancestor's (inherited through the same variable).
+    pub runner_args: Vec<String>,
     /// `--shuffle` (libtest compat). When `true`, the runner permutes
     /// each `(runtime, suite)` group's test list before dispatch using
     /// [`Self::shuffle_seed`] (or a derived seed when the seed flag was
@@ -876,23 +888,32 @@ impl Config {
         env: BTreeMap<String, String>,
         cargo: CargoMeta,
     ) -> Self {
-        // A parent rudzio runner serializes its resolved config into
-        // `RUNNER_ARGS_ENV` for descendant runners (see `to_runner_args`).
-        // Apply those as LOW-precedence defaults ahead of the real argv so
-        // a nested `cargo rudzio test` (or a fixture bin spawned by an e2e
-        // spec) inherits the parent's effective concurrency/timeout config,
-        // while any explicit CLI arg on the child still wins (later args
-        // override earlier ones in `parse_argv`).
-        let mut merged = runner_args_env_defaults(&env);
-        merged.extend(argv.iter().cloned());
-        let parsed = parse_argv(&merged);
+        // `own` is this runner's argv alone; `parsed` stacks it on top of
+        // the inherited ancestor layer (later args override earlier ones
+        // in `parse_argv`), so every explicit argv flag outranks its
+        // inherited counterpart.
+        let own = parse_argv(argv);
+        let mut layered = inherited_runner_args(&env);
+        layered.extend(argv.iter().cloned());
+        let parsed = parse_argv(&layered);
+        let runner_args = portable_tokens(&parsed);
 
-        let resolved_threads = resolve_threads(parsed.threads, &env);
+        // The worker-thread count and the in-flight cap size the process
+        // that runs the tests: a child's own `RUST_TEST_THREADS` (fixture /
+        // harness configuration) outranks an ancestor's inherited
+        // `--test-threads` / `--concurrency-limit`.
+        let local_threads = resolve_local_threads(own.threads, &env);
+        let resolved_threads = resolve_threads(local_threads, parsed.threads);
 
         // `concurrency_limit` defaults to `threads` so the single-flag
         // `--test-threads=N` invocation keeps behaving the way libtest users
         // expect: N worker threads, N tests in-flight.
-        let resolved_concurrency_limit = parsed.concurrency_limit.unwrap_or(resolved_threads);
+        let resolved_concurrency_limit = resolve_concurrency_limit(
+            own.concurrency_limit,
+            local_threads,
+            parsed.concurrency_limit,
+            resolved_threads,
+        );
 
         // `threads` is guaranteed >= 1 by the resolution chain above
         // (available_parallelism returns NonZeroUsize); the fallback is
@@ -925,6 +946,7 @@ impl Config {
             print_only: parsed.print_only,
             run_ignored: parsed.run_ignored,
             run_timeout: parsed.run_timeout,
+            runner_args,
             shuffle: parsed.shuffle,
             shuffle_seed: parsed.shuffle_seed,
             skip_filters: parsed.skip_filters,
@@ -950,94 +972,6 @@ impl Config {
         let env_snapshot: BTreeMap<String, String> = env::vars().collect();
         Self::from_argv_and_env(&argv, env_snapshot, cargo)
     }
-
-    /// Serialize this resolved config back into a canonical `--flag=value`
-    /// argv that a descendant rudzio runner re-applies as low-precedence
-    /// defaults (see [`RUNNER_ARGS_ENV`]).
-    ///
-    /// Emits the concurrency knobs unconditionally (they are always
-    /// resolved to concrete values) plus every timeout/grace/shuffle/
-    /// presentation knob whose value diverges from the no-flag default.
-    /// Run-scoped selections — the positional [`Self::filter`],
-    /// [`Self::skip_filters`] (space-bearing), [`Self::logfile`],
-    /// [`Self::print_only`] — are intentionally NOT emitted: they describe
-    /// this run's test selection and output sink, not portable config.
-    #[must_use]
-    #[inline]
-    pub fn to_runner_args(&self) -> Vec<String> {
-        let mut args = Vec::new();
-
-        args.push(format!("--test-threads={}", self.threads));
-        args.push(format!("--concurrency-limit={}", self.concurrency_limit));
-        match self.parallel_hardlimit {
-            Some(limit) => args.push(format!("--threads-parallel-hardlimit={}", limit.get())),
-            None => args.push("--threads-parallel-hardlimit=none".to_owned()),
-        }
-
-        if matches!(self.bench_mode, BenchMode::Full) {
-            args.push("--bench".to_owned());
-        } else if matches!(self.bench_mode, BenchMode::Skip) {
-            args.push("--no-bench".to_owned());
-        } else {
-            // `BenchMode::None`: emit no bench flag.
-        }
-
-        push_duration(&mut args, "--test-timeout", self.test_timeout);
-        push_duration(&mut args, "--run-timeout", self.run_timeout);
-        push_duration(&mut args, "--suite-setup-timeout", self.suite_setup_timeout);
-        push_duration(
-            &mut args,
-            "--suite-teardown-timeout",
-            self.suite_teardown_timeout,
-        );
-        push_duration(&mut args, "--test-setup-timeout", self.test_setup_timeout);
-        push_duration(
-            &mut args,
-            "--test-teardown-timeout",
-            self.test_teardown_timeout,
-        );
-        push_duration(&mut args, "--phase-hang-grace", self.phase_hang_grace);
-        push_duration(&mut args, "--cancel-grace-period", self.cancel_grace_period);
-
-        if self.shuffle {
-            args.push("--shuffle".to_owned());
-        }
-        if let Some(seed) = self.shuffle_seed {
-            args.push(format!("--shuffle-seed={seed}"));
-        }
-        if self.exact_match {
-            args.push("--exact".to_owned());
-        }
-        if matches!(self.run_ignored, RunIgnoredMode::Include) {
-            args.push("--include-ignored".to_owned());
-        } else if matches!(self.run_ignored, RunIgnoredMode::Only) {
-            args.push("--ignored".to_owned());
-        } else {
-            // `RunIgnoredMode::Normal`: emit no run-ignored flag.
-        }
-        if matches!(self.format, Format::Terse) {
-            args.push("--format=terse".to_owned());
-        }
-        if matches!(self.color, ColorMode::Always) {
-            args.push("--color=always".to_owned());
-        } else if matches!(self.color, ColorMode::Never) {
-            args.push("--color=never".to_owned());
-        } else {
-            // `ColorMode::Auto`: emit no color flag.
-        }
-        if matches!(self.output_mode, OutputMode::Plain) {
-            args.push("--output=plain".to_owned());
-        }
-        if let Some(times) = self.ensure_time {
-            args.push(format!(
-                "--ensure-time={},{}",
-                times.warn.as_millis(),
-                times.critical.as_millis()
-            ));
-        }
-
-        args
-    }
 }
 
 impl OutputMode {
@@ -1061,17 +995,110 @@ impl OutputMode {
     }
 }
 
-/// Split [`RUNNER_ARGS_ENV`] into a default-argv prefix (empty when the
-/// variable is absent). Tokens are space-separated and space-free by
-/// construction: [`Config::to_runner_args`] only emits `--flag=value`
-/// forms whose values are numbers or the keywords `none`/`threads`/
-/// `pretty`/`terse`/`auto`/`always`/`never`/`live`/`plain`.
+/// Parse [`RUNNER_ARGS_ENV`] into its portable flags (an empty layer when
+/// the variable is absent). Tokens are space-separated and space-free by
+/// construction. Re-serializing through [`portable_tokens`] keeps the
+/// inherited layer to portable configuration: a run-scoped selection
+/// (filter, `--skip`, `--ignored`, `--logfile`, `--list`) placed in the
+/// variable stays with the runner it was meant for.
 #[inline]
 #[must_use]
-fn runner_args_env_defaults(env: &BTreeMap<String, String>) -> Vec<String> {
-    env.get(RUNNER_ARGS_ENV)
-        .map(|raw| raw.split_whitespace().map(str::to_owned).collect())
-        .unwrap_or_default()
+fn inherited_runner_args(env: &BTreeMap<String, String>) -> Vec<String> {
+    env.get(RUNNER_ARGS_ENV).map_or_else(Vec::new, |raw| {
+        let tokens: Vec<String> = raw.split_whitespace().map(str::to_owned).collect();
+        portable_tokens(&parse_argv(&tokens))
+    })
+}
+
+/// Serialize the explicitly-set portable flags of one parsed argv layer
+/// into canonical `--flag=value` tokens, in a fixed field order.
+///
+/// Portable flags are the concurrency, bench, timeout, grace, shuffle and
+/// presentation knobs. Run-scoped selections — the positional filter,
+/// `--skip`, `--exact`, `--ignored` / `--include-ignored`, `--logfile`,
+/// `--list` / `--help` — describe one run's test selection and output
+/// sink, so they stay with the runner that received them. A field at its
+/// no-flag value is omitted, so each descendant resolves it for itself.
+#[must_use]
+fn portable_tokens(parsed: &ParsedArgs) -> Vec<String> {
+    let mut args = Vec::new();
+
+    if let Some(threads) = parsed.threads {
+        args.push(format!("--test-threads={threads}"));
+    }
+    if let Some(limit) = parsed.concurrency_limit {
+        args.push(format!("--concurrency-limit={limit}"));
+    }
+    match parsed.hardlimit_arg {
+        HardlimitArg::Unset => {}
+        HardlimitArg::Disabled => args.push("--threads-parallel-hardlimit=none".to_owned()),
+        HardlimitArg::Threads => args.push("--threads-parallel-hardlimit=threads".to_owned()),
+        HardlimitArg::Explicit(limit) => {
+            args.push(format!("--threads-parallel-hardlimit={}", limit.get()));
+        }
+    }
+
+    match parsed.bench_mode {
+        BenchMode::Full => args.push("--bench".to_owned()),
+        BenchMode::Skip => args.push("--no-bench".to_owned()),
+        BenchMode::Smoke => {}
+    }
+
+    push_duration(&mut args, "--test-timeout", parsed.test_timeout);
+    push_duration(&mut args, "--run-timeout", parsed.run_timeout);
+    push_duration(
+        &mut args,
+        "--suite-setup-timeout",
+        parsed.suite_setup_timeout,
+    );
+    push_duration(
+        &mut args,
+        "--suite-teardown-timeout",
+        parsed.suite_teardown_timeout,
+    );
+    push_duration(&mut args, "--test-setup-timeout", parsed.test_setup_timeout);
+    push_duration(
+        &mut args,
+        "--test-teardown-timeout",
+        parsed.test_teardown_timeout,
+    );
+    push_duration(&mut args, "--phase-hang-grace", parsed.phase_hang_grace);
+    match parsed.cancel_grace_period {
+        None => args.push("--cancel-grace-period=0".to_owned()),
+        Some(grace) if grace == DEFAULT_CANCEL_GRACE_PERIOD => {}
+        Some(grace) => args.push(format!("--cancel-grace-period={}", grace.as_secs())),
+    }
+
+    if parsed.shuffle {
+        args.push("--shuffle".to_owned());
+    }
+    if let Some(seed) = parsed.shuffle_seed {
+        args.push(format!("--shuffle-seed={seed}"));
+    }
+    if matches!(parsed.format, Format::Terse) {
+        args.push("--format=terse".to_owned());
+    }
+    match parsed.color {
+        ColorMode::Always => args.push("--color=always".to_owned()),
+        ColorMode::Never => args.push("--color=never".to_owned()),
+        ColorMode::Auto => {}
+    }
+    match parsed.output_mode_explicit {
+        None => {}
+        Some(OutputMode::Plain) => args.push("--output=plain".to_owned()),
+        Some(OutputMode::Live) => args.push("--output=live".to_owned()),
+    }
+    match parsed.ensure_time {
+        None => {}
+        Some(EnsureTimeArg::Default) => args.push("--ensure-time".to_owned()),
+        Some(EnsureTimeArg::Explicit { critical, warn }) => args.push(format!(
+            "--ensure-time={},{}",
+            warn.as_millis(),
+            critical.as_millis()
+        )),
+    }
+
+    args
 }
 
 /// Push `--flag=<secs>` onto `args` when `duration` is `Some`.
@@ -1092,16 +1119,44 @@ fn env_thread_count(env: &BTreeMap<String, String>) -> Option<usize> {
     None
 }
 
-/// Resolve the worker-thread count: the `--test-threads` flag, else the
-/// `RUST_TEST_THREADS` env var, else `available_parallelism()`.
-fn resolve_threads(threads: Option<usize>, env: &BTreeMap<String, String>) -> usize {
-    if let Some(explicit) = threads {
-        return explicit;
-    }
-    if let Some(env_threads) = env_thread_count(env) {
-        return env_threads;
+/// Resolve the worker-thread count this runner was configured with
+/// directly: its own `--test-threads` flag, else its own
+/// `RUST_TEST_THREADS` env var. `None` leaves the choice to the inherited
+/// layer and then to `available_parallelism()`.
+fn resolve_local_threads(threads: Option<usize>, env: &BTreeMap<String, String>) -> Option<usize> {
+    threads.or_else(|| env_thread_count(env))
+}
+
+/// Resolve the worker-thread count across the configuration layers: the
+/// child's own value (`--test-threads` or `RUST_TEST_THREADS`), else the
+/// inherited `--test-threads`, else `available_parallelism()`.
+fn resolve_threads(local: Option<usize>, inherited: Option<usize>) -> usize {
+    if let Some(n) = local.or(inherited) {
+        return n;
     }
     thread::available_parallelism().map_or(1, NonZeroUsize::get)
+}
+
+/// Resolve the in-flight cap. Precedence: the child's explicit
+/// `--concurrency-limit`, else (when the child sized its own threads) the
+/// resolved thread count, else the inherited `--concurrency-limit`, else
+/// the resolved thread count.
+const fn resolve_concurrency_limit(
+    own: Option<usize>,
+    local_threads: Option<usize>,
+    inherited: Option<usize>,
+    threads: usize,
+) -> usize {
+    if let Some(explicit) = own {
+        return explicit;
+    }
+    if local_threads.is_some() {
+        return threads;
+    }
+    if let Some(limit) = inherited {
+        return limit;
+    }
+    threads
 }
 
 /// Parse a `--ensure-time=<warn-ms>,<critical-ms>` value into thresholds.
@@ -1527,7 +1582,7 @@ fn parse_argv(argv: &[String]) -> ParsedArgs {
     // tasks ignoring SIGINT have always-on protection from
     // `process::exit(2)` so the binary can't hang forever.
     let mut state = ParsedArgs {
-        cancel_grace_period: Some(Duration::from_secs(5)),
+        cancel_grace_period: Some(DEFAULT_CANCEL_GRACE_PERIOD),
         ..ParsedArgs::empty()
     };
 

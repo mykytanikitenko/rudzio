@@ -823,17 +823,14 @@ fn enable_full_backtrace_default() {
     }
 }
 
-/// Re-export this run's resolved config to [`crate::config::RUNNER_ARGS_ENV`]
-/// so descendant rudzio runners (nested `cargo rudzio test` runs, fixture
-/// bins spawned by e2e specs) inherit the parent's effective concurrency and
-/// timeout config. A child's explicit CLI args still win — the env var is
-/// only the low-precedence default layer in `Config::from_argv_and_env`.
+/// Export the operator's explicitly-set portable flags to
+/// [`RUNNER_ARGS_ENV`] so descendant rudzio runners (nested
+/// `cargo rudzio test` runs, fixture bins spawned by e2e specs) apply them
+/// as their lowest-precedence layer (see `Config::from_argv_and_env`).
+/// With no such flags the variable holds an empty list, which a
+/// descendant reads as an empty layer.
 fn set_runner_args_env(config: &Config) {
-    let args = config.to_runner_args();
-    if args.is_empty() {
-        return;
-    }
-    let joined = args.join(" ");
+    let joined = config.runner_args.join(" ");
     #[expect(
         unsafe_code,
         reason = "single-threaded entry point; see SAFETY comment below"
