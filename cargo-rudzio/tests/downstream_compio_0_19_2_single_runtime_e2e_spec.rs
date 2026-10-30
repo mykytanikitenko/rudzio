@@ -195,13 +195,19 @@ mod tests {
             "`cargo tree -d -e normal` must succeed:\n{text}"
         );
         // `cargo tree` writes the dependency tree to stdout and download/progress
-        // chatter to stderr. `-d` restricts stdout to *duplicated* packages, so
-        // any `compio-runtime`/`compio-driver` mention on stdout is a duplicate.
+        // chatter to stderr. `-d` restricts stdout to *duplicated* packages, each
+        // printed as a top-level `name vX.Y.Z` header at column 0; non-duplicate
+        // nodes appear only as indented children. So a `compio-runtime` /
+        // `compio-driver` header line at column 0 is exactly a duplicate.
         let tree = String::from_utf8_lossy(&output.stdout);
+        let compio_duplicated = tree.lines().any(|line| {
+            let header = line.trim_start();
+            header.starts_with("compio-runtime") || header.starts_with("compio-driver")
+        });
         anyhow::ensure!(
-            !tree.contains("compio-runtime") && !tree.contains("compio-driver"),
+            !compio_duplicated,
             "downstream `compio 0.19.2` + rudzio must unify on ONE compio-runtime / \
-             compio-driver copy, but `cargo tree -d -e normal` reports duplicates:\n\
+             compio-driver copy, but `cargo tree -d -e normal` reports a duplicate:\n\
              --- stdout (tree) ---\n{tree}",
         );
         Ok(())
