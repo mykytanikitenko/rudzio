@@ -88,7 +88,7 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
         async move {
             match handle.await {
                 Ok(result) => Ok(result),
-                Err(payload) => Err(compio_join_error_to_join_error(payload.as_ref())),
+                Err(payload) => Err(compio_join_error_to_join_error(payload)),
             }
         }
     }
@@ -106,7 +106,7 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
         async move {
             match handle.await {
                 Ok(result) => Ok(result),
-                Err(payload) => Err(compio_join_error_to_join_error(payload.as_ref())),
+                Err(payload) => Err(compio_join_error_to_join_error(payload)),
             }
         }
     }
@@ -121,16 +121,31 @@ impl<'rt> RuntimeTrait<'rt> for Runtime {
         async move {
             match handle.await {
                 Ok(result) => Ok(result),
-                Err(payload) => Err(compio_join_error_to_join_error(payload.as_ref())),
+                Err(payload) => Err(compio_join_error_to_join_error(payload)),
             }
         }
     }
 }
 
-/// Convert a compio panic payload into a [`JoinError::Panicked`].
+/// Convert a compio [`JoinError`](::compio_runtime::JoinError) into a
+/// [`JoinError`]. In compio 0.12 the join handle resolves to a dedicated
+/// error enum (`Cancelled` / `Panicked`) instead of a raw
+/// `Box<dyn Any + Send>` panic payload.
 #[inline]
-fn compio_join_error_to_join_error(payload: &(dyn Any + Send)) -> JoinError {
-    let message = payload.downcast_ref::<&'static str>().map_or_else(
+fn compio_join_error_to_join_error(error: ::compio_runtime::JoinError) -> JoinError {
+    match error {
+        ::compio_runtime::JoinError::Cancelled => JoinError::cancelled_simple(),
+        ::compio_runtime::JoinError::Panicked(payload) => {
+            let message = panic_payload_message(&*payload);
+            JoinError::panicked(io::Error::other(message))
+        }
+    }
+}
+
+/// Extract a human-readable message from a `Box<dyn Any + Send>` panic payload.
+#[inline]
+fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
+    payload.downcast_ref::<&'static str>().map_or_else(
         || {
             payload.downcast_ref::<String>().map_or_else(
                 || "task panicked".to_owned(),
@@ -138,8 +153,7 @@ fn compio_join_error_to_join_error(payload: &(dyn Any + Send)) -> JoinError {
             )
         },
         |msg| format!("task panicked: {msg}"),
-    );
-    JoinError::panicked(io::Error::other(message))
+    )
 }
 
 /// Create a new compio runtime instance.
