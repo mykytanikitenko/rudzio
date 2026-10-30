@@ -49,6 +49,31 @@ check-clippy:
 check-udeps:
     cargo +nightly udeps --workspace --all-features --all-targets
 
+# Resolve + build with the MINIMAL version of every DIRECT dependency,
+# proving each `^X.Y.Z` floor actually compiles (operator decision,
+# REL020-DEPRANGES). Runs under a pinned nightly with
+# `-Z direct-minimal-versions`, which constrains only DIRECT deps (the `^`
+# floors), not transitive ones — exactly what a caret promise means. Full
+# `-Z minimal-versions` would also force unrelated transitive crates to
+# their own minimal versions and report breakage we do not control.
+#
+# The throwaway copy keeps the repo's Cargo.lock untouched: a fresh lock is
+# resolved inside `$tmp`, so this gate never mutates the checked-in lock.
+check-minimal-versions:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    NIGHTLY="${RUDZIO_NIGHTLY_TOOLCHAIN:-nightly-2026-10-29}"
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    # Copy tracked sources (excludes target/, .git, and nix caches) into the
+    # throwaway dir. `git archive HEAD` is deterministic and mirrors what CI
+    # checks out.
+    git archive HEAD | tar -x -C "$tmp"
+    cd "$tmp"
+    # `-Z direct-minimal-versions` resolves each direct dep to its `^` floor
+    # and writes a NEW Cargo.lock inside the copy; the repo's lock is intact.
+    cargo "+$NIGHTLY" -Z direct-minimal-versions check --workspace --all-features --all-targets
+
 # Run all custom code-audit linters under `linters/`.
 #
 # Each linter under `linters/` is its own binary crate; this recipe
@@ -67,9 +92,14 @@ check-lints:
     #!/usr/bin/env bash
     set -uo pipefail
     status=0
+    cargo run --manifest-path linters/Cargo.toml -p dep-version-ranges || status=$?
     cargo run --manifest-path linters/Cargo.toml -p non-result-fns || status=$?
     cargo run --manifest-path linters/Cargo.toml -p expect-allow-ban || status=$?
     cargo run --manifest-path linters/Cargo.toml -p no-default-impls || status=$?
+    # `dep-version-ranges` carries unit tests asserting the caret/exact split
+    # (caret accepted for library dep, caret rejected for binary/dev dep,
+    # bare `1.2` / `>=` rejected, exact accepted where required).
+    cargo test --manifest-path linters/Cargo.toml -p dep-version-ranges --quiet || status=$?
     exit $status
 
 # Alias — `just lint` is the canonical linter-gate entry point.
@@ -198,4 +228,4 @@ pre-commit: check-fmt check-taplo check check-clippy check-udeps test
 #
 # `check-lints` is part of this aggregate because CI is strict on
 # purpose: a linter failure blocks the pipeline like any other gate.
-ci: check-fmt check-taplo check-clippy check-lints check-audit check-deny test
+ci: check-fmt check-taplo check-clippy check-lints check-minimal-versions check-audit check-deny test

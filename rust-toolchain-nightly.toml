@@ -1,0 +1,14 @@
+# Nightly toolchain for `just check-minimal-versions` (REL020-DEPRANGES).
+#
+# Pinned to an EXACT date — never the floating `nightly` channel — so the
+# `-Z direct-minimal-versions` resolver behaviour is reproducible across CI
+# and developer machines. Bump deliberately when the minimal-versions gate
+# needs a newer nightly (and update the matching `RUDZIO_NIGHTLY_TOOLCHAIN`
+# export in flake.nix).
+#
+# This is a SEPARATE file from rust-toolchain.toml (stable 1.99.1) because
+# rustup auto-selects a single directory toolchain file; the nightly channel
+# is selected explicitly via `cargo +nightly-2026-10-29` in the recipe.
+[toolchain]
+channel = "nightly-2026-10-29"
+components = ["rustfmt", "clippy", "rust-src"]

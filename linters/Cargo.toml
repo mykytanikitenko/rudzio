@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "dep-version-ranges",
   "expect-allow-ban",
   "no-default-impls",
   "rs-result-sig-rewrite",
