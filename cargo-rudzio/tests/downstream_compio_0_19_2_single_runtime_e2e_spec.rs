@@ -129,11 +129,7 @@ anyhow = "=1.0.104"
 /// `-d` restricts output to *duplicated* packages, so an empty `compio-runtime`
 /// / `compio-driver` result set proves a unified graph. `CARGO_NET_OFFLINE=false`
 /// lets the `compio` facade resolve (see module doc).
-fn run_cargo_tree_d(
-    root: &Path,
-    cargo_home: &Path,
-    cargo_target_dir: &Path,
-) -> io::Result<Output> {
+fn run_cargo_tree_d(root: &Path, cargo_home: &Path, cargo_target_dir: &Path) -> io::Result<Output> {
     Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
         .args(["tree", "-d", "-e", "normal"])
         .current_dir(root)
@@ -145,11 +141,7 @@ fn run_cargo_tree_d(
 }
 
 /// Spawn `cargo rudzio test` against `root` with the isolated cargo env.
-fn run_cargo_rudzio(
-    root: &Path,
-    cargo_home: &Path,
-    cargo_target_dir: &Path,
-) -> io::Result<Output> {
+fn run_cargo_rudzio(root: &Path, cargo_home: &Path, cargo_target_dir: &Path) -> io::Result<Output> {
     Command::new(
         cargo_rudzio_test_helpers::assert_fresh_binary(env!("CARGO_BIN_EXE_cargo-rudzio"))
             .map_err(io::Error::other)?,
