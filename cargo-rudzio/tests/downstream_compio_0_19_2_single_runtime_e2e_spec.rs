@@ -44,12 +44,6 @@ use cargo_rudzio_test_helpers::{IsolatedCargoSuite, IsolatedCargoTest};
 use rudzio::runtime::tokio::Multithread as TokioMultithread;
 use tempfile::TempDir;
 
-/// Repo root = parent of `cargo-rudzio/`. The fixture's `rudzio` dependency is
-/// a path dep pointing here, so it builds against the code under test.
-fn rudzio_source_root() -> Option<&'static Path> {
-    Path::new(env!("CARGO_MANIFEST_DIR")).parent()
-}
-
 /// The consumer's `src/lib.rs`: a `#[rudzio::suite]` under the compio runtime
 /// whose single test asserts it is genuinely executing inside the (single)
 /// compio runtime — `compio::runtime::Runtime::try_current()` returns `Some`
@@ -76,6 +70,12 @@ mod tests {
     }
 }
 "#;
+
+/// Repo root = parent of `cargo-rudzio/`. The fixture's `rudzio` dependency is
+/// a path dep pointing here, so it builds against the code under test.
+fn rudzio_source_root() -> Option<&'static Path> {
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent()
+}
 
 /// Materialise a single-member workspace whose `consumer` lib depends on the
 /// `compio` facade (`0.19.2`) in `[dependencies]` and on `rudzio`
