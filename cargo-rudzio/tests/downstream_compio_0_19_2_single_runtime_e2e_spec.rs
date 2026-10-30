@@ -114,9 +114,9 @@ path = "src/lib.rs"
 
 [dependencies]
 compio = "0.19.2"
+rudzio = { workspace = true }
 
 [dev-dependencies]
-rudzio = { workspace = true }
 anyhow = "=1.0.104"
 "#,
     )?;
@@ -194,10 +194,15 @@ mod tests {
             output.status.success(),
             "`cargo tree -d -e normal` must succeed:\n{text}"
         );
+        // `cargo tree` writes the dependency tree to stdout and download/progress
+        // chatter to stderr. `-d` restricts stdout to *duplicated* packages, so
+        // any `compio-runtime`/`compio-driver` mention on stdout is a duplicate.
+        let tree = String::from_utf8_lossy(&output.stdout);
         anyhow::ensure!(
-            !text.contains("compio-runtime v") && !text.contains("compio-driver v"),
+            !tree.contains("compio-runtime") && !tree.contains("compio-driver"),
             "downstream `compio 0.19.2` + rudzio must unify on ONE compio-runtime / \
-             compio-driver copy, but `cargo tree -d` reports duplicates:\n{text}"
+             compio-driver copy, but `cargo tree -d -e normal` reports duplicates:\n\
+             --- stdout (tree) ---\n{tree}",
         );
         Ok(())
     }
