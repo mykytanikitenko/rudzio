@@ -173,12 +173,9 @@ fn run_cargo_rudzio(
     test = IsolatedCargoTest
 )])]
 mod tests {
-    use super::{
-        IsolatedCargoTest, Path, TempDir, combined_output, run_cargo_rudzio, run_cargo_tree_d,
-        write_fixture,
-    };
+    use super::{IsolatedCargoTest, TempDir, run_cargo_rudzio, run_cargo_tree_d, write_fixture};
     use cargo_rudzio_test_helpers::{
-        RunSummary, assert_exact_test_names, assert_summary,
+        RunSummary, assert_exact_test_names, assert_summary, combined_output,
     };
 
     /// `cargo tree -d -e normal` must report no duplicate `compio-runtime` /
@@ -236,10 +233,7 @@ mod tests {
                 filtered_out: 0,
             },
         )?;
-        assert_exact_test_names(
-            &text,
-            &["consumer::runs_inside_single_compio_runtime"],
-        )?;
+        assert_exact_test_names(&text, &["runs_inside_single_compio_runtime"])?;
         Ok(())
     }
 }
