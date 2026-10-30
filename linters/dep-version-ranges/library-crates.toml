@@ -1,0 +1,18 @@
+# Explicit allowlist of PUBLISHED LIBRARY crates whose REGULAR dependencies
+# (`[dependencies]` and `[target.*.dependencies]`) MUST use a caret range
+# (`^X.Y.Z`) — never an exact pin. An exact `=X.Y.Z` on a library forces a
+# downstream user onto exactly that version (e.g. a user on tokio 1.55 could
+# not resolve rudzio's `tokio = "=1.54.1"`).
+#
+# Every OTHER manifest section — binaries (`cargo-rudzio`, `rudzio-migrate`),
+# all dev-dependencies, all build-dependencies, fixtures, and linters — must
+# keep an exact pin (`=X.Y.Z`), relying on Cargo.lock for reproducibility.
+#
+# This is an explicit name list, NOT a heuristic: a crate's `[package] name`
+# is "library-facing" only if it appears here.
+
+library_crates = [
+  "rudzio",
+  "rudzio-macro",
+  "rudzio-macro-internals",
+]

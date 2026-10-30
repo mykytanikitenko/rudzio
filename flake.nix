@@ -36,6 +36,12 @@
             # Rust toolchain (managed by rustup, pinned via rust-toolchain.toml)
             pkgs.rustup
 
+            # Pinned nightly for `just check-minimal-versions` (REL020-DEPRANGES).
+            # The exact date is pinned in rust-toolchain-nightly.toml; rustup
+            # provides the toolchain (same mechanism as the stable 1.99.1 pin).
+            # `RUDZIO_NIGHTLY_TOOLCHAIN` keeps the recipe and shell in lockstep
+            # — no floating "latest".
+
             # Task runner
             pkgs.just
 
@@ -83,6 +89,10 @@
             export SCCACHE_CACHE_DIR="$PWD/.cache/sccache-nix"
             export SCCACHE_DIRECT=true
             export SCCACHE_COMPRESS=true
+
+            # Pinned nightly channel for `just check-minimal-versions`
+            # (REL020-DEPRANGES). Must match rust-toolchain-nightly.toml.
+            export RUDZIO_NIGHTLY_TOOLCHAIN="nightly-2026-10-29"
 
             # Stamp the source revision into the cargo-rudzio binary so a
             # build from a git-less source tree (nix store copy, tarball)

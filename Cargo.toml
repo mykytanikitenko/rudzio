@@ -155,38 +155,54 @@ edition = "2024"
 
 [workspace.dependencies]
 # Local crates
-rudzio = { version = "0.2.0", path = "." }
-rudzio-macro = { version = "0.2.0", path = "macro" }
-rudzio-macro-internals = { version = "0.2.0", path = "macro-internals" }
-rudzio-migrate = { version = "0.2.0", path = "migrate" }
+#
+# Version scheme (operator decision, REL020-DEPRANGES):
+#   * `rudzio-macro` and `rudzio-macro-internals` are REGULAR dependencies of
+#     published library crates (`rudzio` -> `rudzio-macro` -> internals), so
+#     their published manifests carry a caret range (`^X.Y.Z`) rather than an
+#     exact pin — an exact `=X.Y.Z` on a library forces a downstream user onto
+#     exactly that version.
+#   * `rudzio` and `rudzio-migrate` are consumed by binaries (`cargo-rudzio`,
+#     `rudzio-migrate`), fixtures, and dev-dependencies — exact `=X.Y.Z`.
+rudzio = { version = "=0.2.0", path = "." }
+rudzio-macro = { version = "^0.2.0", path = "macro" }
+rudzio-macro-internals = { version = "^0.2.0", path = "macro-internals" }
+rudzio-migrate = { version = "=0.2.0", path = "migrate" }
 
-# External crates (pinned to exact versions for reproducible builds)
-anyhow = "=1.0.104"
-async-std = "=1.13.2"
+# External crates.
+#
+# Caret (`^X.Y.Z`) entries are REGULAR dependencies of a published library
+# crate (`rudzio`, `rudzio-macro`, `rudzio-macro-internals`); the caret floor
+# is the lowest version we promise to build against. Exact `=X.Y.Z` entries
+# are consumed ONLY by binaries (`cargo-rudzio`, `rudzio-migrate`),
+# dev-dependencies, fixtures, or linters, which rely on Cargo.lock for
+# reproducibility rather than a manifest pin.
+anyhow = "^1.0.104"
+async-std = "^1.13.2"
 cargo_metadata = "=0.23.1"
-compio-runtime = "=0.11.0"
-compio-driver = "=0.11.4"
-crossbeam-channel = "=0.5.17"
-libc = "=0.2.191"
-signal-hook = "=0.4.5"
-embassy-executor = { version = "=0.10.0", features = ["platform-std"] }
-futures-executor = "=0.3.34"
-futures-intrusive = "=0.5.0"
-futures-timer = "=3.0.4"
-futures-util = "=0.3.34"
+compio-runtime = "^0.11.0"
+compio-driver = "^0.11.4"
+crossbeam-channel = "^0.5.17"
+libc = "^0.2.191"
+signal-hook = "^0.4.5"
+embassy-executor = { version = "^0.10.0", features = ["platform-std"] }
+futures-executor = "^0.3.34"
+futures-intrusive = "^0.5.0"
+futures-timer = "^3.0.4"
+futures-util = "^0.3.34"
 ignore = "=0.4.33"
 prettyplease = "=0.2.37"
 thiserror = "=2.0.21"
-proc-macro2 = "=1.0.107"
-quote = "=1.0.47"
-send_wrapper = "=0.6.0"
-smol = "=2.0.2"
-syn = "=2.0.119"
+proc-macro2 = "^1.0.107"
+quote = "^1.0.47"
+send_wrapper = "^0.6.0"
+smol = "^2.0.2"
+syn = "^2.0.119"
 toml_edit = "=0.25.17"
-tokio = { version = "=1.54.1", features = ["rt", "macros", "time"] }
-tokio-util = { version = "=0.7.20", features = ["rt"] }
+tokio = { version = "^1.54.1", features = ["rt", "macros", "time"] }
+tokio-util = { version = "^0.7.20", features = ["rt"] }
 trybuild = "=1.0.122"
-linkme = "=0.3.37"
+linkme = "^0.3.37"
 # Keep monoio's default features (`iouring`, `legacy`, `macros`, `bytes`,
 # `utils`, `async-cancel`) so `FusionDriver` is available on linux+macos
 # (the only platforms where the runtime adapter compiles). The `iouring`
@@ -205,7 +221,7 @@ linkme = "=0.3.37"
 # cross-thread wake path to a flume-channel + driver-unpark bridge
 # that delivers the waker to monoio's owner thread and breaks its
 # `driver.park()`.
-monoio = { version = "=0.2.4", features = ["sync"] }
+monoio = { version = "^0.2.4", features = ["sync"] }
 
 # ===========================================================================
 # Rust compiler lints
