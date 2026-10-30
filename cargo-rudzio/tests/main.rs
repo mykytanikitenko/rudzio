@@ -17,6 +17,7 @@ mod cli_spec;
 mod concurrent_same_target_dir_spec;
 mod crate_path_under_aggregator_spec;
 mod cross_bridge_spec;
+mod downstream_compio_0_19_2_single_runtime_e2e_spec;
 mod edge_bin_only_e2e_spec;
 mod edge_build_and_lifecycle_e2e_spec;
 mod edge_cargo_config_e2e_spec;
