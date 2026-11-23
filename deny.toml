@@ -14,14 +14,6 @@ all-features = true
 [advisories]
 version = 2
 ignore = [
-    # `paste` is archived and unmaintained, but no safe upgrade exists
-    # — it's pulled in transitively by `compio-driver`/`compio-runtime`,
-    # both of which use the macro internally and don't expose it. The
-    # crate is feature-complete rather than buggy, and the upstream
-    # advisory itself notes "no safe upgrade is available". Revisit
-    # when compio releases a paste-free version (or migrates to
-    # `pastey`).
-    "RUSTSEC-2024-0436",
     # `async-std` discontinued. No safe upgrade — async-std is the
     # whole point of the `runtime-async-std` adapter. Same disposition
     # as the workspace `multiple_crate_versions` clippy allow: drop
